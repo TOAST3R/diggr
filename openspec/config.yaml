@@ -1,0 +1,41 @@
+schema: spec-driven
+
+context: |
+  Product: a Winamp 2.x-inspired music player written in Rust, plus a fullscreen,
+  music-synchronized fractal visualizer ("MilkDrop that understands song structure").
+  Primary music genre: electronica (steady 4/4 grid, 8/16/32-bar phrases, builds/drops).
+
+  Top priority: play fast with zero perceived latency.
+    - Press play → first audio < 30 ms (audio device is kept open at all times).
+    - Audio ↔ visual offset < 1 video frame (render reads a playback clock).
+    - Track → next track is gapless (next track pre-warmed).
+    - Nothing on the playback path ever waits for analysis or rendering.
+
+  Targets: native first (macOS/CoreAudio primary; Windows/Linux via cpal), web second
+  (Chrome-only, WebGPU-only, served locally with COOP/COEP headers). Web support is
+  achieved through three platform seams only: AudioSink, Spawner, FileSource.
+
+  Tech stack: Rust (stable), cargo workspace. symphonia (decode), rubato (resample),
+  cpal (native audio), rtrb (lock-free SPSC rings), realfft (FFT), egui/eframe with the
+  wgpu backend (UI), wgpu + WGSL (visuals, compute allowed), serde + RON (data files),
+  notify (hot reload, native only).
+
+  Workspace layout (target):
+    crates/platform   - seam traits + native impls
+    crates/audio      - decode, rings, engine, clock, EQ, tap
+    crates/analysis   - rolling-horizon music analyzer, SongScore, cache
+    crates/visuals    - signal bus, modulation, scenes, variants, director, compositor
+    crates/ui         - classic skin, player/EQ/playlist, fullscreen, overlay, deck
+    apps/native       - desktop binary
+    apps/web          - wasm entry points, worklet JS, dev server
+
+  Conventions: no allocations, locks, or syscalls in the audio callback. Real-time
+  params cross threads via atomics or SPSC queues. All randomness in visuals is
+  deterministic, seeded from the track hash and musical time.
+
+rules:
+  specs:
+    - Use SHALL/MUST; every requirement has at least one WHEN/THEN scenario.
+    - State latency/performance targets numerically where they apply.
+  tasks:
+    - Each task should be completable in one focused session and be verifiable.
