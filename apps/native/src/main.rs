@@ -1,21 +1,27 @@
-//! Native harness for the audio core (a GUI arrives with `classic-ui`).
+//! Winamp-style player for the desktop.
 //!
 //! ```text
-//! winamp-native FILE...                      interactive player
+//! winamp-native [FILE...]                    the player window (files replace the playlist)
+//! winamp-native --tui FILE...                terminal player
 //! winamp-native --bench [--volume V] FILE... measure start/seek latency and underruns
 //! winamp-native --click-test                 clock vs. microphone (needs speaker → mic path)
+//! winamp-native --startup-time               print time to first frame and quit
 //! ```
 
 mod bench;
 mod click;
 mod interactive;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 use audio::{Engine, EngineConfig};
 use platform::TrackRef;
 use platform::native::{CpalSink, NativeFileSource, NativeSpawner};
+use ui::settings::Store;
+use ui::{AppContext, Startup, WinampApp};
 
 // Debug builds count any allocation made inside the audio callback (shown in the status/bench).
 #[cfg(debug_assertions)]
@@ -32,28 +38,40 @@ pub fn open_engine() -> Result<Engine, String> {
     .map_err(|e| e.to_string())
 }
 
+const USAGE: &str = "usage: winamp-native [FILE...] | --tui FILE... | --bench [--volume 0..1] FILE... | --click-test | --startup-time";
+
 fn main() -> ExitCode {
+    let process_start = Instant::now();
     let mut args = std::env::args().skip(1).peekable();
-    let mut mode = "play";
+    let mut mode = "gui";
     let mut volume = None;
     let mut files = Vec::new();
+    let mut startup_time = false;
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--tui" => mode = "tui",
             "--bench" => mode = "bench",
             "--click-test" => mode = "click",
+            "--startup-time" => startup_time = true,
             "--volume" => volume = args.next().and_then(|v| v.parse::<f32>().ok()),
             "-h" | "--help" => {
-                println!("usage: winamp-native [--bench [--volume 0..1] | --click-test] FILE...");
+                println!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
-            _ => files.push(TrackRef::new(a)),
+            _ => files.push(a),
         }
     }
+    let tracks = || files.iter().map(TrackRef::new).collect::<Vec<_>>();
     let result = match mode {
-        "bench" => bench::run(files, volume.unwrap_or(0.0)),
+        "bench" => bench::run(tracks(), volume.unwrap_or(0.0)),
         "click" => click::run(),
-        _ if files.is_empty() => Err("no files given (try --help)".into()),
-        _ => interactive::run(files, volume.unwrap_or(0.8)),
+        "tui" if files.is_empty() => Err(format!("no files given\n{USAGE}")),
+        "tui" => interactive::run(tracks(), volume.unwrap_or(0.8)),
+        _ => gui(
+            files.into_iter().map(PathBuf::from).collect(),
+            process_start,
+            startup_time,
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -62,4 +80,47 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result<(), String> {
+    // WINAMP_CONFIG_DIR overrides where settings and the playlist are kept (handy for testing).
+    let store = std::env::var_os("WINAMP_CONFIG_DIR")
+        .map(Store::new)
+        .or_else(Store::platform_default);
+    let settings = store.as_ref().map(Store::load_settings).unwrap_or_default();
+    let size = WinampApp::window_size(&settings, &ui::skin::LoadedSkin::default_skin());
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("Winamp")
+        .with_inner_size(size)
+        .with_decorations(false)
+        .with_resizable(false);
+    if let Some((x, y)) = settings.window_pos {
+        viewport = viewport.with_position([x, y]);
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        persist_window: false,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "winamp_rust",
+        options,
+        Box::new(move |cc| {
+            let ctx = AppContext {
+                engine: Box::new(open_engine),
+                spawner: Arc::new(NativeSpawner),
+                files: Arc::new(NativeFileSource),
+                store,
+                open,
+                scene: Box::new(ui::fullscreen::BeatFlash::default()),
+                startup: Startup {
+                    process_start,
+                    report: startup_time,
+                    exit_after_first_frame: startup_time,
+                },
+            };
+            Ok(Box::new(WinampApp::new(cc, ctx)))
+        }),
+    )
+    .map_err(|e| e.to_string())
 }

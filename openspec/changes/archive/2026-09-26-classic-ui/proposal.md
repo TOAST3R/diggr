@@ -23,7 +23,7 @@ The player needs the instantly recognizable, compact Winamp 2.x interface — ma
 - `fullscreen-mode`: entering/leaving fullscreen and hosting the visual engine surface.
 
 ### Modified Capabilities
-<!-- none -->
+- `audio-playback`: adds gapless repeat modes (Off / All / One) to the engine, needed for the player's repeat button.
 
 ## Impact
 

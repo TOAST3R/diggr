@@ -17,7 +17,7 @@ use crate::renderer::{Control, Renderer, RendererParts};
 use crate::ring::pcm_ring;
 use crate::tap::{TapReader, tap};
 use crate::trycell::TryCell;
-use crate::worker::{Command, DecodeWorker, EngineEvent, WorkerConfig};
+use crate::worker::{Command, DecodeWorker, EngineEvent, RepeatMode, WorkerConfig};
 use crate::{PlayState, TrackId, TrackInfo, rt_guard};
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +85,7 @@ pub struct Engine {
     infos: HashMap<TrackId, TrackInfo>,
     unread: Vec<EngineEvent>,
     last_index: Option<usize>,
+    repeat: RepeatMode,
 }
 
 impl Engine {
@@ -175,6 +176,7 @@ impl Engine {
             infos: HashMap::new(),
             unread: Vec::new(),
             last_index: None,
+            repeat: RepeatMode::Off,
         })
     }
 
@@ -264,9 +266,25 @@ impl Engine {
         });
     }
 
+    /// Next queue entry; wraps to the first with [`RepeatMode::All`].
     pub fn next(&mut self) {
-        let next = self.current_index().map_or(0, |i| i + 1);
+        let len = self.queue.len();
+        let next = match self.current_index() {
+            Some(i) if self.repeat == RepeatMode::All && len > 0 => (i + 1) % len,
+            Some(i) => i + 1,
+            None => 0,
+        };
         self.play_index(next);
+    }
+
+    /// What follows each track: nothing, the next one (wrapping), or itself. Gapless.
+    pub fn set_repeat(&mut self, mode: RepeatMode) {
+        self.repeat = mode;
+        let _ = self.commands.send(Command::SetRepeat(mode));
+    }
+
+    pub fn repeat(&self) -> RepeatMode {
+        self.repeat
     }
 
     pub fn previous(&mut self) {

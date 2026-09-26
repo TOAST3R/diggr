@@ -567,3 +567,50 @@ fn clock_switches_track_at_the_audible_gapless_boundary_when_resampling() {
     );
     assert_eq!(rig.engine.stats().underruns, 0);
 }
+
+#[test]
+fn repeat_one_loops_gaplessly() {
+    let dir = temp_dir("repeat-one");
+    let len = 5_000u64;
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, len);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_repeat(audio::RepeatMode::One);
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let out = rig.pull_audio(30); // 15 360 frames ≈ 3 loops
+    let expected: Vec<f32> = (0..30 * BUF as u64)
+        .flat_map(|i| {
+            let (l, r) = signal(i % len);
+            [l, r]
+        })
+        .collect();
+    assert_close(&out, &expected, "repeat one");
+    assert_eq!(rig.engine.stats().underruns, 0);
+    assert_eq!(rig.engine.state(), PlayState::Playing);
+}
+
+#[test]
+fn repeat_all_wraps_to_the_first_track() {
+    let dir = temp_dir("repeat-all");
+    let a = write_wav(&dir.join("a.wav"), 48_000, 0, 3_000);
+    let b = write_wav(&dir.join("b.wav"), 48_000, 3_000, 6_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_repeat(audio::RepeatMode::All);
+    rig.engine.set_queue(vec![a, b]);
+    rig.engine.play_index(0);
+    let out = rig.pull_audio(20); // 10 240 frames: a, b, a, b(part)
+    let expected: Vec<f32> = (0..20 * BUF as u64)
+        .flat_map(|i| {
+            let (l, r) = signal(i % 6_000);
+            [l, r]
+        })
+        .collect();
+    assert_close(&out, &expected, "repeat all");
+    assert_eq!(rig.engine.stats().queue_ended, 0);
+    // `next` from the last track wraps as well.
+    rig.engine.play_index(1);
+    rig.pull_audio(1);
+    rig.engine.next();
+    let out = rig.pull_audio(1);
+    assert_close(&out, &expected[..BUF * 2], "next wraps");
+}

@@ -16,7 +16,7 @@ pub use clock::{ClockReader, ClockSnapshot, Position};
 pub use engine::{Engine, EngineConfig, EngineError, EngineStats};
 pub use eq::{EqPreset, EqPresets, EqSettings};
 pub use tap::{TapChunk, TapReader};
-pub use worker::EngineEvent;
+pub use worker::{EngineEvent, RepeatMode};
 
 /// Identifies one playback instance of a track (a new id each time a track is loaded). 0 = none.
 pub type TrackId = u64;
