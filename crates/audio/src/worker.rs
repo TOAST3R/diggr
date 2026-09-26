@@ -27,8 +27,32 @@ const MAX_SEGMENT_FRAMES: usize = 2048;
 const PREWARM_BUFFER_SECS: f64 = 1.0;
 const RECENT_IDS: usize = 64;
 
+/// What plays after the last track (or after every track, for `One`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    /// After the last queue entry, continue gaplessly with the first.
+    All,
+    /// Loop the current track gaplessly.
+    One,
+}
+
+impl RepeatMode {
+    /// The queue index that follows `index` in a queue of `len` entries.
+    pub fn next_index(self, index: usize, len: usize) -> Option<usize> {
+        match self {
+            _ if index >= len => None,
+            RepeatMode::One => Some(index),
+            RepeatMode::All => Some((index + 1) % len),
+            RepeatMode::Off => (index + 1 < len).then_some(index + 1),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Command {
+    SetRepeat(RepeatMode),
     /// Replace the queue; `current` is the new index of the playing track, if it is still there.
     SetQueue {
         tracks: Vec<TrackRef>,
@@ -228,6 +252,7 @@ pub struct DecodeWorker {
     next_id: TrackId,
     recent: VecDeque<(TrackId, usize)>,
     shutdown: bool,
+    repeat: RepeatMode,
 }
 
 impl DecodeWorker {
@@ -258,6 +283,7 @@ impl DecodeWorker {
             next_id: 1,
             recent: VecDeque::new(),
             shutdown: false,
+            repeat: RepeatMode::Off,
         }
     }
 
@@ -338,6 +364,10 @@ impl DecodeWorker {
 
     fn handle(&mut self, cmd: Command) {
         match cmd {
+            Command::SetRepeat(mode) => {
+                self.repeat = mode;
+                self.prewarm = None;
+            }
             Command::SetQueue { tracks, current } => {
                 self.queue = tracks;
                 self.prewarm = None;
@@ -529,9 +559,9 @@ impl DecodeWorker {
             return;
         };
         let mut stream = self.stream.take().expect("a current track has a stream");
-        let next = cur
-            .index
-            .checked_add(1)
+        let next = self
+            .repeat
+            .next_index(cur.index, self.queue.len())
             .and_then(|i| self.open_from(i, 0.0));
         let Some((dec, index, buffered, finished)) = next else {
             stream.finish(&mut self.pending);
@@ -647,10 +677,10 @@ impl DecodeWorker {
             return;
         };
         let position = cur.start_secs + cur.in_frames as f64 / cur.dec.src_rate() as f64;
-        let Some(index) = cur.index.checked_add(1) else {
+        let Some(index) = self.repeat.next_index(cur.index, self.queue.len()) else {
             return;
         };
-        if duration - position > self.prewarm_secs || index >= self.queue.len() {
+        if duration - position > self.prewarm_secs {
             return;
         }
         let track = self.queue[index].clone();
@@ -683,4 +713,22 @@ impl DecodeWorker {
 
 fn cur_index(current: &Option<Active>) -> usize {
     current.as_ref().map_or(usize::MAX, |c| c.index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RepeatMode;
+
+    #[test]
+    fn next_index_per_repeat_mode() {
+        assert_eq!(RepeatMode::Off.next_index(0, 3), Some(1));
+        assert_eq!(RepeatMode::Off.next_index(2, 3), None);
+        assert_eq!(RepeatMode::All.next_index(2, 3), Some(0));
+        assert_eq!(RepeatMode::One.next_index(1, 3), Some(1));
+        // A removed track (index past the end) never continues.
+        for mode in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+            assert_eq!(mode.next_index(usize::MAX, 3), None);
+            assert_eq!(mode.next_index(0, 0), None);
+        }
+    }
 }
