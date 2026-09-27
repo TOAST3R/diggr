@@ -11,6 +11,7 @@ pub mod playlist;
 pub mod settings;
 pub mod skin;
 pub mod spectrum;
+pub mod timeline;
 pub mod widgets;
 
 pub use app::{AppContext, Startup, WinampApp};

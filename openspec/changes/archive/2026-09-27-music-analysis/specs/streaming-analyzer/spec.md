@@ -1,5 +1,16 @@
 ## ADDED Requirements
 
+### Requirement: Analysis service API
+The system SHALL provide an `AnalysisService` that the player drives with the audible track and position every frame (`playhead`), with tracks about to play (`prewarm`), and from which it reads the latest score of a track (`score`). Scores SHALL be addressed by `TrackRef`; the player maps the clock's `TrackId` to a `TrackRef` using the engine's `TrackLoaded` events.
+
+#### Scenario: Score for the audible track
+- **WHEN** a track has been playing for 2 s and the player calls `playhead(track, 2.0)` each frame
+- **THEN** `score(track)` returns a snapshot covering at least the first 32 bars
+
+#### Scenario: Cheap per-frame calls
+- **WHEN** the UI calls `playhead` and `score` on every frame at 60 Hz
+- **THEN** each call returns without waiting on analysis work (no blocking locks, no I/O)
+
 ### Requirement: Playback isolation
 Analysis SHALL run on low-priority threads with its own file handles and decoders and SHALL never block, delay, or share state with the playback path.
 
@@ -12,7 +23,7 @@ Analysis SHALL run on low-priority threads with its own file handles and decoder
 - **THEN** playback has zero underruns
 
 ### Requirement: Rolling horizon
-The analyzer SHALL analyze ahead of the audible position, maintaining at least 120 s of coverage ahead of the playhead when possible, then idle until the horizon shrinks.
+The analyzer SHALL analyze ahead of the audible position, maintaining at least 120 s of coverage ahead of the playhead when possible, then idle until the horizon shrinks. At most two tracks SHALL be analyzed at once (the audible one and the pre-warmed one); a track that is neither for 30 s SHALL stop being analyzed, keeping what was computed.
 
 #### Scenario: Early coverage
 - **WHEN** a 4-minute uncached track starts playing
@@ -30,14 +41,14 @@ When the playhead moves outside covered regions, the analyzer SHALL restart at t
 - **THEN** analysis restarts near 47:00 and coverage for that region appears within 1 s
 
 ### Requirement: Next-track pre-warm
-On the engine's pre-warm event, the analyzer SHALL begin analyzing the next track so its opening is covered before it plays.
+On the engine's `EngineEvent::PreWarm` (about 30 s before a track ends), the player SHALL call `prewarm`, and the analyzer SHALL begin analyzing that next track so its opening is covered before it plays.
 
 #### Scenario: Score ready at transition
 - **WHEN** a gapless transition to a pre-warmed uncached track occurs
 - **THEN** the new track's first 32 bars are already covered
 
 ### Requirement: Cache
-Scores (including partial coverage) SHALL be cached by content hash and algorithm version, and a cached score SHALL be available immediately on play.
+Scores (including partial coverage) SHALL be cached on disk by content hash and algorithm version in the platform cache directory (`WINAMP_CACHE_DIR` overrides), and a cached score SHALL be available immediately on play.
 
 #### Scenario: Second play
 - **WHEN** a previously fully analyzed track is played again

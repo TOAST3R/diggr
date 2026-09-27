@@ -15,6 +15,9 @@ pub struct SceneFrame<'a> {
     pub bars: &'a [f32; BARS],
     pub artist: &'a str,
     pub title: &'a str,
+    /// What the analyzer knows about the audible track (beats, sections, tension, upcoming
+    /// drops), when it has analyzed it.
+    pub score: Option<&'a analysis::SongScore>,
 }
 
 /// A fullscreen visual. The host calls, once per displayed frame: `paint` (GPU layer under the
@@ -31,11 +34,15 @@ pub trait VisualScene {
 
 /// Brightness of the placeholder flash: a fixed 120 BPM grid on the *audible* time, decaying
 /// quickly after each beat, so audio/visual offset is easy to judge by eye.
-pub fn beat_flash(position: &Position) -> f32 {
+/// Brightness of the placeholder flash, decaying quickly after each beat. Uses the analyzed
+/// beats when the score covers the audible time (a visible check that the grid is right), and a
+/// fixed 120 BPM grid otherwise.
+pub fn beat_flash(position: &Position, score: Option<&analysis::SongScore>) -> f32 {
     if position.state != PlayState::Playing {
         return 0.0;
     }
-    let beats = position.seconds() * 2.0;
+    let secs = position.seconds();
+    let beats = score.and_then(|s| s.beat_at(secs)).unwrap_or(secs * 2.0);
     (-(beats.fract() as f32) * 6.0).exp()
 }
 
@@ -180,7 +187,7 @@ impl VisualScene for BeatFlash {
         if !self.ready {
             return None;
         }
-        let flash = beat_flash(&frame.position);
+        let flash = beat_flash(&frame.position, frame.score);
         let bass = frame.bars[..4].iter().copied().fold(0.0, f32::max);
         let base = [0.02, 0.02, 0.06];
         let hot = [0.2 + 0.6 * bass, 0.9, 0.3];
@@ -200,7 +207,8 @@ impl VisualScene for BeatFlash {
         let small = egui::FontId::proportional(16.0);
         let white = Color32::from_rgba_unmultiplied(255, 255, 255, 230);
         let x = rect.left() + 48.0;
-        let y = rect.bottom() - 120.0;
+        // Above the host's analysis strip (which sits along the bottom when shown).
+        let y = rect.bottom() - 120.0 - crate::timeline::HEIGHT - 40.0;
         if !frame.artist.is_empty() {
             p.text(
                 egui::pos2(x, y),
@@ -221,7 +229,7 @@ impl VisualScene for BeatFlash {
         p.text(
             egui::pos2(x, y + 66.0),
             egui::Align2::LEFT_TOP,
-            format!("{}  ·  placeholder visual: beat flash at 120 BPM from the playback clock  ·  F / Esc to exit", crate::format::clock(secs)),
+            format!("{}  ·  placeholder visual: flashes on analyzed beats (120 BPM grid until analyzed) · T analysis strip · A annotate  ·  F / Esc to exit", crate::format::clock(secs)),
             small,
             Color32::from_gray(170),
         );
@@ -247,16 +255,33 @@ mod tests {
     }
 
     #[test]
+    fn flash_follows_analyzed_beats_when_available() {
+        // A 128 BPM grid starting at 0.1 s: beats at 0.1, 0.56875, …
+        let s = analysis::SongScore {
+            beats: (0..64).map(|i| 0.1 + i as f64 * 60.0 / 128.0).collect(),
+            ..Default::default()
+        };
+        let on_beat = 0.1 + 10.0 * 60.0 / 128.0 + 0.001; // just after the beat
+        assert!(beat_flash(&at(on_beat, PlayState::Playing), Some(&s)) > 0.95);
+        assert!(beat_flash(&at(on_beat + 0.2, PlayState::Playing), Some(&s)) < 0.1);
+        // Outside the analyzed beats it falls back to the fixed grid.
+        assert!(beat_flash(&at(100.0, PlayState::Playing), Some(&s)) > 0.99);
+    }
+
+    #[test]
     fn flash_peaks_on_each_beat_and_decays() {
         assert!(
-            (beat_flash(&at(1.0, PlayState::Playing)) - 1.0).abs() < 1e-3,
+            (beat_flash(&at(1.0, PlayState::Playing), None) - 1.0).abs() < 1e-3,
             "on the beat"
         );
         assert!(
-            beat_flash(&at(1.25, PlayState::Playing)) < 0.1,
+            beat_flash(&at(1.25, PlayState::Playing), None) < 0.1,
             "half a beat later"
         );
-        assert!(beat_flash(&at(1.5, PlayState::Playing)) > 0.99, "next beat");
-        assert_eq!(beat_flash(&at(1.0, PlayState::Paused)), 0.0);
+        assert!(
+            beat_flash(&at(1.5, PlayState::Playing), None) > 0.99,
+            "next beat"
+        );
+        assert_eq!(beat_flash(&at(1.0, PlayState::Paused), None), 0.0);
     }
 }

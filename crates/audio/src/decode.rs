@@ -338,10 +338,11 @@ fn to_stereo(src: &[f32], channels: usize, dst: &mut Vec<f32>) {
     }
 }
 
-/// FFT resampler for interleaved stereo that trims its startup delay and flushes its tail, so
-/// `n` input frames always become exactly `round(n * ratio)` output frames.
-pub struct StereoResampler {
+/// FFT resampler for interleaved audio with any channel count that trims its startup delay and
+/// flushes its tail, so `n` input frames always become exactly `round(n * ratio)` output frames.
+pub struct ChannelResampler {
     inner: Fft<f32>,
+    channels: usize,
     ratio: f64,
     input: Vec<f32>,
     output: Vec<f32>,
@@ -350,13 +351,25 @@ pub struct StereoResampler {
     total_out: u64,
 }
 
-impl StereoResampler {
+/// The playback path's resampler (interleaved stereo).
+pub type StereoResampler = ChannelResampler;
+
+impl ChannelResampler {
+    /// Interleaved stereo.
     pub fn new(in_rate: u32, out_rate: u32) -> Result<Self, DecodeError> {
+        Self::with_channels(in_rate, out_rate, CHANNELS)
+    }
+
+    pub fn with_channels(
+        in_rate: u32,
+        out_rate: u32,
+        channels: usize,
+    ) -> Result<Self, DecodeError> {
         let fft = Fft::<f32>::new(
             in_rate as usize,
             out_rate as usize,
             RESAMPLER_CHUNK,
-            CHANNELS,
+            channels,
             FixedSync::Input,
         )
         .map_err(|e| DecodeError::Unsupported(format!("resampler: {e}")))?;
@@ -364,21 +377,22 @@ impl StereoResampler {
         let out_max = fft.output_frames_max();
         Ok(Self {
             inner: fft,
+            channels,
             ratio: out_rate as f64 / in_rate as f64,
-            input: Vec::with_capacity(RESAMPLER_CHUNK * CHANNELS * 2),
-            output: vec![0.0; out_max * CHANNELS],
+            input: Vec::with_capacity(RESAMPLER_CHUNK * channels * 2),
+            output: vec![0.0; out_max * channels],
             delay_left: delay,
             total_in: 0,
             total_out: 0,
         })
     }
 
-    pub fn process(&mut self, stereo: &[f32], out: &mut Vec<f32>) {
-        self.input.extend_from_slice(stereo);
-        self.total_in += (stereo.len() / CHANNELS) as u64;
+    pub fn process(&mut self, samples: &[f32], out: &mut Vec<f32>) {
+        self.input.extend_from_slice(samples);
+        self.total_in += (samples.len() / self.channels) as u64;
         loop {
             let need = self.inner.input_frames_next();
-            if self.input.len() / CHANNELS < need {
+            if self.input.len() / self.channels < need {
                 break;
             }
             self.run(None, out);
@@ -388,7 +402,7 @@ impl StereoResampler {
     /// Flushes buffered input and the filter tail.
     pub fn finish(&mut self, out: &mut Vec<f32>) {
         let expected = (self.total_in as f64 * self.ratio).round() as u64;
-        let pending = self.input.len() / CHANNELS;
+        let pending = self.input.len() / self.channels;
         if pending > 0 {
             self.run(Some(pending), out);
         }
@@ -396,19 +410,20 @@ impl StereoResampler {
             self.run(Some(0), out);
         }
         let extra = (self.total_out - expected) as usize;
-        out.truncate(out.len() - extra * CHANNELS);
+        out.truncate(out.len() - extra * self.channels);
         self.total_out = expected;
     }
 
     fn run(&mut self, partial: Option<usize>, out: &mut Vec<f32>) {
         let r = &mut self.inner;
         let need = r.input_frames_next();
-        if self.input.len() < need * CHANNELS {
-            self.input.resize(need * CHANNELS, 0.0);
+        if self.input.len() < need * self.channels {
+            self.input.resize(need * self.channels, 0.0);
         }
-        let out_frames = self.output.len() / CHANNELS;
-        let input = InterleavedSlice::new(&self.input[..], CHANNELS, need).expect("sized input");
-        let mut output = InterleavedSlice::new_mut(&mut self.output[..], CHANNELS, out_frames)
+        let out_frames = self.output.len() / self.channels;
+        let input =
+            InterleavedSlice::new(&self.input[..], self.channels, need).expect("sized input");
+        let mut output = InterleavedSlice::new_mut(&mut self.output[..], self.channels, out_frames)
             .expect("sized output");
         let indexing = Indexing {
             partial_len: partial,
@@ -418,13 +433,13 @@ impl StereoResampler {
             .process_into_buffer(&input, &mut output, Some(&indexing))
             .expect("buffers sized from the resampler");
         let consumed = partial.unwrap_or(used).min(used);
-        self.input.drain(..consumed * CHANNELS);
+        self.input.drain(..consumed * self.channels);
         if partial.is_some() {
             self.input.clear();
         }
         let skip = self.delay_left.min(produced);
         self.delay_left -= skip;
-        out.extend_from_slice(&self.output[skip * CHANNELS..produced * CHANNELS]);
+        out.extend_from_slice(&self.output[skip * self.channels..produced * self.channels]);
         self.total_out += (produced - skip) as u64;
     }
 }
@@ -470,6 +485,23 @@ mod tests {
         );
         // Delay trimmed: the output starts like the input (near zero, rising).
         assert!(out[0].abs() < 0.05 && out[2 * 5] > 0.0);
+    }
+
+    #[test]
+    fn mono_resampling_keeps_length_and_pitch() {
+        let mut r = ChannelResampler::with_channels(48_000, 22_050, 1).unwrap();
+        let input: Vec<f32> = sine(48_000, 440.0, 48_000)
+            .chunks(2)
+            .map(|f| f[0])
+            .collect();
+        let mut out = Vec::new();
+        for chunk in input.chunks(1000) {
+            r.process(chunk, &mut out);
+        }
+        r.finish(&mut out);
+        assert_eq!(out.len(), 22_050);
+        let crossings = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        assert!((439..=441).contains(&crossings), "{crossings}");
     }
 
     #[test]

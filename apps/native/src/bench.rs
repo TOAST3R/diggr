@@ -2,16 +2,50 @@
 //!
 //! For each file: time from play request to first audio at the device, then seeks at 25/50/75%.
 //! Finally the whole queue plays through gaplessly while underruns are counted.
+//!
+//! With `--analysis`, the music analyzer runs throughout (the playing track and, earlier than in
+//! real use, the next one) to show it does not slow playback down.
 
 use std::time::{Duration, Instant};
 
+use std::sync::Arc;
+
+use analysis::AnalysisService;
 use audio::{Engine, EngineEvent, PlayState};
 use platform::TrackRef;
+use platform::native::{NativeFileSource, NativeSpawner};
+
+/// Keeps the analyzer busy the way the player does: playhead every tick, next track pre-warmed.
+struct Load {
+    svc: Option<AnalysisService>,
+    files: Vec<TrackRef>,
+}
+
+impl Load {
+    fn tick(&self, engine: &mut Engine) {
+        let Some(svc) = &self.svc else { return };
+        if let Some(i) = engine.current_index() {
+            svc.playhead(&self.files[i], engine.position().seconds());
+            if let Some(next) = self.files.get(i + 1) {
+                svc.prewarm(next);
+            }
+        }
+    }
+
+    /// Sleeps `d` while ticking every 5 ms.
+    fn sleep(&self, engine: &mut Engine, d: Duration) {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            self.tick(engine);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
 
 const START_TARGET_MS: f64 = 30.0;
 const SEEK_TARGET_MS: f64 = 50.0;
 
-pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
+pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(), String> {
     if files.is_empty() {
         return Err("--bench needs audio files".into());
     }
@@ -28,6 +62,28 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
     );
     engine.set_volume(volume);
     engine.set_queue(files.clone());
+    let load = Load {
+        svc: with_analysis.then(|| {
+            // A fresh cache, so everything really gets analyzed during the run.
+            let dir =
+                std::env::temp_dir().join(format!("winamp-bench-cache-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            AnalysisService::new(
+                Arc::new(NativeSpawner),
+                Arc::new(NativeFileSource),
+                Some(analysis::cache::ScoreCache::new(dir)),
+            )
+        }),
+        files: files.clone(),
+    };
+    println!(
+        "analysis {}",
+        if with_analysis {
+            "running (current + next track)"
+        } else {
+            "off"
+        }
+    );
     std::thread::sleep(Duration::from_millis(300)); // device fully running, as in a warm app
     let underruns_before = engine.stats().underruns;
 
@@ -39,7 +95,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
     );
     for (i, f) in files.iter().enumerate() {
         engine.play_index(i);
-        let Some(duration) = wait_started(&mut engine, i)? else {
+        let Some(duration) = wait_started(&mut engine, i, &load)? else {
             println!("{:<32} failed to play", f.file_name());
             continue;
         };
@@ -48,7 +104,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
         let mut seeks = Vec::new();
         for frac in [0.25, 0.5, 0.75] {
             engine.seek(duration * frac);
-            std::thread::sleep(Duration::from_millis(250));
+            load.sleep(&mut engine, Duration::from_millis(250));
             let ms = engine.stats().last_start_latency_ms;
             worst_seek = worst_seek.max(ms);
             seeks.push(ms);
@@ -68,7 +124,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
     engine.play_index(0);
     let began = Instant::now();
     while engine.stats().queue_ended == ended_before {
-        std::thread::sleep(Duration::from_millis(50));
+        load.sleep(&mut engine, Duration::from_millis(50));
         engine.poll_events();
         if began.elapsed() > Duration::from_secs(3600) {
             break;
@@ -90,6 +146,21 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
     } else {
         println!("rt allocs   not measured in release builds");
     }
+    if let Some(svc) = &load.svc {
+        let analyzed: f64 = files
+            .iter()
+            .filter_map(|f| {
+                svc.score(f).and_then(|s| {
+                    s.coverage
+                        .spans()
+                        .iter()
+                        .map(|(a, b)| b - a)
+                        .reduce(|x, y| x + y)
+                })
+            })
+            .sum();
+        println!("analyzed    {analyzed:.0} s of audio during the run");
+    }
     let ok = worst_start < START_TARGET_MS
         && worst_seek < SEEK_TARGET_MS
         && underruns == 0
@@ -102,7 +173,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32) -> Result<(), String> {
 }
 
 /// Waits until track `index` is audible; returns its duration in seconds.
-fn wait_started(engine: &mut Engine, index: usize) -> Result<Option<f64>, String> {
+fn wait_started(engine: &mut Engine, index: usize, load: &Load) -> Result<Option<f64>, String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut duration = None;
     loop {
@@ -126,6 +197,7 @@ fn wait_started(engine: &mut Engine, index: usize) -> Result<Option<f64>, String
         if Instant::now() > deadline {
             return Err(format!("track {index} did not start within 5 s"));
         }
+        load.tick(engine);
         std::thread::sleep(Duration::from_millis(5));
     }
 }

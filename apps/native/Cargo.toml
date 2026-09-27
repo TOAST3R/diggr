@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+analysis = { version = "0.1.0", path = "../../crates/analysis" }
 audio = { version = "0.1.0", path = "../../crates/audio" }
 cpal = "0.18"
 crossterm = "0.29.0"

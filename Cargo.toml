@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/platform", "crates/audio", "apps/native", "crates/ui"]
+members = ["crates/platform", "crates/audio", "apps/native", "crates/ui", "crates/analysis"]
 
 [workspace.package]
 edition = "2024"
@@ -8,4 +8,8 @@ license = "MIT"
 
 # Decoders and resamplers are far too slow unoptimized to play audio in real time.
 [profile.dev.package."*"]
+opt-level = 3
+
+# The analyzer is DSP-heavy (STFT, self-similarity); unoptimized it cannot keep ahead of playback.
+[profile.dev.package.analysis]
 opt-level = 3

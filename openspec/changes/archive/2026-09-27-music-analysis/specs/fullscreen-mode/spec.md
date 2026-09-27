@@ -1,18 +1,4 @@
-# fullscreen-mode Specification
-
-## Purpose
-TBD - created by archiving change classic-ui. Update Purpose after archive.
-## Requirements
-### Requirement: Toggle fullscreen visuals
-Pressing `F` SHALL switch to borderless fullscreen visual mode on the current monitor; pressing `F` or `Esc` SHALL return to the classic window at its previous size and position.
-
-#### Scenario: Enter and leave
-- **WHEN** the user presses F, then Esc
-- **THEN** the app enters fullscreen visuals and then returns to the classic window unchanged
-
-#### Scenario: Playback unaffected
-- **WHEN** fullscreen is toggled during playback
-- **THEN** audio has no glitches or pauses
+## MODIFIED Requirements
 
 ### Requirement: Visual engine hosting
 In fullscreen mode, the system SHALL give the visual engine the wgpu device, queue, and full surface each frame at display refresh rate, and SHALL let it draw an egui layer (overlay, deck) on top. Each frame SHALL also carry the audible track's latest `SongScore`, when one exists, so scenes can follow beats, sections and upcoming drops.
@@ -35,11 +21,3 @@ In fullscreen, transport keys (Z/X/C/V/B, arrows) SHALL keep working, the host S
 #### Scenario: Host keys are not forwarded
 - **WHEN** the user presses T in fullscreen
 - **THEN** the timeline strip toggles and the scene does not receive the key
-
-### Requirement: Cursor hiding
-In fullscreen the mouse cursor SHALL hide after 2 s without movement and reappear on movement.
-
-#### Scenario: Idle cursor
-- **WHEN** the mouse does not move for 2 s in fullscreen
-- **THEN** the cursor is hidden
-
