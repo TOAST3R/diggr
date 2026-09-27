@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+analysis = { version = "0.1.0", path = "../analysis" }
 audio = { version = "0.1.0", path = "../audio" }
 dirs = "7.0.0"
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
@@ -15,3 +16,6 @@ realfft = "3.5.0"
 rfd = "0.17.2"
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+hound = "3"

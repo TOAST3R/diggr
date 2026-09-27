@@ -38,6 +38,10 @@ pub struct AppContext {
     pub open: Vec<PathBuf>,
     pub scene: Box<dyn VisualScene>,
     pub startup: Startup,
+    /// Music analysis ahead of the playhead (beats, sections) for the visuals.
+    pub analysis: Option<analysis::AnalysisService>,
+    /// Where annotation mode saves its JSON files.
+    pub annotations_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +102,14 @@ pub struct WinampApp {
     playlist_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
     message: Option<(String, Instant)>,
+    analysis: Option<analysis::AnalysisService>,
+    files: Arc<dyn FileSource>,
+    /// Engine track instances → files, from `TrackLoaded` events.
+    track_refs: std::collections::HashMap<audio::TrackId, TrackRef>,
+    score: Option<Arc<analysis::SongScore>>,
+    strip: bool,
+    annotating: Option<analysis::eval::Annotations>,
+    annotations_dir: Option<PathBuf>,
 }
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
@@ -192,6 +204,13 @@ impl WinampApp {
             playlist_dirty: None,
             last_size: None,
             message: None,
+            analysis: ctx.analysis,
+            files: ctx.files.clone(),
+            track_refs: std::collections::HashMap::new(),
+            score: None,
+            strip: false,
+            annotating: None,
+            annotations_dir: ctx.annotations_dir,
         }
     }
 
@@ -380,7 +399,16 @@ impl WinampApp {
                         self.playlist.set_failed(id);
                     }
                 }
-                _ => {}
+                EngineEvent::TrackLoaded { id, track, .. } => {
+                    // Keep the recent instances only (ids grow monotonically).
+                    self.track_refs.retain(|&k, _| k + 256 > id);
+                    self.track_refs.insert(id, track);
+                }
+                EngineEvent::PreWarm { track, .. } => {
+                    if let Some(a) = &self.analysis {
+                        a.prewarm(&track);
+                    }
+                }
             }
         }
         if let Some(tap) = &mut self.tap {
@@ -394,6 +422,15 @@ impl WinampApp {
         }
         self.analyzer.update(&self.position, dt);
         self.now_playing = engine.track_info(self.position.track).cloned();
+        // Drive the analyzer with the audible position and pick up its latest score.
+        self.score = None;
+        if self.position.state != PlayState::Stopped
+            && let (Some(a), Some(track)) =
+                (&self.analysis, self.track_refs.get(&self.position.track))
+        {
+            a.playhead(track, self.position.seconds());
+            self.score = a.score(track);
+        }
         if self.position.state != PlayState::Stopped
             && let Some(&id) = engine.current_index().and_then(|q| queue.get(q))
         {
@@ -492,11 +529,69 @@ impl WinampApp {
         for key in pressed {
             if !self.transport_key(ctx, key, mods) {
                 if self.fullscreen.is_some() {
-                    self.scene.key(key, mods);
+                    if !self.host_key(key) {
+                        self.scene.key(key, mods);
+                    }
                 } else {
                     self.window_key(key, mods);
                 }
             }
+        }
+    }
+
+    /// Keys the fullscreen host keeps for itself (see [`host_action`]); others go to the scene.
+    fn host_key(&mut self, key: Key) -> bool {
+        let Some(action) = host_action(key, self.annotating.is_some()) else {
+            return false;
+        };
+        let t = self.position.seconds();
+        match action {
+            HostAction::ToggleStrip => self.strip = !self.strip,
+            HostAction::ToggleAnnotating => self.toggle_annotating(),
+            HostAction::Tap => {
+                if let Some(a) = &mut self.annotating {
+                    a.tap(t);
+                }
+                self.save_annotations();
+            }
+            HostAction::Boundary(kind) => {
+                if let Some(a) = &mut self.annotating {
+                    a.boundary(t, kind);
+                }
+                self.save_annotations();
+            }
+        }
+        true
+    }
+
+    fn toggle_annotating(&mut self) {
+        if self.annotating.take().is_some() {
+            return; // every mark is saved as it is made
+        }
+        let Some(track) = self.track_refs.get(&self.position.track).cloned() else {
+            self.notify("Play a track to annotate it");
+            return;
+        };
+        let Some(dir) = self.annotations_dir.clone() else {
+            self.notify("Annotations need a cache directory");
+            return;
+        };
+        let hash = self
+            .score
+            .as_ref()
+            .map(|s| s.content_hash)
+            .filter(|&h| h != 0)
+            .or_else(|| analysis::cache::content_hash(&*self.files, &track))
+            .unwrap_or(0);
+        self.annotating = Some(analysis::eval::Annotations::load_or_new(&dir, &track, hash));
+        self.strip = true;
+    }
+
+    fn save_annotations(&mut self) {
+        if let (Some(ann), Some(dir)) = (&self.annotating, &self.annotations_dir)
+            && let Err(e) = ann.save(dir)
+        {
+            self.message = Some((format!("Could not save annotations: {e}"), Instant::now()));
         }
     }
 
@@ -596,11 +691,21 @@ impl WinampApp {
             bars: &bars,
             artist: &artist,
             title: &title,
+            score: self.score.as_deref(),
         };
         if let Some(cb) = self.scene.paint(rect, &frame) {
             ui.painter().add(cb);
         }
         self.scene.ui(ui, &frame);
+        if self.strip || self.annotating.is_some() {
+            crate::timeline::draw(
+                ui,
+                rect,
+                &self.position,
+                self.score.as_deref(),
+                self.annotating.as_ref(),
+            );
+        }
 
         // Hide the cursor after 2 s without movement.
         if let Some(fs) = &mut self.fullscreen {
@@ -1402,6 +1507,34 @@ enum Action {
     ExportM3u,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostAction {
+    ToggleStrip,
+    ToggleAnnotating,
+    Tap,
+    Boundary(analysis::SectionKind),
+}
+
+/// Fullscreen keys the host keeps instead of passing them to the scene: `T` (analysis strip),
+/// `A` (annotation mode), and while annotating `Space` (beat tap) and `1`–`6` (boundary of kind
+/// intro, build, drop, breakdown, groove, outro).
+pub fn host_action(key: Key, annotating: bool) -> Option<HostAction> {
+    use analysis::SectionKind as K;
+    Some(match key {
+        Key::T => HostAction::ToggleStrip,
+        Key::A => HostAction::ToggleAnnotating,
+        _ if !annotating => return None,
+        Key::Space => HostAction::Tap,
+        Key::Num1 => HostAction::Boundary(K::Intro),
+        Key::Num2 => HostAction::Boundary(K::Build),
+        Key::Num3 => HostAction::Boundary(K::Drop),
+        Key::Num4 => HostAction::Boundary(K::Breakdown),
+        Key::Num5 => HostAction::Boundary(K::Groove),
+        Key::Num6 => HostAction::Boundary(K::Outro),
+        _ => return None,
+    })
+}
+
 /// What the window is doing, for the repaint policy.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
@@ -1566,6 +1699,32 @@ fn _unused(_: Rect, _: Pos2) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_keys_are_not_forwarded_to_the_scene() {
+        use analysis::SectionKind as K;
+        assert_eq!(host_action(Key::T, false), Some(HostAction::ToggleStrip));
+        assert_eq!(
+            host_action(Key::A, false),
+            Some(HostAction::ToggleAnnotating)
+        );
+        // Digits and Space belong to the scene unless annotating.
+        assert_eq!(host_action(Key::Num1, false), None);
+        assert_eq!(host_action(Key::Space, false), None);
+        assert_eq!(
+            host_action(Key::Num3, true),
+            Some(HostAction::Boundary(K::Drop))
+        );
+        assert_eq!(
+            host_action(Key::Num6, true),
+            Some(HostAction::Boundary(K::Outro))
+        );
+        assert_eq!(host_action(Key::Space, true), Some(HostAction::Tap));
+        // Anything else still reaches the scene (e.g. the visual engine's M / K / D).
+        for k in [Key::M, Key::K, Key::D, Key::Num7] {
+            assert_eq!(host_action(k, true), None);
+        }
+    }
 
     #[test]
     fn idle_window_never_repaints_on_its_own() {
