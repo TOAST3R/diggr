@@ -64,7 +64,7 @@ pub fn byte_to_db(b: u8) -> f32 {
     b as f32 / 255.0 * FLOOR_DB - FLOOR_DB
 }
 
-fn power_to_byte(p: f32) -> u8 {
+pub fn power_to_byte(p: f32) -> u8 {
     db_to_byte(10.0 * p.max(1e-20).log10())
 }
 

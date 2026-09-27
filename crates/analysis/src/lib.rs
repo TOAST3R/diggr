@@ -3,6 +3,7 @@
 
 pub mod assemble;
 pub mod cache;
+pub mod detail;
 pub mod eval;
 pub mod frontend;
 pub mod onsets;

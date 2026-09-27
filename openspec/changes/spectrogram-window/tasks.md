@@ -4,8 +4,8 @@
 - [x] 1.2 Cutoff data in the same pass: loud-frame long-term linear spectrum (2049 bins) and per-frame cutoff histogram, saved with the overview
 - [x] 1.3 `TrackInfo.lossless` from the symphonia codec type (FLAC, PCM, ALAC)
 - [x] 1.4 Cutoff detector: 90th-percentile cutoff, lossless + < 19.5 kHz + > 40 dB drop within 500 Hz, bitrate hint table
-- [ ] 1.5 Detail worker: own decoder, seek before range and trim, FFT size = smallest power of two ≥ 4× column hop (512–8192), Hann, progressive strips, small result cache
-- [ ] 1.6 Tests: tone lands on its row, bounded size for 3-minute vs 2-hour (and unknown-length) input, 2-hour total ≤ 16 MB, detail resolves events 10 ms apart at 2 s/1000 columns, brick-wall 16 kHz FLAC flagged, gradual roll-off not flagged, AAC not flagged
+- [x] 1.5 Detail worker: own decoder, seek before range and trim, FFT size = smallest power of two ≥ 4× column hop (512–8192), Hann, progressive strips, small result cache
+- [x] 1.6 Tests: tone lands on its row, bounded size for 3-minute vs 2-hour (and unknown-length) input, 2-hour total ≤ 16 MB, detail resolves events 10 ms apart at 2 s/1000 columns, brick-wall 16 kHz FLAC flagged, gradual roll-off not flagged, AAC not flagged
 
 ## 2. Window and rendering
 
