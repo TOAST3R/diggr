@@ -9,7 +9,10 @@ Progress:
 
 Implemented so far: the audio engine (`audio-core`), the classic Winamp-style player window
 (`classic-ui`), music analysis ahead of the playhead (`music-analysis`), and the fullscreen
-visual engine (`visual-engine`), which holds a steady 60 fps on an M2 MacBook.
+visual engine (`visual-engine`), which holds a steady 60 fps on an M2 MacBook. All four are
+archived in `openspec/changes/archive/`. `web-target` is planned and not started yet.
+
+Working on the code (or pointing an AI agent at it)? Start with [`AGENTS.md`](AGENTS.md).
 
 ## Launch the app
 
@@ -50,12 +53,13 @@ If you get `zsh: command not found: cargo`, repeat step 3. To make it permanent,
 | Platform | Needs |
 |---|---|
 | macOS | Xcode command-line tools (the linker): `xcode-select --install` |
-| Linux | a C toolchain plus ALSA headers: `sudo apt install build-essential pkg-config libasound2-dev` |
+| Linux | a C toolchain plus ALSA headers: `sudo apt install build-essential pkg-config libasound2-dev`; runs under X11 or Wayland |
 | Windows | Visual Studio Build Tools (C++); rustup offers to install them |
 
 ### 2. Rust
 
-The project uses stable Rust (built with 1.98, edition 2024):
+The project uses stable Rust, edition 2024. It needs **Rust 1.95 or newer** (egui 0.36 requires
+it) and is built and tested with 1.98. On an older toolchain, `rustup update stable`.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -120,16 +124,19 @@ playlist).
   - drag the sliders, or double-click one to reset it to 0 dB;
   - **PRESETS** loads the built-in presets, and can save or delete your own.
 - **Move the window** by dragging any title bar. Your playlist, settings and presets are saved
-  in `~/Library/Application Support/winamp_rust/`. Set `WINAMP_CONFIG_DIR=/some/dir` to use
-  another folder, for example for testing.
+  in the config folder (see [Where files are kept](#where-files-are-kept)). Set
+  `WINAMP_CONFIG_DIR=/some/dir` to use another folder, for example for testing.
 
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
 | `Z` | previous | | `←` / `→` | seek −5 s / +5 s |
 | `X` | play | | `↑` / `↓` | volume |
 | `C` | pause / resume | | `F` | fullscreen visuals (`F`/`Esc` to leave) |
-| `V` | stop | | `Delete` | remove selected entries |
-| `B` | next | | `Cmd+O` / `Cmd+A` | add files / select all |
+| `V` | stop | | `Delete` / `Backspace` | remove selected entries |
+| `B` | next | | `Enter` | play the (first) selected entry |
+| | | | `Cmd+O` / `Cmd+A` | add files / select all |
+
+On Linux and Windows, `Cmd` is `Ctrl`.
 
 **Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys keep
 working in fullscreen.
@@ -162,8 +169,8 @@ line. Click RETURN in the deck header to change the global setting. Right-click 
 its own RETURN, and double-click it to hand it back to automation now. Speed snaps to ¼, ½, 1, 2
 and 4×.
 
-**Make it yours:** on first use the scenes are copied to
-`~/Library/Application Support/winamp_rust/visuals/`, and any file you save there is picked up
+**Make it yours:** on first use the scenes are copied to `visuals/` in the config folder
+(`~/Library/Application Support/winamp_rust/visuals/` on macOS), and any file you save there is picked up
 while the music plays:
 
 ```
@@ -201,7 +208,7 @@ cargo run -p ui --example fullscreen_probe --release         # what a blank efra
 While a track plays, the app analyzes it about 2 minutes ahead of what you hear: tempo, the beat
 grid, bars, and sections (intro, build, drop, breakdown, groove, outro), with a countdown to the
 next drop. The first 32 bars are ready about half a second after you press play, and results are
-cached in `~/Library/Caches/winamp_rust/`, so a second play is instant. Set `WINAMP_CACHE_DIR`
+cached in the cache folder (`~/Library/Caches/winamp_rust/` on macOS), so a second play is instant. Set `WINAMP_CACHE_DIR`
 to use another folder. It runs at low priority and never delays playback.
 
 In fullscreen:
@@ -213,7 +220,7 @@ In fullscreen:
 | `Space` *(annotating)* | tap along with the beat |
 | `1`–`6` *(annotating)* | mark where a section starts: 1 intro, 2 build, 3 drop, 4 breakdown, 5 groove, 6 outro |
 
-Annotations are saved immediately to `~/Library/Caches/winamp_rust/annotations/`. To see how the
+Annotations are saved immediately to `annotations/` in the cache folder. To see how the
 analyzer scores against them:
 
 ```sh
@@ -267,7 +274,9 @@ For each file this measures press-play → first audio at the device and three s
 plays the whole queue gaplessly. Underruns are counted over the whole session, including the
 seeks. It exits non-zero if a target is missed:
 start < 30 ms, seek < 50 ms, 0 underruns, 0 callback allocations (the allocation check needs a
-debug build: drop `--release`). `--volume 0` runs the full pipeline silently.
+debug build: drop `--release`). `--volume 0` runs the full pipeline silently (it is also the
+default for `--bench`). Add `--analysis` to run the music analyzer during the whole bench and
+confirm it doesn't cost underruns or latency.
 
 Last measured on an M-series Mac (CoreAudio, 44.1 kHz, 512-frame buffer), 60 s files:
 start 7.9–20.8 ms, seek 12.1–20.0 ms.
@@ -282,10 +291,31 @@ Plays 16 clicks and records them with the default microphone. It reports how far
 clicks are from when the playback clock said they'd be audible (target ±2 ms). This needs your
 speakers audible to the mic, and macOS will ask for microphone permission.
 
+### Where files are kept
+
+| | macOS | Linux | Windows | Override |
+|---|---|---|---|---|
+| config (settings, playlist, presets, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
+| cache (analysis scores, `annotations/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+
+\* `WINAMP_CONFIG_DIR` covers settings, playlist and presets; the editable `visuals/` folder
+always lives in the platform config folder.
+
+Other environment variables, mostly for unattended runs and measurements:
+
+| Variable | Effect |
+|---|---|
+| `WINAMP_AUTO_FULLSCREEN=1` | enter fullscreen as soon as playback starts |
+| `WINAMP_AUTO_QUIT_SECS=n` | close the app after `n` seconds |
+| `WINAMP_VISUAL_BENCH=1` | benchmark every scene on the first fullscreen (see [Visuals](#visuals)) |
+| `WINAMP_FRAME_STATS=1` | print per-second frame timings |
+
+`winamp-native --help` prints all command-line modes.
+
 ## Tests
 
 ```sh
-cargo test --workspace            # 216 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 219 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -399,6 +429,8 @@ crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
 apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time
 openspec/         specs and plans for every milestone (see below)
+.claude/, .opencode/  OpenSpec agent commands (/opsx:propose, :explore, :apply, :archive)
+AGENTS.md         conventions and checks for anyone (human or AI) changing the code
 ```
 
 ## Known limitations
@@ -420,8 +452,9 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 3. `music-analysis`: beat grid, phrases, build/drop/breakdown detection that analyzes ahead of
    the playhead ✅ (done and archived)
 4. `visual-engine`: fractal scenes (WGSL), a modulation matrix, a director, a fader deck, and an
-   auto-fading track overlay ✅
-5. `web-target`: the same app in Chrome via WebAssembly, AudioWorklet and WebGPU
+   auto-fading track overlay ✅ (done and archived)
+5. `web-target`: the same app in Chrome via WebAssembly, AudioWorklet and WebGPU (proposed in
+   `openspec/changes/web-target/`, not started)
 
 Finished changes move to `openspec/changes/archive/`, and their requirements become the living
 specs in `openspec/specs/`.
