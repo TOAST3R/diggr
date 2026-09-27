@@ -10,6 +10,7 @@ pub mod help;
 pub mod metadata;
 pub mod navigation;
 pub mod playlist;
+pub mod render_job;
 pub mod settings;
 pub mod skin;
 pub mod spectrum;

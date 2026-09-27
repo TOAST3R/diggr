@@ -11,6 +11,21 @@ pub fn clock(secs: f64) -> String {
     }
 }
 
+/// Parses `90`, `1:30` or `1:02:03.5` into seconds.
+pub fn parse_clock(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.split(':').try_fold(0.0, |acc, part| {
+        part.trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| *v >= 0.0 && v.is_finite())
+            .map(|v| acc * 60.0 + v)
+    })
+}
+
 /// The main LCD: minutes (at least two digits) and seconds, e.g. `("01", "51")`.
 /// Minutes run past 99 rather than wrapping.
 pub fn lcd(secs: f64) -> (String, String) {
@@ -54,6 +69,16 @@ mod tests {
         assert_eq!(clock(111.9), "1:51");
         assert_eq!(clock(3_725.0), "1:02:05");
         assert_eq!(clock(-3.0), "0:00");
+    }
+
+    #[test]
+    fn parses_clock_times() {
+        assert_eq!(parse_clock("90"), Some(90.0));
+        assert_eq!(parse_clock(" 1:30 "), Some(90.0));
+        assert_eq!(parse_clock("1:02:03.5"), Some(3723.5));
+        assert_eq!(parse_clock("x"), None);
+        assert_eq!(parse_clock(""), None);
+        assert_eq!(parse_clock("-5"), None);
     }
 
     #[test]
