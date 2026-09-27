@@ -541,8 +541,7 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 6. `waveform-navigation`: the coloured waveform, section/drop jumps on the beat, bar loops,
    and the shortcuts help ✅ (done and archived)
 7. `spectrogram-window`: a spectrogram window with whole-track, zoomed and live views, and a
-   check for files made from lossy sources ✅ (implemented; the listening check with real
-   files is still to do before archiving)
+   check for files made from lossy sources ✅ (done and archived)
 8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
 9. `show-render`: render a track's visual show to an MP4 (proposed)
 

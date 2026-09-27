@@ -25,4 +25,4 @@
 ## 4. Docs and verification
 
 - [x] 4.1 README: spectrogram window, modes, quality check, `S` key, cache rebuilt once after upgrade; update the test count
-- [ ] 4.2 Manual check with a real FLAC and a transcoded one; live mode sync by eye
+- [x] 4.2 Manual check with a real FLAC and a transcoded one; live mode sync by eye
