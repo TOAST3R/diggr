@@ -1,9 +1,14 @@
 ## Context
 
-- `waveform-navigation` adds a background overview pass that decodes each track at its native rate in stereo and caches the results by content hash.
-- The audio tap delivers position-stamped stereo chunks of what is audible, which already feed the 19-bar spectrum and the scope.
-- egui 0.36 supports extra native windows (viewports) on desktop, sharing the same wgpu device.
-- Long mixes (2 h) must stay cheap, the same constraint as the analyzer's rolling horizon.
+What `waveform-navigation` actually built, and what this change builds on:
+
+- **Overview pass** (`analysis::overview`): `OverviewService::request` spawns a low-priority `build` that decodes with its own `TrackDecoder` at the native rate and feeds interleaved stereo into `OverviewBuilder::push`. It publishes a snapshot every 250 ms through an `ArcSwapOption`, keeps 6 tracks in memory, and caches the finished overview as `overview-<hash>.bin` (`CACHE_VERSION` 1). A cache hit returns early without decoding. The player requests the audible track once the analyzer has its first results, and the next track on pre-warm. The whole overview of a 2-hour mix must stay within 16 MB (it is about 13 MB today).
+- **Track length can be unknown up front:** `TrackInfo::duration_secs` is an `Option`, because some files have no frame count.
+- **Tap:** an SPSC `TapReader` with one consumer. `WinampApp` pops the 256-frame, position-stamped stereo chunks in its update loop and feeds the 19-bar spectrum analyzer. A second consumer must be fed from that same loop.
+- **Codec:** `TrackInfo` has no codec field, so a FLAC/WAV/ALAC file can only be told apart from AAC in an `.m4a` by asking symphonia.
+- **Seeking:** the waveform's overview row seeks immediately with `Engine::seek`, and seeking outside an active loop clears it. The help panel (`H`/`F1`, `crates/ui/src/help.rs`) must list every shortcut. The playlist's **OPT** menu is the player's options menu.
+- **Windows:** egui 0.36 supports extra native windows (viewports) on desktop, sharing the same wgpu device.
+- **Web:** `web-target` is not implemented and is blocked on a seam redesign, so no web code is part of this change.
 
 ## Goals / Non-Goals
 
@@ -16,53 +21,75 @@
 - Spectral editing, export of images or data (maybe later).
 - Detecting every kind of transcode (only the high-frequency cutoff is checked).
 - A spectrogram inside fullscreen visuals.
+- The web version of the window (it belongs to `web-target`).
 
 ## Decisions
 
 ### D1. Three data sources for one view
 ```
- track mode   ◀── spectral overview: fixed 4096 columns × 256 log-frequency rows, u8 dB (1 MB), cached
+ track mode   ◀── spectral overview: ≤ 4096 columns × 256 log rows × {mid, side}, u8 dB (≤ 2 MB), cached with the overview
  detail mode  ◀── on demand: seek + decode + FFT only the visible range, at column resolution
- live mode    ◀── tap chunks → 4096-point FFT, one column per ~10 ms, a ring texture
+ live mode    ◀── tap chunks (fanned out in the app's tap loop) → 4096-point FFT, one column per ~10 ms, a ring texture
 ```
-- **Why fixed-size overview:** storing full-resolution columns grows with length. A 2-h mix at 512 rows would be ~160 MB. 4096 columns cover any track at screen resolution, and zooming beyond that switches to detail mode.
-- **Detail:** the zoomed range is decoded from a separate decoder, in a background worker, and delivered progressively in column strips. Decoding is ~100× realtime, so a 10-s window at 2,000 columns is a few milliseconds of FFT. Results are cached for the last few views.
+
+**Spectral overview, built in the existing overview pass:**
+- **FFT frames:** `OverviewBuilder::push` also runs a 4096-point Hann FFT every 1024 frames on mid ((L+R)/2) and side ((L−R)/2).
+- **Columns:** a column starts at 1024 frames and holds the mean power of its FFT frames. Whenever the column count reaches 4096, adjacent pairs are merged (power mean) and the column width doubles. This handles unknown track lengths and progressive publishing, and the result always has 2048–4096 columns. A 3-minute track ends with about 3,900 columns and a 2-hour mix with about 2,000. The UI maps columns to time with the stored column width.
+- **Rows:** 256 log-spaced rows from 20 Hz to Nyquist. A row narrower than an FFT bin (below about 500 Hz at 4096 points) takes the value interpolated between the neighbouring bins, so no row is empty.
+- **Storage:** u8 dB (−120 to 0 dBFS). Merging converts to power, averages and converts back.
+- **Why bounded, not full resolution:** full-resolution columns grow with length (a 2-hour mix at 512 rows is about 160 MB). Screen resolution is covered, and zooming further switches to detail mode.
+- **Memory:** mid and side at 4096 × 256 are 2 MB, so a 2-hour mix stays at about 15 MB, within the 16 MB bound. `snapshot()` currently clones the whole builder every 250 ms, so the spectral data is shared through an `Arc` rather than cloned.
+- **Cache:** the spectral overview is part of `Overview`, and `CACHE_VERSION` goes to 2, so old cache files are rebuilt once.
+
+**Channels:** track mode offers mid and side. Detail and live modes also offer L and R, because they decode or tap the full stereo signal. Storing L and R in the overview as well would double its size for little benefit.
+
+**Detail:** the zoomed range is decoded from a separate decoder, in a background worker (`Priority::Low`), and delivered progressively in column strips. Decoding is about 100× realtime, so a 10-second window at 2,000 columns takes a few milliseconds of FFT. The last few views are cached.
 
 ### D2. Frequency axis and FFT sizes
-- **Axis:** log frequency from 20 Hz to Nyquist, 256 rows (overview) or one row per pixel (detail).
-- **Detail FFT size:** chosen so each row has at least one bin, up to 8192 at 44.1/48 kHz, with a Hann window.
-- **Overlap:** time columns overlap as needed to fill the pixel columns.
-- **Channels:** the default is mid ((L+R)/2); L, R and side ((L−R)/2) are selectable, and side shows stereo width.
+- **Axis:** log frequency from 20 Hz to Nyquist, with 256 rows (overview) or one row per pixel (detail). Rows narrower than a bin are interpolated, as in D1. Asking for "at least one bin per row" is impossible at the low end: at 8192 points a bin is 5.4 Hz, while a pixel row near 20 Hz is under 1 Hz.
+- **Detail FFT size:** the smallest power of two at least 4× the column hop, clamped to 512–8192 points. Time and frequency resolution trade off: an 8192-point window lasts 186 ms and would smear the 10 ms events the detail spec asks for. At 2 s over 1,000 columns (2 ms per column) this picks 512 points (11.6 ms). A 60-second view picks 8192.
+- **Window:** Hann. **Overlap:** as much as it takes to fill every pixel column.
+- **Channels:** the default is mid ((L+R)/2). L, R and side ((L−R)/2) are selectable (see D1 for track mode); side shows stereo width.
 
 ### D3. Colour and range
 A perceptual colour map (inferno-like, 256 entries) is applied in a fragment shader from u8 dB values, so the dB range control (default −120 to 0 dBFS) changes contrast without recomputing anything.
 
 ### D4. Cutoff detection
-For each overview column, the detector finds the highest frequency whose level stays within 30 dB of the column's median in the 2–8 kHz band.
-- **Cutoff:** the 90th percentile of those frequencies over loud columns (RMS above −30 dBFS).
-- **Verdict:** a "lossy-style cutoff" when a lossless-container file (FLAC, WAV, ALAC) has a cutoff below 19.5 kHz with a steep edge (more than 40 dB drop within 500 Hz).
+**Data:** the log rows are too coarse for this (at 16 kHz a row spans about 440 Hz, as wide as the whole steep-edge window). So the overview pass also keeps, for loud FFT frames (RMS above −30 dBFS):
+- a linear-frequency long-term mean power spectrum (2049 bins, about 10.8 Hz each);
+- a histogram of per-frame cutoffs. A frame's cutoff is the highest bin within 30 dB of the frame's median level in the 2–8 kHz band.
+
+Both are a few kilobytes and are stored with the overview.
+
+**Deciding:**
+- **Cutoff:** the 90th percentile of the per-frame cutoffs.
+- **Verdict:** a "lossy-style cutoff" when the codec is lossless (FLAC, PCM/WAV, ALAC), the cutoff is below 19.5 kHz, and the long-term spectrum drops by more than 40 dB within 500 Hz above the cutoff.
+- **Codec:** `TrackInfo` gains a `lossless: bool` taken from the symphonia codec type, so ALAC in `.m4a` is covered and AAC in `.m4a` is not flagged.
 - **Wording:** always shown as "likely", with the cutoff value. The ≈ bitrate hint comes from a small table: ~16 kHz ≈ 128 kbps, ~19 kHz ≈ 192 kbps, ~20 kHz ≈ 256–320 kbps.
 - **Why these thresholds:** music can legitimately lack highs, so the steep-edge test avoids false alarms from dark recordings.
 
 ### D5. Window
-- **Opening:** a deferred egui viewport, titled "Spectrogram — <artist> – <title>" and resizable. Size and mode persist in settings.
-- **Web:** it becomes an overlay panel in the page instead.
+- **Opening:** a deferred egui viewport titled "Spectrogram — <artist> – <title>", resizable. It opens with `S` or with **Spectrogram (S)** in the playlist's OPT menu. Size and mode persist in `Settings`. The help panel lists `S`.
+- **Shared state:** the deferred viewport callback must be `Send + Sync`, so the window's state (view, detail worker handle, live ring) lives behind an `Arc<Mutex<…>>`. The main update loop writes the audible position, the overview handle and the live columns into it, and the window only reads from it and returns actions (seek, mode changes).
 - **Rendering:** a wgpu paint callback draws the u8 tiles as textures with the colour-map shader. Live mode updates one texture column per step.
-- **Idle cost:** the window repaints only while playing in live mode, or while the detail worker delivers strips.
+- **Idle cost:** the window repaints only while playing in live mode, while the detail worker is delivering strips, or on input.
 
 ### D6. Interaction
-- Click in track or detail mode: seek.
-- Scroll: zoom time around the cursor. Shift+scroll: zoom frequency.
-- Drag: pan.
-- Readouts: time (m:ss.mmm), frequency (Hz and nearest note, e.g. "440 Hz A4"), and level (dB) at the cursor.
+- **Click** in track or detail mode: seek with the same `Engine::seek` path as the waveform's overview row. Seeking outside an active loop clears it, just as the waveform does.
+- **Scroll:** zoom time around the cursor. **Shift+scroll:** zoom frequency.
+- **Drag:** pan.
+- **Readouts:** time (m:ss.mmm), frequency (Hz and nearest note, e.g. "440 Hz A4"), and level (dB) at the cursor.
 
 ## Risks / Trade-offs
 
 - [Two windows on one wgpu device double presentation work] → The spectrogram repaints only when needed. Fullscreen visuals keep priority, and the spectrogram window stops repainting while fullscreen is active.
 - [False "lossy" verdicts] → Conservative thresholds, steep-edge requirement, "likely" wording, cutoff value always shown. Tested with synthetic brickwall-filtered versus naturally dark signals.
 - [Seeking inside compressed files for detail can be inexact] → Decode from a little before the range and trim by timestamps; the overview is still available as a fallback.
+- [The overview pass gets slower] → A 4096-point FFT every 1024 frames per channel adds about 43 FFTs per second of audio per channel, which is small next to decoding. It stays at low priority.
+- [Cache version bump] → Every cached overview is rebuilt once on first play after upgrading.
 
 ## Open Questions
 
 - Should the verdict also appear as a marker in the playlist? (It could be a small follow-up.)
 - Should reassigned or "sharpened" spectrograms be offered for extra detail? (Probably not needed.)
+- Should detail mode draw the beat grid and section bands like the waveform does? (Cheap, since the score is already in the app.)
