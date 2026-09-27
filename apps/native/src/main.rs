@@ -8,11 +8,15 @@
 //!                                            (optionally with music analysis running)
 //! winamp-native --click-test                 clock vs. microphone (needs speaker → mic path)
 //! winamp-native --startup-time               print time to first frame and quit
+//! winamp-native --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T]
+//!               [--overlay] [--look SCENE/VARIANT]
+//!                                            render the track's visual show to a video
 //! ```
 
 mod bench;
 mod click;
 mod interactive;
+mod render;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -40,11 +44,21 @@ pub fn open_engine() -> Result<Engine, String> {
     .map_err(|e| e.to_string())
 }
 
-const USAGE: &str = "usage: winamp-native [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time";
+const USAGE: &str = "usage: winamp-native [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time | --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T] [--overlay] [--look SCENE/VARIANT]";
 
 fn main() -> ExitCode {
     let process_start = Instant::now();
-    let mut args = std::env::args().skip(1).peekable();
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if all.first().is_some_and(|a| a == "--render-show") {
+        return match render::run(&all[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let mut args = all.into_iter().peekable();
     let mut mode = "gui";
     let mut volume = None;
     let mut files = Vec::new();
@@ -134,6 +148,10 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                     Arc::new(NativeFileSource),
                     cache.as_ref().map(|c| c.dir().to_path_buf()),
                 )),
+                show_renderer: Some(Box::new(visuals::render::BackgroundRenderer::new(
+                    Arc::new(NativeFileSource),
+                    Arc::new(NativeSpawner),
+                ))),
                 startup: Startup {
                     process_start,
                     report: startup_time,

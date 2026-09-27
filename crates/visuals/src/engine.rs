@@ -25,7 +25,7 @@ use crate::overlay::{self, Fade};
 use crate::signals::{SignalBus, Signals, track_seed};
 use crate::variants::{BIG_SIGMA, History, Rng, SMALL_SIGMA, Variant, auto_name};
 
-const ACCENT: Color32 = Color32::from_rgb(0, 230, 110);
+pub(crate) const ACCENT: Color32 = Color32::from_rgb(0, 230, 110);
 const MAX_PARAM_FADERS: usize = 12;
 const BENCH_SECS: f64 = 15.0;
 /// Refreshes between sampling the clock and the frame being on screen: the host queues up to
@@ -186,6 +186,10 @@ pub struct VisualEngine {
     bench: Option<Bench>,
     cost: FrameCost,
     loaded: bool,
+    /// The director is off and the look stays put (offline `--look`).
+    pinned: bool,
+    /// Crossfade position of layer B this frame.
+    mix_b: f32,
 }
 
 impl Default for VisualEngine {
@@ -245,11 +249,18 @@ impl VisualEngine {
             bench: None,
             cost: FrameCost::default(),
             loaded: false,
+            pinned: false,
+            mix_b: 0.0,
         }
     }
 
     /// Installs missing bundled assets, loads everything, and starts watching for edits.
     fn ensure_loaded(&mut self) {
+        self.load(true);
+    }
+
+    /// Installs missing bundled assets and loads everything; `watch` starts hot reload.
+    fn load(&mut self, watch: bool) {
         if self.loaded {
             return;
         }
@@ -264,7 +275,89 @@ impl VisualEngine {
             );
         }
         self.load_all();
-        self.watcher = Watcher::new(&self.dir).ok();
+        if watch {
+            self.watcher = Watcher::new(&self.dir).ok();
+        }
+    }
+
+    /// Uses `gpu` for everything: compiles every scene and picks the first look. Called again
+    /// with a new device, it rebuilds all GPU resources from what is loaded.
+    fn attach(&mut self, gpu: Gpu) {
+        self.gpu = Some(gpu);
+        self.targets = None;
+        let ids: Vec<String> = self.scenes.keys().cloned().collect();
+        for id in &ids {
+            self.compile(id);
+        }
+        for slot in [&mut self.a, &mut self.b].into_iter().flatten() {
+            slot.layer = None;
+        }
+        if self.a.as_ref().is_none_or(|a| !self.usable(a.look))
+            && let Some(first) = self.first_look()
+        {
+            self.a = Some(Slot::new(first));
+        }
+        self.refresh_infos();
+    }
+
+    /// An engine for offline rendering: the looks in `dir` (bundled ones installed if missing),
+    /// no hot reload, drawing on `gpu`.
+    pub fn new_offline(dir: &Path, gpu: Gpu) -> Self {
+        let mut e = Self::with_dir(dir);
+        e.load(false);
+        e.attach(gpu);
+        e
+    }
+
+    /// Shows `scene/variant` for the whole render: the director is off (macros still follow
+    /// the `always` rules and modulation still runs).
+    pub fn pin_look(&mut self, scene: &str, variant: &str) -> Result<(), String> {
+        let look = self
+            .looks
+            .iter()
+            .position(|l| l.variant.scene == scene && l.variant.name == variant)
+            .filter(|&l| self.usable(l))
+            .ok_or_else(|| {
+                let known: Vec<String> = self
+                    .looks
+                    .iter()
+                    .map(|l| format!("{}/{}", l.variant.scene, l.variant.name))
+                    .collect();
+                format!(
+                    "no look {scene}/{variant} (available: {})",
+                    known.join(", ")
+                )
+            })?;
+        self.a = Some(Slot::new(look));
+        self.b = None;
+        self.transition = None;
+        self.pinned = true;
+        Ok(())
+    }
+
+    /// Advances the show to `tick.now` and renders it offscreen at `size`. For offline
+    /// rendering: `tick.lead_secs` should be 0 (a file has no display delay). Returns false
+    /// when nothing could be drawn.
+    pub fn render_offline(&mut self, frame: &SceneFrame, tick: Tick, size: (u32, u32)) -> bool {
+        self.step(frame, tick).is_some() && self.draw(frame, size, tick.dt).is_some()
+    }
+
+    pub fn gpu(&self) -> Option<&Gpu> {
+        self.gpu.as_ref()
+    }
+
+    /// The offscreen targets of the last drawn frame.
+    pub fn targets(&self) -> Option<&Targets> {
+        self.targets.as_ref()
+    }
+
+    /// Errors met while loading (for reporting in offline runs).
+    pub fn errors(&self) -> Vec<String> {
+        self.toasts
+            .iter()
+            .filter(|(_, _, e)| *e)
+            .map(|(t, _, _)| t.clone())
+            .collect()
     }
 
     fn now(&self) -> f64 {
@@ -1091,20 +1184,48 @@ impl VisualEngine {
         let now = self.now();
         let dt = self.last_frame.map_or(1.0 / 60.0, |t| (now - t) as f32);
         self.last_frame = Some(now);
-        self.frame += 1;
         if let Some(ch) = self.watcher.as_mut().and_then(|w| w.poll()) {
             self.apply_changes(ch);
         }
         self.gpu.as_ref()?;
-
-        // Signals and musical time.
-        // A frame reaches the screen a few refreshes after it is drawn (the host queues up to three,
-        // see `ui::app::surface_config`), so read the audio clock that far ahead to
-        // land visuals on the audible beat.
-        let position = presented(
-            frame.position,
-            self.governor.refresh_interval() * PRESENT_LEAD_FRAMES,
+        // The host queues up to three frames (see `ui::app::surface_config`).
+        let tick = Tick {
+            now,
+            dt,
+            lead_secs: self.governor.refresh_interval() * PRESENT_LEAD_FRAMES,
+        };
+        self.step(frame, tick)?;
+        // Render size: the screen at the governor's scale, capped by the scenes on screen.
+        let a_look = self.a.as_ref()?.look;
+        let b_look = self.b.as_ref().map(|s| s.look);
+        self.governor.max_scale = [Some(a_look), b_look]
+            .into_iter()
+            .flatten()
+            .filter_map(|l| self.manifest_of(l).max_scale)
+            .fold(1.0, f32::min);
+        self.governor.update(dt);
+        let screen = (
+            (rect.width() * self.ppp).round() as u32,
+            (rect.height() * self.ppp).round() as u32,
         );
+        let size = self.governor.size(screen);
+        self.draw(frame, size, dt)?;
+        let gpu = self.gpu.as_ref()?;
+        Some(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            gpu.final_callback(self.targets.as_ref()?),
+        ))
+    }
+
+    /// Advances the show by one frame: signals, director, transitions, macros. Returns `None`
+    /// when there is nothing to draw.
+    fn step(&mut self, frame: &SceneFrame, tick: Tick) -> Option<()> {
+        let (now, dt) = (tick.now, tick.dt);
+        self.frame += 1;
+        // Signals and musical time.
+        // A frame is seen `lead_secs` after it is drawn (the display queue when live, none
+        // offline), so read the audio clock that far ahead to land visuals on the audible beat.
+        let position = presented(frame.position, tick.lead_secs);
         self.signals = self
             .bus
             .update(&position, frame.score, frame.bars, dt.min(0.25));
@@ -1129,7 +1250,9 @@ impl VisualEngine {
             if self.bench_host_only() {
                 return None;
             }
-        } else if let Some(cur) = self.current_look() {
+        } else if !self.pinned
+            && let Some(cur) = self.current_look()
+        {
             let cmds = self.director.update(
                 &self.signals,
                 frame.score,
@@ -1144,7 +1267,7 @@ impl VisualEngine {
             let first = self.first_look()?;
             self.a = Some(Slot::new(first));
         }
-        let mix_b = match self.transition {
+        self.mix_b = match self.transition {
             Some(t) => match t.progress(self.signals.beats) {
                 Some(p) => p,
                 None => {
@@ -1170,21 +1293,13 @@ impl VisualEngine {
         self.update_macros();
         self.motion += dbeats as f64 * self.macros.speed() as f64;
 
-        // Render size and targets.
+        Some(())
+    }
+
+    /// Renders the current frame offscreen at `size` (scenes, feedback, bloom).
+    fn draw(&mut self, frame: &SceneFrame, size: (u32, u32), dt: f32) -> Option<()> {
         let a_look = self.a.as_ref()?.look;
         let b_look = self.b.as_ref().map(|s| s.look);
-        let max_scale = [Some(a_look), b_look]
-            .into_iter()
-            .flatten()
-            .filter_map(|l| self.manifest_of(l).max_scale)
-            .fold(1.0, f32::min);
-        self.governor.max_scale = max_scale;
-        self.governor.update(dt);
-        let screen = (
-            (rect.width() * self.ppp).round() as u32,
-            (rect.height() * self.ppp).round() as u32,
-        );
-        let size = self.governor.size(screen);
         let gpu = self.gpu.as_ref()?;
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
             self.targets = Some(Targets::new(gpu, size));
@@ -1199,7 +1314,7 @@ impl VisualEngine {
         let (decay_b, warp_b) = b_look.map_or((0.0, 0.0), |l| self.feedback(l, dt));
         let intensity = self.macros.intensity_gain();
         let post = PostParams {
-            mix_b,
+            mix_b: self.mix_b,
             decay_a,
             warp_a,
             decay_b,
@@ -1253,11 +1368,17 @@ impl VisualEngine {
             &post,
         );
         self.cost.submit = t_submit.elapsed().as_secs_f32() * 1000.0;
-        Some(egui_wgpu::Callback::new_paint_callback(
-            rect,
-            gpu.final_callback(targets),
-        ))
+        Some(())
     }
+}
+
+/// A frame's timing: `now` (seconds on any monotonic base), the time since the last frame, and
+/// how long after drawing the frame will be seen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tick {
+    pub now: f64,
+    pub dt: f32,
+    pub lead_secs: f32,
 }
 
 /// The audible position one presentation delay ahead (only while playing).
@@ -1303,23 +1424,7 @@ fn bench_report(rows: &[BenchRow]) -> String {
 impl VisualScene for VisualEngine {
     fn init(&mut self, rs: &egui_wgpu::RenderState) {
         self.ensure_loaded();
-        // Everything on the GPU can be rebuilt from what is loaded, so a new device (or a
-        // repeated init) just re-creates it all.
-        self.gpu = Some(Gpu::from_render_state(rs));
-        self.targets = None;
-        let ids: Vec<String> = self.scenes.keys().cloned().collect();
-        for id in &ids {
-            self.compile(id);
-        }
-        for slot in [&mut self.a, &mut self.b].into_iter().flatten() {
-            slot.layer = None;
-        }
-        if self.a.as_ref().is_none_or(|a| !self.usable(a.look))
-            && let Some(first) = self.first_look()
-        {
-            self.a = Some(Slot::new(first));
-        }
-        self.refresh_infos();
+        self.attach(Gpu::from_render_state(rs));
     }
 
     fn entered(&mut self) {
@@ -1694,6 +1799,45 @@ mod tests {
         assert!(
             report.contains("flame") && report.contains("60.0"),
             "{report}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_kick_at_12_5_s_hits_on_frame_750_at_60_fps() {
+        let dir = temp_dir("engine-kick");
+        let mut e = VisualEngine::with_dir(&dir);
+        let mut score = analysis::SongScore {
+            beats: (0..80).map(|i| i as f64 * 0.5).collect(),
+            ..Default::default()
+        };
+        score.coverage.insert(0.0, 40.0);
+        score.events.kick = vec![12.5];
+        let bars = [0.0; 19];
+        let at = |n: u64| -> (SceneFrame<'_>, Tick) {
+            let t = n as f64 / 60.0;
+            let mut f = frame_at(t, &bars);
+            f.score = Some(&score);
+            (
+                f,
+                Tick {
+                    now: t,
+                    dt: 1.0 / 60.0,
+                    lead_secs: 0.0,
+                },
+            )
+        };
+        for n in 700..750 {
+            let (f, tick) = at(n);
+            e.step(&f, tick);
+        }
+        assert!(e.since[0] > 1.0, "no kick yet on frame 749: {}", e.since[0]);
+        let (f, tick) = at(750);
+        e.step(&f, tick);
+        assert!(
+            e.since[0] < 1e-6,
+            "the kick lands on frame 750: {}",
+            e.since[0]
         );
         std::fs::remove_dir_all(dir).ok();
     }

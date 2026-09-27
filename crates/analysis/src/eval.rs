@@ -178,6 +178,16 @@ mod tests {
     use platform::native::NativeFileSource;
 
     #[test]
+    fn a_two_second_track_analyzes_without_panicking() {
+        // Too short for any section: the structure step must cope with none.
+        let track = TrackRef::new(format!(
+            "{}/../audio/tests/fixtures/tone.flac",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        assert!(analyze_file(&NativeFileSource, &track).is_some());
+    }
+
+    #[test]
     fn f_measure_basics() {
         let truth = [1.0, 2.0, 3.0, 4.0];
         assert_eq!(f_measure(&truth, &truth, 0.07), 1.0);

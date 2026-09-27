@@ -43,7 +43,7 @@ pub struct Rt {
 }
 
 impl Rt {
-    fn new(
+    pub fn new(
         device: &wgpu::Device,
         label: &str,
         size: (u32, u32),
@@ -62,7 +62,8 @@ impl Rt {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -762,6 +763,18 @@ impl Gpu {
     pub fn last_gpu_ms(&self) -> f32 {
         let _ = self.device.poll(wgpu::PollType::Poll);
         f32::from_bits(self.gpu_ms.load(Ordering::Relaxed))
+    }
+
+    /// Records the final pass (post FX + scaling) into `view`, e.g. an offscreen Rgba8 texture.
+    pub fn encode_final(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        t: &Targets,
+        view: &wgpu::TextureView,
+    ) {
+        let fp = self.final_callback(t);
+        let mut pass = begin(enc, "final", view);
+        fp.draw(&mut pass);
     }
 
     /// The final pass (post FX + upscale) as something egui can draw.
