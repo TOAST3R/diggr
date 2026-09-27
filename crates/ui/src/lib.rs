@@ -13,6 +13,7 @@ pub mod playlist;
 pub mod render_job;
 pub mod settings;
 pub mod skin;
+pub mod spectrogram;
 pub mod spectrum;
 pub mod timeline;
 pub mod waveform;

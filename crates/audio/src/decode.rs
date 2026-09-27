@@ -123,6 +123,7 @@ impl TrackDecoder {
             },
             sample_rate: src_rate,
             channels,
+            lossless: is_lossless(params.codec),
             ..Default::default()
         };
         if let Some(rev) = reader.metadata().skip_to_latest() {
@@ -264,6 +265,13 @@ impl TrackDecoder {
         self.errors_in_row = 0;
         Ok(())
     }
+}
+
+/// Uncompressed PCM (not A-law/μ-law) and the compressed lossless codecs.
+fn is_lossless(codec: symphonia::core::codecs::audio::AudioCodecId) -> bool {
+    use symphonia::core::codecs::audio::well_known::*;
+    (CODEC_ID_PCM_S32LE..=CODEC_ID_PCM_F64BE_PLANAR).contains(&codec)
+        || (CODEC_ID_FLAC..=CODEC_ID_TRUEHD).contains(&codec)
 }
 
 fn apply_tags(info: &mut TrackInfo, rev: &MetadataRevision) {

@@ -4,7 +4,8 @@
 //!
 //! Level 0 has one [`Block`] per 256 frames: per-channel min/max, RMS, and low/mid/high band
 //! energy (Linkwitz–Riley crossovers at 200 Hz and 2.5 kHz). Each further level is 4× coarser,
-//! so all levels together cost about 1.33× level 0: ~13 MB for a 2-hour mix at 44.1 kHz.
+//! so all levels together cost about 1.33× level 0: ~13 MB for a 2-hour mix at 44.1 kHz. The same
+//! pass builds the bounded spectral overview and cutoff statistics ([`crate::spectral`], ≤ 2 MB).
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -17,6 +18,8 @@ use arc_swap::ArcSwapOption;
 use audio::decode::TrackDecoder;
 use platform::{FileSource, Priority, Spawner, TrackRef};
 
+use crate::spectral::{Spectral, SpectralBuilder};
+
 /// Frames per level-0 block.
 pub const BLOCK: usize = 256;
 /// Each level is this many times coarser than the one below.
@@ -25,7 +28,7 @@ const LOW_HZ: f32 = 200.0;
 const HIGH_HZ: f32 = 2500.0;
 /// Band energies are stored as dB in [-FLOOR_DB, 0] mapped to 0..=255.
 const FLOOR_DB: f32 = 60.0;
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 const MAGIC: &[u8; 4] = b"WROV";
 
 /// Summary of a run of frames.
@@ -99,6 +102,8 @@ pub struct Overview {
     pub levels: Vec<Vec<Block>>,
     /// The whole track has been summarized.
     pub complete: bool,
+    /// The spectrogram at overview resolution, as far as it is built.
+    pub spectral: Option<Arc<Spectral>>,
 }
 
 impl Overview {
@@ -142,12 +147,13 @@ impl Overview {
         Block::merge(&blocks[a..b])
     }
 
-    /// Memory used by the block data.
+    /// Memory used by the block and spectral data.
     pub fn bytes(&self) -> usize {
         self.levels
             .iter()
             .map(|l| l.len() * std::mem::size_of::<Block>())
-            .sum()
+            .sum::<usize>()
+            + self.spectral.as_ref().map_or(0, |s| s.bytes())
     }
 
     fn rebuild_levels(&mut self) {
@@ -172,7 +178,14 @@ impl Overview {
         let l0 = self.levels.first().map_or(&[][..], |l| l.as_slice());
         w.write_all(&(l0.len() as u64).to_le_bytes())?;
         let bytes: Vec<u8> = l0.iter().flat_map(|b| b.to_bytes()).collect();
-        w.write_all(&bytes)
+        w.write_all(&bytes)?;
+        match &self.spectral {
+            Some(s) => {
+                w.write_all(&[1])?;
+                s.write_to(w)
+            }
+            None => w.write_all(&[0]),
+        }
     }
 
     pub fn read_from(r: &mut impl Read) -> std::io::Result<Self> {
@@ -193,11 +206,18 @@ impl Overview {
             .iter()
             .map(|c| Block::from_bytes(*c))
             .collect();
+        let mut flag = [0u8];
+        r.read_exact(&mut flag)?;
+        let spectral = match flag[0] {
+            0 => None,
+            _ => Some(Arc::new(Spectral::read_from(r, u32_at(8))?)),
+        };
         let mut o = Overview {
             sample_rate: u32_at(8),
             frames: u64_at(12),
             levels: vec![l0],
             complete: true,
+            spectral,
         };
         o.rebuild_levels();
         Ok(o)
@@ -236,6 +256,8 @@ impl Biquad {
         let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1]
             - self.a[0] * self.y[0]
             - self.a[1] * self.y[1];
+        // Flush the decaying tail after silence or DC: denormals make each step ~100× slower.
+        let y = if y.abs() < 1e-20 { 0.0 } else { y };
         self.x = [x, self.x[0]];
         self.y = [y, self.y[0]];
         y
@@ -319,6 +341,7 @@ pub struct OverviewBuilder {
     high: Lr4,
     /// Blocks of each level not yet merged into the next.
     pending: Vec<usize>,
+    spectral: SpectralBuilder,
 }
 
 impl OverviewBuilder {
@@ -335,6 +358,7 @@ impl OverviewBuilder {
             mid_lp: Lr4::new(sample_rate, HIGH_HZ, false),
             high: Lr4::new(sample_rate, HIGH_HZ, true),
             pending: vec![0],
+            spectral: SpectralBuilder::new(sample_rate),
         }
     }
 
@@ -354,6 +378,7 @@ impl OverviewBuilder {
             a.bands[1] += (mi * mi) as f64;
             a.bands[2] += (hi * hi) as f64;
             a.n += 1;
+            self.spectral.push_frame(f[0], f[1]);
             if a.n == BLOCK {
                 self.emit();
             }
@@ -383,7 +408,10 @@ impl OverviewBuilder {
 
     /// What has been built so far.
     pub fn snapshot(&self) -> Overview {
-        self.ov.clone()
+        Overview {
+            spectral: Some(Arc::new(self.spectral.snapshot())),
+            ..self.ov.clone()
+        }
     }
 
     pub fn frames(&self) -> u64 {
@@ -397,6 +425,7 @@ impl OverviewBuilder {
         }
         self.ov.rebuild_levels();
         self.ov.complete = true;
+        self.ov.spectral = Some(Arc::new(self.spectral.finish()));
         self.ov
     }
 }

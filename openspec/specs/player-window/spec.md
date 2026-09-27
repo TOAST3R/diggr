@@ -36,7 +36,7 @@ The main section SHALL show a 19-bar spectrum analyzer with peak caps (or an osc
 - **THEN** the low bars rise in the same displayed frame (within one UI refresh)
 
 ### Requirement: Keyboard shortcuts
-The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume), F (fullscreen visuals), H or F1 (shortcuts help), W (waveform section), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), and Shift+L (4/8/16-bar loop).
+The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume), F (fullscreen visuals), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), and Shift+L (4/8/16-bar loop).
 
 #### Scenario: Classic keys
 - **WHEN** the user presses B during playback
@@ -45,6 +45,10 @@ The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), 
 #### Scenario: Structure keys
 - **WHEN** the user presses ] during playback of an analyzed track
 - **THEN** playback moves to the next section on the next downbeat
+
+#### Scenario: Spectrogram key
+- **WHEN** the user presses S in the player window
+- **THEN** the spectrogram window opens
 
 ### Requirement: Low idle cost
 The UI SHALL consume near-zero CPU when idle and SHALL NOT repaint while minimized or occluded.

@@ -51,4 +51,6 @@ pub struct TrackInfo {
     pub bitrate_kbps: Option<u32>,
     pub sample_rate: u32,
     pub channels: u16,
+    /// Decoded with a lossless codec (PCM, FLAC, ALAC, …), so any band limit is in the source.
+    pub lossless: bool,
 }

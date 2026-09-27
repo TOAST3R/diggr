@@ -33,6 +33,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         "Player window",
         &[
             ("W", "show / hide the waveform"),
+            ("S", "spectrogram window (also in the playlist's OPT menu)"),
             ("F", "fullscreen visuals"),
             ("H or F1", "this help"),
             ("Enter", "play the selected entry"),
@@ -61,6 +62,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Waveform: click / drag", "seek"),
             ("Waveform: scroll wheel", "zoom 1–64 bars"),
+            ("Spectrogram: click / drag", "seek / pan"),
+            (
+                "Spectrogram: scroll / Shift+scroll",
+                "zoom time / zoom frequency (double-click: whole track)",
+            ),
             (
                 "Deck fader: drag",
                 "set by hand (returns to automation after RETURN)",
@@ -147,7 +153,7 @@ mod tests {
             .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "F", "H or F1", "D", "K", "T", "A",
+            "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

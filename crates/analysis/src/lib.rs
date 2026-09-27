@@ -3,6 +3,7 @@
 
 pub mod assemble;
 pub mod cache;
+pub mod detail;
 pub mod eval;
 pub mod frontend;
 pub mod onsets;
@@ -12,6 +13,7 @@ pub mod rhythm;
 pub mod score;
 pub mod service;
 pub mod source;
+pub mod spectral;
 pub mod structure;
 pub mod synth;
 
