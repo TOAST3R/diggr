@@ -275,7 +275,7 @@ pub fn classify(feats: &[BeatFeat], bounds: &[usize], complete: bool) -> Vec<Sec
     energies.sort_by(f32::total_cmp);
     let pct = |p: f32| {
         energies
-            .get(((energies.len() - 1) as f32 * p).round() as usize)
+            .get((energies.len().saturating_sub(1) as f32 * p).round() as usize)
             .copied()
             .unwrap_or(0.0)
     };

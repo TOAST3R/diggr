@@ -44,6 +44,8 @@ pub struct AppContext {
     pub annotations_dir: Option<PathBuf>,
     /// Native-rate track overviews for the waveform section.
     pub overviews: Option<analysis::overview::OverviewService>,
+    /// Renders a track's visual show to a video (playlist menu "Render show…").
+    pub show_renderer: Option<Box<dyn crate::render_job::ShowRenderer>>,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +111,13 @@ pub struct WinampApp {
     /// The spectrogram window (`S`) and whether it is open.
     spectro: crate::spectrogram::SpectrogramWindow,
     spectro_open: bool,
+    show_renderer: Option<Box<dyn crate::render_job::ShowRenderer>>,
+    /// The running (or just finished) show render and its output file name.
+    render_job: Option<(Arc<dyn crate::render_job::RenderJob>, String)>,
+    /// The "Render show" options dialog, while open.
+    render_dialog: Option<crate::render_job::RenderDialog>,
+    /// Looks the renderer offers, read when the dialog opens.
+    render_looks: Vec<(String, String)>,
     /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/winamp_frame_stats.log`.
     profile: Option<FrameProfile>,
@@ -248,6 +257,10 @@ impl WinampApp {
             nav: Nav::default(),
             spectro,
             spectro_open: false,
+            show_renderer: ctx.show_renderer,
+            render_job: None,
+            render_dialog: None,
+            render_looks: Vec::new(),
         }
     }
 
@@ -647,6 +660,78 @@ impl WinampApp {
             && let Some(id) = first
         {
             self.play_entry(id);
+        }
+    }
+
+    /// Opens the "Render show" dialog for a playlist entry.
+    fn open_render_dialog(&mut self, id: EntryId) {
+        let (Some(renderer), Some(e)) = (&self.show_renderer, self.playlist.get(id)) else {
+            return;
+        };
+        self.render_looks = renderer.looks();
+        let s = &self.settings;
+        self.render_dialog = Some(crate::render_job::RenderDialog::new(
+            e.track.clone(),
+            e.display_name(),
+            e.duration,
+            s.render_size,
+            s.render_fps,
+            s.render_overlay,
+        ));
+    }
+
+    /// Shows the dialog; on "Render…" asks where to save and starts the background render.
+    fn render_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.render_dialog else {
+            return;
+        };
+        let looks = &self.render_looks;
+        let modal = egui::Modal::new(Id::new("render-dialog")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            dialog.ui(ui, looks)
+        });
+        let outcome = if modal.should_close() {
+            crate::render_job::DialogOutcome::Cancel
+        } else {
+            modal.inner
+        };
+        match outcome {
+            crate::render_job::DialogOutcome::Open => {}
+            crate::render_job::DialogOutcome::Cancel => self.render_dialog = None,
+            crate::render_job::DialogOutcome::Render => {
+                let name: String = dialog
+                    .name
+                    .chars()
+                    .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+                    .collect();
+                let Some(out) = rfd::FileDialog::new()
+                    .add_filter("MP4 video", &["mp4"])
+                    .set_file_name(format!("{name}.mp4"))
+                    .save_file()
+                else {
+                    return; // back to the dialog
+                };
+                let request = match dialog.request(out.clone(), looks) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        dialog.error = Some(e);
+                        return;
+                    }
+                };
+                let Some(renderer) = &self.show_renderer else {
+                    return;
+                };
+                let label = out
+                    .file_name()
+                    .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+                let (size, fps, overlay) = (request.size, request.fps, request.overlay);
+                self.render_job = Some((renderer.start(request), label));
+                self.render_dialog = None;
+                self.settings.render_size = size;
+                self.settings.render_fps = fps;
+                self.settings.render_overlay = overlay;
+                self.mark_settings();
+            }
         }
     }
 
@@ -1395,10 +1480,43 @@ impl WinampApp {
                     col,
                 );
                 let resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
+                let menu_click = opens_context_menu(
+                    resp.secondary_clicked(),
+                    resp.clicked(),
+                    ui.input(|i| i.modifiers),
+                );
                 if resp.double_clicked() {
                     actions.push(Action::PlayEntry(e.id));
-                } else if resp.clicked() {
+                } else if resp.clicked() && !menu_click {
                     actions.push(Action::Select(idx, mods));
+                }
+                if self.show_renderer.is_some() {
+                    let rendering = self
+                        .render_job
+                        .as_ref()
+                        .is_some_and(|(j, _)| !j.status().finished());
+                    // egui's context menu opens only on the secondary button; on a Mac,
+                    // Control-click is the usual right-click too.
+                    let open = if menu_click {
+                        Some(egui::SetOpenCommand::Bool(true))
+                    } else if resp.clicked() {
+                        Some(egui::SetOpenCommand::Bool(false))
+                    } else {
+                        None
+                    };
+                    egui::Popup::context_menu(&resp)
+                        .open_memory(open)
+                        .show(|ui| {
+                            if rendering {
+                                if ui.button("Cancel show render").clicked() {
+                                    actions.push(Action::CancelRender);
+                                    ui.close();
+                                }
+                            } else if ui.button("Render show…").clicked() {
+                                actions.push(Action::RenderShow(e.id));
+                                ui.close();
+                            }
+                        });
                 }
                 if resp.drag_started() {
                     self.pl_drag_from = Some(idx);
@@ -1649,6 +1767,12 @@ impl WinampApp {
                 self.save_presets();
             }
             Action::PlayEntry(id) => self.play_entry(id),
+            Action::RenderShow(id) => self.open_render_dialog(id),
+            Action::CancelRender => {
+                if let Some((job, _)) = &self.render_job {
+                    job.cancel();
+                }
+            }
             Action::Select(i, m) => self.playlist.click(i, m),
             Action::Move(from, to) => {
                 self.playlist.move_entry(from, to);
@@ -1716,6 +1840,9 @@ enum Action {
     SavePreset,
     DeletePreset(String),
     PlayEntry(EntryId),
+    /// Render this entry's visual show to a video file.
+    RenderShow(EntryId),
+    CancelRender,
     Select(usize, ClickMods),
     Move(usize, usize),
     AddFiles,
@@ -1810,6 +1937,18 @@ impl eframe::App for WinampApp {
         {
             self.auto_fullscreen = false;
             self.toggle_fullscreen(ctx);
+        }
+        // A background show render: progress in the main window; it waits while fullscreen
+        // visuals use the GPU.
+        if let Some((job, name)) = &self.render_job {
+            job.set_paused(self.fullscreen.is_some());
+            let status = job.status();
+            self.message = Some((crate::render_job::status_line(name, &status), now));
+            if status.finished() {
+                self.render_job = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
         }
         if self.auto_quit.is_some_and(|t| now >= t) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1935,6 +2074,7 @@ impl WinampApp {
                 }
             }
             self.preset_dialog(&ctx);
+            self.render_dialog_ui(&ctx);
         }
         if self.help {
             crate::help::show(&ctx, &mut self.help);
@@ -2138,6 +2278,12 @@ impl FrameProfile {
     }
 }
 
+/// Whether a click opens a context menu: the secondary button, or Control-click where Control
+/// isn't the command key (macOS; elsewhere Ctrl-click stays multi-select).
+pub fn opens_context_menu(secondary: bool, clicked: bool, mods: Modifiers) -> bool {
+    secondary || (clicked && mods.ctrl && !mods.command)
+}
+
 /// Structure-navigation state mirrored from engine events.
 #[derive(Debug, Default)]
 struct Nav {
@@ -2234,6 +2380,41 @@ mod tests {
             None,
             "no repaints while minimized/occluded"
         );
+    }
+
+    #[test]
+    fn control_click_opens_the_context_menu_on_macos() {
+        let mac_ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let mac_cmd = Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Default::default()
+        };
+        let pc_ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        assert!(
+            opens_context_menu(true, false, Modifiers::NONE),
+            "right button / two-finger click"
+        );
+        assert!(
+            opens_context_menu(false, true, mac_ctrl),
+            "Control-click on a Mac"
+        );
+        assert!(
+            !opens_context_menu(false, true, mac_cmd),
+            "Cmd-click selects"
+        );
+        assert!(
+            !opens_context_menu(false, true, pc_ctrl),
+            "Ctrl-click selects on Windows/Linux"
+        );
+        assert!(!opens_context_menu(false, true, Modifiers::NONE));
     }
 
     #[test]

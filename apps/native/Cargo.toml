@@ -8,6 +8,7 @@ analysis = { version = "0.1.0", path = "../../crates/analysis" }
 audio = { version = "0.1.0", path = "../../crates/audio" }
 cpal = "0.18"
 crossterm = "0.29.0"
+ctrlc = "3.5.2"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
 platform = { version = "0.1.0", path = "../../crates/platform" }
 ui = { version = "0.1.0", path = "../../crates/ui" }

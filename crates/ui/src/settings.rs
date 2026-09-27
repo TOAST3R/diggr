@@ -61,6 +61,10 @@ pub struct Settings {
     pub show_waveform: bool,
     /// Bars visible in the waveform's zoomed row.
     pub waveform_bars: f32,
+    /// Last used show-render options.
+    pub render_size: (u32, u32),
+    pub render_fps: u32,
+    pub render_overlay: bool,
     /// Visible playlist rows.
     pub playlist_rows: u16,
     pub volume: f32,
@@ -84,6 +88,9 @@ impl Default for Settings {
             show_playlist: true,
             show_waveform: true,
             waveform_bars: crate::waveform::DEFAULT_BARS,
+            render_size: (1920, 1080),
+            render_fps: 60,
+            render_overlay: false,
             playlist_rows: 10,
             volume: 0.8,
             balance: 0.0,
@@ -107,6 +114,10 @@ impl Settings {
         self.balance = self.balance.clamp(-1.0, 1.0);
         self.eq = self.eq.clamped();
         self.spectrogram = self.spectrogram.sanitized();
+        if !crate::render_job::size_ok(self.render_size) {
+            self.render_size = (1920, 1080);
+        }
+        self.render_fps = self.render_fps.clamp(1, 240);
         self
     }
 }
