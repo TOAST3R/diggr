@@ -18,6 +18,10 @@ pub struct SceneFrame<'a> {
     /// What the analyzer knows about the audible track (beats, sections, tension, upcoming
     /// drops), when it has analyzed it.
     pub score: Option<&'a analysis::SongScore>,
+    /// Length of the audible track, when known.
+    pub duration: Option<f64>,
+    /// Whether the host's analysis strip is drawn along the bottom (overlays go above it).
+    pub strip_visible: bool,
 }
 
 /// A fullscreen visual. The host calls, once per displayed frame: `paint` (GPU layer under the
@@ -30,6 +34,8 @@ pub trait VisualScene {
     fn ui(&mut self, ui: &mut Ui, frame: &SceneFrame);
     /// Returns true if the key was used.
     fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> bool;
+    /// Fullscreen was just entered (e.g. to show track info again).
+    fn entered(&mut self) {}
 }
 
 /// Brightness of the placeholder flash: a fixed 120 BPM grid on the *audible* time, decaying
@@ -207,8 +213,13 @@ impl VisualScene for BeatFlash {
         let small = egui::FontId::proportional(16.0);
         let white = Color32::from_rgba_unmultiplied(255, 255, 255, 230);
         let x = rect.left() + 48.0;
-        // Above the host's analysis strip (which sits along the bottom when shown).
-        let y = rect.bottom() - 120.0 - crate::timeline::HEIGHT - 40.0;
+        // Above the host's analysis strip when it is shown.
+        let strip = if frame.strip_visible {
+            crate::timeline::HEIGHT
+        } else {
+            0.0
+        };
+        let y = rect.bottom() - 120.0 - strip - 40.0;
         if !frame.artist.is_empty() {
             p.text(
                 egui::pos2(x, y),

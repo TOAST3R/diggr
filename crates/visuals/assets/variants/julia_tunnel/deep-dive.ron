@@ -1,0 +1,1 @@
+(scene: "julia_tunnel", name: "deep-dive", params: {"julia_c": [-0.745, 0.113], "tunnel": [0.85], "color_a": [0.2, 0.3, 0.5], "color_b": [0.3, 0.5, 0.5], "glow": [0.9]}, tags: ["deep"], rating: 4)

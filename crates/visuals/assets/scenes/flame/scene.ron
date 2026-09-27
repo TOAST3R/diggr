@@ -1,0 +1,41 @@
+// A fractal flame: a chaos game of three transforms with sinusoidal / spherical / swirl
+// variations, accumulated on the GPU and tone-mapped by log density. Bands weight the
+// transforms; each phrase slowly turns the first transform.
+(
+    name: "Flame",
+    tags: ["calm", "silky", "compute"],
+    kind: Compute(invocations: 32768),
+    params: [
+        (name: "rot", type: Vec3, default: [0.6, -1.2, 2.4], min: [-3.14, -3.14, -3.14], max: [3.14, 3.14, 3.14]),
+        (name: "scl", type: Vec3, default: [0.6, 0.55, 0.5], min: [0.2, 0.2, 0.2], max: [0.95, 0.95, 0.95]),
+        (name: "off1", type: Vec2, default: [0.5, 0.0], min: [-1, -1], max: [1, 1]),
+        (name: "off2", type: Vec2, default: [-0.4, 0.4], min: [-1, -1], max: [1, 1]),
+        (name: "off3", type: Vec2, default: [0.0, -0.5], min: [-1, -1], max: [1, 1]),
+        (name: "weights", type: Vec3, default: [1.0, 1.0, 1.0], min: [0.05, 0.05, 0.05], max: [2, 2, 2]),
+        (name: "variation", type: Vec3, default: [0.6, 0.3, 0.1], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "exposure", type: F32, default: [1.0], min: [0.2], max: [3.0]),
+        (name: "zoom", type: F32, default: [0.8], min: [0.3], max: [2.0]),
+        (name: "spin", type: F32, default: [0.05], min: [-0.3], max: [0.3]),
+        (name: "color_a", type: Color, default: [1.0, 0.5, 0.2], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "color_b", type: Color, default: [0.3, 0.6, 1.0], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "color_c", type: Color, default: [0.9, 0.2, 0.7], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "steps", type: Int, default: [48], min: [16], max: [128], mutable: false),
+    ],
+    macros: [
+        (macro: Chaos, param: "variation", amount: 0.4),
+        (macro: Chaos, param: "rot", amount: 0.15),
+        (macro: Stretch, param: "zoom", amount: 0.3),
+    ],
+    routes: [
+        (source: Bass, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.8)], target: "weights.x"),
+        (source: Mid, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.8)], target: "weights.y"),
+        (source: Treble, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.8)], target: "weights.z"),
+        (source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(250)), Range(0.0, 0.4)], target: "exposure"),
+        (source: Const(0), shapers: [Random(Phrase), Range(-0.6, 0.6), Smooth(Beats(8))], target: "rot.x"),
+    ],
+    optional_routes: [
+        (source: Snare, shapers: [Envelope(attack: Ms(0), release: Beats(0.5)), Range(0.0, 0.3)], target: "variation.z"),
+        (source: Tension, shapers: [Range(0.0, 0.3)], target: "scl.y"),
+    ],
+    feedback: Some((decay: 0.5, warp: 0.2)),
+)

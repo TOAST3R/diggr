@@ -1,0 +1,34 @@
+// The MilkDrop feel: the previous frame flows through a noise field and fades, while simple
+// emitters (a ring per beat, a spectrum line) keep feeding it.
+(
+    name: "Liquid Feedback",
+    tags: ["2d", "feedback", "liquid"],
+    kind: Fragment,
+    params: [
+        (name: "flow", type: F32, default: [0.02], min: [0.0], max: [0.1]),
+        (name: "scale", type: F32, default: [2.0], min: [0.5], max: [6.0]),
+        (name: "zoom_in", type: F32, default: [0.01], min: [-0.03], max: [0.05]),
+        (name: "spin", type: F32, default: [0.004], min: [-0.03], max: [0.03]),
+        (name: "decay", type: F32, default: [0.96], min: [0.8], max: [0.995]),
+        (name: "ring", type: F32, default: [0.6], min: [0.0], max: [3.0]),
+        (name: "wave", type: F32, default: [0.5], min: [0.0], max: [1.5]),
+        (name: "hue_a", type: Color, default: [0.1, 0.6, 1.0], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "hue_b", type: Color, default: [1.0, 0.3, 0.6], min: [0, 0, 0], max: [1, 1, 1]),
+    ],
+    macros: [
+        (macro: Chaos, param: "flow", amount: 0.3),
+        (macro: Chaos, param: "scale", amount: 0.3),
+        (macro: Stretch, param: "zoom_in", amount: 0.4),
+        (macro: Feedback, param: "decay", amount: 0.8),
+    ],
+    routes: [
+        (source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(200)), Range(0.0, 1.5)], target: "ring"),
+        (source: Bass, shapers: [Smooth(Beats(0.25)), Range(0.0, 0.03)], target: "flow"),
+        (source: Snare, shapers: [Envelope(attack: Ms(0), release: Ms(150)), Range(0.0, 0.02)], target: "zoom_in"),
+        (source: Treble, shapers: [Smooth(Beats(0.25)), Range(0.0, 0.5)], target: "wave"),
+    ],
+    optional_routes: [
+        (source: Const(0), shapers: [Random(Bar), Range(-0.02, 0.02), Smooth(Beats(1))], target: "spin"),
+        (source: Hat, shapers: [Envelope(attack: Ms(0), release: Ms(80)), Range(0.0, 0.01)], target: "flow"),
+    ],
+)

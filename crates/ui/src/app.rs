@@ -98,6 +98,13 @@ pub struct WinampApp {
     last_frame: Instant,
     startup: Startup,
     first_frame_done: bool,
+    /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
+    /// `$TMPDIR/winamp_frame_stats.log`.
+    profile: Option<FrameProfile>,
+    /// `WINAMP_AUTO_FULLSCREEN=1`: enter fullscreen once playback starts (for unattended runs).
+    auto_fullscreen: bool,
+    /// `WINAMP_AUTO_QUIT_SECS=n`: close the app after n seconds.
+    auto_quit: Option<Instant>,
     settings_dirty: Option<Instant>,
     playlist_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
@@ -200,6 +207,12 @@ impl WinampApp {
             last_frame: Instant::now(),
             startup: ctx.startup,
             first_frame_done: false,
+            profile: std::env::var_os("WINAMP_FRAME_STATS").map(|_| FrameProfile::new()),
+            auto_fullscreen: std::env::var_os("WINAMP_AUTO_FULLSCREEN").is_some(),
+            auto_quit: std::env::var("WINAMP_AUTO_QUIT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|s| Instant::now() + Duration::from_secs(s)),
             settings_dirty: None,
             playlist_dirty: None,
             last_size: None,
@@ -666,6 +679,7 @@ impl WinampApp {
                     self.scene.init(rs);
                     self.scene_ready = true;
                 }
+                self.scene.entered();
                 let restore = ctx.input(|i| i.viewport().outer_rect);
                 ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
                 self.fullscreen = Some(Fullscreen {
@@ -681,9 +695,9 @@ impl WinampApp {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
-        let (artist, title) = match &self.now_playing {
-            Some(i) => (i.artist.clone(), i.title.clone()),
-            None => (String::new(), "Nothing playing".into()),
+        let (artist, title, duration) = match &self.now_playing {
+            Some(i) => (i.artist.clone(), i.title.clone(), i.duration_secs),
+            None => (String::new(), "Nothing playing".into(), None),
         };
         let bars = *self.analyzer.bars();
         let frame = SceneFrame {
@@ -692,6 +706,8 @@ impl WinampApp {
             artist: &artist,
             title: &title,
             score: self.score.as_deref(),
+            duration,
+            strip_visible: self.strip || self.annotating.is_some(),
         };
         if let Some(cb) = self.scene.paint(rect, &frame) {
             ui.painter().add(cb);
@@ -1575,6 +1591,19 @@ fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
 impl eframe::App for WinampApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
+        if let Some(p) = &mut self.profile {
+            p.logic_start(now);
+        }
+        if self.auto_fullscreen
+            && self.fullscreen.is_none()
+            && self.position.state == PlayState::Playing
+        {
+            self.auto_fullscreen = false;
+            self.toggle_fullscreen(ctx);
+        }
+        if self.auto_quit.is_some_and(|t| now >= t) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
         let dt = (now - self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
         self.update_audio(dt);
@@ -1633,9 +1662,26 @@ impl eframe::App for WinampApp {
             ctx.request_repaint_after(SAVE_DELAY);
         }
         self.save_now(false);
+        if let Some(p) = &mut self.profile {
+            p.logic_end();
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ui_start = Instant::now();
+        self.ui_inner(ui);
+        if let Some(p) = &mut self.profile {
+            p.ui_done(ui_start, self.fullscreen.is_some());
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.exit();
+    }
+}
+
+impl WinampApp {
+    fn ui_inner(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if self.tex.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(self.skin.size, &self.skin.rgba);
@@ -1683,12 +1729,141 @@ impl eframe::App for WinampApp {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn exit(&mut self) {
         if let Some(r) = self.fullscreen.as_ref().and_then(|f| f.restore) {
             self.settings.window_pos = Some((r.min.x, r.min.y));
         }
         self.settings_dirty.get_or_insert_with(Instant::now);
         self.save_now(true);
+    }
+}
+
+/// Presentation settings for the app's window: vsync with up to 3 frames queued. With eframe's
+/// default of 1 (measured on an M2 MacBook, even for a blank fullscreen window) frames regularly
+/// miss their vsync slot and the rate swings between 30 and 60 fps; with 3 it holds 60. The
+/// windowed player only draws on input or at 30 fps, so its queue stays short and clicks stay
+/// snappy. (Set at startup: eframe 0.36's `Frame::set_wgpu_surface_config` changes a clone of
+/// the render state and has no effect.) The visuals read the audio clock ahead to make up for
+/// the display delay.
+pub fn surface_config() -> eframe::egui_wgpu::SurfaceConfig {
+    eframe::egui_wgpu::SurfaceConfig {
+        present_mode: eframe::egui_wgpu::wgpu::PresentMode::AutoVsync,
+        desired_maximum_frame_latency: Some(3),
+    }
+}
+
+#[derive(Default)]
+struct PhaseStats {
+    sum: f64,
+    max: f64,
+    n: u32,
+}
+
+impl PhaseStats {
+    fn add(&mut self, ms: f64) {
+        self.sum += ms;
+        self.max = self.max.max(ms);
+        self.n += 1;
+    }
+
+    fn show(&self) -> String {
+        format!("{:5.2}/{:5.2}", self.sum / self.n.max(1) as f64, self.max)
+    }
+}
+
+/// Where each frame's time goes: our `logic`, our `ui` (which includes the visuals' `paint` and
+/// egui layer), and everything eframe does outside them (egui tessellation, GPU submit, waiting
+/// for a drawable, present, event loop).
+struct FrameProfile {
+    window: Instant,
+    frames: u32,
+    frame_dt: PhaseStats,
+    logic: PhaseStats,
+    ui: PhaseStats,
+    outside: PhaseStats,
+    last_logic_start: Option<Instant>,
+    logic_started: Instant,
+    ui_end: Option<Instant>,
+    log: Option<std::fs::File>,
+}
+
+impl FrameProfile {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join("winamp_frame_stats.log");
+        eprintln!("frame stats → {}", path.display());
+        Self {
+            window: Instant::now(),
+            frames: 0,
+            frame_dt: PhaseStats::default(),
+            logic: PhaseStats::default(),
+            ui: PhaseStats::default(),
+            outside: PhaseStats::default(),
+            last_logic_start: None,
+            logic_started: Instant::now(),
+            ui_end: None,
+            log: std::fs::File::create(path).ok(),
+        }
+    }
+
+    fn logic_start(&mut self, now: Instant) {
+        if let Some(end) = self.ui_end.take() {
+            self.outside.add((now - end).as_secs_f64() * 1e3);
+        }
+        if let Some(prev) = self.last_logic_start {
+            self.frame_dt.add((now - prev).as_secs_f64() * 1e3);
+        }
+        self.last_logic_start = Some(now);
+        self.logic_started = now;
+    }
+
+    fn logic_end(&mut self) {
+        self.logic
+            .add(self.logic_started.elapsed().as_secs_f64() * 1e3);
+    }
+
+    fn ui_done(&mut self, start: Instant, fullscreen: bool) {
+        let now = Instant::now();
+        self.ui.add((now - start).as_secs_f64() * 1e3);
+        self.ui_end = Some(now);
+        self.frames += 1;
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            let line = format!(
+                "{} fps {:3} | frame ms avg/max {} | logic {} | ui+visuals {} | eframe paint+present {}",
+                if fullscreen { "full" } else { "win " },
+                self.frames,
+                self.frame_dt.show(),
+                self.logic.show(),
+                self.ui.show(),
+                self.outside.show(),
+            );
+            eprintln!("{line}");
+            if let Some(f) = &mut self.log {
+                use std::io::Write;
+                let _ = writeln!(f, "{line}");
+            }
+            let log = self.log.take();
+            *self = Self {
+                log,
+                last_logic_start: self.last_logic_start,
+                ui_end: self.ui_end,
+                ..Self::quiet()
+            };
+        }
+    }
+
+    fn quiet() -> Self {
+        Self {
+            window: Instant::now(),
+            frames: 0,
+            frame_dt: PhaseStats::default(),
+            logic: PhaseStats::default(),
+            ui: PhaseStats::default(),
+            outside: PhaseStats::default(),
+            last_logic_start: None,
+            logic_started: Instant::now(),
+            ui_end: None,
+            log: None,
+        }
     }
 }
 
