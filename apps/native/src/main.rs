@@ -129,6 +129,11 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                     cache.clone(),
                 )),
                 annotations_dir: cache.as_ref().map(|c| c.dir().join("annotations")),
+                overviews: Some(analysis::overview::OverviewService::new(
+                    Arc::new(NativeSpawner),
+                    Arc::new(NativeFileSource),
+                    cache.as_ref().map(|c| c.dir().to_path_buf()),
+                )),
                 startup: Startup {
                     process_start,
                     report: startup_time,

@@ -149,6 +149,7 @@ pub struct Renderer {
     /// Track and frame that will be audible after everything written so far.
     pos: (TrackId, u64),
     played_generation: u32,
+    played_splice: u16,
     device_epoch: u32,
     /// Whether audio of the current generation has started (for underrun accounting).
     started: bool,
@@ -171,6 +172,7 @@ impl Renderer {
             gains: (v * l, v * r),
             pos: (0, 0),
             played_generation: 0,
+            played_splice: 0,
             device_epoch: 0,
             started: false,
         }
@@ -190,7 +192,9 @@ impl Renderer {
     }
 
     fn epoch(&self) -> u64 {
-        ((self.device_epoch as u64) << 32) | self.played_generation as u64
+        ((self.device_epoch as u64 & 0xffff) << 48)
+            | ((self.played_generation as u64) << 16)
+            | self.played_splice as u64
     }
 
     /// The real-time callback body. `out` is interleaved in the device's channel layout.
@@ -215,6 +219,7 @@ impl Renderer {
             starved: false,
             buffer_frames: total as u32,
             epoch: self.epoch(),
+            boundary_epoch: None,
         };
 
         if state != PlayState::Playing {
@@ -249,8 +254,18 @@ impl Renderer {
                         let at = done + filled;
                         if run.generation != self.played_generation {
                             self.played_generation = run.generation;
+                            self.played_splice = run.splice;
                             self.started = false;
                             snap.epoch = self.epoch();
+                        } else if run.splice != self.played_splice {
+                            // A splice without a flush: the new epoch applies from where the
+                            // spliced audio starts, which may be inside this buffer.
+                            self.played_splice = run.splice;
+                            if at == 0 {
+                                snap.epoch = self.epoch();
+                            } else {
+                                snap.boundary_epoch = Some(self.epoch());
+                            }
                         }
                         if !self.started {
                             self.started = true;

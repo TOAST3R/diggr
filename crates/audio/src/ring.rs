@@ -20,6 +20,9 @@ pub struct Segment {
     pub frames: u32,
     /// A zero-length marker meaning "nothing follows": the queue has ended.
     pub end_of_queue: bool,
+    /// Changes where the worker spliced the stream without a flush (a scheduled jump or a
+    /// loop wrap), so the clock can report a discontinuity at exactly that point.
+    pub splice: u16,
 }
 
 pub fn pcm_ring(capacity_frames: usize, max_segments: usize) -> (PcmProducer, PcmConsumer) {
@@ -62,6 +65,18 @@ impl PcmProducer {
         start_frame: u64,
         samples: &[f32],
     ) -> bool {
+        self.push_spliced(generation, 0, track, start_frame, samples)
+    }
+
+    /// [`push`](Self::push) with a splice number (see [`Segment::splice`]).
+    pub fn push_spliced(
+        &mut self,
+        generation: u32,
+        splice: u16,
+        track: TrackId,
+        start_frame: u64,
+        samples: &[f32],
+    ) -> bool {
         debug_assert_eq!(samples.len() % CHANNELS, 0);
         let frames = samples.len() / CHANNELS;
         if frames == 0 {
@@ -80,6 +95,7 @@ impl PcmProducer {
                 start_frame,
                 frames: frames as u32,
                 end_of_queue: false,
+                splice,
             })
             .expect("space checked");
         true
@@ -93,6 +109,7 @@ impl PcmProducer {
                 start_frame: at_frame,
                 frames: 0,
                 end_of_queue: true,
+                splice: 0,
             })
             .is_ok()
     }
@@ -102,6 +119,7 @@ impl PcmProducer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run {
     pub generation: u32,
+    pub splice: u16,
     pub track: TrackId,
     pub start_frame: u64,
     pub frames: usize,
@@ -170,6 +188,7 @@ impl PcmConsumer {
             chunk.commit_all();
             let run = Run {
                 generation: seg.generation,
+                splice: seg.splice,
                 track: seg.track,
                 start_frame: seg.start_frame + self.consumed as u64,
                 frames,
@@ -231,6 +250,7 @@ mod tests {
         assert_eq!(
             rx.read(1, &mut dst),
             ReadResult::Audio(Run {
+                splice: 0,
                 generation: 1,
                 track: 7,
                 start_frame: 0,
@@ -241,6 +261,7 @@ mod tests {
         assert_eq!(
             rx.read(1, &mut dst),
             ReadResult::Audio(Run {
+                splice: 0,
                 generation: 1,
                 track: 7,
                 start_frame: 64,
@@ -250,6 +271,7 @@ mod tests {
         assert_eq!(
             rx.read(1, &mut dst),
             ReadResult::Audio(Run {
+                splice: 0,
                 generation: 1,
                 track: 7,
                 start_frame: 100,

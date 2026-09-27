@@ -33,6 +33,9 @@ pub struct ClockSnapshot {
     pub buffer_frames: u32,
     /// Changes on seek and on device changes.
     pub epoch: u64,
+    /// The epoch of positions at or past `boundary`, when it differs from `epoch` (a splice
+    /// inside this buffer: positions after it may move backwards).
+    pub boundary_epoch: Option<u64>,
 }
 
 #[derive(Default)]
@@ -50,6 +53,7 @@ struct Shared {
     starved: AtomicU64,
     buffer_frames: AtomicU64,
     epoch: AtomicU64,
+    boundary_epoch: AtomicU64,
     offset_ns: AtomicI64,
 }
 
@@ -91,6 +95,8 @@ impl ClockWriter {
         sh.buffer_frames
             .store(s.buffer_frames as u64, Ordering::Relaxed);
         sh.epoch.store(s.epoch, Ordering::Relaxed);
+        sh.boundary_epoch
+            .store(s.boundary_epoch.unwrap_or(u64::MAX), Ordering::Relaxed);
         sh.seq.store(seq.wrapping_add(2), Ordering::Release);
     }
 }
@@ -151,6 +157,8 @@ impl ClockReader {
                 starved: sh.starved.load(Ordering::Relaxed) != 0,
                 buffer_frames: sh.buffer_frames.load(Ordering::Relaxed) as u32,
                 epoch: sh.epoch.load(Ordering::Relaxed),
+                boundary_epoch: Some(sh.boundary_epoch.load(Ordering::Relaxed))
+                    .filter(|&e| e != u64::MAX),
             };
             fence(Ordering::Acquire);
             if sh.seq.load(Ordering::Relaxed) == s1 {
@@ -175,9 +183,13 @@ impl ClockReader {
     pub fn position(&mut self, now_ns: u64) -> Position {
         let snap = self.snapshot();
         let offset_ns = self.shared.offset_ns.load(Ordering::Relaxed);
-        let mut pos = compute(&snap, now_ns, offset_ns);
+        let (mut pos, past_boundary) = compute(&snap, now_ns, offset_ns);
+        let epoch = match snap.boundary_epoch {
+            Some(e) if past_boundary => e,
+            _ => snap.epoch,
+        };
         match self.last {
-            Some((track, frame, epoch)) if epoch == snap.epoch => {
+            Some((track, frame, last_epoch)) if last_epoch == epoch => {
                 if track == pos.track && pos.frame < frame {
                     pos.frame = frame;
                 }
@@ -185,12 +197,13 @@ impl ClockReader {
             Some(_) => pos.discontinuity = true,
             None => {}
         }
-        self.last = Some((pos.track, pos.frame, snap.epoch));
+        self.last = Some((pos.track, pos.frame, epoch));
         pos
     }
 }
 
-fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> Position {
+/// The position, and whether it lies at or past the snapshot's in-buffer boundary.
+fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> (Position, bool) {
     let mut pos = Position {
         track: s.track,
         frame: s.frame,
@@ -199,7 +212,7 @@ fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> Position {
         discontinuity: false,
     };
     if s.state != PlayState::Playing || s.starved || s.sample_rate == 0 {
-        return pos;
+        return (pos, false);
     }
     let rate = s.sample_rate as f64;
     let audible_at = s.host_ns as f64 + s.latency_ns as f64;
@@ -211,10 +224,13 @@ fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> Position {
         Some((track, at, frame)) if off >= at as f64 => {
             pos.track = track;
             pos.frame = frame + (off - at as f64) as u64;
+            (pos, true)
         }
-        _ => pos.frame = (s.frame as f64 + off).max(0.0) as u64,
+        _ => {
+            pos.frame = (s.frame as f64 + off).max(0.0) as u64;
+            (pos, false)
+        }
     }
-    pos
 }
 
 #[cfg(test)]
@@ -235,6 +251,7 @@ mod tests {
             starved: false,
             buffer_frames: 512,
             epoch: 1,
+            boundary_epoch: None,
         }
     }
 

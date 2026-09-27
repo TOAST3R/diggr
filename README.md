@@ -134,12 +134,47 @@ playlist).
 | `C` | pause / resume | | `F` | fullscreen visuals (`F`/`Esc` to leave) |
 | `V` | stop | | `Delete` / `Backspace` | remove selected entries |
 | `B` | next | | `Enter` | play the (first) selected entry |
-| | | | `Cmd+O` / `Cmd+A` | add files / select all |
+| `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
+| `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
+| `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
+| `H` or `F1` | all shortcuts (help panel) | | | |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
-**Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys keep
-working in fullscreen.
+**Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys,
+including the section jumps and loops, keep working in fullscreen.
+
+### Waveform and structure navigation
+
+Under the main window, the **waveform** (`W`) has two rows:
+
+- **Overview** of the whole track: coloured by frequency, with section bands, red markers where
+  the energy jumps (the drops), and the playhead. Click or drag to seek.
+- **Zoom** around the playhead: bass is red, mids green, highs blue, so kicks and hats are easy
+  to tell apart. Beat ticks are shown, taller on bar starts. The scroll wheel zooms from 1 to
+  64 bars.
+
+The waveform fills in within a few seconds of a track starting. It's saved in the cache, so a
+replayed track shows its whole waveform at once.
+
+**Jump by structure:**
+- `]` goes to the next section, and `[` to the start of this one (or the previous one if you're
+  in its first bar).
+- `Shift+]` goes to the next drop, meaning the next section that is at least 4 dB louder than
+  the one before.
+
+Jumps land exactly on a bar line, so the beat never stumbles. A yellow line on the waveform
+shows where the jump will happen. The player uses the first bar line it can still reach: the
+next one, or the one after if the next is less than half a second away.
+
+**Loops:**
+- `L` loops the current section, at most 32 bars. Press it again to stop.
+- `Shift+L` loops 4 bars from the current bar line; press again for 8, then 16.
+
+Loops repeat without a gap and show in yellow on the waveform. A seek, stop or track change
+ends them.
+
+`[` and `]` work by key position, next to `P`, so they work on any keyboard layout.
 
 ### Visuals
 
@@ -296,7 +331,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, playlist, presets, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, `annotations/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, playlist and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -315,7 +350,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 219 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 241 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -455,6 +490,12 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
    auto-fading track overlay ✅ (done and archived)
 5. `web-target`: the same app in Chrome via WebAssembly, AudioWorklet and WebGPU (proposed in
    `openspec/changes/web-target/`, not started)
+6. `waveform-navigation`: the coloured waveform, section/drop jumps on the beat, bar loops,
+   and the shortcuts help ✅ (done and archived)
+7. `spectrogram-window`: a spectrogram window with whole-track, zoomed and live views, and a
+   check for files made from lossy sources (proposed)
+8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
+9. `show-render`: render a track's visual show to an MP4 (proposed)
 
 Finished changes move to `openspec/changes/archive/`, and their requirements become the living
 specs in `openspec/specs/`.
