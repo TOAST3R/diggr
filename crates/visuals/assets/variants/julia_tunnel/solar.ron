@@ -1,0 +1,1 @@
+(scene: "julia_tunnel", name: "solar", params: {"julia_c": [0.285, 0.01], "tunnel": [0.2], "color_a": [0.6, 0.35, 0.2], "color_b": [0.4, 0.3, 0.2], "trap": [0.6]}, rating: 3)

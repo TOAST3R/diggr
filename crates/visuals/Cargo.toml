@@ -1,0 +1,20 @@
+[package]
+name = "visuals"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+analysis = { version = "0.1.0", path = "../analysis" }
+audio = { version = "0.1.0", path = "../audio" }
+dirs = "7.0.0"
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
+egui = { version = "0.36", default-features = false }
+naga = { version = "30", features = ["wgsl-in"] }
+notify = "8.2.0"
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+ui = { version = "0.1.0", path = "../ui" }
+
+[dev-dependencies]
+pollster = "1.0.1"

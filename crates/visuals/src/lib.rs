@@ -1,0 +1,16 @@
+//! The fullscreen visual engine: signals, modulation, scenes, variants, director, compositor.
+
+pub mod codegen;
+pub mod compositor;
+pub mod deck;
+pub mod director;
+pub mod engine;
+pub mod gpu;
+pub mod library;
+pub mod manifest;
+pub mod modulation;
+pub mod overlay;
+pub mod signals;
+pub mod variants;
+
+pub use engine::VisualEngine;

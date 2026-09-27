@@ -1,0 +1,1 @@
+(scene: "liquid_feedback", name: "plasma", params: {"flow": [0.05], "scale": [3.5], "zoom_in": [0.02], "decay": [0.94], "ring": [1.2], "hue_a": [1.0, 0.4, 0.0], "hue_b": [0.6, 0.0, 1.0]}, rating: 4)

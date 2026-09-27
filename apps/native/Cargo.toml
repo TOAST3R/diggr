@@ -11,3 +11,4 @@ crossterm = "0.29.0"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
 platform = { version = "0.1.0", path = "../../crates/platform" }
 ui = { version = "0.1.0", path = "../../crates/ui" }
+visuals = { version = "0.1.0", path = "../../crates/visuals" }

@@ -168,7 +168,11 @@ impl SongScore {
             return None;
         }
         let i = b.partition_point(|&x| x <= t).saturating_sub(1);
-        let next = b.get(i + 1).copied().unwrap_or(b[i] + (b[i] - b[i - 1]));
+        // Past the last beat, extrapolate one period (i ≥ 1 here since b.len() ≥ 2).
+        let next = b
+            .get(i + 1)
+            .copied()
+            .unwrap_or_else(|| b[i] + (b[i] - b[i - 1]));
         Some(i as f64 + (t - b[i]) / (next - b[i]))
     }
 
@@ -267,6 +271,11 @@ mod tests {
     fn queries() {
         let s = score();
         assert_eq!(s.beat_at(1.25), Some(2.5));
+        // Inside the first beat (regression: this used to index beats[-1]).
+        assert_eq!(s.beat_at(0.0), Some(0.0));
+        assert_eq!(s.beat_at(0.25), Some(0.5));
+        // Just past the last beat extrapolates one period.
+        assert_eq!(s.beat_at(31.75), Some(63.5));
         assert_eq!(s.beat_at(-1.0), None);
         assert_eq!(s.section_at(40).unwrap().kind, SectionKind::Drop);
         assert_eq!(s.drop_in(24), Some(8));

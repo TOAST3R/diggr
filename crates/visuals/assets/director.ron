@@ -1,0 +1,17 @@
+// The director: rules are checked in order at each section boundary; the first match wins.
+// Events: Rise(dB), Fall(dB), Change, Repeat, Kind(Drop|Build|Breakdown|Intro|Groove|Outro),
+//         TrackChange, Idle(bars), Always (continuous set_macro).
+// Actions: Cut(pick), Crossfade(pick, bars), Morph(pick, bars), SetMacro(macro, value, glide_beats),
+//          Flash(beats).
+// Picks: Tag("calm"), SameAsLabel, HighestRatedUnused, RandomWeighted, Sibling.
+(
+    rules: [
+        (on: Repeat, do: [Cut(SameAsLabel)]),
+        (on: Rise(4.0), do: [Cut(HighestRatedUnused), Flash(1.0)]),
+        (on: Fall(4.0), do: [Crossfade(Tag("calm"), 1.0)]),
+        (on: Change, do: [Morph(Sibling, 2.0)]),
+        (on: Idle(16.0), do: [Morph(Sibling, 4.0)]),
+        (on: TrackChange, do: [Crossfade(RandomWeighted, 2.0)]),
+        (on: Always, do: [SetMacro(Stretch, Signal(Tension), 0.0)]),
+    ],
+)

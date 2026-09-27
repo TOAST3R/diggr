@@ -1,14 +1,15 @@
 # winamp_rust
 
 A Winamp 2.x–inspired music player in Rust, built for **speed and zero perceived latency**,
-with (coming) a fullscreen fractal visualizer that follows the rhythm and structure of the music.
+with a fullscreen fractal visualizer that follows the rhythm and structure of the music.
 
 Progress:
 
- **audio-core** ✅ → **classic-ui** ✅ → **music-analysis** ✅ → visual-engine → web-target
+ **audio-core** ✅ → **classic-ui** ✅ → **music-analysis** ✅ → **visual-engine** ✅ → web-target
 
-Implemented so far: the audio engine (`audio-core`) and the classic Winamp-style player window
-(`classic-ui`), including a fullscreen mode that the fractal visualizer will plug into.
+Implemented so far: the audio engine (`audio-core`), the classic Winamp-style player window
+(`classic-ui`), music analysis ahead of the playhead (`music-analysis`), and the fullscreen
+visual engine (`visual-engine`), which holds a steady 60 fps on an M2 MacBook.
 
 ## Launch the app
 
@@ -130,10 +131,70 @@ playlist).
 | `V` | stop | | `Delete` | remove selected entries |
 | `B` | next | | `Cmd+O` / `Cmd+A` | add files / select all |
 
-**Fullscreen (`F`)** currently shows a placeholder visual: the screen flashes on every **analyzed
-beat** of the playing track (a fixed 120 BPM grid until the analyzer has reached that point), so
-you can judge audio/visual sync and the beat grid by eye. The fractal visual engine replaces it in
-a later milestone. Transport keys keep working in fullscreen.
+**Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys keep
+working in fullscreen.
+
+### Visuals
+
+Fullscreen visuals run on musical time: beats, bars and phrases from the analysis, with kicks,
+snares and hats fired as the playhead crosses them, so motion lands on the beat you hear. At
+each section change the **director** picks what to show. A big rise in energy cuts to your
+highest-rated look with a flash. A drop in energy crossfades to something calm. A section that
+comes back returns to the look it had before. Other changes morph to a sibling look, and the
+`stretch` macro follows the track's tension. The same track always gets the same show.
+
+Four scenes ship with it, each with two variants: **Julia Tunnel** (2D fractal), **Liquid
+Feedback** (the MilkDrop feel), **KIFS Cathedral** (raymarched 3D) and **Flame** (a compute-shader
+fractal flame). The artist, title and progress (with section ticks) show for 5 s on entering
+fullscreen, on each new track, and when you move the mouse or press a key.
+
+| Key | Action |
+|---|---|
+| `D` | show/hide the fader deck: 6 macros (intensity, chaos, stretch, speed, hue, feedback) and the scene's parameters |
+| `M` / `Shift+M` | mutate the current look (small / big step) |
+| `K` | keep: save the current look, fader positions included, as a new variant |
+| `Backspace` | undo back through the looks you had |
+| `1`–`5` | rate the current look (the director prefers higher ratings) |
+
+On the deck, dragging a fader switches it to MANUAL. When you let go, it holds, then glides back
+to automation after the RETURN time (1 beat, 1 bar, 4 bars, a phrase, or ∞), landing on a bar
+line. Click RETURN in the deck header to change the global setting. Right-click a fader to give it
+its own RETURN, and double-click it to hand it back to automation now. Speed snaps to ¼, ½, 1, 2
+and 4×.
+
+**Make it yours:** on first use the scenes are copied to
+`~/Library/Application Support/winamp_rust/visuals/`, and any file you save there is picked up
+while the music plays:
+
+```
+visuals/
+  director.ron              the rules for what happens at section changes (commented)
+  prelude/*.wgsl            helpers every scene can call: complex math, noise, palettes, SDFs
+  scenes/<id>/scene.ron     name, tags, parameters (type, default, range), macro mappings, routes
+  scenes/<id>/scene.wgsl    fn scene(uv: vec2f, m: Music, p: Params) -> vec4f
+  variants/<id>/<name>.ron  saved looks (K writes these; ratings live here too)
+```
+
+A new look is one `.wgsl` and one `.ron` file in a new `scenes/<id>/` folder. You write only
+`fn scene`. The engine generates `p.<param>` from your manifest and passes the music as `m`: for
+example `m.beat` (the phase within the beat), `m.motion` (beats, scaled by the speed macro), `m.kick`
+(beats since the last kick, so use `pulse(m.kick, 4.0)` for a punch), `m.energy`, `m.tension`,
+and `band(m, i)` for the 19 spectrum bars. Routes in the manifest connect signals to parameters
+without writing code, for example
+`(source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(120)), Range(0, 0.35)], target: "zoom")`.
+If you save a broken shader or manifest, the previous version keeps running, and a message
+shows the file, line and error for 8 seconds. To reset a file, delete it and it is restored from
+the bundled copy the next time you enter fullscreen.
+
+Resolution adapts to hold the frame rate. You can measure the scenes on your GPU:
+
+```sh
+cargo run -p visuals --example visual_bench --release        # offscreen, native Retina size
+WINAMP_VISUAL_BENCH=1 cargo run -p winamp-native --release   # in the app: press F; 15 s with no visuals,
+                                                             # then 15 s per scene; results in .../visuals/bench.txt
+WINAMP_FRAME_STATS=1 cargo run -p winamp-native --release    # per-second frame timings (app, visuals, present)
+cargo run -p ui --example fullscreen_probe --release         # what a blank eframe window can present
+```
 
 ### Music analysis
 
@@ -224,7 +285,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 ## Tests
 
 ```sh
-cargo test --workspace            # 150 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 216 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -278,6 +339,19 @@ What's covered:
   - `-- --ignored two_hour`: flat memory on a 2-hour mix.
 - **`crates/ui/tests/analysis_playback.rs`**: real-time playback while two tracks are analyzed,
   with zero underruns.
+- **`crates/visuals`** (unit tests, plus GPU tests on a headless device that skip when there is
+  no GPU):
+  - musical time and triggers locked to the analyzed beats, including pause and seek;
+  - every shaper, route determinism, and the base → manual → macros → routes → clamp order;
+  - manifests, and WGSL generation checked with naga, with errors mapped to the author's line;
+  - every bundled scene compiling and rendering;
+  - crossfade, feedback trails, compute accumulation, hue, and broken shaders not panicking;
+  - variants loading when params change, mutation, lineage and undo;
+  - the director's default show (rise, fall, repeat, idle, track change, provisional boundaries);
+  - fader RETURN glides landing on bar lines;
+  - the overlay fade;
+  - hot reload keeping the last good scene, and the file watcher;
+  - the engine end to end (keys, crossfades, re-init).
 
 Measure the player's launch time (the target is under 300 ms):
 
@@ -320,6 +394,8 @@ crates/platform   seam traits (AudioSink, Spawner, FileSource) + native impls + 
 crates/audio      decode, ring, renderer (callback), clock, EQ, tap, decode worker, Engine API
 crates/analysis   music analysis: beat grid, tempo segments, sections, tension, cache, eval tools
 crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model
+crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, deck
+crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
 apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time
 openspec/         specs and plans for every milestone (see below)
@@ -344,7 +420,7 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 3. `music-analysis`: beat grid, phrases, build/drop/breakdown detection that analyzes ahead of
    the playhead ✅ (done and archived)
 4. `visual-engine`: fractal scenes (WGSL), a modulation matrix, a director, a fader deck, and an
-   auto-fading track overlay
+   auto-fading track overlay ✅
 5. `web-target`: the same app in Chrome via WebAssembly, AudioWorklet and WebGPU
 
 Finished changes move to `openspec/changes/archive/`, and their requirements become the living

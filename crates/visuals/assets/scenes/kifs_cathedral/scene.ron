@@ -1,0 +1,36 @@
+// A raymarched kaleidoscopic IFS: an endless cathedral the camera flies through at tempo.
+// Folds snap on each bar and kicks bend them.
+(
+    name: "KIFS Cathedral",
+    tags: ["3d", "raymarch"],
+    kind: Fragment,
+    params: [
+        (name: "fold", type: F32, default: [0.3], min: [-1.0], max: [1.0]),
+        (name: "scale", type: F32, default: [2.0], min: [1.6], max: [2.8]),
+        (name: "offset", type: Vec3, default: [1.0, 1.0, 1.0], min: [0.2, 0.2, 0.2], max: [2.0, 2.0, 2.0]),
+        (name: "fly", type: F32, default: [0.5], min: [0.0], max: [2.0]),
+        (name: "fov", type: F32, default: [1.2], min: [0.6], max: [2.5]),
+        (name: "glow", type: F32, default: [1.0], min: [0.0], max: [3.0]),
+        (name: "fog", type: F32, default: [0.08], min: [0.0], max: [0.3]),
+        (name: "color_a", type: Color, default: [0.9, 0.6, 0.3], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "color_b", type: Color, default: [0.2, 0.4, 0.9], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "steps", type: Int, default: [56], min: [32], max: [160], mutable: false),
+        (name: "iters", type: Int, default: [7], min: [4], max: [12], mutable: false),
+    ],
+    macros: [
+        (macro: Chaos, param: "fold", amount: 0.3),
+        (macro: Chaos, param: "offset", amount: 0.2),
+        (macro: Stretch, param: "fov", amount: 0.4),
+    ],
+    routes: [
+        (source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(150)), Range(0.0, 0.12)], target: "fold"),
+        (source: Const(0), shapers: [Random(Bar), Range(-0.3, 0.3), Smooth(Beats(1))], target: "fold"),
+        (source: Energy, shapers: [Smooth(Beats(1)), Range(0.0, 1.0)], target: "glow"),
+    ],
+    optional_routes: [
+        (source: Bass, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.15)], target: "scale"),
+        (source: Snare, shapers: [Envelope(attack: Ms(0), release: Ms(200)), Range(0.0, 0.5)], target: "fov"),
+    ],
+    feedback: Some((decay: 0.3, warp: 0.2)),
+    max_scale: Some(0.6),
+)

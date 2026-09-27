@@ -106,6 +106,10 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
     let options = eframe::NativeOptions {
         viewport,
         persist_window: false,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            surface: ui::app::surface_config(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(
@@ -118,7 +122,7 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                 files: Arc::new(NativeFileSource),
                 store,
                 open,
-                scene: Box::new(ui::fullscreen::BeatFlash::default()),
+                scene: Box::new(visuals::VisualEngine::new()),
                 analysis: Some(analysis::AnalysisService::new(
                     Arc::new(NativeSpawner),
                     Arc::new(NativeFileSource),
