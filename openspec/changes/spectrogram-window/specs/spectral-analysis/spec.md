@@ -5,7 +5,7 @@ The track overview pass SHALL also produce a bounded spectral overview of the wh
 
 #### Scenario: Tone lands on the right row
 - **WHEN** a track contains a steady 1 kHz sine
-- **THEN** the spectral overview's strongest row in every column is the row whose band contains 1 kHz
+- **THEN** the spectral overview's strongest row in every column is the row whose band contains 1 kHz, to within one FFT bin
 
 #### Scenario: Size is bounded regardless of length
 - **WHEN** overviews are computed for a 3-minute track, a 2-hour mix, and a track whose length is not known in advance

@@ -12,6 +12,7 @@ pub mod rhythm;
 pub mod score;
 pub mod service;
 pub mod source;
+pub mod spectral;
 pub mod structure;
 pub mod synth;
 

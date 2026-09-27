@@ -33,7 +33,7 @@ What `waveform-navigation` actually built, and what this change builds on:
 ```
 
 **Spectral overview, built in the existing overview pass:**
-- **FFT frames:** `OverviewBuilder::push` also runs a 4096-point Hann FFT every 1024 frames on mid ((L+R)/2) and side ((L−R)/2).
+- **FFT frames:** `OverviewBuilder::push` also runs a 4096-point Hann FFT on mid ((L+R)/2) and side ((L−R)/2) every 1024 frames, or every eighth of a column once columns are wider. That caps the work at about 8 FFTs per column, so a 2-hour mix costs about as much as a 3-minute track.
 - **Columns:** a column starts at 1024 frames and holds the mean power of its FFT frames. Whenever the column count reaches 4096, adjacent pairs are merged (power mean) and the column width doubles. This handles unknown track lengths and progressive publishing, and the result always has 2048–4096 columns. A 3-minute track ends with about 3,900 columns and a 2-hour mix with about 2,000. The UI maps columns to time with the stored column width.
 - **Rows:** 256 log-spaced rows from 20 Hz to Nyquist. A row narrower than an FFT bin (below about 500 Hz at 4096 points) takes the value interpolated between the neighbouring bins, so no row is empty.
 - **Storage:** u8 dB (−120 to 0 dBFS). Merging converts to power, averages and converts back.
@@ -85,7 +85,7 @@ Both are a few kilobytes and are stored with the overview.
 - [Two windows on one wgpu device double presentation work] → The spectrogram repaints only when needed. Fullscreen visuals keep priority, and the spectrogram window stops repainting while fullscreen is active.
 - [False "lossy" verdicts] → Conservative thresholds, steep-edge requirement, "likely" wording, cutoff value always shown. Tested with synthetic brickwall-filtered versus naturally dark signals.
 - [Seeking inside compressed files for detail can be inexact] → Decode from a little before the range and trim by timestamps; the overview is still available as a fallback.
-- [The overview pass gets slower] → A 4096-point FFT every 1024 frames per channel adds about 43 FFTs per second of audio per channel, which is small next to decoding. It stays at low priority.
+- [The overview pass gets slower] → At most 43 FFTs per second of audio per channel (short tracks), and far fewer for long mixes, which is small next to decoding. It stays at low priority. (Found while testing: the band filters hit denormal floats after silence or DC, making the pass ~15× slower; their outputs are now flushed to zero.)
 - [Cache version bump] → Every cached overview is rebuilt once on first play after upgrading.
 
 ## Open Questions

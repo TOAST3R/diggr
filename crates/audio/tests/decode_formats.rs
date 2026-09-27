@@ -89,6 +89,19 @@ fn tags_are_read_for_every_format() {
 }
 
 #[test]
+fn lossless_follows_the_codec() {
+    for (name, lossless) in [
+        ("tone.wav", true),
+        ("tone.flac", true),
+        ("tone.mp3", false),
+        ("tone.ogg", false),
+        ("tone.m4a", false), // AAC in MP4
+    ] {
+        assert_eq!(open(name).info().lossless, lossless, "{name}");
+    }
+}
+
+#[test]
 fn missing_tags_fall_back_to_file_name() {
     let dec = open("untagged.mp3");
     assert_eq!(dec.info().title, "untagged");
