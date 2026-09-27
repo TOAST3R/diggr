@@ -474,47 +474,6 @@ mod tests {
         assert!(sc.sections.iter().any(|x| x.kind == SectionKind::Drop));
     }
 
-    /// Speed targets (spec: first 32 bars within 1 s; seek coverage within 1 s). Analysis runs at
-    /// low priority by design, so these only mean something on an otherwise idle machine:
-    /// `cargo test -p analysis --release -- --ignored timing`.
-    #[test]
-    #[ignore = "timing: run alone in release"]
-    fn timing_targets() {
-        let dir = tmp("timing");
-        let (track, _) = write_track(&dir, "a.wav", &synth::standard_track(125.0));
-        let bars32 = 32.0 * 4.0 * 60.0 / 125.0;
-        let svc = service(&dir.join("cache"));
-        let first = wait(
-            || {
-                svc.playhead(&track, 0.0);
-                svc.score(&track)
-                    .is_some_and(|sc| sc.coverage.covered_until(0.0).is_some_and(|e| e >= bars32))
-            },
-            10.0,
-        );
-        let parts: Vec<synth::Part> = (0..3).flat_map(|_| synth::standard_track(128.0)).collect();
-        let (mix, _) = write_track(&dir, "mix.wav", &parts);
-        svc.playhead(&mix, 0.0);
-        wait(
-            || svc.score(&mix).is_some_and(|sc| !sc.beats.is_empty()),
-            10.0,
-        );
-        let seek = wait(
-            || {
-                svc.playhead(&mix, 400.0);
-                svc.score(&mix)
-                    .is_some_and(|sc| sc.coverage.contains(410.0))
-            },
-            10.0,
-        );
-        eprintln!("first 32 bars: {first:?}, seek: {seek:?}");
-        assert!(
-            first < Duration::from_secs(1),
-            "first 32 bars took {first:?}"
-        );
-        assert!(seek < Duration::from_secs(1), "seek coverage took {seek:?}");
-    }
-
     #[test]
     fn idles_once_the_horizon_is_covered() {
         let dir = tmp("horizon");

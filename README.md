@@ -426,7 +426,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 284 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 284 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -474,10 +474,6 @@ What's covered:
   - downbeats and section boundaries on the right bar;
   - section kinds, and repeated drops sharing a label;
   - streaming, seek, cache and pre-warm.
-
-  Two long checks run on request:
-  - `-- --ignored timing`: speed targets;
-  - `-- --ignored two_hour`: flat memory on a 2-hour mix.
 - **`crates/ui/tests/analysis_playback.rs`**: real-time playback while two tracks are analyzed,
   with zero underruns.
 - **Spectrogram** (`crates/analysis` spectral and detail modules, `crates/ui` spectrogram):

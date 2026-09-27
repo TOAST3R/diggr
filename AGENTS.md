@@ -41,8 +41,7 @@ cargo check -p audio -p platform --target wasm32-unknown-unknown   # core must s
 ```
 
 Narrower runs: `cargo test -p audio --test engine`, `cargo test -p visuals director`.
-Long checks are opt-in: `cargo test -p analysis --release -- --ignored timing` and
-`-- --ignored two_hour`. GPU tests in `visuals` skip themselves when no adapter is available.
+GPU tests in `visuals` skip themselves when no adapter is available.
 
 Run all four checks before committing. Dependencies are built with `opt-level = 3` even in
 dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up with real time.

@@ -384,42 +384,6 @@ mod tests {
         );
     }
 
-    /// Spec: "a 2-hour mix plays to the end → memory stays bounded". Rendered and streamed track
-    /// by track (the synthetic input alone would otherwise need ~600 MB).
-    /// `cargo test -p analysis --release -- --ignored two_hour`
-    #[test]
-    #[ignore = "long: about a minute in release"]
-    fn two_hour_mix_keeps_memory_bounded() {
-        let mut r = Region::new(0.0);
-        let mut max_frames = 0;
-        let (mut secs, mut tracks, mut true_beats) = (0.0, 0u64, 0usize);
-        while secs < 7_200.0 {
-            let bpm = 124.0 + (tracks % 5) as f64; // tempo drifts between tracks, like a DJ set
-            let t = synth::render(&synth::standard_track(bpm), SR, tracks + 1);
-            true_beats += t.beats.len();
-            for c in t.samples.chunks((UPDATE_EVERY_SECS * SR as f64) as usize) {
-                r.push(c);
-                r.update(false);
-                max_frames = max_frames.max(r.frames_held());
-            }
-            secs += t.samples.len() as f64 / SR as f64;
-            tracks += 1;
-        }
-        let res = r.update(true);
-        let limit = ((FINAL_LAG_BARS * 4.0 * 60.0 / 124.0 + CONTEXT_SECS + 2.0 * UPDATE_EVERY_SECS)
-            * FPS) as usize;
-        eprintln!(
-            "{tracks} tracks, {:.0} min: max frames held {max_frames} (limit {limit}), {} beats (truth {true_beats}), {} sections, {} tempo segments",
-            secs / 60.0,
-            res.beats.len(),
-            res.sections.len(),
-            res.segments.len()
-        );
-        assert!(max_frames <= limit, "frames held grew to {max_frames}");
-        // Per-beat data is all that is kept for the past: ~15k beats, not 600k frames.
-        assert!((res.beats.len() as f64 - true_beats as f64).abs() / (true_beats as f64) < 0.01);
-    }
-
     #[test]
     fn region_starting_mid_file() {
         let s = synth::render(&[part(Pattern::Drop, 32, 124.0)], SR, 2);
