@@ -57,6 +57,9 @@ pub struct Detail {
     pub request: DetailRequest,
     pub sample_rate: u32,
     pub fft: usize,
+    /// The frequency range the rows actually cover (the request's, limited by Nyquist).
+    pub lo_hz: f32,
+    pub hi_hz: f32,
     /// Columns computed so far, from the left.
     pub columns_done: usize,
     /// Column-major dB bytes (see [`crate::spectral::byte_to_db`]), `rows` per column.
@@ -169,6 +172,8 @@ pub fn compute(
             request: req,
             sample_rate: 0,
             fft: 0,
+            lo_hz: 0.0,
+            hi_hz: 0.0,
             columns_done: 0,
             data: Vec::new(),
             seeks: 0,
@@ -181,11 +186,14 @@ pub fn compute(
     let n = req.fft_size(rate);
     let hop = req.hop_frames(rate);
     let hi = req.hi_hz.min(rate as f32 / 2.0);
-    let map = RowMap::new(n, rate, req.rows, req.lo_hz.min(hi * 0.5), hi);
+    let lo = req.lo_hz.min(hi * 0.5);
+    let map = RowMap::new(n, rate, req.rows, lo, hi);
     let mut stft = Stft::new(n);
     let mut out = Detail {
         sample_rate: rate,
         fft: n,
+        lo_hz: lo,
+        hi_hz: hi,
         columns_done: 0,
         data: Vec::with_capacity(req.columns * req.rows),
         seeks: 0,

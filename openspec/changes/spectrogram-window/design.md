@@ -52,7 +52,8 @@ What `waveform-navigation` actually built, and what this change builds on:
 - **Channels:** the default is mid ((L+R)/2). L, R and side ((L−R)/2) are selectable (see D1 for track mode); side shows stereo width.
 
 ### D3. Colour and range
-A perceptual colour map (inferno-like, 256 entries) is applied in a fragment shader from u8 dB values, so the dB range control (default −120 to 0 dBFS) changes contrast without recomputing anything.
+A perceptual colour map (inferno, 256 entries) turns the u8 dB values into colours. The dB range control (default −120 to 0 dBFS) changes contrast without recomputing any spectrum.
+- **As built:** the lookup happens on the CPU when a tile is uploaded as an ordinary egui texture, not in a wgpu fragment shader. A range change re-colours at most ~2 M texels (a few ms), the same code draws in the deferred viewport, in an embedded window and in headless tests, and there is no second render pipeline to maintain. A shader remains possible if re-colouring ever shows up in profiles.
 
 ### D4. Cutoff detection
 **Data:** the log rows are too coarse for this (at 16 kHz a row spans about 440 Hz, as wide as the whole steep-edge window). So the overview pass also keeps, for loud FFT frames (RMS above −30 dBFS):
@@ -71,8 +72,9 @@ Both are a few kilobytes and are stored with the overview.
 ### D5. Window
 - **Opening:** a deferred egui viewport titled "Spectrogram — <artist> – <title>", resizable. It opens with `S` or with **Spectrogram (S)** in the playlist's OPT menu. Size and mode persist in `Settings`. The help panel lists `S`.
 - **Shared state:** the deferred viewport callback must be `Send + Sync`, so the window's state (view, detail worker handle, live ring) lives behind an `Arc<Mutex<…>>`. The main update loop writes the audible position, the overview handle and the live columns into it, and the window only reads from it and returns actions (seek, mode changes).
-- **Rendering:** a wgpu paint callback draws the u8 tiles as textures with the colour-map shader. Live mode updates one texture column per step.
-- **Idle cost:** the window repaints only while playing in live mode, while the detail worker is delivering strips, or on input.
+- **Rendering:** each tile (overview, detail, live ring) is one texture whose width is frequency and height is time, drawn as a quad with transposed UVs, clipped to what it covers. Live mode updates only the new columns of its ring texture (`set_partial`).
+- **Without native windows:** egui embeds a deferred viewport as an in-app window, so the same code serves as the fallback panel.
+- **Idle cost:** the window repaints at the display rate while playing in live mode, every 40 ms while the detail worker is delivering strips, every 100 ms while playing in track mode (the playhead), and otherwise only on input. The player wakes it when the track, position or overview changes.
 
 ### D6. Interaction
 - **Click** in track or detail mode: seek with the same `Engine::seek` path as the waveform's overview row. Seeking outside an active loop clears it, just as the waveform does.

@@ -12,6 +12,7 @@ pub mod navigation;
 pub mod playlist;
 pub mod settings;
 pub mod skin;
+pub mod spectrogram;
 pub mod spectrum;
 pub mod timeline;
 pub mod waveform;

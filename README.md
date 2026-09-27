@@ -137,7 +137,7 @@ playlist).
 | `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
-| `H` or `F1` | all shortcuts (help panel) | | | |
+| `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -175,6 +175,42 @@ Loops repeat without a gap and show in yellow on the waveform. A seek, stop or t
 ends them.
 
 `[` and `]` work by key position, next to `P`, so they work on any keyboard layout.
+
+### Spectrogram
+
+`S` (or **Spectrogram (S)** in the playlist's **OPT** menu) opens a separate, resizable window
+with the current track's spectrogram: time runs left to right, frequency goes up on a log scale
+from 20 Hz to the file's Nyquist frequency, and brighter means louder.
+
+- **Track** shows the whole track with the playhead. Click to seek. Scroll to zoom time around
+  the cursor, Shift+scroll to zoom frequency, drag to pan, and double-click to see the whole
+  track again. Once you zoom past what the overview holds, the visible range is recomputed at
+  full resolution in the background (the header shows the FFT size: short ranges use short
+  windows so drum hits stay sharp, long ranges up to 8192 points for fine pitch detail).
+- **Live** is a scrolling waterfall of what you hear right now, in step with the audio.
+- **Mid / Side / L / R** picks the signal: mid is the sum of both channels, side their
+  difference (stereo width). The whole-track view has mid and side; L and R need a zoomed or
+  live view.
+- **dB** sets the range the colours span (−120 to 0 dB by default), to bring out quiet detail.
+- Hovering shows the time, frequency with the nearest note (e.g. `440 Hz A4`) and the level.
+
+**Quality check:** the bottom right shows where the content ends. For a lossless file (FLAC,
+WAV, ALAC) whose highs stop at a hard wall below 19.5 kHz it reads, for example, *Content ends
+at 16.0 kHz: likely from a lossy source (≈128 kbps MP3)*: a sign that the file was made from an
+MP3 or similar. Music that just gets quieter towards the top isn't flagged, and lossy files
+(MP3, AAC, Vorbis) never are.
+
+The whole-track view comes from the same background pass as the waveform, so it appears as the
+waveform fills in and is instant on replay. That pass's cache format changed with this feature,
+so tracks you played before are analyzed once more the first time you play them again.
+
+To look at a file without playing it (for example a FLAC next to a transcoded copy):
+
+```sh
+cargo run --release -p ui --example spectrogram_probe -- song.flac
+```
+
+It prints the quality verdict and opens the window; clicks move the playhead.
 
 ### Visuals
 
@@ -350,7 +386,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 241 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 266 tests (+2 long ones ignored), under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -404,6 +440,16 @@ What's covered:
   - `-- --ignored two_hour`: flat memory on a 2-hour mix.
 - **`crates/ui/tests/analysis_playback.rs`**: real-time playback while two tracks are analyzed,
   with zero underruns.
+- **Spectrogram** (`crates/analysis` spectral and detail modules, `crates/ui` spectrogram):
+  - a tone lands on its row, and a full-scale sine reads 0 dB;
+  - the whole-track overview stays between 2048 and 4096 columns for any length, and a 2-hour
+    mix's complete overview within 16 MB;
+  - zoomed detail resolves clicks 10 ms apart, and skips gaps by seeking in sparse views;
+  - a brick wall at 16 kHz is flagged, a gradual roll-off and full-band content aren't, and
+    lossy codecs never are;
+  - `lossless` follows the codec for every fixture format;
+  - note names, cursor readout, zoom limits, live columns lined up with the audio, and a
+    headless click that seeks to the time under the pointer.
 - **`crates/visuals`** (unit tests, plus GPU tests on a headless device that skip when there is
   no GPU):
   - musical time and triggers locked to the analyzed beats, including pause and seek;
@@ -457,8 +503,10 @@ Full details and the reasoning behind each decision:
 ```
 crates/platform   seam traits (AudioSink, Spawner, FileSource) + native impls + ManualSink for tests
 crates/audio      decode, ring, renderer (callback), clock, EQ, tap, decode worker, Engine API
-crates/analysis   music analysis: beat grid, tempo segments, sections, tension, cache, eval tools
-crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model
+crates/analysis   music analysis: beat grid, tempo segments, sections, tension, cache, eval tools;
+                  track overview (waveform + spectrogram, cutoff check) and zoomed spectrogram detail
+crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model,
+                  waveform, spectrogram window
 crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, deck
 crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
@@ -493,7 +541,8 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 6. `waveform-navigation`: the coloured waveform, section/drop jumps on the beat, bar loops,
    and the shortcuts help ✅ (done and archived)
 7. `spectrogram-window`: a spectrogram window with whole-track, zoomed and live views, and a
-   check for files made from lossy sources (proposed)
+   check for files made from lossy sources ✅ (implemented; the listening check with real
+   files is still to do before archiving)
 8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
 9. `show-render`: render a track's visual show to an MP4 (proposed)
 

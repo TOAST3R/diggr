@@ -40,7 +40,7 @@ The window SHALL show the detected content cutoff and, when flagged, a "likely f
 - **THEN** it reads "Content ends at 16.0 kHz: likely from a lossy source (≈128 kbps MP3)"
 
 ### Requirement: Low cost
-The spectrogram window SHALL repaint only while live mode is playing, while detail is arriving, or on input, and SHALL NOT repaint while fullscreen visuals are active.
+The spectrogram window SHALL repaint only while playing (at the display rate in live mode, at most 10 times a second in track mode for the playhead), while detail is arriving, or on input, and SHALL NOT repaint while fullscreen visuals are active.
 
 #### Scenario: Track mode, paused
 - **WHEN** the window is in track mode and playback is paused with no input

@@ -106,6 +106,9 @@ pub struct WinampApp {
     /// The audible track's overview, as far as it is built.
     overview: Option<Arc<analysis::overview::Overview>>,
     nav: Nav,
+    /// The spectrogram window (`S`) and whether it is open.
+    spectro: crate::spectrogram::SpectrogramWindow,
+    spectro_open: bool,
     /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/winamp_frame_stats.log`.
     profile: Option<FrameProfile>,
@@ -176,6 +179,13 @@ impl WinampApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(1, |d| d.as_nanos() as u64);
 
+        let spectro = crate::spectrogram::SpectrogramWindow::new(
+            settings.spectrogram.clone(),
+            Some(Arc::new(analysis::detail::DetailService::new(
+                ctx.spawner.clone(),
+                ctx.files.clone(),
+            ))),
+        );
         let skin = LoadedSkin::default_skin();
         Self {
             def: Arc::new(skin.def.clone()),
@@ -236,6 +246,8 @@ impl WinampApp {
             overviews: ctx.overviews,
             overview: None,
             nav: Nav::default(),
+            spectro,
+            spectro_open: false,
         }
     }
 
@@ -558,10 +570,19 @@ impl WinampApp {
                 }
             }
         }
+        let live = self.spectro_open && self.spectro.live_mode();
+        let mut chunks = Vec::new();
         if let Some(tap) = &mut self.tap {
             while let Some(chunk) = tap.pop() {
                 self.analyzer.push(&chunk);
+                if live {
+                    chunks.push(chunk);
+                }
             }
+        }
+        if live {
+            self.spectro
+                .push_tap(&chunks, engine.stats().format.sample_rate);
         }
         self.position = engine.position();
         if self.position.discontinuity {
@@ -811,6 +832,7 @@ impl WinampApp {
                 self.settings.show_waveform = !self.settings.show_waveform;
                 self.mark_settings();
             }
+            Key::S if !mods.command => self.spectro_open = !self.spectro_open,
             Key::Delete | Key::Backspace => {
                 if self.playlist.remove_selected() > 0 {
                     self.mark_playlist();
@@ -1487,6 +1509,9 @@ impl WinampApp {
                 if ui.button(label).clicked() {
                     actions.push(Action::ToggleScale);
                 }
+                if ui.button("Spectrogram (S)").clicked() {
+                    actions.push(Action::ToggleSpectrogram);
+                }
             });
 
             // "selected/total" time, Winamp style.
@@ -1608,6 +1633,7 @@ impl WinampApp {
                 self.settings.vis = self.settings.vis.cycle();
                 self.mark_settings();
             }
+            Action::ToggleSpectrogram => self.spectro_open = !self.spectro_open,
             Action::ToggleScale => {
                 self.settings.scale = if self.settings.scale >= 2 { 1 } else { 2 };
                 self.mark_settings();
@@ -1685,6 +1711,7 @@ enum Action {
     ToggleRemaining,
     CycleVis,
     ToggleScale,
+    ToggleSpectrogram,
     Rows(i32),
     SavePreset,
     DeletePreset(String),
@@ -1912,6 +1939,7 @@ impl WinampApp {
         if self.help {
             crate::help::show(&ctx, &mut self.help);
         }
+        self.spectrogram_window(&ctx);
         if !self.first_frame_done {
             self.first_frame_done = true;
             let ms = self.startup.process_start.elapsed().as_secs_f64() * 1e3;
@@ -1922,6 +1950,54 @@ impl WinampApp {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         }
+    }
+
+    /// Feeds and declares the spectrogram window while it is open, and applies its actions.
+    fn spectrogram_window(&mut self, ctx: &egui::Context) {
+        for action in self.spectro.take_actions() {
+            match action {
+                crate::spectrogram::Action::Seek(t) => self.with_engine(|e| e.seek(t)),
+                crate::spectrogram::Action::Close => self.spectro_open = false,
+                crate::spectrogram::Action::Settings(s) => {
+                    self.settings.spectrogram = s;
+                    self.mark_settings();
+                }
+            }
+        }
+        if !self.spectro_open {
+            return;
+        }
+        let playing = self.position.state != PlayState::Stopped;
+        let info = self.now_playing.as_ref().filter(|_| playing);
+        let title = info.map_or(String::new(), |i| {
+            if i.artist.is_empty() {
+                i.title.clone()
+            } else {
+                format!("{} – {}", i.artist, i.title)
+            }
+        });
+        let overview = self.overview.clone();
+        let feed = crate::spectrogram::Feed {
+            title,
+            track: self
+                .track_refs
+                .get(&self.position.track)
+                .cloned()
+                .filter(|_| playing),
+            duration: info.and_then(|i| i.duration_secs).or(overview
+                .as_ref()
+                .filter(|o| o.complete)
+                .map(|o| o.seconds())),
+            overview,
+            now: self.position.seconds(),
+            playing: self.position.state == PlayState::Playing,
+            fullscreen: self.fullscreen.is_some(),
+            lossless: info.is_some_and(|i| i.lossless),
+        };
+        if self.spectro.feed(feed) {
+            ctx.request_repaint_of(crate::spectrogram::viewport_id());
+        }
+        self.spectro.show(ctx);
     }
 
     fn exit(&mut self) {

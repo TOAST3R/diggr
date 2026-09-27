@@ -20,8 +20,8 @@ Cargo workspace, edition 2024, **Rust ≥ 1.95** (egui 0.36); built and tested w
 |---|---|---|---|
 | `crates/platform` | `platform` | seam traits `AudioSink`, `Spawner`, `FileSource`; native impls (cpal); `testing::ManualSink` | — |
 | `crates/audio` | `audio` | decode (symphonia) → rubato → lock-free ring → real-time renderer (EQ, tap, volume) → device; playback clock; `Engine` API | platform |
-| `crates/analysis` | `analysis` | streaming analyzer: onsets, tempo/beat grid, sections, tension → immutable `SongScore` snapshots; cache; eval tools | audio, platform |
-| `crates/ui` | `ui` | egui/eframe (wgpu) player: skin, main/EQ/playlist, settings, fullscreen host | audio, analysis, platform |
+| `crates/analysis` | `analysis` | streaming analyzer: onsets, tempo/beat grid, sections, tension → immutable `SongScore` snapshots; cache; eval tools; track overview (waveform + spectral + cutoff) and spectrogram detail worker | audio, platform |
+| `crates/ui` | `ui` | egui/eframe (wgpu) player: skin, main/EQ/playlist, waveform, spectrogram window, settings, fullscreen host | audio, analysis, platform |
 | `crates/visuals` | `visuals` | signal bus, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, fader deck | audio, analysis, ui |
 | `apps/native` | `winamp-native` | desktop binary: GUI (default), `--tui`, `--bench [--analysis]`, `--click-test`, `--startup-time` | all |
 
@@ -34,7 +34,7 @@ director rules are in `crates/visuals/assets/`.
 Linux needs `build-essential pkg-config libasound2-dev`. macOS needs the Xcode CLT.
 
 ```sh
-cargo test --workspace                                   # ~219 tests; no audio device, display or GPU needed
+cargo test --workspace                                   # ~266 tests; no audio device, display or GPU needed
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
 cargo fmt --all --check                                  # must be clean
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core must stay web-portable

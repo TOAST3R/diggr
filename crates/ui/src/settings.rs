@@ -71,6 +71,8 @@ pub struct Settings {
     pub time_remaining: bool,
     pub vis: VisMode,
     pub av_offset_ms: i64,
+    /// The spectrogram window's mode, channel, dB range and size.
+    pub spectrogram: crate::spectrogram::SpectroSettings,
 }
 
 impl Default for Settings {
@@ -91,6 +93,7 @@ impl Default for Settings {
             time_remaining: false,
             vis: VisMode::Spectrum,
             av_offset_ms: 0,
+            spectrogram: Default::default(),
         }
     }
 }
@@ -103,6 +106,7 @@ impl Settings {
         self.volume = self.volume.clamp(0.0, 1.0);
         self.balance = self.balance.clamp(-1.0, 1.0);
         self.eq = self.eq.clamped();
+        self.spectrogram = self.spectrogram.sanitized();
         self
     }
 }
