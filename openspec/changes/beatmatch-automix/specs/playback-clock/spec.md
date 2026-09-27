@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Monotonic and track-aware
-The clock SHALL be monotonic within a track and SHALL switch track id at the exact audible frame of a gapless boundary. During a mix it SHALL report the outgoing track until the handover downbeat is audible, then the incoming track in that track's own time, accounting for its tempo ratio.
+The clock SHALL be monotonic within a track and SHALL switch track id at the exact audible frame of a gapless boundary. During a mix it SHALL report the outgoing track until the handover downbeat is audible, then the incoming track in that track's own time, advancing at the incoming track's playback speed.
 
 #### Scenario: Gapless boundary
 - **WHEN** playback crosses from track N into N+1 gaplessly
@@ -13,4 +13,8 @@ The clock SHALL be monotonic within a track and SHALL switch track id at the exa
 
 #### Scenario: Handover during a mix
 - **WHEN** a mix reaches its handover downbeat
-- **THEN** the clock switches to the incoming track at the position of that downbeat in the incoming track, and its seconds advance at the incoming track's own tempo
+- **THEN** the clock switches to the incoming track at the position of that downbeat in the incoming track
+
+#### Scenario: Track time at a changed tempo
+- **WHEN** the incoming track plays at ratio 0.95 after the handover
+- **THEN** its reported position advances by 0.95 s per second heard, so its beats stay aligned with what is audible
