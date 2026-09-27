@@ -6,6 +6,7 @@ pub mod cache;
 pub mod eval;
 pub mod frontend;
 pub mod onsets;
+pub mod overview;
 pub mod region;
 pub mod rhythm;
 pub mod score;

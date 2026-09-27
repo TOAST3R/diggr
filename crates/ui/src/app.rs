@@ -42,6 +42,8 @@ pub struct AppContext {
     pub analysis: Option<analysis::AnalysisService>,
     /// Where annotation mode saves its JSON files.
     pub annotations_dir: Option<PathBuf>,
+    /// Native-rate track overviews for the waveform section.
+    pub overviews: Option<analysis::overview::OverviewService>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +100,12 @@ pub struct WinampApp {
     last_frame: Instant,
     startup: Startup,
     first_frame_done: bool,
+    /// The shortcuts help panel (`H` / `F1`).
+    help: bool,
+    overviews: Option<analysis::overview::OverviewService>,
+    /// The audible track's overview, as far as it is built.
+    overview: Option<Arc<analysis::overview::Overview>>,
+    nav: Nav,
     /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/winamp_frame_stats.log`.
     profile: Option<FrameProfile>,
@@ -224,6 +232,10 @@ impl WinampApp {
             strip: false,
             annotating: None,
             annotations_dir: ctx.annotations_dir,
+            help: false,
+            overviews: ctx.overviews,
+            overview: None,
+            nav: Nav::default(),
         }
     }
 
@@ -231,6 +243,9 @@ impl WinampApp {
     pub fn window_size(settings: &Settings, skin: &LoadedSkin) -> egui::Vec2 {
         let d = &skin.def;
         let mut h = d.main_size.1 as f32;
+        if settings.show_waveform {
+            h += crate::waveform::HEIGHT as f32;
+        }
         if settings.show_eq {
             h += d.eq_size.1 as f32;
         }
@@ -360,6 +375,104 @@ impl WinampApp {
         }
     }
 
+    // ---- structure navigation ----------------------------------------------------------
+
+    /// Jumps to `target(score, now)`, on the next downbeat when the beat grid allows.
+    fn structure_jump(&mut self, target: fn(&analysis::SongScore, f64) -> Option<f64>) {
+        let Some(score) = self.score.clone() else {
+            self.message = Some(("Not analyzed yet".into(), Instant::now()));
+            return;
+        };
+        let now = self.position.seconds();
+        let Some(t) = target(&score, now) else { return };
+        let track = self.position.track;
+        if self.nav.loop_region.is_some() {
+            self.with_engine(|e| e.set_loop(track, None));
+        }
+        let at = crate::navigation::downbeats_after(&score, now, crate::navigation::CANDIDATES);
+        if crate::navigation::grid_ok(&score, now) && !at.is_empty() {
+            self.nav.jump_target = Some(t);
+            self.with_engine(|e| e.seek_at(track, at, t));
+        } else {
+            self.with_engine(|e| e.seek(t));
+        }
+    }
+
+    fn set_loop(&mut self, region: Option<(f64, f64)>) {
+        let track = self.position.track;
+        self.with_engine(|e| e.set_loop(track, region));
+    }
+
+    /// `L`: loop the current section (at most 32 bars), or stop looping.
+    fn section_loop(&mut self) {
+        if self.nav.loop_region.is_some() {
+            self.set_loop(None);
+            return;
+        }
+        let now = self.position.seconds();
+        match self
+            .score
+            .as_deref()
+            .and_then(|s| crate::navigation::section_loop(s, now))
+        {
+            Some(region) => self.set_loop(Some(region)),
+            None => self.message = Some(("Not analyzed yet".into(), Instant::now())),
+        }
+    }
+
+    /// `Shift+L`: loop 4, 8, 16 bars from the current downbeat (each press doubles).
+    fn bar_loop(&mut self) {
+        let bars = crate::navigation::next_loop_bars(self.nav.loop_bars);
+        let now = self.position.seconds();
+        match self
+            .score
+            .as_deref()
+            .and_then(|s| crate::navigation::bar_loop(s, now, bars))
+        {
+            Some(region) => {
+                self.nav.loop_bars = Some(bars);
+                self.set_loop(Some(region));
+            }
+            None => self.message = Some(("Not analyzed yet".into(), Instant::now())),
+        }
+    }
+
+    fn waveform_section(&mut self, ui: &mut Ui, rect: Rect) {
+        let drops = self
+            .score
+            .as_deref()
+            .map(crate::navigation::rise_marks)
+            .unwrap_or_default();
+        let overview = self.overview.clone();
+        let duration = self
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.duration_secs)
+            .or(overview
+                .as_ref()
+                .filter(|o| o.complete)
+                .map(|o| o.seconds()));
+        let playing = self.position.state != PlayState::Stopped;
+        let view = crate::waveform::View {
+            overview: overview.as_deref().filter(|_| playing),
+            score: self.score.as_deref(),
+            now: self.position.seconds(),
+            duration: duration.filter(|_| playing),
+            zoom_bars: self.settings.waveform_bars,
+            loop_region: self.nav.loop_region,
+            pending_jump: self.nav.pending_jump,
+            drops: &drops,
+        };
+        match crate::waveform::draw(ui, rect, self.settings.scale as f32, &view) {
+            Some(crate::waveform::Action::Seek(t)) => self.with_engine(|e| e.seek(t)),
+            Some(crate::waveform::Action::Zoom(bars)) => {
+                self.settings.waveform_bars = bars;
+                self.mark_settings();
+            }
+            None => {}
+        }
+    }
+
     fn update_audio(&mut self, dt: f32) {
         self.poll_engine_start();
         if self.queue_dirty && self.engine().is_some() {
@@ -417,9 +530,30 @@ impl WinampApp {
                     self.track_refs.retain(|&k, _| k + 256 > id);
                     self.track_refs.insert(id, track);
                 }
+                EngineEvent::JumpScheduled { at_secs, .. } => self.nav.pending_jump = Some(at_secs),
+                EngineEvent::JumpMissed { .. } => {
+                    // Too late to quantize: jump now rather than not at all.
+                    self.nav.pending_jump = None;
+                    if let Some(t) = self.nav.jump_target.take() {
+                        engine.seek(t);
+                    }
+                }
+                EngineEvent::LoopChanged { region, .. } => {
+                    self.nav.loop_region = region;
+                    if region.is_none() {
+                        self.nav.loop_bars = None;
+                    }
+                }
+                EngineEvent::LoopRejected { .. } => {
+                    self.nav.loop_bars = None;
+                    self.message = Some(("Too late to loop there".into(), Instant::now()));
+                }
                 EngineEvent::PreWarm { track, .. } => {
                     if let Some(a) = &self.analysis {
                         a.prewarm(&track);
+                    }
+                    if let Some(o) = &self.overviews {
+                        o.request(&track);
                     }
                 }
             }
@@ -443,6 +577,25 @@ impl WinampApp {
         {
             a.playhead(track, self.position.seconds());
             self.score = a.score(track);
+        }
+        // The overview is built only once the analyzer has its first results, so it never
+        // competes with playback start or the playhead analysis.
+        self.overview = None;
+        if self.position.state != PlayState::Stopped
+            && let (Some(ov), Some(track)) =
+                (&self.overviews, self.track_refs.get(&self.position.track))
+        {
+            if self.score.is_some() {
+                ov.request(track);
+            }
+            self.overview = ov.get(track);
+        }
+        // A scheduled jump has happened once its landing point is audible.
+        if let Some(at) = self.nav.pending_jump
+            && (self.position.discontinuity || self.position.seconds() >= at + 0.25)
+        {
+            self.nav.pending_jump = None;
+            self.nav.jump_target = None;
         }
         if self.position.state != PlayState::Stopped
             && let Some(&id) = engine.current_index().and_then(|q| queue.get(q))
@@ -531,15 +684,31 @@ impl WinampApp {
                 .events
                 .iter()
                 .filter_map(|e| match e {
+                    // Brackets by position (right of P), so they work on any keyboard layout.
                     egui::Event::Key {
-                        key, pressed: true, ..
-                    } => Some(*key),
+                        key,
+                        physical_key,
+                        pressed: true,
+                        ..
+                    } => Some(match physical_key {
+                        Some(k @ (Key::OpenBracket | Key::CloseBracket)) => *k,
+                        _ => *key,
+                    }),
                     _ => None,
                 })
                 .collect();
             (keys, i.modifiers)
         });
         for key in pressed {
+            // The help panel takes its own close keys first (Esc must not leave fullscreen).
+            if matches!(key, Key::H | Key::F1) && !mods.command {
+                self.help = !self.help;
+                continue;
+            }
+            if self.help && key == Key::Escape {
+                self.help = false;
+                continue;
+            }
             if !self.transport_key(ctx, key, mods) {
                 if self.fullscreen.is_some() {
                     if !self.host_key(key) {
@@ -626,6 +795,11 @@ impl WinampApp {
             Key::ArrowDown => self.set_volume(self.settings.volume - 0.05),
             Key::F => self.toggle_fullscreen(ctx),
             Key::Escape if self.fullscreen.is_some() => self.toggle_fullscreen(ctx),
+            Key::CloseBracket if mods.shift => self.structure_jump(crate::navigation::next_rise),
+            Key::CloseBracket => self.structure_jump(crate::navigation::next_section),
+            Key::OpenBracket => self.structure_jump(crate::navigation::previous_section),
+            Key::L if mods.shift => self.bar_loop(),
+            Key::L => self.section_loop(),
             _ => return false,
         }
         true
@@ -633,6 +807,10 @@ impl WinampApp {
 
     fn window_key(&mut self, key: Key, mods: Modifiers) {
         match key {
+            Key::W if !mods.command => {
+                self.settings.show_waveform = !self.settings.show_waveform;
+                self.mark_settings();
+            }
             Key::Delete | Key::Backspace => {
                 if self.playlist.remove_selected() > 0 {
                     self.mark_playlist();
@@ -1555,6 +1733,8 @@ pub fn host_action(key: Key, annotating: bool) -> Option<HostAction> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
     pub playing: bool,
+    /// The waveform section is visible (it scrolls with the playhead).
+    pub waveform: bool,
     pub bars_moving: bool,
     pub engine_starting: bool,
     pub hidden: bool,
@@ -1566,6 +1746,9 @@ pub struct Activity {
 pub fn repaint_after(a: Activity) -> Option<Duration> {
     if a.hidden || a.fullscreen {
         None
+    } else if a.playing && a.waveform {
+        // The waveform scrolls with the playhead: smooth at the display rate.
+        Some(Duration::from_millis(16))
     } else if a.playing || a.bars_moving {
         Some(Duration::from_millis(33))
     } else if a.engine_starting {
@@ -1650,6 +1833,7 @@ impl eframe::App for WinampApp {
         });
         let activity = Activity {
             playing: self.position.state == PlayState::Playing,
+            waveform: self.settings.show_waveform,
             bars_moving: self.analyzer.is_active(),
             engine_starting: matches!(self.engine, EngineSlot::Starting(_)),
             hidden,
@@ -1695,6 +1879,14 @@ impl WinampApp {
             let d = self.skin.def.clone();
             self.main_section(ui, origin);
             let mut y = d.main_size.1 as f32;
+            if self.settings.show_waveform {
+                let rect = Rect::from_min_size(
+                    origin + vec2(0.0, y * scale),
+                    vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
+                );
+                self.waveform_section(ui, rect);
+                y += crate::waveform::HEIGHT as f32;
+            }
             if self.settings.show_eq {
                 self.eq_section(ui, origin + vec2(0.0, y * scale));
                 y += d.eq_size.1 as f32;
@@ -1716,6 +1908,9 @@ impl WinampApp {
                 }
             }
             self.preset_dialog(&ctx);
+        }
+        if self.help {
+            crate::help::show(&ctx, &mut self.help);
         }
         if !self.first_frame_done {
             self.first_frame_done = true;
@@ -1867,6 +2062,18 @@ impl FrameProfile {
     }
 }
 
+/// Structure-navigation state mirrored from engine events.
+#[derive(Debug, Default)]
+struct Nav {
+    /// A quantized jump will land at this time of the current track.
+    pending_jump: Option<f64>,
+    /// Where the pending jump goes (to jump at once if it misses).
+    jump_target: Option<f64>,
+    loop_region: Option<(f64, f64)>,
+    /// Length of the `Shift+L` loop, when that is what's looping.
+    loop_bars: Option<usize>,
+}
+
 // Keep `Rect`/`Pos2` imports used in all cfgs.
 #[allow(dead_code)]
 fn _unused(_: Rect, _: Pos2) {}
@@ -1917,6 +2124,25 @@ mod tests {
             Some(Duration::from_millis(33)),
             "30 Hz while playing"
         );
+        let scrolling = Activity {
+            playing: true,
+            waveform: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            repaint_after(scrolling),
+            Some(Duration::from_millis(16)),
+            "waveform scrolls smoothly"
+        );
+        let paused_waveform = Activity {
+            waveform: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            repaint_after(paused_waveform),
+            None,
+            "no repaint while paused"
+        );
         let falling = Activity {
             bars_moving: true,
             ..Default::default()
@@ -1941,6 +2167,7 @@ mod tests {
             scale: 1,
             show_eq: false,
             show_playlist: false,
+            show_waveform: false,
             ..Default::default()
         };
         assert_eq!(WinampApp::window_size(&s, &skin), vec2(275.0, 116.0));
@@ -1954,5 +2181,10 @@ mod tests {
         );
         s.scale = 2;
         assert_eq!(WinampApp::window_size(&s, &skin), vec2(550.0, 840.0));
+        s.show_waveform = true;
+        assert_eq!(
+            WinampApp::window_size(&s, &skin),
+            vec2(550.0, 840.0 + 116.0)
+        );
     }
 }

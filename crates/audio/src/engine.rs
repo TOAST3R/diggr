@@ -266,6 +266,28 @@ impl Engine {
         });
     }
 
+    /// Jumps within `track` to `target_secs`, sample-accurately at the first of `at_secs`
+    /// (track time, e.g. upcoming downbeats) not yet sent to the device, with a 2 ms
+    /// crossfade and no gap. Reports [`EngineEvent::JumpScheduled`] or
+    /// [`EngineEvent::JumpMissed`].
+    pub fn seek_at(&self, track: TrackId, at_secs: Vec<f64>, target_secs: f64) {
+        if self.control.state() == PlayState::Stopped {
+            return;
+        }
+        let _ = self.commands.send(Command::SeekAt {
+            track,
+            at_secs,
+            target_secs,
+        });
+    }
+
+    /// Loops `[start, end)` seconds of `track` gaplessly (`None` stops looping). The loop ends
+    /// on a seek, stop, or track change. Reports [`EngineEvent::LoopChanged`] or
+    /// [`EngineEvent::LoopRejected`].
+    pub fn set_loop(&self, track: TrackId, region: Option<(f64, f64)>) {
+        let _ = self.commands.send(Command::SetLoop { track, region });
+    }
+
     /// Next queue entry; wraps to the first with [`RepeatMode::All`].
     pub fn next(&mut self) {
         let len = self.queue.len();

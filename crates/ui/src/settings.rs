@@ -57,6 +57,10 @@ pub struct Settings {
     pub window_pos: Option<(f32, f32)>,
     pub show_eq: bool,
     pub show_playlist: bool,
+    /// The waveform section under the main window (`W`).
+    pub show_waveform: bool,
+    /// Bars visible in the waveform's zoomed row.
+    pub waveform_bars: f32,
     /// Visible playlist rows.
     pub playlist_rows: u16,
     pub volume: f32,
@@ -76,6 +80,8 @@ impl Default for Settings {
             window_pos: None,
             show_eq: true,
             show_playlist: true,
+            show_waveform: true,
+            waveform_bars: crate::waveform::DEFAULT_BARS,
             playlist_rows: 10,
             volume: 0.8,
             balance: 0.0,

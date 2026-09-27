@@ -614,3 +614,217 @@ fn repeat_all_wraps_to_the_first_track() {
     let out = rig.pull_audio(1);
     assert_close(&out, &expected[..BUF * 2], "next wraps");
 }
+
+/// Pulls until `frames` frames of audio (from the first audible buffer) are collected,
+/// recording the clock after every buffer.
+fn collect(rig: &mut Rig, first: Vec<f32>, frames: usize) -> (Vec<f32>, Vec<audio::Position>) {
+    let mut out = first;
+    let mut clock = Vec::new();
+    while out.len() < frames * 2 {
+        out.extend(rig.pull_waiting());
+        clock.push(rig.engine.position());
+    }
+    out.truncate(frames * 2);
+    (out, clock)
+}
+
+fn wait_event(rig: &mut Rig, f: impl Fn(&EngineEvent) -> bool) -> EngineEvent {
+    rig.wait_for(|e| e.poll_events().into_iter().find(|ev| f(ev)))
+}
+
+/// Largest jump between consecutive samples of one channel: a click shows up as a big step.
+fn max_step(samples: &[f32]) -> f32 {
+    samples
+        .as_chunks::<2>()
+        .0
+        .windows(2)
+        .map(|w| (w[1][0] - w[0][0]).abs().max((w[1][1] - w[0][1]).abs()))
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn scheduled_jump_splices_at_the_exact_frame() {
+    let dir = temp_dir("seek-at");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let first = rig.pull_audio(1);
+    let track = rig.engine.position().track;
+    // Candidates: one already sent (0.005 s), then 1.0 s. Jump to 5.0 s.
+    rig.engine.seek_at(track, vec![0.005, 1.0], 5.0);
+    let ev = wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::JumpScheduled { .. } | EngineEvent::JumpMissed { .. }
+        )
+    });
+    assert_eq!(
+        ev,
+        EngineEvent::JumpScheduled {
+            track,
+            at_secs: 1.0
+        }
+    );
+    let (out, clock) = collect(&mut rig, first, 48_000 + 8_192);
+    let xf = 96;
+    assert_close(
+        &out[..48_000 * 2],
+        &expected(0, 48_000),
+        "before the splice",
+    );
+    assert_close(
+        &out[(48_000 + xf) * 2..],
+        &expected(240_000 + xf as u64, 8_192 - xf),
+        "after the splice",
+    );
+    assert!(
+        max_step(&out[(48_000 - 4) * 2..(48_000 + xf + 4) * 2]) < 0.03,
+        "no click at the splice"
+    );
+    assert_eq!(rig.engine.stats().underruns, 0);
+    // The clock follows the jump (no clamp at the old position) and flags it.
+    assert!(
+        clock.iter().any(|p| p.discontinuity),
+        "discontinuity reported"
+    );
+    let last = clock.last().unwrap();
+    assert!(
+        (240_000..=240_000 + 8_192 + 2 * BUF as u64).contains(&last.frame),
+        "clock at {}",
+        last.frame
+    );
+}
+
+#[test]
+fn a_jump_too_late_for_every_point_is_reported() {
+    let dir = temp_dir("seek-at-late");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 96_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    rig.pull_audio(2);
+    let track = rig.engine.position().track;
+    rig.engine.seek_at(track, vec![0.001, 0.002], 1.5);
+    let ev = wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::JumpScheduled { .. } | EngineEvent::JumpMissed { .. }
+        )
+    });
+    assert_eq!(ev, EngineEvent::JumpMissed { track });
+}
+
+#[test]
+fn loop_wraps_gaplessly_and_the_clock_goes_back() {
+    let dir = temp_dir("loop");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let first = rig.pull_audio(1);
+    let track = rig.engine.position().track;
+    rig.engine.set_loop(track, Some((1.0, 1.5)));
+    let ev = wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::LoopChanged { .. } | EngineEvent::LoopRejected { .. }
+        )
+    });
+    assert_eq!(
+        ev,
+        EngineEvent::LoopChanged {
+            track,
+            region: Some((1.0, 1.5))
+        }
+    );
+    // 1.5 s, then the 0.5 s loop twice, then a bit.
+    let len = 24_000;
+    let (out, clock) = collect(&mut rig, first, 72_000 + 2 * len + 4_096);
+    let xf = 96;
+    assert_close(
+        &out[..72_000 * 2],
+        &expected(0, 72_000),
+        "up to the loop end",
+    );
+    for k in 0..2 {
+        let at = 72_000 + k * len;
+        assert_close(
+            &out[(at + xf) * 2..(at + len) * 2],
+            &expected(48_000 + xf as u64, len - xf),
+            "loop body",
+        );
+        assert!(
+            max_step(&out[(at - 4) * 2..(at + xf + 4) * 2]) < 0.03,
+            "no click at wrap {k}"
+        );
+    }
+    assert_eq!(rig.engine.stats().underruns, 0);
+    let last = clock.last().unwrap();
+    assert!(
+        (48_000..72_000).contains(&last.frame),
+        "clock inside the loop: {}",
+        last.frame
+    );
+}
+
+#[test]
+fn a_seek_ends_the_loop() {
+    let dir = temp_dir("loop-seek");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    rig.pull_audio(1);
+    let track = rig.engine.position().track;
+    rig.engine.set_loop(track, Some((2.0, 3.0)));
+    wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::LoopChanged {
+                region: Some(_),
+                ..
+            }
+        )
+    });
+    rig.engine.seek(5.0);
+    let ev = wait_event(&mut rig, |e| matches!(e, EngineEvent::LoopChanged { .. }));
+    assert_eq!(
+        ev,
+        EngineEvent::LoopChanged {
+            track,
+            region: None
+        }
+    );
+}
+
+#[test]
+fn a_track_change_ends_the_loop() {
+    let dir = temp_dir("loop-next");
+    let a = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let b = write_wav(&dir.join("b.wav"), 48_000, 0, 96_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![a, b]);
+    rig.engine.play_index(0);
+    rig.pull_audio(1);
+    let track = rig.engine.position().track;
+    rig.engine.set_loop(track, Some((2.0, 3.0)));
+    wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::LoopChanged {
+                region: Some(_),
+                ..
+            }
+        )
+    });
+    rig.engine.next();
+    let ev = wait_event(&mut rig, |e| matches!(e, EngineEvent::LoopChanged { .. }));
+    assert_eq!(
+        ev,
+        EngineEvent::LoopChanged {
+            track,
+            region: None
+        }
+    );
+}
