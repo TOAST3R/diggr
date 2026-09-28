@@ -24,6 +24,11 @@ use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
 use crate::widgets::{self, Skinned, SliderSprites, color};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod digging;
+#[cfg(not(target_arch = "wasm32"))]
+pub use digging::{DigAction, DigSetup, SendMode};
+
 pub type EngineFactory = Box<dyn FnOnce() -> Result<Engine, String> + Send>;
 
 /// What the host app provides.
@@ -45,6 +50,9 @@ pub struct AppContext {
     pub overviews: Option<analysis::overview::OverviewService>,
     /// Renders a track's visual show to a video (playlist menu "Render show…").
     pub show_renderer: Option<Box<dyn crate::render_job::ShowRenderer>>,
+    /// Digging Discogs pages into crates of previews; `None` turns it off.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub dig: Option<DigSetup>,
 }
 
 #[derive(Clone, Copy)]
@@ -142,6 +150,8 @@ pub struct WinampApp {
     strip: bool,
     annotating: Option<analysis::eval::Annotations>,
     annotations_dir: Option<PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
+    dig: Option<digging::Dig>,
 }
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
@@ -208,6 +218,16 @@ impl WinampApp {
                 ctx.files.clone(),
             ))),
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        let dig = ctx.dig.map(|setup| {
+            digging::Dig::new(
+                setup,
+                ctx.spawner.clone(),
+                ctx.files.clone(),
+                store.as_ref().map(|s| s.dir().to_path_buf()),
+                egui_ctx.clone(),
+            )
+        });
         let skin = LoadedSkin::default_skin();
         Self {
             def: Arc::new(skin.def.clone()),
@@ -276,6 +296,8 @@ impl WinampApp {
             render_job: None,
             render_dialog: None,
             render_looks: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            dig,
         }
     }
 
@@ -733,6 +755,28 @@ impl WinampApp {
     }
 
     /// "Waiting for ‹title› (downloading 40%)" while an entry is armed.
+    /// Digging progress for the status line.
+    fn dig_line(&self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.dig.as_ref().and_then(|d| d.line());
+        #[cfg(target_arch = "wasm32")]
+        None
+    }
+
+    /// Kept, passed and wantlist-pending marks for a playlist row.
+    fn dig_marks(&self, e: &crate::playlist::Entry) -> (bool, bool, bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self
+            .dig
+            .as_ref()
+            .map_or((false, false, false), |d| d.marks(e));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = e;
+            (false, false, false)
+        }
+    }
+
     fn armed_line(&self) -> Option<String> {
         let (c, id) = self.armed?;
         let e = self.crates.get(c)?.get(id)?;
@@ -893,6 +937,18 @@ impl WinampApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        for text in ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Paste(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        }) {
+            self.dig_paste(&text);
+        }
         let (pressed, mods): (Vec<Key>, Modifiers) = ctx.input(|i| {
             let keys = i
                 .events
@@ -995,6 +1051,10 @@ impl WinampApp {
     fn transport_key(&mut self, ctx: &egui::Context, key: Key, mods: Modifiers) -> bool {
         if mods.command {
             return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.dig_key(key) {
+            return true;
         }
         let secs = self.position.seconds();
         match key {
@@ -1232,7 +1292,15 @@ impl WinampApp {
             let number = self.crates.playing().current_index().map_or(0, |i| i + 1);
             let title = match self.now_playing_names() {
                 Some((artist, title, duration)) => {
-                    format::title_line(number, &artist, &title, duration)
+                    let mut line = format::title_line(number, &artist, &title, duration);
+                    let playing = self.crates.playing();
+                    if let Some(o) = playing
+                        .current()
+                        .and_then(|id| playing.get(id)?.origin.as_ref())
+                    {
+                        line += &format::origin_details(o);
+                    }
+                    line
                 }
                 None => engine_status(&self.engine),
             };
@@ -1587,7 +1655,12 @@ impl WinampApp {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
                 }
                 let current = shown.current() == Some(e.id);
-                let (col, dur) = row_look(e, current, &d.colors);
+                let (mut col, dur) = row_look(e, current, &d.colors);
+                let (kept, passed, pending) = self.dig_marks(e);
+                if passed {
+                    let [r, g, b, _] = col.to_array();
+                    col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
+                }
                 let dur_w = clip
                     .text(
                         pos2(rr.right() - 3.0 * scale, rr.center().y),
@@ -1604,7 +1677,13 @@ impl WinampApp {
                 name_clip.text(
                     pos2(rr.left() + 3.0 * scale, rr.center().y),
                     egui::Align2::LEFT_CENTER,
-                    format!("{}. {}", idx + 1, e.display_name()),
+                    format!(
+                        "{}. {}{}{}",
+                        idx + 1,
+                        if kept { "✓ " } else { "" },
+                        e.display_name(),
+                        if pending { " (wantlist pending)" } else { "" }
+                    ),
                     font.clone(),
                     col,
                 );
@@ -1666,6 +1745,8 @@ impl WinampApp {
                                 ui.close();
                             }
                         }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.dig_entry_menu(ui, e, &mut actions);
                     });
                 if resp.drag_started() {
                     self.pl_drag_from = Some(idx);
@@ -1778,6 +1859,10 @@ impl WinampApp {
                 }
                 if ui.button("Spectrogram (S)").clicked() {
                     actions.push(Action::ToggleSpectrogram);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.dig.is_some() && ui.button("Discogs…").clicked() {
+                    actions.push(Action::Dig(DigAction::OpenDialog));
                 }
             });
 
@@ -1966,8 +2051,12 @@ impl WinampApp {
         if self.armed.is_some_and(|(c, _)| c == id) {
             self.armed = None;
         }
-        if let Err(e) = self.crates.delete(id) {
-            self.notify(e);
+        match self.crates.delete(id) {
+            Ok(()) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.dig_crate_deleted(id);
+            }
+            Err(e) => self.notify(e),
         }
     }
 
@@ -1999,6 +2088,8 @@ impl WinampApp {
 
     fn apply(&mut self, a: Action, ctx: &egui::Context) {
         match a {
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::Dig(a) => self.dig_act(self.crates.shown_id(), a),
             Action::Prev => {
                 self.armed = None;
                 self.with_engine(|e| e.previous());
@@ -2177,6 +2268,8 @@ enum Action {
     /// Send an entry (with the rest of the selection, when it is selected) to a crate, or to
     /// a new one.
     SendTo(EntryId, Option<CrateId>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Dig(DigAction),
 }
 
 /// How opened files are used.
@@ -2428,6 +2521,8 @@ impl WinampApp {
         self.last_frame = now;
         self.update_audio(dt);
         self.handle_keys(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dig_update();
 
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -2527,7 +2622,8 @@ impl WinampApp {
             // An armed entry's "Waiting for …" stays up until it plays.
             let line = self
                 .armed_line()
-                .or_else(|| self.message.as_ref().map(|(text, _)| text.clone()));
+                .or_else(|| self.message.as_ref().map(|(text, _)| text.clone()))
+                .or_else(|| self.dig_line());
             if let Some(text) = line {
                 egui::Tooltip::always_open(
                     ctx.clone(),
@@ -2540,6 +2636,8 @@ impl WinampApp {
             self.name_dialog(&ctx);
             self.delete_dialog(&ctx);
             self.render_dialog_ui(&ctx);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dig_dialog_ui(&ctx);
         }
         if self.help {
             crate::help::show(&ctx, &mut self.help);
@@ -2611,6 +2709,10 @@ impl WinampApp {
         }
         self.settings_dirty.get_or_insert_with(Instant::now);
         self.save_now(true);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(e) = self.dig.as_mut().and_then(|d| d.save_memory()) {
+            eprintln!("{e}");
+        }
     }
 }
 
@@ -2935,11 +3037,8 @@ mod headless_tests {
         ))
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ui-app-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("ui-app-{name}"))
     }
 
     struct Rig {
@@ -2947,7 +3046,7 @@ mod headless_tests {
         ctx: egui::Context,
         sink: ManualSink,
         now_ns: u64,
-        dir: PathBuf,
+        dir: platform::testing::TestDir,
         /// Modifier keys held during the next frames.
         mods: Modifiers,
     }
@@ -2955,6 +3054,30 @@ mod headless_tests {
     impl Rig {
         /// `prepare` may fill the config folder before the app starts.
         fn new(name: &str, open: Vec<PathBuf>, prepare: impl FnOnce(&Store)) -> Self {
+            Self::with_dig(name, open, prepare, |_| None)
+        }
+
+        /// `dig` gets the rig's folder and gives the digging setup (fakes), if any.
+        fn with_dig(
+            name: &str,
+            open: Vec<PathBuf>,
+            prepare: impl FnOnce(&Store),
+            dig: impl FnOnce(&Path) -> Option<DigSetup>,
+        ) -> Self {
+            let mut rig = Self::build(name, open, prepare, dig);
+            rig.until(|r| r.app.engine().is_some(), "the engine starts");
+            // Digging starts on the frame after the first.
+            rig.frame(Vec::new());
+            rig
+        }
+
+        /// The app before its first frame.
+        fn build(
+            name: &str,
+            open: Vec<PathBuf>,
+            prepare: impl FnOnce(&Store),
+            dig: impl FnOnce(&Path) -> Option<DigSetup>,
+        ) -> Self {
             let dir = temp(name);
             let store = Store::new(dir.join("config"));
             store
@@ -3000,18 +3123,17 @@ mod headless_tests {
                     annotations_dir: None,
                     overviews: None,
                     show_renderer: None,
+                    dig: dig(&dir),
                 },
             );
-            let mut rig = Rig {
+            Rig {
                 app,
                 ctx,
                 sink,
                 now_ns: 0,
                 dir,
                 mods: Modifiers::NONE,
-            };
-            rig.until(|r| r.app.engine().is_some(), "the engine starts");
-            rig
+            }
         }
 
         fn frame(&mut self, mut events: Vec<Event>) -> egui::FullOutput {
@@ -3159,6 +3281,9 @@ mod headless_tests {
         rect: Rect,
         color: Option<Color32>,
     }
+
+    // Digging, with a fake Discogs, fake previews and a fake browser.
+    mod dig_tests;
 
     fn texts(out: &egui::FullOutput) -> Vec<Text> {
         fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {
@@ -3503,9 +3628,9 @@ mod headless_tests {
         let def = LoadedSkin::default_skin().def;
         assert_eq!(crate_title(&def, "Lowtide Tapes", 200.0), "LOWTIDE TAPES");
         assert_eq!(
-            crate_title(&def, "Canción €5", 200.0),
+            crate_title(&def, "Canción ₩5", 200.0),
             "CANCION 5",
-            "folded, € skipped"
+            "folded, ₩ skipped"
         );
         // 6 px per character, the last one without its gap: 29 px fit five, 28 px four.
         assert_eq!(crate_title(&def, "Keepers", 29.0), "KEEPE");

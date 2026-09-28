@@ -17,6 +17,10 @@ rfd = "0.17.2"
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
 
+# Discogs digging is native only: it runs programs and talks to the network.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dig = { version = "0.1.0", path = "../dig" }
+
 [dev-dependencies]
 hound = "3"
 

@@ -94,11 +94,8 @@ mod tests {
     use super::*;
     use platform::native::NativeFileSource;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("analysis-cache-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("analysis-cache-{name}"))
     }
 
     #[test]
@@ -123,7 +120,8 @@ mod tests {
 
     #[test]
     fn save_load_and_version_mismatch() {
-        let c = ScoreCache::new(tmp("store"));
+        let d = tmp("store");
+        let c = ScoreCache::new(d.path());
         let s = SongScore {
             version: ALGORITHM_VERSION,
             content_hash: 99,

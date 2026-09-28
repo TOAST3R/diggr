@@ -1,0 +1,84 @@
+{
+ "id": 2001,
+ "title": "Currents",
+ "year": 1998,
+ "artists": [
+  {
+   "name": "Ohm (12)",
+   "anv": "",
+   "join": "",
+   "id": 9
+  }
+ ],
+ "labels": [
+  {
+   "name": "Shoreline",
+   "catno": "SO-001"
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "1",
+   "descriptions": [
+    "12\"",
+    "EP"
+   ]
+  }
+ ],
+ "master_id": 0,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Currents",
+   "duration": ""
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "Currents (Nightcraft Remix)",
+   "duration": ""
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Undertow",
+   "duration": ""
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "Undertow (Dub)",
+   "duration": ""
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=CURRENTS001",
+   "title": "Ohm - Currents",
+   "duration": 300,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=CURRENTSnc1",
+   "title": "Ohm - Currents (Nightcraft Remix)",
+   "duration": 400,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=UNDERTOW001",
+   "title": "Ohm - Undertow",
+   "duration": 300,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=UNDERTOWdub",
+   "title": "Ohm - Undertow (Dub)",
+   "duration": 320,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 0,
+ "lowest_price": null
+}

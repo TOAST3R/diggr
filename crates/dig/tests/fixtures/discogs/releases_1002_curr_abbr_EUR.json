@@ -1,0 +1,48 @@
+{
+ "id": 1002,
+ "title": "Glasshouse",
+ "year": 1995,
+ "artists": [
+  {
+   "name": "Nightcraft",
+   "anv": "",
+   "join": "",
+   "id": 4242
+  }
+ ],
+ "labels": [
+  {
+   "name": "Lowtide Tapes",
+   "catno": "LTCD-1",
+   "id": 12345
+  }
+ ],
+ "formats": [
+  {
+   "name": "CD",
+   "qty": "1",
+   "descriptions": [
+    "Album"
+   ]
+  }
+ ],
+ "master_id": 0,
+ "tracklist": [
+  {
+   "position": "1",
+   "type_": "track",
+   "title": "Glasshouse",
+   "duration": ""
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=CDglasshou1",
+   "title": "Nightcraft - Glasshouse (CD)",
+   "duration": 371,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 0,
+ "lowest_price": null
+}

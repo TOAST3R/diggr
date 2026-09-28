@@ -1,0 +1,49 @@
+{
+ "id": 1004,
+ "title": "Tidal",
+ "year": 1996,
+ "artists": [
+  {
+   "name": "Nightcraft",
+   "anv": "",
+   "join": "",
+   "id": 4242
+  }
+ ],
+ "labels": [
+  {
+   "name": "Lowtide Tapes",
+   "catno": "LT-014",
+   "id": 12345
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "1",
+   "descriptions": [
+    "12\"",
+    "EP"
+   ]
+  }
+ ],
+ "master_id": 0,
+ "tracklist": [
+  {
+   "position": "A",
+   "type_": "track",
+   "title": "Tidal",
+   "duration": "6:00"
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=TIDALtidal1",
+   "title": "Nightcraft - Tidal",
+   "duration": 360,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 0,
+ "lowest_price": null
+}

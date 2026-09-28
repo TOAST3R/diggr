@@ -888,11 +888,8 @@ mod tests {
     use analysis::synth::{self, Pattern};
     use platform::native::NativeFileSource;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("show-render-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn temp_dir(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("show-render-{name}"))
     }
 
     /// Eight bars of groove into eight of drop at 128 BPM (30 s), as a stereo WAV.

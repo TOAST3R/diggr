@@ -1,0 +1,29 @@
+{
+ "pagination": {
+  "page": 2,
+  "pages": 3,
+  "per_page": 100,
+  "items": 6
+ },
+ "releases": [
+  {
+   "id": 1004,
+   "status": "Accepted",
+   "format": "12\"",
+   "catno": "LT-014",
+   "artist": "Nightcraft",
+   "title": "Tidal",
+   "year": 1996,
+   "resource_url": "https://api.discogs.com/releases/1004"
+  },
+  {
+   "id": 1005,
+   "status": "Accepted",
+   "catno": "LT-015",
+   "artist": "Nightcraft",
+   "title": "Unknown Format",
+   "year": 1996,
+   "resource_url": "https://api.discogs.com/releases/1005"
+  }
+ ]
+}

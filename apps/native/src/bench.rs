@@ -62,16 +62,14 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
     );
     engine.set_volume(volume);
     engine.set_queue(files.clone());
+    // A fresh cache, so everything really gets analyzed during the run; deleted afterwards.
+    let cache = with_analysis.then(|| platform::testing::TestDir::new("winamp-bench-cache"));
     let load = Load {
-        svc: with_analysis.then(|| {
-            // A fresh cache, so everything really gets analyzed during the run.
-            let dir =
-                std::env::temp_dir().join(format!("winamp-bench-cache-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+        svc: cache.as_ref().map(|dir| {
             AnalysisService::new(
                 Arc::new(NativeSpawner),
                 Arc::new(NativeFileSource),
-                Some(analysis::cache::ScoreCache::new(dir)),
+                Some(analysis::cache::ScoreCache::new(dir.path())),
             )
         }),
         files: files.clone(),

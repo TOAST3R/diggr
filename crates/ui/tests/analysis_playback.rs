@@ -32,9 +32,7 @@ fn write(dir: &std::path::Path, name: &str, bpm: f64) -> TrackRef {
 
 #[test]
 fn playback_has_no_underruns_while_two_tracks_are_analyzed() {
-    let dir = std::env::temp_dir().join(format!("ui-analysis-playback-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = platform::testing::TestDir::new("ui-analysis-playback");
     let current = write(&dir, "current.wav", 126.0);
     let next = write(&dir, "next.wav", 128.0);
 

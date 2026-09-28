@@ -1,0 +1,20 @@
+{
+ "pagination": {
+  "page": 3,
+  "pages": 3,
+  "per_page": 100,
+  "items": 6
+ },
+ "releases": [
+  {
+   "id": 1006,
+   "status": "Accepted",
+   "format": "7\", Single",
+   "catno": "LT-016",
+   "artist": "Nightcraft",
+   "title": "Last Light",
+   "year": 1997,
+   "resource_url": "https://api.discogs.com/releases/1006"
+  }
+ ]
+}

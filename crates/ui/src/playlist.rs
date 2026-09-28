@@ -60,6 +60,35 @@ pub struct Origin {
     pub position: String,
     /// The clip the audio comes from, e.g. a video id.
     pub clip: Option<String>,
+    /// Copies for sale when the record was last looked up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_sale: Option<ForSale>,
+}
+
+/// A marketplace snapshot: how many copies are for sale, and the cheapest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForSale {
+    pub count: u32,
+    /// The lowest price in hundredths of `currency` (yen too, so every currency is alike).
+    pub lowest_cents: Option<u64>,
+    /// ISO code, e.g. "EUR".
+    pub currency: String,
+    /// Seconds since the Unix epoch.
+    pub fetched_at: u64,
+}
+
+/// An entry to add in place of another (see [`Playlist::replace`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewEntry {
+    pub artist: String,
+    pub title: String,
+    pub source: Option<String>,
+    pub origin: Option<Origin>,
+    /// A duration known before the file is read.
+    pub duration: Option<f64>,
+    /// The waiting note ("queued").
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -308,6 +337,60 @@ impl Playlist {
         e.track = track;
         e.status = EntryStatus::Pending;
         true
+    }
+
+    /// Replaces an entry, at its place, by new waiting entries (a listed record by its clips);
+    /// with none it is removed. The current entry, the selection and the anchor move to the
+    /// first new entry. Returns the new ids.
+    pub fn replace(&mut self, id: EntryId, new: Vec<NewEntry>) -> Vec<EntryId> {
+        let Some(at) = self.index_of(id) else {
+            return Vec::new();
+        };
+        let ids: Vec<EntryId> = new.iter().map(|_| self.alloc_id()).collect();
+        let entries = new.into_iter().zip(&ids).map(|(n, &nid)| Entry {
+            id: nid,
+            track: TrackRef::new(""),
+            source: n.source,
+            origin: n.origin,
+            title: n.title,
+            artist: n.artist,
+            duration: n.duration,
+            status: EntryStatus::Waiting(n.status),
+        });
+        self.entries.splice(at..=at, entries);
+        let first = ids.first().copied();
+        if self.current == Some(id) {
+            self.current = first;
+        }
+        if self.selected.remove(&id)
+            && let Some(f) = first
+        {
+            self.selected.insert(f);
+        }
+        if self.anchor == Some(id) {
+            self.anchor = first;
+        }
+        ids
+    }
+
+    /// Removes one entry (the current one may be it).
+    pub fn remove(&mut self, id: EntryId) -> bool {
+        let found = self.index_of(id).is_some();
+        self.replace(id, Vec::new());
+        found
+    }
+
+    /// An entry whose audio went away (its preview was deleted from the cache) waits again.
+    pub fn set_waiting(&mut self, id: EntryId, text: impl Into<String>) {
+        if let Some(e) = self.entry_mut(id) {
+            e.track = TrackRef::new("");
+            e.status = EntryStatus::Waiting(text.into());
+        }
+    }
+
+    /// Every entry, for updates that touch many (marketplace numbers of a release).
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut Entry> {
+        self.entries.iter_mut()
     }
 
     /// The entry will never have audio; it stays listed, dimmed, with `reason`.
@@ -786,6 +869,66 @@ mod tests {
             r.entries()[2].status,
             EntryStatus::Unavailable("no clip".into())
         );
+    }
+
+    #[test]
+    fn a_listed_record_is_replaced_in_place_by_its_clips() {
+        let mut p = pl(2);
+        let listed = p.add_waiting("Nightcraft", "Glasshouse EP", None, None, "listed");
+        p.add([TrackRef::new("/m/after.mp3")]);
+        p.set_current(Some(listed));
+        p.click(2, ClickMods::default());
+        let clip = |t: &str| NewEntry {
+            artist: "Nightcraft".into(),
+            title: t.into(),
+            source: Some(format!("https://www.youtube.com/watch?v={t:x<11}")),
+            origin: None,
+            duration: Some(300.0),
+            status: "queued".into(),
+        };
+        let ids = p.replace(listed, vec![clip("a"), clip("b")]);
+        let titles: Vec<String> = p.entries().iter().map(|e| e.title.clone()).collect();
+        assert_eq!(titles, ["0", "1", "a", "b", "after"]);
+        assert_eq!(
+            p.current(),
+            Some(ids[0]),
+            "the current entry moves to the first clip"
+        );
+        assert_eq!(p.selected_ids(), [ids[0]]);
+        assert_eq!(
+            p.get(ids[1]).unwrap().status,
+            EntryStatus::Waiting("queued".into())
+        );
+        assert_eq!(p.get(ids[1]).unwrap().duration, Some(300.0));
+        // A record with nothing to add leaves the crate.
+        let gone = p.add_waiting("", "CD only", None, None, "listed");
+        assert!(p.replace(gone, Vec::new()).is_empty());
+        assert!(p.get(gone).is_none());
+        assert!(p.remove(ids[1]));
+        assert_eq!(p.len(), 4);
+        // Audio that went away: waiting again.
+        p.set_audio(ids[0], TrackRef::new("/cache/previews/a.m4a"));
+        p.set_waiting(ids[0], "queued");
+        assert_eq!(
+            p.get(ids[0]).unwrap().status,
+            EntryStatus::Waiting("queued".into())
+        );
+        assert!(p.get(ids[0]).unwrap().track.0.is_empty());
+    }
+
+    #[test]
+    fn a_for_sale_snapshot_is_optional_in_saved_crates() {
+        let mut o = origin(1, "x");
+        let text = ron::to_string(&o).unwrap();
+        assert!(!text.contains("for_sale"), "left out when unknown");
+        o.for_sale = Some(ForSale {
+            count: 6,
+            lowest_cents: Some(900),
+            currency: "EUR".into(),
+            fetched_at: 1_790_000_000,
+        });
+        let back: Origin = ron::from_str(&ron::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
     }
 
     #[test]

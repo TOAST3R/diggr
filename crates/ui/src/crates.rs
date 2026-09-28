@@ -370,6 +370,21 @@ impl Crates {
         self.loaded.get_mut(&id)
     }
 
+    /// The crates read so far (in no particular order).
+    pub fn loaded_ids(&self) -> Vec<CrateId> {
+        self.loaded.keys().copied().collect()
+    }
+
+    /// A crate by name, ignoring case.
+    pub fn find(&self, name: &str) -> Option<CrateId> {
+        let lower = name.trim().to_lowercase();
+        self.index
+            .crates
+            .iter()
+            .find(|c| c.name.to_lowercase() == lower)
+            .map(|c| c.id)
+    }
+
     // ---- create, rename, delete ------------------------------------------------------------
 
     /// Checks a crate name: 1 to 40 characters, unique ignoring case (`except` is the crate
@@ -620,10 +635,8 @@ mod tests {
     use super::*;
     use crate::playlist::Origin;
 
-    fn config(name: &str) -> Store {
-        let d = std::env::temp_dir().join(format!("ui-crates-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        Store::new(d)
+    fn config(name: &str) -> crate::settings::TestStore {
+        crate::settings::TestStore::new(&format!("ui-crates-{name}"))
     }
 
     fn tracks(names: &[&str]) -> Vec<TrackRef> {
@@ -642,7 +655,8 @@ mod tests {
 
     #[test]
     fn a_fresh_install_has_an_empty_playlist_crate() {
-        let c = Crates::open(&config("fresh"));
+        let cfg = config("fresh");
+        let c = Crates::open(&cfg);
         assert_eq!(c.list().len(), 1);
         assert_eq!(c.name(PLAYLIST), "Playlist");
         assert_eq!((c.shown_id(), c.playing_id()), (PLAYLIST, PLAYLIST));
@@ -651,7 +665,8 @@ mod tests {
 
     #[test]
     fn create_rename_delete_follow_the_name_rules() {
-        let mut c = Crates::open(&config("names"));
+        let cfg = config("names");
+        let mut c = Crates::open(&cfg);
         let keepers = c.create("Keepers").unwrap();
         assert_eq!(
             c.create("keepers").unwrap_err(),

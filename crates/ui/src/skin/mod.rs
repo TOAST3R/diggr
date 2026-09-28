@@ -370,7 +370,9 @@ mod tests {
         assert_eq!(def.glyph('a'), def.glyph('A'));
         assert_eq!(def.glyph('ñ'), def.glyph('N'));
         assert_eq!(def.glyph('é'), def.glyph('E'));
-        assert!(def.glyph('€').is_none());
+        assert!(def.glyph('€').is_some(), "for-sale prices");
+        assert!(def.glyph('·').is_some());
+        assert!(def.glyph('₩').is_none());
     }
 
     #[test]

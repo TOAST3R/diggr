@@ -17,10 +17,8 @@ fn signal(frame: u64) -> (f32, f32) {
     (((t * 0.0123).sin() * 0.4), ((t * 0.0071).cos() * 0.3))
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("audio-engine-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> platform::testing::TestDir {
+    platform::testing::TestDir::new(&format!("audio-engine-{name}"))
 }
 
 /// Writes frames `[from, to)` of `signal` as a 32-bit float WAV.

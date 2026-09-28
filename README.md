@@ -156,11 +156,52 @@ playlist).
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
 | `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
+| `Y` | keep the playing track (again: undo) | | `Cmd+V` | paste a Discogs page into the crate on screen |
+| `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
 **Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys,
-including the section jumps and loops, keep working in fullscreen.
+including the section jumps and loops, and `Y`, `N` and `I`, keep working in fullscreen.
+
+### Digging Discogs
+
+Paste a Discogs address (Cmd+V, anywhere in the player) and the page's tracks go into the crate
+on screen as previews. They're the clips the page links to, fetched with yt-dlp a few tracks
+ahead of what plays. Other pasted text is ignored.
+
+- **Pages:** a label, an artist (their own and remix credits, oldest first), a release, a
+  master, a user's wantlist, or a list. Addresses with or without a language prefix, the name
+  part, a query or a fragment all work. Any other Discogs page shows which ones do.
+- **Entries appear at once:** each listed record waits, dimmed, until its details arrive
+  (records near the selected or playing entry are fetched first). It then becomes one entry per
+  clip, matched to its tracklist, or "no clip". A send that's still going when you quit resumes
+  when you next show or play its crate. The main window shows the progress
+  ("12 of 250 releases").
+- **Previews:** the playing entry and the next 3 download two at a time, with progress where
+  the duration goes. While stopped, it's the current entry of the crate on screen and the next
+  3. Each downloaded preview is analyzed and its waveform built before it plays, so section
+  jumps and loops work from its first second.
+- **Verdicts on the playing track:** `Y` keeps it. It's copied to the **Keepers** crate, marked
+  ✓ wherever it appears, and its release is added to your Discogs wantlist (with a token).
+  Pressing `Y` again undoes this, and the release comes off the wantlist only if the app put it
+  there. `N` passes it: it's dimmed, the next track starts, and later sends leave it out.
+  `I` opens the release's for-sale page in your browser. A Discogs entry's title line shows its
+  side, catalog number, year and what's for sale (`· A1 · LT-012 · 1994 · 6 for sale from
+  €9.00`). The entry menu (right-click) has Keep, Pass (or Undo pass) and Open for-sale page.
+- **Setup (OPT ▸ Discogs…):**
+  - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
+    instead of 60).
+  - For the wantlist and the full rate, paste a personal access token (discogs.com ▸
+    Settings ▸ Developers). It's checked before it's saved, is readable only by you, and is
+    shown only by its last 4 characters.
+  - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp): `brew install yt-dlp` (or your
+    package manager). The dialog shows the version found, and can take a path if it isn't on
+    the `PATH`. Until it's found, entries say "needs yt-dlp". If clips keep failing, try
+    `yt-dlp -U`.
+  - The dialog also sets the default filters for every send (vinyl only, skip what you've
+    passed) and the preview cache size (2 GB by default; the least recently played go first).
+- Previews are for listening while you dig. They stay in the cache and are never exported.
 
 ### Waveform and structure navigation
 
@@ -454,8 +495,8 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
-| config (settings, presets, `crates/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -465,6 +506,13 @@ that can't be read is reported once and left as it is; a damaged `index.ron` is 
 crate files. The single `playlist.ron` of earlier versions is read once, on the first launch
 with crates, to create the Playlist crate, and is then left untouched as a backup (the previous
 version still opens it); the Playlist crate is now the one that counts.
+
+Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
+yt-dlp path, the Keepers crate), `token` (readable only by you), `memory.ron` (kept and passed
+tracks, and wantlist changes still to be sent) and `jobs.ron` (sends still in progress). In the
+cache, `discogs/` keeps API responses: record details for good, listings for a day, and
+for-sale numbers refreshed once a day when their track plays. `previews/` holds the downloaded
+clips.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -480,7 +528,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 335 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 420 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -488,6 +536,10 @@ cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays 
 
 Run a single test file or test with `cargo test -p audio --test engine` or
 `cargo test -p audio gapless`.
+
+Tests write their files under `<temp>/winamp_rust-tests/` and delete them when they finish.
+Anything a background worker writes late, or a killed run leaves, is deleted by a later run
+once it's an hour old.
 
 The test fixtures in `crates/audio/tests/fixtures/` were generated with ffmpeg (2 s, 440 Hz, tagged
 `M83 / Midnight_City`). You only need ffmpeg if you want to regenerate them.
@@ -525,6 +577,34 @@ What's covered:
     alone, starting a track re-targets next/previous, an armed entry is audible within 100 ms
     of its audio arriving, Eject replaces only the Playlist crate, dimmed rows, the title bar's
     click (crate menu) versus drag (move), and the crate and entry menus.
+- **`crates/dig`**: the Discogs client against recorded JSON (`crates/dig/tests/fixtures/`),
+  covering:
+  - request headers, and a rate limit that never exceeds 60 requests in any minute;
+  - backing off on 429;
+  - the disk cache;
+  - every supported address form;
+  - listings for each page kind;
+  - clip extraction and matching;
+  - focus-first expansion;
+  - jobs resumed after a restart;
+  - offline and back;
+  - token checks and wantlist changes.
+
+  The preview scheduler runs against a fake yt-dlp: the horizon, 2 slots, the armed entry
+  first, cancelling, retries, the timeout, yt-dlp appearing later, and the cache limit. Also
+  covered: the dig memory, and preparing a preview's score and overview behind the gate.
+- **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
+  - a pasted release filling the crate with playable previews;
+  - Play mode naming its crate and playing;
+  - a missing page taking its crate away again;
+  - `Y`, `N` and `I` with and without a token;
+  - the entry menu;
+  - OPT ▸ Discogs… checking a token;
+  - "needs yt-dlp";
+  - no request to Discogs before the window is interactive.
+- **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
+  downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared
+  preview starts as fast as a local file.
 - **`crates/ui/tests/waiting_skip.rs`**: track 3 is followed sample-exactly by track 5 while
   track 4 waits for its audio, and track 4 is not marked failed.
 - **`crates/ui/tests/large_add.rs`**: 2,000 files get their metadata read while the engine plays
@@ -577,7 +657,9 @@ Measure the player's launch time (the target is under 300 ms):
 cargo run --release -p winamp-native -- --startup-time
 ```
 
-On an M-series Mac it takes 142–171 ms, including with a 500-entry saved playlist. The very
+On an M-series Mac it takes 142–171 ms, including with a 500-entry saved playlist, and
+148–182 ms with a Discogs token and a send still in progress (nothing is sent to Discogs
+before the window is up). The very
 first launch after a build takes about 0.7 s while macOS compiles and caches GPU shaders.
 
 ## How it works
@@ -614,6 +696,8 @@ crates/analysis   music analysis: beat grid, tempo segments, sections, tension, 
                   track overview (waveform + spectrogram, cutoff check) and zoomed spectrogram detail
 crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model,
                   waveform, spectrogram window
+crates/dig        digging Discogs (native only): API client, rate limit and cache, page expansion,
+                  send jobs, yt-dlp previews and their scheduler, preparing previews, dig memory
 crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, deck
 crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
@@ -653,11 +737,11 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 9. `show-render`: render a track's visual show to an MP4, from the command line or the playlist
    ✅ (done and archived)
 10. `crates`: named playlists ("crates") switched from the playlist's title bar, with entries that
-    remember the record they came from and can wait for their audio (proposed)
+    remember the record they came from and can wait for their audio ✅ (done and archived)
 11. `discogs-digging`: paste a Discogs page (label, artist, release, master, wantlist or list) to
     dig it in a crate. Previews are downloaded and analyzed a few tracks ahead, so each one opens
     ready to navigate. `Y` keeps a track (and adds it to your Discogs wantlist), `N` passes and
-    `I` opens its for-sale page (proposed; needs `crates`)
+    `I` opens its for-sale page ✅ (done and archived)
 12. `browser-bridge`: a Chrome extension with Play in / Enqueue in / Send to crate on Discogs pages
     and links, talking to the player through a paired local bridge (proposed; needs
     `discogs-digging`)

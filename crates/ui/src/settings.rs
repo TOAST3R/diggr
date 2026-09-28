@@ -188,15 +188,40 @@ impl Store {
     }
 }
 
+/// A store in its own test folder, deleted with it.
+#[cfg(test)]
+pub(crate) struct TestStore {
+    store: Store,
+    _dir: platform::testing::TestDir,
+}
+
+#[cfg(test)]
+impl TestStore {
+    pub(crate) fn new(name: &str) -> Self {
+        let dir = platform::testing::TestDir::new(name);
+        Self {
+            store: Store::new(dir.path()),
+            _dir: dir,
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestStore {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        &self.store
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use audio::EqPreset;
 
-    fn store(name: &str) -> Store {
-        let d = std::env::temp_dir().join(format!("ui-store-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        Store::new(d)
+    fn store(name: &str) -> TestStore {
+        TestStore::new(&format!("ui-store-{name}"))
     }
 
     #[test]

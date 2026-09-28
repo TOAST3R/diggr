@@ -197,8 +197,7 @@ mod tests {
 
     #[test]
     fn file_source_streams_chunks() {
-        let dir = std::env::temp_dir().join(format!("platform-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testing::TestDir::new("platform-file-source");
         let path = dir.join("data.bin");
         std::fs::File::create(&path)
             .unwrap()
@@ -211,7 +210,6 @@ mod tests {
         assert_eq!(media.byte_len(), Some(10_000));
         let mut chunk = [0u8; 4096];
         assert_eq!(media.read(&mut chunk).unwrap(), 4096);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

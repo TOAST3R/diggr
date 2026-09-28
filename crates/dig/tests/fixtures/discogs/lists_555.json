@@ -1,0 +1,22 @@
+{
+ "id": 555,
+ "name": "Deep Tapes",
+ "items": [
+  {
+   "type": "release",
+   "id": 1006,
+   "display_title": "Nightcraft - Last Light",
+   "comment": ""
+  },
+  {
+   "type": "artist",
+   "id": 4242,
+   "display_title": "Nightcraft"
+  },
+  {
+   "type": "master",
+   "id": 98765,
+   "display_title": "Nightcraft - Glasshouse EP"
+  }
+ ]
+}

@@ -152,6 +152,9 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                     Arc::new(NativeFileSource),
                     Arc::new(NativeSpawner),
                 ))),
+                dig: Some(ui::DigSetup::system(
+                    cache.as_ref().map(|c| c.dir().to_path_buf()),
+                )),
                 startup: Startup {
                     process_start,
                     report: startup_time,

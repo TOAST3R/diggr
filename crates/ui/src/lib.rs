@@ -21,3 +21,5 @@ pub mod waveform;
 pub mod widgets;
 
 pub use app::{AppContext, Startup, WinampApp};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::{DigAction, DigSetup, SendMode};

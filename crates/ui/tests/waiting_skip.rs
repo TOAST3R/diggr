@@ -41,9 +41,7 @@ fn write_wav(path: &Path, from: u64, to: u64) -> TrackRef {
 
 #[test]
 fn a_waiting_entry_is_skipped_gaplessly_and_not_marked_failed() {
-    let dir = std::env::temp_dir().join(format!("ui-waiting-skip-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = platform::testing::TestDir::new("ui-waiting-skip");
     // Tracks 3 and 5 are one continuous signal split at an odd frame.
     let split = 30_001;
     let mut playlist = Playlist::default();

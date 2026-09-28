@@ -1,0 +1,60 @@
+{
+ "id": 1006,
+ "title": "Last Light",
+ "year": 1997,
+ "artists": [
+  {
+   "name": "Nightcraft",
+   "anv": "",
+   "join": "",
+   "id": 4242
+  }
+ ],
+ "labels": [
+  {
+   "name": "Lowtide Tapes",
+   "catno": "LT-016",
+   "id": 12345
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "1",
+   "descriptions": [
+    "7\""
+   ]
+  }
+ ],
+ "master_id": 0,
+ "tracklist": [
+  {
+   "position": "A",
+   "type_": "track",
+   "title": "Last Light",
+   "duration": ""
+  },
+  {
+   "position": "B",
+   "type_": "track",
+   "title": "First Dark",
+   "duration": ""
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=LASTlight01",
+   "title": "Nightcraft - Last Light",
+   "duration": 300,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=FIRSTdark01",
+   "title": "Nightcraft - First Dark",
+   "duration": 280,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 1,
+ "lowest_price": 4.5
+}

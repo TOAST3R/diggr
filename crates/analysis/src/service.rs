@@ -328,11 +328,8 @@ mod tests {
     use crate::synth;
     use platform::native::{NativeFileSource, NativeSpawner};
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("analysis-svc-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("analysis-svc-{name}"))
     }
 
     /// Writes a synthetic track as a 44.1 kHz stereo WAV (the analyzer resamples it).
