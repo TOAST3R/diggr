@@ -100,9 +100,15 @@ cargo run --release -p winamp-native -- ~/Music/album/*.flac  # replaces the Pla
 No music handy? The repo includes short test tones:
 `cargo run --release -p winamp-native -- crates/audio/tests/fixtures/tone.*`
 
-The window is the classic three-part Winamp layout: main player, equalizer and playlist. It's
-drawn from an original pixel-art skin, at double size by default (switch with **OPT** in the
-playlist).
+The window has the classic Winamp parts, side by side: the player column on the left (main
+player, then the waveform and the equalizer when they show) and the playlist on its right, at
+least as tall as the player column. It's drawn from an original pixel-art skin, at double size
+by default (switch with **OPT** in the playlist).
+
+Click in the player or in the playlist (or press `Tab`) to give it the keyboard: its title bar
+lights up and the other side's dims. With the player focused, `↑` / `↓` set the volume. With the
+playlist focused, they move a cursor through the list (Shift extends the selection; PgUp/PgDn
+and Home/End jump), and Enter plays the entry under it.
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
   playlists are expanded), use **ADD**, or press Cmd+O. These add to the crate on screen.
@@ -128,7 +134,10 @@ playlist).
   - Shift/Cmd-click to select several;
   - drag to reorder;
   - Delete removes the selection;
-  - drag the bottom-right grip to show more rows;
+  - drag the bottom-right grip to make the playlist wider (any width) or taller (whole rows);
+    its size is remembered, and narrowed to fit a smaller screen;
+  - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
+    previous one was on screen;
   - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
   - Entries can wait for their audio (dimmed, with a status such as "downloading 40%" where
     the duration goes) or be unavailable (dimmed, with the reason). Both are skipped by next,
@@ -140,7 +149,8 @@ playlist).
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
   - **SHUFFLE**;
   - **REP** cycles off → all → one (all gapless);
-  - **EQ** and **PL** show or hide the other sections.
+  - **WAVE**, **EQ** and **PL** show or hide the other sections. There is no balance
+    control: playback is always centred.
 - **Equalizer:**
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
@@ -152,16 +162,17 @@ playlist).
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
 | `Z` | previous | | `←` / `→` | seek −5 s / +5 s |
-| `X` | play | | `↑` / `↓` | volume |
+| `X` | play | | `↑` / `↓` | volume (playlist focused: move in the list) |
 | `C` | pause / resume | | `F` | fullscreen visuals (`F`/`Esc` to leave) |
 | `V` | stop | | `Delete` / `Backspace` | remove selected entries |
-| `B` | next | | `Enter` | play the (first) selected entry |
+| `B` | next | | `Enter` | play the entry under the cursor (or the first selected) |
 | `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
 | `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
 | `Y` | keep the playing track (again: undo) | | `Cmd+V` | paste a Discogs page into the crate on screen |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
+| `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -607,7 +618,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 452 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 462 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

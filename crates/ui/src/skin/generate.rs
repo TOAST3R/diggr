@@ -455,6 +455,28 @@ fn titlebar(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, caption: &str) {
     c.text(tx, ty, caption, GOLD);
 }
 
+/// Part of a raised bar: a vertical gradient with the top and bottom bevel, and the left
+/// and/or right bevel when it is an end piece.
+#[allow(clippy::too_many_arguments)]
+fn bar_piece(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, top: C, bot: C, ends: (bool, bool)) {
+    c.grad_v(x, y, w, h, top, bot);
+    c.fill(x, y, w, 1, HI);
+    c.fill(x, y + h - 1, w, 1, LO);
+    if ends.0 {
+        c.fill(x, y, 1, h, HI);
+    }
+    if ends.1 {
+        c.fill(x + w - 1, y, 1, h, LO);
+    }
+}
+
+/// Widths of the playlist bars' end pieces (at the skin's 275-pixel minimum, the tiled middle
+/// fills the rest: 235 pixels of title stripes, and nothing of the bottom bar).
+pub const PL_TOP_L: u16 = 6;
+pub const PL_TOP_R: u16 = 34;
+pub const PL_BOTTOM_L: u16 = 125;
+pub const PL_BOTTOM_R: u16 = 150;
+
 /// One column of a plain title bar (its gradient and top/bottom bevel), to stretch behind text.
 fn title_fill(c: &mut Canvas, x: i32, y: i32, h: i32) {
     c.grad_v(x, y, 1, h, TITLE_BG, TITLE_BG);
@@ -539,11 +561,66 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny_centered(x + 78 + 18 * i as i32 + 7, y + 105, l, LABEL);
         }
     });
-    // The playlist title bar names the shown crate: the app draws it on `pl_title_fill`.
-    b.sprite("pl_top", 275, 20, |c, x, y| titlebar(c, x, y, 275, 20, ""));
-    b.sprite("pl_bottom", 275, 38, |c, x, y| {
-        panel(c, x, y, 275, 38);
-        c.inset(x + 126, y + 12, 104, 11, LCD_BG);
+    // The playlist stretches sideways: its title and bottom bars are a left cap, a column
+    // the app tiles to the width, and a right cap. The title bar names the shown crate: the
+    // app draws it on `pl_title_fill`.
+    b.sprite("pl_top_l", PL_TOP_L, 20, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            PL_TOP_L as i32,
+            20,
+            TITLE_BG,
+            TITLE_BG,
+            (true, false),
+        );
+    });
+    b.sprite("pl_top_fill", 1, 20, |c, x, y| {
+        bar_piece(c, x, y, 1, 20, TITLE_BG, TITLE_BG, (false, false));
+        for sy in (6..13).step_by(2) {
+            c.px(x, y + sy, GOLD_DIM);
+        }
+    });
+    b.sprite("pl_top_r", PL_TOP_R, 20, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            PL_TOP_R as i32,
+            20,
+            TITLE_BG,
+            TITLE_BG,
+            (false, true),
+        );
+    });
+    b.sprite("pl_bottom_l", PL_BOTTOM_L, 38, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            PL_BOTTOM_L as i32,
+            38,
+            PANEL_TOP,
+            PANEL_BOT,
+            (true, false),
+        );
+    });
+    b.sprite("pl_bottom_fill", 1, 38, |c, x, y| {
+        bar_piece(c, x, y, 1, 38, PANEL_TOP, PANEL_BOT, (false, false));
+    });
+    b.sprite("pl_bottom_r", PL_BOTTOM_R, 38, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            PL_BOTTOM_R as i32,
+            38,
+            PANEL_TOP,
+            PANEL_BOT,
+            (false, true),
+        );
+        c.inset(x + 1, y + 12, 104, 11, LCD_BG);
     });
     b.sprite("pl_left", 12, 1, |c, x, y| {
         c.grad_h(x, y, 12, 1, &[HI, PANEL_TOP, PANEL_BOT]);
@@ -677,6 +754,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     for (name, w, label) in [
         ("tog_eq", 23, "EQ"),
         ("tog_pl", 23, "PL"),
+        ("tog_wave", 38, "WAVE"),
         ("eq_on", 26, "ON"),
     ] {
         for (state, lit) in [("off", false), ("on", true)] {
@@ -776,11 +854,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             &[rgb(0, 190, 0), rgb(220, 220, 0), rgb(230, 70, 0)],
         );
     });
-    b.sprite("balance_track", 38, 13, |c, x, y| {
-        c.inset(x, y + 3, 38, 7, GROOVE);
-        c.fill(x + 18, y + 4, 2, 5, rgb(0, 150, 0));
-    });
-    for name in ["volume_thumb", "balance_thumb"] {
+    for name in ["volume_thumb"] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -895,7 +969,7 @@ fn layout() -> BTreeMap<String, R> {
         ("mono", R::new(206, 38, 25, 12)),
         ("stereo", R::new(233, 38, 36, 12)),
         ("volume", R::new(107, 57, 68, 13)),
-        ("balance", R::new(177, 57, 38, 13)),
+        ("wave_toggle", R::new(177, 58, 38, 12)),
         ("eq_toggle", R::new(219, 58, 23, 12)),
         ("pl_toggle", R::new(243, 58, 23, 12)),
         ("seek", R::new(16, 72, 248, 10)),
