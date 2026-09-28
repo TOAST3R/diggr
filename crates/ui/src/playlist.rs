@@ -1,6 +1,9 @@
 //! The playlist model: entries, selection, reordering, totals, and play order.
 //!
 //! Entries have stable ids so the current track and pending metadata survive reordering.
+//! An entry can exist before its audio does (`Waiting`), or be kept for the record without
+//! ever having audio (`Unavailable`); neither ever reaches the engine, so the engine's
+//! "track failed" keeps meaning "this file is broken".
 
 use std::collections::BTreeSet;
 
@@ -9,19 +12,64 @@ use serde::{Deserialize, Serialize};
 
 pub type EntryId = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryStatus {
     /// Metadata not read yet.
     Pending,
     Ready,
     /// Could not be opened or decoded.
     Failed,
+    /// The audio isn't local yet; the text says why ("listed", "downloading 40%").
+    Waiting(String),
+    /// Will never play ("no clip"); kept for the record.
+    Unavailable(String),
+}
+
+impl EntryStatus {
+    /// Has a local file the engine can be given.
+    pub fn is_playable(&self) -> bool {
+        matches!(self, EntryStatus::Pending | EntryStatus::Ready)
+    }
+
+    /// Playable now or once its audio arrives: it has a place in the play order.
+    pub fn in_play_order(&self) -> bool {
+        self.is_playable() || matches!(self, EntryStatus::Waiting(_))
+    }
+
+    /// The short text shown where a waiting or unavailable entry's duration would be.
+    pub fn note(&self) -> Option<&str> {
+        match self {
+            EntryStatus::Waiting(t) | EntryStatus::Unavailable(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// The record an entry belongs to, for entries sent from a catalogue page.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Origin {
+    /// The page it was sent from.
+    pub page: String,
+    pub release: Option<u64>,
+    pub master: Option<u64>,
+    pub label: String,
+    pub catno: String,
+    pub year: Option<u16>,
+    /// Side, e.g. "A1".
+    pub position: String,
+    /// The clip the audio comes from, e.g. a video id.
+    pub clip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub id: EntryId,
+    /// The local file; empty while waiting.
     pub track: TrackRef,
+    /// Where the audio comes from (a URL), for remote entries.
+    pub source: Option<String>,
+    pub origin: Option<Origin>,
     pub title: String,
     pub artist: String,
     pub duration: Option<f64>,
@@ -37,6 +85,36 @@ impl Entry {
             format!("{} - {}", self.artist, self.title)
         }
     }
+
+    /// What Send to crate compares: the origin's clip when there is one, otherwise the file.
+    pub fn duplicate_key(&self) -> DuplicateKey {
+        match self.origin.as_ref().and_then(|o| o.clip.clone()) {
+            Some(clip) => DuplicateKey::Clip(clip),
+            None => DuplicateKey::File(self.track.0.clone()),
+        }
+    }
+
+    fn to_saved(&self) -> SavedEntry {
+        SavedEntry {
+            path: self.track.0.clone(),
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            duration: self.duration,
+            source: self.source.clone(),
+            origin: self.origin.clone(),
+            status: match &self.status {
+                EntryStatus::Waiting(t) => SavedStatus::Waiting(t.clone()),
+                EntryStatus::Unavailable(t) => SavedStatus::Unavailable(t.clone()),
+                _ => SavedStatus::Local,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DuplicateKey {
+    Clip(String),
+    File(String),
 }
 
 /// Saved form of the playlist (metadata cached so a restart shows titles immediately).
@@ -55,6 +133,27 @@ pub struct SavedEntry {
     pub artist: String,
     #[serde(default)]
     pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    #[serde(default, skip_serializing_if = "SavedStatus::is_local")]
+    pub status: SavedStatus,
+}
+
+/// Whether a saved entry has local audio; Pending/Ready/Failed are worked out again at load.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavedStatus {
+    #[default]
+    Local,
+    Waiting(String),
+    Unavailable(String),
+}
+
+impl SavedStatus {
+    fn is_local(&self) -> bool {
+        *self == SavedStatus::Local
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,10 +205,32 @@ impl Playlist {
                 artist: String::new(),
                 duration: None,
                 status: EntryStatus::Pending,
+                source: None,
+                origin: None,
                 track,
             });
         }
         added
+    }
+
+    /// Appends saved entries (Send to crate) with fresh ids; returns the ones whose metadata
+    /// still has to be read.
+    pub fn add_saved(
+        &mut self,
+        saved: impl IntoIterator<Item = SavedEntry>,
+    ) -> Vec<(EntryId, TrackRef)> {
+        let mut pending = Vec::new();
+        for s in saved {
+            let id = self.alloc_id();
+            let entry = Entry::from_saved(id, s);
+            if entry.status == EntryStatus::Pending
+                || (entry.status.is_playable() && entry.duration.is_none())
+            {
+                pending.push((id, entry.track.clone()));
+            }
+            self.entries.push(entry);
+        }
+        pending
     }
 
     fn alloc_id(&mut self) -> EntryId {
@@ -117,18 +238,82 @@ impl Playlist {
         self.next_id
     }
 
+    fn entry_mut(&mut self, id: EntryId) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|e| e.id == id)
+    }
+
+    /// Metadata read from the file. An entry with an origin keeps its own artist and title
+    /// (the record is the truth, not the file's tags) and takes only the duration.
     pub fn set_info(&mut self, id: EntryId, title: String, artist: String, duration: Option<f64>) {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
-            e.title = title;
-            e.artist = artist;
+        if let Some(e) = self.entry_mut(id)
+            && e.status.note().is_none()
+        {
+            if e.origin.is_none() {
+                e.title = title;
+                e.artist = artist;
+            }
             e.duration = duration;
             e.status = EntryStatus::Ready;
         }
     }
 
     pub fn set_failed(&mut self, id: EntryId) {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
+        if let Some(e) = self.entry_mut(id)
+            && e.status.note().is_none()
+        {
             e.status = EntryStatus::Failed;
+        }
+    }
+
+    // ---- entries waiting for their audio (the producer API) ----------------------------
+
+    /// Appends an entry whose audio isn't local yet, with `status` as its short note.
+    pub fn add_waiting(
+        &mut self,
+        artist: impl Into<String>,
+        title: impl Into<String>,
+        source: Option<String>,
+        origin: Option<Origin>,
+        status: impl Into<String>,
+    ) -> EntryId {
+        let id = self.alloc_id();
+        self.entries.push(Entry {
+            id,
+            track: TrackRef::new(""),
+            source,
+            origin,
+            title: title.into(),
+            artist: artist.into(),
+            duration: None,
+            status: EntryStatus::Waiting(status.into()),
+        });
+        id
+    }
+
+    /// Updates a waiting entry's note ("downloading 40%").
+    pub fn set_status(&mut self, id: EntryId, text: impl Into<String>) {
+        if let Some(e) = self.entry_mut(id)
+            && let EntryStatus::Waiting(t) = &mut e.status
+        {
+            *t = text.into();
+        }
+    }
+
+    /// The entry's audio arrived at `track`: it becomes Pending, so its duration is read and
+    /// it joins the engine queue. Returns false if there is no such entry.
+    pub fn set_audio(&mut self, id: EntryId, track: TrackRef) -> bool {
+        let Some(e) = self.entry_mut(id) else {
+            return false;
+        };
+        e.track = track;
+        e.status = EntryStatus::Pending;
+        true
+    }
+
+    /// The entry will never have audio; it stays listed, dimmed, with `reason`.
+    pub fn set_unavailable(&mut self, id: EntryId, reason: impl Into<String>) {
+        if let Some(e) = self.entry_mut(id) {
+            e.status = EntryStatus::Unavailable(reason.into());
         }
     }
 
@@ -251,50 +436,88 @@ impl Playlist {
 
     pub fn to_saved(&self) -> SavedPlaylist {
         SavedPlaylist {
-            entries: self
-                .entries
-                .iter()
-                .map(|e| SavedEntry {
-                    path: e.track.0.clone(),
-                    title: e.title.clone(),
-                    artist: e.artist.clone(),
-                    duration: e.duration,
-                })
-                .collect(),
+            entries: self.entries.iter().map(Entry::to_saved).collect(),
             current: self.current_index(),
         }
+    }
+
+    /// The saved form of some entries, in playlist order (for Send to crate).
+    pub fn saved_entries(&self, ids: &[EntryId]) -> Vec<SavedEntry> {
+        self.entries
+            .iter()
+            .filter(|e| ids.contains(&e.id))
+            .map(Entry::to_saved)
+            .collect()
     }
 
     /// Restores a saved playlist; entries without cached metadata are returned for lookup.
     pub fn from_saved(saved: SavedPlaylist) -> (Self, Vec<(EntryId, TrackRef)>) {
         let mut pl = Playlist::default();
-        let mut pending = Vec::new();
-        for s in saved.entries {
-            let id = pl.alloc_id();
-            let track = TrackRef::new(s.path);
-            let known = !s.title.is_empty();
-            if !known || s.duration.is_none() {
-                pending.push((id, track.clone()));
-            }
-            pl.entries.push(Entry {
-                id,
-                title: if known {
-                    s.title
-                } else {
-                    track.stem().to_owned()
-                },
-                artist: s.artist,
-                duration: s.duration,
-                status: if known {
-                    EntryStatus::Ready
-                } else {
-                    EntryStatus::Pending
-                },
-                track,
-            });
-        }
+        let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         (pl, pending)
+    }
+
+    // ---- play order ----------------------------------------------------------------------
+
+    /// Every entry that can eventually play (playable or waiting), in playlist order or
+    /// shuffled starting with `first`. A waiting entry keeps its place when its audio arrives,
+    /// because the set of entries shuffled doesn't change. Audio producers read what comes
+    /// next from this order.
+    pub fn play_order(&self, shuffle: bool, first: Option<EntryId>, seed: u64) -> Vec<EntryId> {
+        let ids: Vec<EntryId> = self
+            .entries
+            .iter()
+            .filter(|e| e.status.in_play_order())
+            .map(|e| e.id)
+            .collect();
+        let first = first.and_then(|f| ids.iter().position(|&id| id == f));
+        play_order(ids.len(), shuffle, first, seed)
+            .into_iter()
+            .map(|i| ids[i])
+            .collect()
+    }
+
+    /// The engine queue: the play order without the entries still waiting for their audio.
+    pub fn queue(
+        &self,
+        shuffle: bool,
+        first: Option<EntryId>,
+        seed: u64,
+    ) -> Vec<(EntryId, TrackRef)> {
+        self.play_order(shuffle, first, seed)
+            .into_iter()
+            .filter_map(|id| self.get(id))
+            .filter(|e| e.status.is_playable())
+            .map(|e| (e.id, e.track.clone()))
+            .collect()
+    }
+}
+
+impl Entry {
+    fn from_saved(id: EntryId, s: SavedEntry) -> Self {
+        let track = TrackRef::new(s.path);
+        let known = !s.title.is_empty();
+        let status = match s.status {
+            SavedStatus::Waiting(t) => EntryStatus::Waiting(t),
+            SavedStatus::Unavailable(t) => EntryStatus::Unavailable(t),
+            SavedStatus::Local if known => EntryStatus::Ready,
+            SavedStatus::Local => EntryStatus::Pending,
+        };
+        Entry {
+            id,
+            title: if known {
+                s.title
+            } else {
+                track.stem().to_owned()
+            },
+            artist: s.artist,
+            duration: s.duration,
+            status,
+            source: s.source,
+            origin: s.origin,
+            track,
+        }
     }
 }
 
@@ -481,5 +704,182 @@ mod tests {
             order,
             "deterministic per seed"
         );
+    }
+
+    fn origin(release: u64, clip: &str) -> Origin {
+        Origin {
+            page: "https://www.discogs.com/label/1".into(),
+            release: Some(release),
+            label: "Lowtide Tapes".into(),
+            catno: "LT-012".into(),
+            year: Some(1994),
+            position: "A1".into(),
+            clip: Some(clip.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_playlist_file_in_the_current_format_still_loads() {
+        // Written by the previous version: no source, origin or status fields.
+        let text = r#"(
+    entries: [
+        (
+            path: "/m/a.mp3",
+            title: "Echo",
+            artist: "Crusher-P",
+            duration: Some(230.0),
+        ),
+        (
+            path: "/m/b.flac",
+        ),
+    ],
+    current: Some(1),
+)"#;
+        let saved: SavedPlaylist = ron::from_str(text).unwrap();
+        let (p, pending) = Playlist::from_saved(saved.clone());
+        assert_eq!(p.entries()[0].display_name(), "Crusher-P - Echo");
+        assert_eq!(p.entries()[0].status, EntryStatus::Ready);
+        assert_eq!(p.entries()[1].status, EntryStatus::Pending);
+        assert!(
+            p.entries()
+                .iter()
+                .all(|e| e.source.is_none() && e.origin.is_none())
+        );
+        assert_eq!(p.current_index(), Some(1));
+        assert_eq!(pending.len(), 1);
+        // And it saves back the same way (no new fields for local entries).
+        assert_eq!(p.to_saved().entries[0], saved.entries[0]);
+        assert!(!ron::to_string(&p.to_saved()).unwrap().contains("status"));
+    }
+
+    #[test]
+    fn waiting_and_unavailable_entries_survive_a_restart() {
+        let mut p = pl(1);
+        let w = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            Some("https://www.youtube.com/watch?v=abcdefghijk".into()),
+            Some(origin(123456, "abcdefghijk")),
+            "listed",
+        );
+        p.set_status(w, "downloading 40%");
+        let u = p.add_waiting(
+            "Nightcraft",
+            "Untitled",
+            None,
+            Some(origin(123456, "")),
+            "listed",
+        );
+        p.set_unavailable(u, "no clip");
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (r, pending) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(pending.len(), 1, "only the local file is looked up");
+        let e = &r.entries()[1];
+        assert_eq!(e.status, EntryStatus::Waiting("downloading 40%".into()));
+        assert_eq!(e.origin.as_ref().unwrap().catno, "LT-012");
+        assert_eq!(
+            e.source.as_deref(),
+            Some("https://www.youtube.com/watch?v=abcdefghijk")
+        );
+        assert_eq!(
+            r.entries()[2].status,
+            EntryStatus::Unavailable("no clip".into())
+        );
+    }
+
+    #[test]
+    fn tags_never_overwrite_an_origin() {
+        let mut p = Playlist::default();
+        let id = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(origin(1, "x")),
+            "listed",
+        );
+        // Metadata for a waiting entry is ignored: it has no file yet.
+        p.set_info(id, "t".into(), "a".into(), Some(1.0));
+        assert_eq!(
+            p.get(id).unwrap().status,
+            EntryStatus::Waiting("listed".into())
+        );
+        assert!(p.set_audio(id, TrackRef::new("/cache/abcdefghijk.m4a")));
+        assert_eq!(p.get(id).unwrap().status, EntryStatus::Pending);
+        p.set_info(
+            id,
+            "glasshouse (vinyl rip)".into(),
+            "Unknown".into(),
+            Some(301.0),
+        );
+        let e = p.get(id).unwrap();
+        assert_eq!(e.display_name(), "Nightcraft - Glasshouse");
+        assert_eq!((e.duration, &e.status), (Some(301.0), &EntryStatus::Ready));
+        // Entries without an origin still take the tags.
+        let plain = p.add([TrackRef::new("/m/x.mp3")])[0].0;
+        p.set_info(plain, "Title".into(), "Artist".into(), None);
+        assert_eq!(p.get(plain).unwrap().display_name(), "Artist - Title");
+    }
+
+    /// Entries 0..6, with 3 waiting and 4 unavailable.
+    fn mixed() -> (Playlist, Vec<EntryId>) {
+        let mut p = pl(3);
+        p.add_waiting("", "three", None, None, "listed");
+        let u = p.add_waiting("", "four", None, None, "listed");
+        p.set_unavailable(u, "no clip");
+        p.add((5..7).map(|i| TrackRef::new(format!("/m/{i}.mp3"))));
+        let ids = p.entries().iter().map(|e| e.id).collect();
+        (p, ids)
+    }
+
+    #[test]
+    fn the_engine_queue_skips_waiting_and_unavailable_entries() {
+        let (p, ids) = mixed();
+        assert_eq!(
+            p.play_order(false, None, 1),
+            [ids[0], ids[1], ids[2], ids[3], ids[5], ids[6]],
+            "unavailable entries have no place in the order"
+        );
+        let queue: Vec<EntryId> = p.queue(false, None, 1).iter().map(|(id, _)| *id).collect();
+        assert_eq!(queue, [ids[0], ids[1], ids[2], ids[5], ids[6]]);
+        // Next/previous/repeat run over the engine queue: 2 is followed by 5, and 5 is preceded
+        // by 2. Shuffle too: whatever the seed, the queue never holds 3 or 4.
+        for seed in 1..50 {
+            let q: Vec<EntryId> = p
+                .queue(true, Some(ids[5]), seed)
+                .iter()
+                .map(|(id, _)| *id)
+                .collect();
+            assert_eq!(q[0], ids[5]);
+            assert_eq!(q.len(), 5);
+            assert!(!q.contains(&ids[3]) && !q.contains(&ids[4]));
+        }
+        // A waiting entry can't be the first of a queue.
+        assert_eq!(p.queue(true, Some(ids[3]), 7).len(), 5);
+    }
+
+    #[test]
+    fn an_entry_joins_the_queue_in_place_when_its_audio_arrives() {
+        let (mut p, ids) = mixed();
+        let order = p.play_order(true, Some(ids[0]), 99);
+        let before: Vec<EntryId> = p
+            .queue(true, Some(ids[0]), 99)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(!before.contains(&ids[3]));
+        p.set_audio(ids[3], TrackRef::new("/cache/three.m4a"));
+        assert_eq!(
+            p.play_order(true, Some(ids[0]), 99),
+            order,
+            "its place in the shuffled order doesn't change"
+        );
+        let after: Vec<EntryId> = p
+            .queue(true, Some(ids[0]), 99)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        let expected: Vec<EntryId> = order.iter().copied().filter(|&id| id != ids[4]).collect();
+        assert_eq!(after, expected, "it is queued where the order puts it");
     }
 }

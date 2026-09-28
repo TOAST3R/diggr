@@ -417,18 +417,33 @@ fn panel(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
     c.bevel(x, y, w, h, HI, LO);
 }
 
-/// Title strip with gold stripes either side of the caption (buttons sit on the right).
+/// Title strip with gold stripes either side of the caption (buttons sit on the right). With
+/// no caption the stripes run across the whole bar, and the app draws its own text on a
+/// `pl_title_fill` strip.
 fn titlebar(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, caption: &str) {
-    c.grad_v(x, y, w, h, darken(TITLE_BG, -0.0), TITLE_BG);
+    c.grad_v(x, y, w, h, TITLE_BG, TITLE_BG);
     c.bevel(x, y, w, h, HI, LO);
+    let ty = y + (h - 7) / 2;
+    if caption.is_empty() {
+        for sy in (ty..ty + 7).step_by(2) {
+            c.fill(x + 6, sy, w - 40, 1, GOLD_DIM);
+        }
+        return;
+    }
     let tw = text_w(caption);
     let tx = x + (w - tw) / 2;
-    let ty = y + (h - 7) / 2;
     for sy in (ty..ty + 7).step_by(2) {
         c.fill(x + 6, sy, tx - 5 - (x + 6), 1, GOLD_DIM);
         c.fill(tx + tw + 5, sy, x + w - 34 - (tx + tw + 5), 1, GOLD_DIM);
     }
     c.text(tx, ty, caption, GOLD);
+}
+
+/// One column of a plain title bar (its gradient and top/bottom bevel), to stretch behind text.
+fn title_fill(c: &mut Canvas, x: i32, y: i32, h: i32) {
+    c.grad_v(x, y, 1, h, TITLE_BG, TITLE_BG);
+    c.px(x, y, HI);
+    c.px(x, y + h - 1, LO);
 }
 
 fn button_face(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, pressed: bool) {
@@ -508,9 +523,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny_centered(x + 78 + 18 * i as i32 + 7, y + 105, l, LABEL);
         }
     });
-    b.sprite("pl_top", 275, 20, |c, x, y| {
-        titlebar(c, x, y, 275, 20, "WINAMP PLAYLIST")
-    });
+    // The playlist title bar names the shown crate: the app draws it on `pl_title_fill`.
+    b.sprite("pl_top", 275, 20, |c, x, y| titlebar(c, x, y, 275, 20, ""));
     b.sprite("pl_bottom", 275, 38, |c, x, y| {
         panel(c, x, y, 275, 38);
         c.inset(x + 126, y + 12, 104, 11, LCD_BG);
@@ -791,6 +805,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         }
     });
 
+    b.sprite("pl_title_fill", 1, 20, |c, x, y| title_fill(c, x, y, 20));
+
     // ---- font -----------------------------------------------------------------------------
     let per_row: u16 = 32;
     let rows = (FONT_CHARS.chars().count() as u16).div_ceil(per_row);
@@ -842,6 +858,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             vis_peak: [190, 190, 200],
             vis_scope: [0, 230, 0],
             eq_curve: [0, 230, 0],
+            pl_title: [GOLD[0], GOLD[1], GOLD[2]],
         },
     };
     (img, def)

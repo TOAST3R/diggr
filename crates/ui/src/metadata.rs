@@ -8,30 +8,29 @@ use audio::TrackInfo;
 use audio::decode::TrackDecoder;
 use platform::{FileSource, Priority, Spawner, TrackRef};
 
-use crate::playlist::EntryId;
-
+/// A result for the key the track was requested with (the app uses crate and entry ids).
 #[derive(Debug, Clone, PartialEq)]
-pub enum MetaResult {
-    Info(EntryId, TrackInfo),
-    Failed(EntryId),
+pub enum MetaResult<K> {
+    Info(K, TrackInfo),
+    Failed(K),
 }
 
-pub struct MetaWorker {
-    requests: Sender<Vec<(EntryId, TrackRef)>>,
-    results: Receiver<MetaResult>,
+pub struct MetaWorker<K> {
+    requests: Sender<Vec<(K, TrackRef)>>,
+    results: Receiver<MetaResult<K>>,
 }
 
 /// How many results to deliver before waking the UI (limits repaints during big adds).
 const WAKE_EVERY: usize = 25;
 
-impl MetaWorker {
+impl<K: Send + 'static> MetaWorker<K> {
     /// `wake` is called (from the worker thread) when new results are ready.
     pub fn start(
         spawner: &dyn Spawner,
         files: Arc<dyn FileSource>,
         wake: impl Fn() + Send + 'static,
     ) -> Result<Self, platform::PlatformError> {
-        let (req_tx, req_rx) = channel::<Vec<(EntryId, TrackRef)>>();
+        let (req_tx, req_rx) = channel::<Vec<(K, TrackRef)>>();
         let (res_tx, res_rx) = channel();
         spawner.spawn(
             "playlist-metadata",
@@ -62,13 +61,13 @@ impl MetaWorker {
         })
     }
 
-    pub fn request(&self, items: Vec<(EntryId, TrackRef)>) {
+    pub fn request(&self, items: Vec<(K, TrackRef)>) {
         if !items.is_empty() {
             let _ = self.requests.send(items);
         }
     }
 
-    pub fn poll(&self) -> Vec<MetaResult> {
+    pub fn poll(&self) -> Vec<MetaResult<K>> {
         self.results.try_iter().collect()
     }
 }

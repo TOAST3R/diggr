@@ -60,6 +60,15 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Mouse",
         &[
+            (
+                "Playlist title: click / drag",
+                "crate menu (switch, new, rename, delete) / move the window",
+            ),
+            (
+                "Entry: double-click",
+                "play (a waiting entry plays as soon as its audio arrives)",
+            ),
+            ("Entry: right-click", "Send to crate (a crate or a new one)"),
             ("Waveform: click / drag", "seek"),
             ("Waveform: scroll wheel", "zoom 1–64 bars"),
             ("Spectrogram: click / drag", "seek / pan"),
@@ -157,6 +166,16 @@ mod tests {
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }
+    }
+
+    #[test]
+    fn describes_the_crate_mouse_actions() {
+        let rows: Vec<&str> = GROUPS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|(_, a)| *a))
+            .collect();
+        assert!(rows.iter().any(|a| a.contains("crate menu")));
+        assert!(rows.iter().any(|a| a.contains("Send to crate")));
     }
 
     #[test]
