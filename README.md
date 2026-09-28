@@ -203,6 +203,79 @@ ahead of what plays. Other pasted text is ignored.
     passed) and the preview cache size (2 GB by default; the least recently played go first).
 - Previews are for listening while you dig. They stay in the cache and are never exported.
 
+### From the browser
+
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs pages: Play in ‹App›,
+Enqueue in ‹App› and Send to crate. It talks to the player through a small **browser bridge**
+that the player starts once its window is up.
+
+- **Local only:** the bridge listens on `127.0.0.1`, port 47800 by default. Other computers
+  can't reach it. If the port is taken, the player works without the bridge and
+  OPT ▸ Browser… says so; you can pick another port there (the extension's options need the
+  same one).
+- **Pairing (OPT ▸ Browser…):** the dialog shows a 6-digit code, valid for 2 minutes and only
+  while the dialog is open. Enter it in the extension's options. The extension receives a long
+  random key and sends it with every request; the player keeps only its hash, in
+  `dig/bridge.ron`. After 5 wrong codes, pairing is locked for a minute. **Forget browsers**
+  revokes every key, and each browser then asks to be paired again.
+- **What it accepts:** only a Discogs page address (the pages that paste accepts), a mode
+  (Play, Enqueue, or a crate of 1 to 40 characters), and the vinyl-only and skip-passed
+  switches, in a body of at most 16 KB. Anything else, including file paths and other
+  addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
+  once, and the crate fills in afterwards. The extension can also read the crate names, what's
+  playing, and the progress of sends.
+- **No web pages:** requests from web pages (a web origin, another host name, a preflight) are
+  refused, and no answer allows other origins.
+
+**Install the extension** (Chrome, or any Chromium browser: Brave, Edge, Arc):
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
+   the `extensions/chrome/` folder. It asks for site access to discogs.com and 127.0.0.1 only.
+2. Start the player and open OPT ▸ Browser…. The extension's options page opens on install (or
+   right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
+3. On a Discogs release, master, artist, label, wantlist or list page, the button after the
+   title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue in ‹App›** and
+   **Send to crate** (the player's crates, or New crate…), and the vinyl-only and skip-passed
+   switches, which it remembers. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
+   Tapes → Playlist").
+4. On any site, right-click a Discogs link for Play in ‹App› or Enqueue in ‹App›; the toolbar
+   button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
+   and paired, what's playing, and sends in progress.
+
+‹App› is the name the player reports (`dig::APP_NAME`, a placeholder, "winamp_rust", until the
+rebrand), so renaming the player renames every label. The manifest's name is a placeholder too,
+and must change before any store publishing. The extension is plain JavaScript with no build
+step and no dependencies: `manifest.json`, `background.js` (the only code that calls the
+player, with the key), `content.js` (the button), `pages.js` (which pages are supported),
+`options.*`, `popup.*` and `icons/`.
+
+**Manual checklist** (the extension has no automated tests):
+
+- [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com and
+      127.0.0.1 only.
+- [ ] Pair with the code from OPT ▸ Browser…; the dialog says a browser was paired, and the same
+      code no longer works.
+- [ ] Release, master, artist, label, wantlist and list pages each show the button, and each of
+      Play, Enqueue, Send to crate and New crate… works; a forum thread shows no button.
+- [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
+- [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in ‹App› adds
+      it and the toolbar shows ✓.
+- [ ] With the player closed, an action says that it isn't running, and nothing else happens.
+- [ ] After Forget browsers, an action opens the pairing screen.
+- [ ] A hostile page cannot use the bridge: serve this file from `python3 -m http.server` and
+      open it; every line should read "refused" or "blocked", and no crate changes:
+      ```html
+      <pre id=o></pre><script>
+      for (const [m, p] of [["GET","hello"],["POST","send"],["POST","pair"]])
+        fetch(`http://127.0.0.1:47800/v1/${p}`, {method: m, body: m == "POST" ? "{}" : undefined,
+          headers: {"Content-Type": "application/json"}})
+          .then(r => o.textContent += `${p}: ${r.status >= 400 ? "refused" : "ACCEPTED"} (${r.status})\n`)
+          .catch(() => o.textContent += `${p}: blocked\n`);
+      </script>
+      ```
+- [ ] From another computer on the network, `curl http://<this computer>:47800/v1/hello` fails
+      to connect.
+
 ### Waveform and structure navigation
 
 Under the main window, the **waveform** (`W`) has two rows:
@@ -509,7 +582,9 @@ version still opens it); the Playlist crate is now the one that counts.
 
 Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
 yt-dlp path, the Keepers crate), `token` (readable only by you), `memory.ron` (kept and passed
-tracks, and wantlist changes still to be sent) and `jobs.ron` (sends still in progress). In the
+tracks, and wantlist changes still to be sent), `jobs.ron` (sends still in progress) and
+`bridge.ron` (the browser bridge's port and the SHA-256 of each paired browser's key, readable
+only by you). In the
 cache, `discogs/` keeps API responses: record details for good, listings for a day, and
 for-sale numbers refreshed once a day when their track plays. `previews/` holds the downloaded
 clips.
@@ -528,7 +603,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 420 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 442 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -590,6 +665,12 @@ What's covered:
   - offline and back;
   - token checks and wantlist changes.
 
+  The browser bridge (`crates/dig/tests/bridge.rs`) runs on an ephemeral loopback port:
+  pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals
+  by host, origin, preflight, size, unknown fields and non-Discogs addresses, no
+  `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, and a
+  send answered in under 100 ms while Discogs is slow.
+
   The preview scheduler runs against a fake yt-dlp: the horizon, 2 slots, the armed entry
   first, cancelling, retries, the timeout, yt-dlp appearing later, and the cache limit. Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
@@ -601,7 +682,10 @@ What's covered:
   - the entry menu;
   - OPT ▸ Discogs… checking a token;
   - "needs yt-dlp";
-  - no request to Discogs before the window is interactive.
+  - no request to Discogs before the window is interactive;
+  - the browser bridge: started only after the first frame, a send answered in under 100 ms
+    while Discogs is slow and then filling the crate, OPT ▸ Browser… pairing once and Forget
+    browsers, and a taken port that leaves the player working.
 - **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
   downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared
   preview starts as fast as a local file.
@@ -697,9 +781,11 @@ crates/analysis   music analysis: beat grid, tempo segments, sections, tension, 
 crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model,
                   waveform, spectrogram window
 crates/dig        digging Discogs (native only): API client, rate limit and cache, page expansion,
-                  send jobs, yt-dlp previews and their scheduler, preparing previews, dig memory
+                  send jobs, yt-dlp previews and their scheduler, preparing previews, dig memory,
+                  the browser bridge (loopback server, pairing)
 crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, deck
 crates/visuals/assets  the bundled scenes, variants, prelude and director rules
+extensions/chrome the Chrome extension (plain JS, loaded unpacked) that sends Discogs pages to the bridge
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
 apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time, --render-show
 openspec/         specs and plans for every milestone (see below)

@@ -5,6 +5,10 @@
 //! `set_unavailable`), tells them what the user is near (the focus, the preview horizon), and
 //! keeps the dig memory. Nothing here waits on a worker, and no worker is started before the
 //! window has shown its first frame, so launch never waits for Discogs.
+//!
+//! The browser bridge starts with the workers: its sends take the same path as a paste, and a
+//! snapshot of the crates, what plays and the sends in progress is kept up to date for it, so
+//! it answers the extension without waiting for a frame.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -12,6 +16,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audio::PlayState;
+use dig::bridge::{
+    self, BridgeCommand, BridgeHandle, CrateState, Mode, Pairing, SendState, Shared, Snapshot,
+};
 use dig::browser::{Browser, SystemBrowser, sell_url};
 use dig::clock::{Clock, RealClock};
 use dig::config::{self as digconf, DigSettings};
@@ -51,6 +58,17 @@ pub struct DigSetup {
     pub browser: Arc<dyn Browser>,
     /// The app's cache folder: Discogs responses, previews, scores and overviews.
     pub cache_root: Option<PathBuf>,
+    pub bridge: BridgeSetup,
+}
+
+/// Whether the browser bridge runs, and on which port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeSetup {
+    Off,
+    /// On the port from `bridge.ron` (47800 by default).
+    Configured,
+    /// On this port (0 picks a free one, for tests).
+    Port(u16),
 }
 
 impl DigSetup {
@@ -62,6 +80,7 @@ impl DigSetup {
             finder: system_finder(),
             browser: Arc::new(SystemBrowser),
             cache_root,
+            bridge: BridgeSetup::Configured,
         }
     }
 }
@@ -84,6 +103,15 @@ pub enum DigAction {
     UndoPass(EntryId),
     OpenForSale(EntryId),
     OpenDialog,
+    OpenBrowserDialog,
+}
+
+/// What OPT ▸ Browser… asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BridgeAction {
+    ForgetBrowsers,
+    SetPort(u16),
+    Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +172,22 @@ pub(super) struct Dig {
     play_when_ready: Option<CrateId>,
     last_playing: Option<(CrateId, EntryId)>,
     pub(super) dialog: Option<DigDialog>,
+    /// Shared with the bridge thread once digging has started (unless the bridge is off).
+    pub(super) bridge_shared: Option<Arc<Shared>>,
+    bridge: Option<BridgeHandle>,
+    /// Why the bridge isn't running (the port is taken…).
+    bridge_error: Option<String>,
+    /// What the bridge was last given to answer with.
+    snapshot: Snapshot,
+    pub(super) bridge_dialog: Option<BridgeDialog>,
     wake: egui::Context,
+}
+
+/// OPT ▸ Browser…
+pub(super) struct BridgeDialog {
+    port: u16,
+    /// A browser was paired while the dialog was open.
+    paired: bool,
 }
 
 impl Dig {
@@ -189,6 +232,11 @@ impl Dig {
             play_when_ready: None,
             last_playing: None,
             dialog: None,
+            bridge_shared: None,
+            bridge: None,
+            bridge_error: None,
+            snapshot: Snapshot::default(),
+            bridge_dialog: None,
             wake,
         }
     }
@@ -241,6 +289,36 @@ impl Dig {
             )
             .ok();
         }
+        if self.setup.bridge != BridgeSetup::Off {
+            let pairing = Pairing::load(self.config.clone(), self.setup.clock.clone());
+            self.bridge_shared = Some(Shared::new(pairing));
+            self.start_bridge();
+        }
+    }
+
+    /// (Re)starts the bridge on its port; a failure is kept for OPT ▸ Browser….
+    fn start_bridge(&mut self) {
+        let Some(shared) = self.bridge_shared.clone() else {
+            return;
+        };
+        self.bridge = None; // frees the old port first
+        let port = match self.setup.bridge {
+            BridgeSetup::Port(p) => p,
+            _ => shared.pairing().port(),
+        };
+        let wake = self.wake.clone();
+        match BridgeHandle::start(&*self.spawner, shared, port, move || wake.request_repaint()) {
+            Ok(h) => {
+                self.bridge = Some(h);
+                self.bridge_error = None;
+            }
+            Err(e) => self.bridge_error = Some(e),
+        }
+    }
+
+    /// The port the bridge listens on, while it runs.
+    pub(super) fn bridge_port(&self) -> Option<u16> {
+        self.bridge.as_ref().map(BridgeHandle::port)
     }
 
     fn send(&self, cmd: Command) {
@@ -456,11 +534,103 @@ impl WinampApp {
         if let Some(p) = self.dig.as_ref().and_then(|d| d.prepare.as_ref()) {
             p.poll();
         }
+        let commands = self
+            .dig
+            .as_ref()
+            .and_then(|d| d.bridge.as_ref())
+            .map(BridgeHandle::poll)
+            .unwrap_or_default();
+        for c in commands {
+            self.dig_bridge_command(c);
+        }
         self.dig_play_when_ready();
         self.dig_horizon();
         self.dig_focus();
         self.dig_playing_changed();
         self.dig_retry_wantlist();
+        self.dig_bridge_snapshot();
+    }
+
+    // ---- the browser bridge ----------------------------------------------------------------
+
+    fn dig_bridge_command(&mut self, c: BridgeCommand) {
+        match c {
+            BridgeCommand::Send {
+                page,
+                mode,
+                filters,
+            } => {
+                let mode = match mode {
+                    Mode::Play => SendMode::Play,
+                    Mode::Enqueue => SendMode::Enqueue,
+                    Mode::Crate(name) => SendMode::Crate(name),
+                };
+                self.dig_send(page, mode, Some(filters));
+            }
+            BridgeCommand::Paired => {
+                if let Some(dialog) = self.dig.as_mut().and_then(|d| d.bridge_dialog.as_mut()) {
+                    dialog.paired = true;
+                }
+                self.notify("A browser was paired");
+            }
+        }
+    }
+
+    /// What the bridge answers with: the crates, what plays, and the sends in progress. Given
+    /// to it only when it changes.
+    fn dig_bridge_snapshot(&mut self) {
+        let Some(d) = &self.dig else { return };
+        let Some(shared) = &d.bridge_shared else {
+            return;
+        };
+        let (shown, playing_id) = (self.crates.shown_id(), self.crates.playing_id());
+        let active = self.position.state != PlayState::Stopped;
+        let crates = self
+            .crates
+            .list()
+            .iter()
+            .map(|c| CrateState {
+                name: c.name.clone(),
+                shown: c.id == shown,
+                playing: active && c.id == playing_id,
+            })
+            .collect();
+        let playing = active
+            .then(|| {
+                let p = self.crates.playing();
+                let e = p.get(p.current()?)?;
+                let title = if e.title.is_empty() {
+                    e.display_name()
+                } else {
+                    e.title.clone()
+                };
+                Some(bridge::Playing {
+                    artist: e.artist.clone(),
+                    title,
+                    crate_name: self.crates.name(playing_id).to_owned(),
+                })
+            })
+            .flatten();
+        let sends = d
+            .jobs
+            .values()
+            .map(|j| SendState {
+                page: j.name.clone(),
+                done: j.done,
+                total: j.total,
+            })
+            .collect();
+        let snap = Snapshot {
+            crates,
+            playing,
+            sends,
+        };
+        if snap != d.snapshot {
+            shared.snapshot.store(Arc::new(snap.clone()));
+            if let Some(d) = &mut self.dig {
+                d.snapshot = snap;
+            }
+        }
     }
 
     fn dig_intake_event(&mut self, e: Event) {
@@ -1012,6 +1182,7 @@ impl WinampApp {
                 }
             }
             DigAction::OpenDialog => self.dig_open_dialog(),
+            DigAction::OpenBrowserDialog => self.dig_open_bridge_dialog(),
         }
     }
 
@@ -1377,6 +1548,158 @@ impl WinampApp {
         if settings_changed {
             let e = d.save_settings();
             self.dig_notify(e);
+        }
+    }
+
+    // ---- OPT ▸ Browser… ------------------------------------------------------------------
+
+    fn dig_open_bridge_dialog(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        let port = d
+            .bridge_port()
+            .or_else(|| d.bridge_shared.as_ref().map(|s| s.pairing().port()))
+            .unwrap_or(bridge::DEFAULT_PORT);
+        d.bridge_dialog = Some(BridgeDialog {
+            port,
+            paired: false,
+        });
+    }
+
+    pub(crate) fn dig_bridge_act(&mut self, a: BridgeAction) {
+        let Some(d) = &mut self.dig else { return };
+        match a {
+            BridgeAction::ForgetBrowsers => {
+                let Some(shared) = &d.bridge_shared else {
+                    return;
+                };
+                let result = shared.pairing().forget_all();
+                if let Some(dialog) = &mut d.bridge_dialog {
+                    dialog.paired = false;
+                }
+                self.notify(match result {
+                    Ok(()) => "Browsers forgotten: each one needs pairing again".into(),
+                    Err(e) => e,
+                });
+            }
+            BridgeAction::SetPort(port) => {
+                let Some(shared) = &d.bridge_shared else {
+                    return;
+                };
+                let saved = shared.pairing().set_port(port);
+                d.setup.bridge = BridgeSetup::Configured;
+                d.start_bridge();
+                if let Err(e) = saved {
+                    self.notify(e);
+                }
+            }
+            BridgeAction::Close => {
+                // No code works while the dialog is closed.
+                if let Some(shared) = &d.bridge_shared {
+                    shared.pairing().clear_code();
+                }
+                d.bridge_dialog = None;
+            }
+        }
+    }
+
+    pub(super) fn dig_bridge_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.dig else { return };
+        let Some(dialog) = &mut d.bridge_dialog else {
+            return;
+        };
+        let shared = d.bridge_shared.clone();
+        let running = d.bridge.as_ref().map(BridgeHandle::port);
+        let error = d.bridge_error.clone();
+        let mut open = true;
+        let mut actions = Vec::new();
+        egui::Window::new("Browser")
+            .id(egui::Id::new("bridge-dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                let Some(shared) = &shared else {
+                    ui.label("The browser bridge starts once the player is ready.");
+                    return;
+                };
+                match (running, &error) {
+                    (_, Some(e)) => {
+                        ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
+                        ui.label("The player works without it; choose another port below.");
+                    }
+                    (Some(p), None) => {
+                        ui.label(format!(
+                            "Listening on 127.0.0.1:{p}, for this computer only"
+                        ));
+                    }
+                    (None, None) => {
+                        ui.label("Starting…");
+                    }
+                }
+
+                ui.separator();
+                ui.strong("Pair a browser");
+                let mut pairing = shared.pairing();
+                if let Some(wait) = pairing.locked_for() {
+                    ui.label(format!(
+                        "Too many wrong codes: pairing resumes in {} s",
+                        wait.as_secs_f32().ceil()
+                    ));
+                } else {
+                    match pairing.ensure_code() {
+                        Ok((code, left)) => {
+                            ui.label(
+                                egui::RichText::new(format!("{} {}", &code[..3], &code[3..]))
+                                    .monospace()
+                                    .size(28.0),
+                            );
+                            let secs = left.as_secs_f32().ceil() as u64;
+                            ui.label(format!("Valid for {}:{:02}", secs / 60, secs % 60));
+                        }
+                        Err(e) => {
+                            ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
+                        }
+                    }
+                }
+                ui.label("Enter this code in the extension's options.");
+                if dialog.paired {
+                    ui.label("A browser was paired.");
+                }
+
+                ui.separator();
+                let n = pairing.paired();
+                drop(pairing);
+                ui.label(match n {
+                    0 => "No paired browsers".to_owned(),
+                    1 => "1 paired browser".to_owned(),
+                    n => format!("{n} paired browsers"),
+                });
+                if ui
+                    .add_enabled(n > 0, egui::Button::new("Forget browsers"))
+                    .clicked()
+                {
+                    actions.push(BridgeAction::ForgetBrowsers);
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    ui.add(egui::DragValue::new(&mut dialog.port).range(1024..=65535));
+                    let changed = Some(dialog.port) != running || error.is_some();
+                    if ui.add_enabled(changed, egui::Button::new("Use")).clicked() {
+                        actions.push(BridgeAction::SetPort(dialog.port));
+                    }
+                });
+                ui.label("The extension's options need the same port.");
+            });
+        // The code's countdown.
+        ctx.request_repaint_after(Duration::from_millis(500));
+        if !open {
+            actions.push(BridgeAction::Close);
+        }
+        for a in actions {
+            self.dig_bridge_act(a);
         }
     }
 
