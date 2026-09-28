@@ -1,8 +1,5 @@
-# scene-system Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change visual-engine. Update Purpose after archive.
-## Requirements
 ### Requirement: Scene package
 A scene SHALL consist of `scene.wgsl` and `scene.ron` in `visuals/scenes/<id>/`; the manifest SHALL declare name, tags, kind (fragment, compute, or automaton), typed parameters with default/range/mutable, macro mappings, routes, and optional feedback settings. An automaton kind SHALL declare its grid size (`theta` and `rings`, each 8..=1024) and `steps_per_beat` (greater than 0, at most 16), and MAY declare `preroll` (steps run after a reset, 16 by default, at most 1024) and `substeps` (`fn rule` passes per step, 1 by default, 1..=32). A manifest outside these ranges SHALL be rejected with an error naming the field.
 
@@ -14,30 +11,7 @@ A scene SHALL consist of `scene.wgsl` and `scene.ron` in `visuals/scenes/<id>/`;
 - **WHEN** a manifest declares `kind: Automaton(theta: 4, rings: 64, steps_per_beat: 4.0)`
 - **THEN** the manifest is rejected with an error naming `theta`, and on hot reload the previous version keeps running
 
-### Requirement: Prelude and generated bindings
-The engine SHALL prepend a prelude providing `struct Music`, the previous-frame texture, and helper functions (complex math, noise, palettes, rotations, SDF and raymarch utilities), and SHALL generate `struct Params` and its uniform layout from the manifest.
-
-#### Scenario: Author writes only the look
-- **WHEN** an author writes `fn scene(uv, m, p) -> vec4f` using `p.zoom` and `m.beat`
-- **THEN** the scene compiles without any binding boilerplate
-
-### Requirement: Hot reload with safe fallback
-On native, edits to scene files SHALL be applied while playing; invalid WGSL or RON SHALL NOT interrupt the show — the last valid version keeps running and an error toast shows file, line, and message.
-
-#### Scenario: Save a valid edit
-- **WHEN** the author changes a color in `scene.wgsl` and saves
-- **THEN** the change is visible within 500 ms and music is unaffected
-
-#### Scenario: Save a broken shader
-- **WHEN** the author saves WGSL with a syntax error
-- **THEN** the previous shader keeps rendering and an error toast appears
-
-### Requirement: Tolerant variants
-Variants SHALL keep loading when their scene's parameters change: unknown keys are ignored and missing keys take defaults.
-
-#### Scenario: Param removed
-- **WHEN** a parameter is removed from a scene manifest
-- **THEN** existing variants of that scene still load
+## ADDED Requirements
 
 ### Requirement: Persistent automaton state
 An automaton scene SHALL have a state grid of `theta` × `rings` cells (four floats each) that persists from frame to frame, private to each drawn instance of the scene. Crossfades, the other layer, render-scale changes and post effects SHALL NOT alter it. The author's `fn rule` SHALL compute a cell's next state from the previous state only, with θ wrapping around and rings outside the grid reading as empty.
@@ -134,4 +108,3 @@ The prelude SHALL provide `tube_hit`, which maps a screen point to the depth, an
 #### Scenario: Mirror injection
 - **WHEN** only the lowest spectrum bar is at full level
 - **THEN** `inject_level` is highest at θ = 0 and θ = 1 and falls to the level of the neighbouring bars toward θ = 0.5
-

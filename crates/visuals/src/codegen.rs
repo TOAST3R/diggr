@@ -121,6 +121,12 @@ fn bindings(m: &SceneManifest) -> String {
     if m.is_compute() {
         s += "@group(0) @binding(4) var<storage, read_write> accum: array<atomic<u32>>;\n";
     }
+    if m.is_automaton() {
+        s += "\nstruct Automaton {\n    tick: i32,\n    phase: f32,\n    since_reset: i32,\n    _pad: f32,\n}\n\n";
+        s += "@group(0) @binding(4) var state_in: texture_2d<f32>;\n";
+        s += "@group(0) @binding(5) var state_out: texture_storage_2d<rgba16float, write>;\n";
+        s += "@group(0) @binding(6) var<uniform> auto_u: Automaton;\n";
+    }
     s += "\nfn load_music() -> Music {\n    return music_u;\n}\n\n";
     s += "fn load_params() -> Params {\n    var p: Params;\n";
     for (i, p) in m.params.iter().enumerate() {
@@ -197,6 +203,72 @@ fn accum_at(uv: vec2f) -> vec4f {
 }
 "#;
     }
+    if let SceneKind::Automaton {
+        theta,
+        rings,
+        substeps,
+        ..
+    } = m.kind
+    {
+        s += &format!("\nconst GRID: vec2<i32> = vec2<i32>({theta}, {rings});\n");
+        s += &format!("const SUBSTEPS: i32 = {};\n", substeps.max(1));
+        s += r#"
+// The grid size: (theta, rings).
+fn grid() -> vec2<i32> {
+    return GRID;
+}
+
+// How many times `rule` runs per step (the manifest's `substeps`).
+fn substeps() -> i32 {
+    return SUBSTEPS;
+}
+
+// A cell of the previous state: `c` = (theta, ring). Theta wraps around; rings outside the
+// grid are empty.
+fn cell(c: vec2<i32>) -> vec4f {
+    if (c.y < 0 || c.y >= GRID.y) {
+        return vec4f(0.0);
+    }
+    let t = ((c.x % GRID.x) + GRID.x) % GRID.x;
+    return textureLoad(state_in, vec2<i32>(t, c.y), 0);
+}
+
+// Index of the step being computed (in `rule`), or of the last step run (in `scene`).
+fn tick() -> i32 {
+    return auto_u.tick;
+}
+
+// Steps since the grid was last reset: 0 on the first step, which starts from an empty grid (a
+// rule can seed its initial state there).
+fn since_reset() -> i32 {
+    return auto_u.since_reset;
+}
+
+// Fraction of the current step elapsed, for gliding between steps.
+fn tick_phase() -> f32 {
+    return auto_u.phase;
+}
+
+// The spectrum bars around the circle, `theta` in 0..1: bars 0..18 over the first half,
+// mirrored over the second, linearly interpolated.
+fn inject_level(m: Music, theta: f32) -> f32 {
+    let x = (1.0 - abs(1.0 - 2.0 * fract(theta))) * 18.0;
+    let i = i32(floor(x));
+    return mix(band(m, i), band(m, min(i + 1, 18)), x - f32(i));
+}
+
+// The current state at a fractional ring `depth` and `theta` in 0..1 (from `scene`): nearest
+// in theta, linear in depth, empty outside the grid.
+fn state_at(depth: f32, theta: f32) -> vec4f {
+    if (depth < 0.0 || depth > f32(GRID.y - 1)) {
+        return vec4f(0.0);
+    }
+    let t = i32(floor(fract(theta) * f32(GRID.x)));
+    let r = i32(floor(depth));
+    return mix(cell(vec2<i32>(t, r)), cell(vec2<i32>(t, r + 1)), depth - f32(r));
+}
+"#;
+    }
     s
 }
 
@@ -232,14 +304,27 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 "#;
     }
+    if m.is_automaton() {
+        s += r#"
+@compute @workgroup_size(8, 8)
+fn cs_step(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec2<i32>(id.xy);
+    if (c.x >= GRID.x || c.y >= GRID.y) {
+        return;
+    }
+    textureStore(state_out, c, rule(c, load_music(), load_params()));
+}
+"#;
+    }
     s
 }
 
 /// Builds the module: bindings, prelude files (name, text) in the given order, the author's
 /// code, then entry points. The author writes
 /// `fn scene(uv: vec2f, m: Music, p: Params) -> vec4f` where `uv` is centered with y in −1..1
-/// (x scaled by the aspect ratio), and for compute scenes also
-/// `fn simulate(i: u32, m: Music, p: Params)`, called once per invocation.
+/// (x scaled by the aspect ratio), for compute scenes also
+/// `fn simulate(i: u32, m: Music, p: Params)`, called once per invocation, and for automata
+/// `fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f`, a cell's next state.
 pub fn assemble(
     m: &SceneManifest,
     prelude: &[(String, String)],
@@ -345,6 +430,7 @@ pub fn required_functions(kind: SceneKind) -> &'static [&'static str] {
     match kind {
         SceneKind::Fragment => &["scene"],
         SceneKind::Compute { .. } => &["scene", "simulate"],
+        SceneKind::Automaton { .. } => &["scene", "rule"],
     }
 }
 
@@ -422,6 +508,37 @@ fn scene(uv: vec2f, m: Music, p: Params) -> vec4f {
         let module = validate(&a).unwrap_or_else(|e| panic!("{e}"));
         assert!(module.entry_points.iter().any(|e| e.name == "cs_main"));
         assert_eq!(required_functions(m.kind), ["scene", "simulate"]);
+    }
+
+    pub const AUTOMATON_SRC: &str = "fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f {
+    if (c.y == 0) {
+        return vec4f(step(0.5, inject_level(m, f32(c.x) / f32(grid().x))), f32(tick()), 0.0, 0.0);
+    }
+    return cell(c - vec2<i32>(0, 1)) * p.zoom;
+}
+fn scene(uv: vec2f, m: Music, p: Params) -> vec4f {
+    let s = state_at(length(uv) * 10.0 - tick_phase(), atan2(uv.y, uv.x) / 6.2831853);
+    return vec4f(s.xxx * p.tint, 1.0);
+}
+";
+
+    #[test]
+    fn automaton_author_writes_only_the_rule_and_the_look() {
+        let m = manifest("Automaton(theta: 64, rings: 32, steps_per_beat: 4.0)");
+        let a = assemble(&m, &bundled_prelude(), "scene.wgsl", AUTOMATON_SRC);
+        let module = validate(&a).unwrap_or_else(|e| panic!("{e}\n{}", a.source));
+        let eps: Vec<_> = module
+            .entry_points
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(eps, ["vs_main", "fs_main", "cs_step"]);
+        assert_eq!(required_functions(m.kind), ["scene", "rule"]);
+        assert!(a.source.contains("vec2<i32>(64, 32)"));
+        assert!(a.source.contains("SUBSTEPS: i32 = 1;"));
+        // Fragment and compute scenes get none of it.
+        let f = assemble(&manifest("Fragment"), &[], "scene.wgsl", SCENE);
+        assert!(!f.source.contains("state_in") && !f.source.contains("cs_step"));
     }
 
     #[test]

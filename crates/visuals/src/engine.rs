@@ -11,13 +11,14 @@ use eframe::egui_wgpu;
 use egui::{Align2, Color32, Key, Modifiers, Rect, RichText, Ui, vec2};
 use ui::fullscreen::{SceneFrame, VisualScene};
 
+use crate::automaton::AutomatonClock;
 use crate::codegen::{MUSIC_BANDS, MUSIC_FLOATS, music_index, pack_params, param_slots};
 use crate::compositor::{Governor, Transition, TransitionKind, lerp_params};
 use crate::deck::{Fader, FaderEvent, FaderView, Return, fader_ui};
 use crate::director::{Command, DEFAULT_RULES, Director, LookInfo, Rules, Value};
 use crate::gpu::{Gpu, Layer, LayerDraw, PostParams, SceneProgram, Targets};
 use crate::library::{self, Changes, LoadError, SceneSource, Watcher};
-use crate::manifest::{ParamType, SceneManifest};
+use crate::manifest::{ParamType, SceneKind, SceneManifest};
 use crate::modulation::{
     Contribution, Macro, Macros, RouteState, Source, compose, resolve, snap_speed,
 };
@@ -54,6 +55,8 @@ struct Look {
 struct Slot {
     look: usize,
     layer: Option<Layer>,
+    /// For automata: when the layer's grid steps (lives and dies with the layer).
+    clock: Option<AutomatonClock>,
     routes: Vec<RouteState>,
     base: Vec<[f32; 4]>,
     live: Vec<[f32; 4]>,
@@ -64,6 +67,7 @@ impl Slot {
         Self {
             look,
             layer: None,
+            clock: None,
             routes: Vec::new(),
             base: Vec::new(),
             live: Vec::new(),
@@ -1240,6 +1244,11 @@ impl VisualEngine {
                 self.fade.poke(now);
             }
             self.track = Some(track);
+            for slot in [&mut self.a, &mut self.b].into_iter().flatten() {
+                if let Some(c) = &mut slot.clock {
+                    c.reset();
+                }
+            }
         }
         self.seed = track_seed(frame.score, frame.title);
         self.rng = Rng(self.seed ^ self.frame);
@@ -1333,17 +1342,40 @@ impl VisualEngine {
             let (Some(slot), Some(look)) = (slot.as_mut(), look) else {
                 continue;
             };
-            let program = self.scenes[&self.looks[look].variant.scene]
-                .program
-                .clone()?;
+            let scene = &self.scenes[&self.looks[look].variant.scene];
+            let program = scene.program.clone()?;
             if slot
                 .layer
                 .as_ref()
                 .is_none_or(|l| !Rc::ptr_eq(&l.program, &program))
             {
                 slot.layer = Some(Layer::new(self.gpu.as_ref()?, program));
+                // A new layer (or a rebuilt program) starts with an empty grid.
+                slot.clock = match scene.src.manifest.kind {
+                    SceneKind::Automaton {
+                        steps_per_beat,
+                        preroll,
+                        ..
+                    } => Some(AutomatonClock::new(steps_per_beat, preroll)),
+                    _ => None,
+                };
                 self.governor.settle();
             }
+        }
+        // Automata step on musical time, at the rate their `step_rate` param asks for.
+        let beats = self.signals.beats;
+        for slot in [&mut self.a, &mut self.b].into_iter().flatten() {
+            let (Some(clock), Some(layer)) = (&mut slot.clock, &mut slot.layer) else {
+                continue;
+            };
+            let m = &self.scenes[&self.looks[slot.look].variant.scene]
+                .src
+                .manifest;
+            let rate = m
+                .param_index("step_rate")
+                .and_then(|i| slot.live.get(i))
+                .map_or(1.0, |v| v[0]);
+            layer.advance(clock.advance(beats, rate));
         }
         let gpu = self.gpu.as_mut()?;
         let targets = self.targets.as_mut()?;
@@ -1612,8 +1644,8 @@ mod tests {
     #[test]
     fn loads_bundled_looks_and_starts_on_the_best_rated() {
         let (mut e, dir) = engine("engine-load");
-        assert_eq!(e.scenes.len(), 4);
-        assert_eq!(e.looks.len(), 8);
+        assert_eq!(e.scenes.len(), 6);
+        assert_eq!(e.looks.len(), 13);
         if with_gpu(&mut e) {
             let first = e.current_look().unwrap();
             assert_eq!(e.looks[first].variant.name, "nave", "rating 5");
@@ -1746,6 +1778,36 @@ mod tests {
             s.layer = None;
         }
         assert!(e.paint(rect, &frame_at(3.0, &bars)).is_some());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn automaton_layers_step_on_their_own_clock() {
+        let (mut e, dir) = engine("engine-automaton");
+        if !with_gpu(&mut e) {
+            return;
+        }
+        let bars = [0.5; 19];
+        let tick = |n: u64| Tick {
+            now: n as f64 / 60.0,
+            dt: 1.0 / 60.0,
+            lead_secs: 0.0,
+        };
+        e.pin_look("polar_life", "bloom").unwrap();
+        for n in 0..30 {
+            assert!(e.render_offline(&frame_at(n as f64 / 60.0, &bars), tick(n), (64, 36)));
+        }
+        let clock =
+            e.a.as_ref()
+                .and_then(|s| s.clock.as_ref())
+                .expect("a clock");
+        assert_eq!(clock.rate(), 1.0, "no drop: ×1");
+        e.pin_look("julia_tunnel", "solar").unwrap();
+        assert!(e.render_offline(&frame_at(0.5, &bars), tick(30), (64, 36)));
+        assert!(
+            e.a.as_ref().unwrap().clock.is_none(),
+            "fragment scenes have none"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

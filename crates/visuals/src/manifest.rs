@@ -60,7 +60,48 @@ pub enum SceneKind {
     Compute {
         invocations: u32,
     },
+    /// A persistent `theta` × `rings` state grid, advanced by `fn rule` `steps_per_beat` times
+    /// per beat (musical time, not frames); `fn scene` draws it. After a reset the grid runs
+    /// `preroll` steps (8 per frame) so it doesn't start empty. Each step runs `fn rule`
+    /// `substeps` times, for continuous rules (diffusion) that need many small updates per tick.
+    Automaton {
+        theta: u32,
+        rings: u32,
+        steps_per_beat: f32,
+        #[serde(default = "default_preroll")]
+        preroll: u32,
+        #[serde(default = "one")]
+        substeps: u32,
+    },
 }
+
+fn default_preroll() -> u32 {
+    crate::automaton::PREROLL
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// The longest pre-roll a scene may ask for, in steps.
+pub const MAX_PREROLL: u32 = 1024;
+/// The most `fn rule` passes per step.
+pub const MAX_SUBSTEPS: u32 = 32;
+
+impl SceneKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            SceneKind::Fragment => "fragment",
+            SceneKind::Compute { .. } => "compute",
+            SceneKind::Automaton { .. } => "automaton",
+        }
+    }
+}
+
+/// Grid sides an automaton may declare.
+pub const AUTOMATON_GRID: std::ops::RangeInclusive<u32> = 8..=1024;
+/// The largest `steps_per_beat`.
+pub const MAX_STEPS_PER_BEAT: f32 = 16.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Feedback {
@@ -134,6 +175,39 @@ impl SceneManifest {
     }
 
     fn check(&self) -> Result<(), ManifestError> {
+        if let SceneKind::Automaton {
+            theta,
+            rings,
+            steps_per_beat,
+            preroll,
+            substeps,
+        } = self.kind
+        {
+            if !(1..=MAX_SUBSTEPS).contains(&substeps) {
+                return Err(err(format!(
+                    "automaton `substeps` must be in 1..={MAX_SUBSTEPS}, is {substeps}"
+                )));
+            }
+            if preroll > MAX_PREROLL {
+                return Err(err(format!(
+                    "automaton `preroll` must be at most {MAX_PREROLL}, is {preroll}"
+                )));
+            }
+            for (field, v) in [("theta", theta), ("rings", rings)] {
+                if !AUTOMATON_GRID.contains(&v) {
+                    return Err(err(format!(
+                        "automaton `{field}` must be in {}..={}, is {v}",
+                        AUTOMATON_GRID.start(),
+                        AUTOMATON_GRID.end()
+                    )));
+                }
+            }
+            if !(steps_per_beat > 0.0 && steps_per_beat <= MAX_STEPS_PER_BEAT) {
+                return Err(err(format!(
+                    "automaton `steps_per_beat` must be above 0 and at most {MAX_STEPS_PER_BEAT}, is {steps_per_beat}"
+                )));
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         for p in &self.params {
             if !valid_ident(&p.name) {
@@ -219,6 +293,10 @@ impl SceneManifest {
         matches!(self.kind, SceneKind::Compute { .. })
     }
 
+    pub fn is_automaton(&self) -> bool {
+        matches!(self.kind, SceneKind::Automaton { .. })
+    }
+
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.iter().any(|t| t == tag)
     }
@@ -290,5 +368,60 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.message.contains("nope"));
+    }
+
+    #[test]
+    fn automaton_grid_and_rate_are_validated() {
+        let parse = |kind: &str| SceneManifest::parse(&format!("(name: \"a\", kind: {kind})"));
+        let m = parse("Automaton(theta: 128, rings: 64, steps_per_beat: 4.0)").unwrap();
+        assert!(m.is_automaton() && !m.is_compute());
+        assert!(
+            matches!(m.kind, SceneKind::Automaton { preroll: 16, .. }),
+            "default pre-roll"
+        );
+        let long = parse("Automaton(theta: 64, rings: 32, steps_per_beat: 4.0, preroll: 256)");
+        assert!(matches!(
+            long.unwrap().kind,
+            SceneKind::Automaton { preroll: 256, .. }
+        ));
+        assert!(matches!(m.kind, SceneKind::Automaton { substeps: 1, .. }));
+        let fine = parse("Automaton(theta: 64, rings: 32, steps_per_beat: 4.0, substeps: 12)");
+        assert!(matches!(
+            fine.unwrap().kind,
+            SceneKind::Automaton { substeps: 12, .. }
+        ));
+        for (kind, field) in [
+            (
+                "Automaton(theta: 128, rings: 64, steps_per_beat: 4.0, substeps: 0)",
+                "`substeps`",
+            ),
+            (
+                "Automaton(theta: 128, rings: 64, steps_per_beat: 4.0, substeps: 33)",
+                "`substeps`",
+            ),
+            (
+                "Automaton(theta: 4, rings: 64, steps_per_beat: 4.0)",
+                "`theta`",
+            ),
+            (
+                "Automaton(theta: 128, rings: 2048, steps_per_beat: 4.0)",
+                "`rings`",
+            ),
+            (
+                "Automaton(theta: 128, rings: 64, steps_per_beat: 0.0)",
+                "`steps_per_beat`",
+            ),
+            (
+                "Automaton(theta: 128, rings: 64, steps_per_beat: 17.0)",
+                "`steps_per_beat`",
+            ),
+            (
+                "Automaton(theta: 128, rings: 64, steps_per_beat: 4.0, preroll: 5000)",
+                "`preroll`",
+            ),
+        ] {
+            let e = parse(kind).unwrap_err();
+            assert!(e.message.contains(field), "{kind}: {e}");
+        }
     }
 }

@@ -1,0 +1,72 @@
+// A cellular automaton on a polar grid, drawn as a tunnel. Spectrum onsets and kicks give birth
+// on the inner ring; the automaton evolves every step (a Life-like rule over the 8 neighbours),
+// and every step the whole tunnel is pushed one ring outward (8 rings per beat). Builds, drops and
+// breakdowns switch to their own rules; drops also step faster with their energy (×2, ×4 at the
+// peak). Cells are lit tiles with halos and comet tails; `tube` bends the tunnel into a 3D pipe.
+(
+    name: "Polar Life",
+    tags: ["2d", "tunnel", "organic", "automaton"],
+    kind: Automaton(theta: 160, rings: 96, steps_per_beat: 8.0, preroll: 32),
+    params: [
+        // Share of cells alive in the random soup a fresh grid starts from.
+        (name: "soup", type: F32, default: [0.35], min: [0.0], max: [0.8]),
+        // Birth on the inner ring where a band rises this far above its recent level.
+        (name: "sensitivity", type: F32, default: [0.06], min: [0.0], max: [0.4]),
+        // Chance per cell of a kick seeding the inner ring.
+        (name: "kick_seed", type: F32, default: [0.2], min: [0.0], max: [1.0]),
+        // Life-like rule as bit masks over the live neighbours (0..=8): default B3/S23 (Life).
+        (name: "birth", type: Int, default: [8], min: [0], max: [511], mutable: false),
+        (name: "survive", type: Int, default: [12], min: [0], max: [511], mutable: false),
+        // Steps a cell takes to fade out after it stops living.
+        (name: "decay_states", type: Int, default: [4], min: [1], max: [12]),
+        // Builds, drops and breakdowns run their own rules (1), or the variant's rule throughout (0).
+        (name: "section_rules", type: F32, default: [1.0], min: [0.0], max: [1.0], mutable: false),
+        // Cells older than this (steps) die, so the tunnel keeps renewing.
+        (name: "max_age", type: Int, default: [240], min: [8], max: [1000]),
+        // Steps between outward pushes: 1 at 8 steps per beat is 8 rings per beat.
+        (name: "shift_every", type: Int, default: [1], min: [1], max: [16], mutable: false),
+        // How far (in rings) the tunnel lunges forward on a kick.
+        (name: "kick_punch", type: F32, default: [1.6], min: [0.0], max: [6.0]),
+        // Kick interference: the picture tearing and splitting for an instant, and the share of
+        // cells flipped in a random band of rings.
+        (name: "glitch", type: F32, default: [1.0], min: [0.0], max: [3.0]),
+        (name: "kick_noise", type: F32, default: [0.5], min: [0.0], max: [1.0]),
+        // Hits are kicks, and with this on (1) every beat too.
+        (name: "beat_hits", type: F32, default: [1.0], min: [0.0], max: [1.0], mutable: false),
+        // Rotation per ring (turns), and a slow spin of the whole tunnel.
+        (name: "twist", type: F32, default: [0.0], min: [-0.004], max: [0.004]),
+        (name: "spin", type: F32, default: [0.0], min: [-0.5], max: [0.5]),
+        // Screen radii of the inner and outer ring.
+        (name: "r_min", type: F32, default: [0.03], min: [0.01], max: [0.2]),
+        (name: "r_max", type: F32, default: [2.0], min: [0.6], max: [2.5]),
+        // The look of a cell: bevel width (0 = flat tiles), halo into the gaps, comet tail length.
+        (name: "bevel", type: F32, default: [0.2], min: [0.0], max: [0.45]),
+        (name: "halo", type: F32, default: [0.6], min: [0.0], max: [2.0]),
+        (name: "tails", type: F32, default: [1.0], min: [0.0], max: [3.0]),
+        // 0 = a flat tunnel, 1 = a 3D pipe lit by a headlight whose far end sways by `sway`.
+        (name: "tube", type: F32, default: [0.0], min: [0.0], max: [1.0]),
+        (name: "sway", type: F32, default: [0.5], min: [0.0], max: [1.2]),
+        (name: "glow", type: F32, default: [0.4], min: [0.0], max: [3.0]),
+        (name: "palette_shift", type: F32, default: [0.0], min: [0.0], max: [1.0]),
+        (name: "color_a", type: Color, default: [0.5, 0.5, 0.5], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "color_b", type: Color, default: [0.5, 0.5, 0.5], min: [0, 0, 0], max: [1, 1, 1]),
+        // Step rate multiplier, read by the engine once per beat (×0.5, ×1, ×2 or ×4).
+        (name: "step_rate", type: F32, default: [1.0], min: [0.5], max: [4.0], mutable: false),
+    ],
+    macros: [
+        (macro: Chaos, param: "kick_seed", amount: 0.4),
+        (macro: Stretch, param: "twist", amount: 0.5),
+        (macro: Feedback, param: "decay_states", amount: 0.6),
+    ],
+    routes: [
+        (source: Kick, shapers: [Envelope(attack: Ms(0), release: Ms(150)), Range(0.0, 1.0)], target: "glow"),
+        (source: Treble, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.0004)], target: "twist"),
+        // Drops run faster, following their energy.
+        (source: Energy, shapers: [Gate([Drop]), Range(1.0, 4.0)], mode: Set, target: "step_rate"),
+    ],
+    optional_routes: [
+        (source: Const(0), shapers: [Random(Phrase), Range(-0.3, 0.3), Smooth(Beats(4.0))], target: "spin"),
+        (source: Hat, shapers: [Envelope(attack: Ms(0), release: Ms(60)), Range(0.0, 0.05)], target: "palette_shift"),
+    ],
+    feedback: Some((decay: 0.3, warp: 0.2)),
+)

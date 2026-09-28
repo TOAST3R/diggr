@@ -1,0 +1,1 @@
+(scene: "polar_life", name: "bloom", params: {"sensitivity": [0.03], "kick_seed": [0.4], "survive": [60], "decay_states": [3], "glow": [1.0], "bevel": [0.15], "halo": [1.2], "tails": [0.8], "color_a": [0.6, 0.45, 0.4], "color_b": [0.55, 0.5, 0.45], "palette_shift": [0.1]}, rating: 4)

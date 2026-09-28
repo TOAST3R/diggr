@@ -1,0 +1,57 @@
+// Gray-Scott reaction-diffusion on a polar grid, drawn as a glossy tunnel. Spectrum onsets seed
+// growth at the centre and kicks splash it into a band of rings; the chemistry grows it into
+// coral, spots or worms (the `feed` / `kill` pair) while the tunnel streams outward. Each step
+// runs the chemistry 12 times, so it evolves quickly while staying on musical time.
+(
+    name: "Coral Tunnel",
+    tags: ["2d", "tunnel", "organic", "automaton", "smooth"],
+    kind: Automaton(theta: 256, rings: 160, steps_per_beat: 8.0, preroll: 256, substeps: 12),
+    params: [
+        // Share of 4×4 blocks seeded with growth when a fresh grid starts.
+        (name: "soup", type: F32, default: [0.08], min: [0.0], max: [0.5]),
+        // The chemistry: feed rate of the substrate and kill rate of the growth. Coral by default;
+        // (0.0367, 0.0649) gives dividing cells, (0.078, 0.061) worms, (0.029, 0.057) mazes.
+        (name: "feed", type: F32, default: [0.0545], min: [0.01], max: [0.1], mutable: false),
+        (name: "kill", type: F32, default: [0.062], min: [0.045], max: [0.07], mutable: false),
+        // Rings per pass the tunnel drifts outward (× 12 passes per step).
+        (name: "flow", type: F32, default: [0.06], min: [0.0], max: [0.2]),
+        // Seeding on the inner rings where a band rises this far above its recent level.
+        (name: "sensitivity", type: F32, default: [0.06], min: [0.0], max: [0.4]),
+        // Chance per step of a random seed in each 3×3 block of the 6 innermost rings (× 0.3 + energy).
+        (name: "spores", type: F32, default: [0.02], min: [0.0], max: [0.2]),
+        // Share of spots in the kicked band that start growing.
+        (name: "splash", type: F32, default: [0.25], min: [0.0], max: [1.0]),
+        (name: "kick_punch", type: F32, default: [2.0], min: [0.0], max: [6.0]),
+        // The relief: how steep the growth looks, and how wet.
+        (name: "height", type: F32, default: [6.0], min: [0.0], max: [16.0]),
+        (name: "gloss", type: F32, default: [0.8], min: [0.0], max: [2.0]),
+        (name: "glow", type: F32, default: [0.3], min: [0.0], max: [2.0]),
+        (name: "twist", type: F32, default: [0.0], min: [-0.004], max: [0.004]),
+        (name: "spin", type: F32, default: [0.0], min: [-0.5], max: [0.5]),
+        (name: "r_min", type: F32, default: [0.03], min: [0.01], max: [0.2]),
+        (name: "r_max", type: F32, default: [2.0], min: [0.6], max: [2.5]),
+        // 0 = a flat tunnel, 1 = a 3D pipe lit by a headlight whose far end sways by `sway`.
+        (name: "tube", type: F32, default: [0.0], min: [0.0], max: [1.0]),
+        (name: "sway", type: F32, default: [0.5], min: [0.0], max: [1.2]),
+        (name: "palette_shift", type: F32, default: [0.0], min: [0.0], max: [1.0]),
+        (name: "color_a", type: Color, default: [0.5, 0.5, 0.5], min: [0, 0, 0], max: [1, 1, 1]),
+        (name: "color_b", type: Color, default: [0.5, 0.5, 0.5], min: [0, 0, 0], max: [1, 1, 1]),
+        // Step rate multiplier, read by the engine once per beat (×0.5, ×1, ×2 or ×4).
+        (name: "step_rate", type: F32, default: [1.0], min: [0.5], max: [4.0], mutable: false),
+    ],
+    macros: [
+        (macro: Chaos, param: "splash", amount: 0.5),
+        (macro: Stretch, param: "twist", amount: 0.5),
+        (macro: Feedback, param: "gloss", amount: 0.5),
+    ],
+    routes: [
+        (source: Kick, shapers: [Envelope(attack: Ms(0), release: Ms(200)), Range(0.0, 0.8)], target: "glow"),
+        (source: Treble, shapers: [Smooth(Beats(0.5)), Range(0.0, 0.0004)], target: "twist"),
+        (source: Energy, shapers: [Gate([Drop]), Range(1.0, 4.0)], mode: Set, target: "step_rate"),
+    ],
+    optional_routes: [
+        (source: Const(0), shapers: [Random(Phrase), Range(-0.3, 0.3), Smooth(Beats(4.0))], target: "spin"),
+        (source: Hat, shapers: [Envelope(attack: Ms(0), release: Ms(60)), Range(0.0, 0.05)], target: "palette_shift"),
+    ],
+    feedback: Some((decay: 0.25, warp: 0.2)),
+)

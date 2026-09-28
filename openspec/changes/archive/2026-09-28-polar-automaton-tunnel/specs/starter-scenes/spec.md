@@ -1,8 +1,5 @@
-# starter-scenes Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change visual-engine. Update Purpose after archive.
-## Requirements
 ### Requirement: Four bundled scenes
 The system SHALL ship `julia_tunnel` (2D fragment), `liquid_feedback` (feedback-based fragment), `kifs_cathedral` (raymarched 3D fragment), `flame` (compute fractal flame), `polar_life` (polar cellular automaton drawn as a tunnel), and `coral_tunnel` (reaction-diffusion drawn as a tunnel), each with at least two variants and appropriate tags.
 
@@ -22,12 +19,7 @@ The system SHALL ship `julia_tunnel` (2D fragment), `liquid_feedback` (feedback-
 - **WHEN** `polar_life` or `coral_tunnel` plays fullscreen on an M2 at native Retina resolution
 - **THEN** it holds 60 fps at a render scale of 0.75 or more
 
-### Requirement: Performance
-Each starter scene SHALL sustain the display refresh rate at render scale ≥ 0.75 in fullscreen on an Apple M-series Mac (native display resolution).
-
-#### Scenario: Benchmark
-- **WHEN** each scene runs for 15 s in fullscreen via the visual benchmark
-- **THEN** average render scale is ≥ 0.75 and fewer than 1% of frames exceed twice the frame budget
+## ADDED Requirements
 
 ### Requirement: Polar life scene
 `polar_life` SHALL be an automaton scene that:
@@ -90,4 +82,3 @@ In drop sections it SHALL step faster than elsewhere, following the drop's energ
 #### Scenario: Cells survive the flow
 - **WHEN** the dividing-cells variant plays for 60 steps without music
 - **THEN** growth covers part of every band of rings, not only the centre or the rim
-
