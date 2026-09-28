@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use eframe::egui_wgpu::wgpu;
+use visuals::automaton::AutoFrame;
 use visuals::codegen::{MUSIC_FLOATS, music_index, pack_params};
 use visuals::gpu::{Gpu, Layer, LayerDraw, PostParams, SceneProgram, Targets};
 use visuals::library;
@@ -80,6 +81,13 @@ fn main() {
                 ] {
                     m[music_index(key)] = v;
                 }
+                // Automata: a step every frame (4 steps per beat at 132 BPM is ~9 per second,
+                // so this is the heavier case).
+                layer.advance(AutoFrame {
+                    first: f as i64,
+                    steps: 1,
+                    ..Default::default()
+                });
                 let t0 = Instant::now();
                 gpu.render(
                     &mut targets,

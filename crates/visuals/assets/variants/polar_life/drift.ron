@@ -1,0 +1,1 @@
+(scene: "polar_life", name: "drift", params: {"sensitivity": [0.1], "kick_seed": [0.05], "decay_states": [6], "glow": [0.2], "twist": [0.002], "bevel": [0.3], "halo": [0.4], "tails": [1.6], "color_a": [0.35, 0.45, 0.6], "color_b": [0.3, 0.35, 0.45]}, tags: ["calm"], rating: 3)

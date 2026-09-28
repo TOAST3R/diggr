@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::codegen::{Assembled, assemble, validate};
+use crate::codegen::{Assembled, assemble, required_functions, validate};
 use crate::director::Rules;
 use crate::manifest::SceneManifest;
 use crate::variants::Variant;
@@ -25,6 +25,7 @@ pub const BUNDLED: &[(&str, &str)] = bundled![
     "prelude/complex.wgsl",
     "prelude/noise.wgsl",
     "prelude/space.wgsl",
+    "prelude/tunnel.wgsl",
     "scenes/julia_tunnel/scene.ron",
     "scenes/julia_tunnel/scene.wgsl",
     "scenes/liquid_feedback/scene.ron",
@@ -33,6 +34,10 @@ pub const BUNDLED: &[(&str, &str)] = bundled![
     "scenes/kifs_cathedral/scene.wgsl",
     "scenes/flame/scene.ron",
     "scenes/flame/scene.wgsl",
+    "scenes/polar_life/scene.ron",
+    "scenes/polar_life/scene.wgsl",
+    "scenes/coral_tunnel/scene.ron",
+    "scenes/coral_tunnel/scene.wgsl",
     "variants/julia_tunnel/deep-dive.ron",
     "variants/julia_tunnel/solar.ron",
     "variants/liquid_feedback/ink.ron",
@@ -41,6 +46,11 @@ pub const BUNDLED: &[(&str, &str)] = bundled![
     "variants/kifs_cathedral/crypt.ron",
     "variants/flame/silk.ron",
     "variants/flame/nebula.ron",
+    "variants/polar_life/drift.ron",
+    "variants/polar_life/bloom.ron",
+    "variants/polar_life/hyperdrive.ron",
+    "variants/coral_tunnel/reef.ron",
+    "variants/coral_tunnel/mitosis.ron",
 ];
 
 /// Something that failed to load, with where.
@@ -148,19 +158,23 @@ pub fn load_scene(
             message: e.message,
         })?;
     let src = read(&dir.join(&wgsl_rel), &wgsl_rel)?;
+    // Before validating: a missing entry function would otherwise surface as an error in the
+    // generated code.
+    for f in required_functions(manifest.kind) {
+        if *f != "scene" && !src.contains(&format!("fn {f}")) {
+            return Err(LoadError {
+                file: wgsl_rel,
+                line: None,
+                message: format!("{} scenes need fn {f}", manifest.kind.name()),
+            });
+        }
+    }
     let assembled = assemble(&manifest, prelude, &wgsl_rel, &src);
     validate(&assembled).map_err(|e| LoadError {
         file: e.file,
         line: e.line,
         message: e.message,
     })?;
-    if manifest.is_compute() && !src.contains("fn simulate") {
-        return Err(LoadError {
-            file: wgsl_rel,
-            line: None,
-            message: "compute scenes need fn simulate".into(),
-        });
-    }
     Ok(SceneSource {
         id: id.into(),
         manifest,
@@ -364,17 +378,24 @@ pub(crate) mod tests {
         assert!(load_rules(&dir).unwrap().rules.is_empty(), "user edit kept");
 
         let prelude = load_prelude(&dir);
-        assert_eq!(prelude.len(), 4);
+        assert_eq!(prelude.len(), 5);
         let ids = scene_ids(&dir);
         assert_eq!(
             ids,
-            ["flame", "julia_tunnel", "kifs_cathedral", "liquid_feedback"]
+            [
+                "coral_tunnel",
+                "flame",
+                "julia_tunnel",
+                "kifs_cathedral",
+                "liquid_feedback",
+                "polar_life"
+            ]
         );
         for id in &ids {
             let s = load_scene(&dir, id, &prelude).unwrap_or_else(|e| panic!("{e}"));
             let (vars, errs) = load_variants(&dir, id);
             assert!(errs.is_empty(), "{errs:?}");
-            assert_eq!(vars.len(), 2, "{id}");
+            assert!(vars.len() >= 2, "{id}");
             for v in vars {
                 // Bundled variants only use params their scene declares.
                 for k in v.params.keys() {
@@ -421,6 +442,13 @@ pub(crate) mod tests {
             ("scenes/flame/scene.ron", Some(3)),
             "{e}"
         );
+        // A missing entry function is reported against the author's file.
+        let wgsl = dir.join("scenes/polar_life/scene.wgsl");
+        let good = std::fs::read_to_string(&wgsl).unwrap();
+        std::fs::write(&wgsl, good.replace("fn rule(", "fn evolve(")).unwrap();
+        let e = load_scene(&dir, "polar_life", &prelude).unwrap_err();
+        assert_eq!(e.file, "scenes/polar_life/scene.wgsl");
+        assert!(e.message.contains("fn rule"), "{e}");
         std::fs::write(dir.join("variants/flame/bad.ron"), "(oops").unwrap();
         let (vars, errs) = load_variants(&dir, "flame");
         assert_eq!((vars.len(), errs.len()), (2, 1));

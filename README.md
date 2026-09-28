@@ -221,10 +221,23 @@ highest-rated look with a flash. A drop in energy crossfades to something calm. 
 comes back returns to the look it had before. Other changes morph to a sibling look, and the
 `stretch` macro follows the track's tension. The same track always gets the same show.
 
-Four scenes ship with it, each with two variants: **Julia Tunnel** (2D fractal), **Liquid
-Feedback** (the MilkDrop feel), **KIFS Cathedral** (raymarched 3D) and **Flame** (a compute-shader
-fractal flame). The artist, title and progress (with section ticks) show for 5 s on entering
-fullscreen, on each new track, and when you move the mouse or press a key.
+Six scenes ship with it, each with at least two variants:
+
+- **Julia Tunnel** (2D fractal);
+- **Liquid Feedback** (the MilkDrop feel);
+- **KIFS Cathedral** (raymarched 3D);
+- **Flame** (a compute-shader fractal flame);
+- **Polar Life** (cellular automata on the walls of a tunnel): spectrum onsets and kicks give birth
+  at the centre, and the tunnel flies outward eight rings per beat. Cells are lit, bevelled tiles
+  with halos and comet tails. Each kind of section runs its own rule: Life in grooves, Brian's
+  Brain in builds, Star Wars in drops, Day & Night in breakdowns. Every kick or beat hits the tunnel with
+  a burst of interference, and drops speed it up with their energy. The `hyperdrive` variant bends
+  the tunnel into a swaying 3D pipe;
+- **Coral Tunnel** (reaction-diffusion): onsets and kicks seed chemistry that grows into glossy
+  coral or dividing cells as it streams outward.
+
+The artist, title and progress (with section ticks) show for 5 s on entering fullscreen, on each
+new track, and when you move the mouse or press a key.
 
 | Key | Action |
 |---|---|
@@ -247,7 +260,7 @@ while the music plays:
 ```
 visuals/
   director.ron              the rules for what happens at section changes (commented)
-  prelude/*.wgsl            helpers every scene can call: complex math, noise, palettes, SDFs
+  prelude/*.wgsl            helpers every scene can call: complex math, noise, palettes, SDFs, tunnels
   scenes/<id>/scene.ron     name, tags, parameters (type, default, range), macro mappings, routes
   scenes/<id>/scene.wgsl    fn scene(uv: vec2f, m: Music, p: Params) -> vec4f
   variants/<id>/<name>.ron  saved looks (K writes these; ratings live here too)
@@ -260,6 +273,23 @@ example `m.beat` (the phase within the beat), `m.motion` (beats, scaled by the s
 and `band(m, i)` for the 19 spectrum bars. Routes in the manifest connect signals to parameters
 without writing code, for example
 `(source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(120)), Range(0, 0.35)], target: "zoom")`.
+A scene can also be a cellular automaton: declare
+`kind: Automaton(theta: 128, rings: 64, steps_per_beat: 4.0)` and write
+`fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f` next to `fn scene`. `rule` returns a cell's
+next state from the previous one, read with `cell(c)`: θ wraps around, and rings outside the grid
+are empty. `inject_level(m, theta)` spreads the spectrum around the circle, `tick()` numbers
+the steps, and `since_reset()` is 0 on the first step after a reset (a rule can seed its start
+state there; `preroll: N` in the kind runs N steps right away, 16 by default). In `fn scene`, `state_at(depth, theta)` samples the grid and `tick_phase()` glides
+between steps. The grid persists between frames, one per drawn layer. It steps on musical time,
+so the show is the same at any frame rate, and it starts over on a seek, a new track or a reload.
+A `step_rate` param, if the scene has one, is read once per beat and snapped to ×0.5, ×1, ×2 or
+×4. For continuous rules such as diffusion, `substeps: N` in the kind runs `rule` N times per step
+(up to 32; `substeps()` returns N). Any scene can fly through a tunnel with
+`tube_hit(uv, focal, bend)` from `prelude/tunnel.wgsl`: it returns the depth, the angle and the
+distance from the axis of a tube whose far end sits at `bend`.
+
+Bundled scenes are copied only when missing, so after an update that changes a scene you've used
+before, delete its folder under `visuals/scenes/` (and `visuals/variants/`) to get the new version.
 If you save a broken shader or manifest, the previous version keeps running, and a message
 shows the file, line and error for 8 seconds. To reset a file, delete it and it is restored from
 the bundled copy the next time you enter fullscreen.
@@ -426,7 +456,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 284 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 303 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -493,6 +523,10 @@ What's covered:
   - manifests, and WGSL generation checked with naga, with errors mapped to the author's line;
   - every bundled scene compiling and rendering;
   - crossfade, feedback trails, compute accumulation, hue, and broken shaders not panicking;
+  - automata: steps on musical time at 30 and 144 fps, per-beat step rate with hysteresis
+    (drops ×2 and ×4), catch-up, pre-roll and reset on seeks; grids that persist, wrap in θ and
+    stay separate per layer; Polar Life starting from a soup, growing from kicks and emptying in
+    silence; Coral Tunnel growing a kick splash with its chemistry staying in range, and its dividing cells outlasting the flow;
   - variants loading when params change, mutation, lineage and undo;
   - the director's default show (rise, fall, repeat, idle, track change, provisional boundaries);
   - fader RETURN glides landing on bar lines;

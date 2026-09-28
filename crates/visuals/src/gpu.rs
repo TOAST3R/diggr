@@ -11,12 +11,19 @@ use std::time::Instant;
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 
+use crate::automaton::{AutoFrame, MAX_CATCHUP};
 use crate::codegen::{Assembled, ShaderError, param_slots};
 use crate::manifest::{SceneKind, SceneManifest};
 
 /// Offscreen format: HDR so feedback and bloom don't band or clip.
 pub const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const WORKGROUP: u32 = 64;
+/// Automaton cells: four floats, readable and storage-writable in core WebGPU.
+const AUTOMATON_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Size of the `Automaton` uniform (tick, phase, padding).
+const AUTOMATON_UNIFORM: u64 = 16;
+/// Uniform slots: one per step run this frame, and the last for the scene pass.
+const AUTOMATON_SLOTS: u32 = MAX_CATCHUP + 1;
 
 fn bytes(f: &[f32]) -> Vec<u8> {
     f.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -254,6 +261,8 @@ fn fs_final(v: VsOut) -> @location(0) vec4f {
 pub struct SceneProgram {
     render: wgpu::RenderPipeline,
     compute: Option<(wgpu::ComputePipeline, u32)>,
+    /// Automata: the step pipeline, the grid size (theta, rings) and the rule passes per step.
+    step: Option<(wgpu::ComputePipeline, (u32, u32), u32)>,
     layout: wgpu::BindGroupLayout,
     pub param_slots: usize,
 }
@@ -322,6 +331,40 @@ impl SceneProgram {
                     count: None,
                 });
             }
+            if m.is_automaton() {
+                entries.extend([
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: all,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: AUTOMATON_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: all,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(AUTOMATON_UNIFORM),
+                        },
+                        count: None,
+                    },
+                ]);
+            }
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some(label),
                 entries: &entries,
@@ -332,23 +375,35 @@ impl SceneProgram {
                 immediate_size: 0,
             });
             let render = fullscreen_pipeline(device, label, &module, &pl, "fs_main", HDR);
-            let compute = match m.kind {
-                SceneKind::Compute { invocations } => Some((
-                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some(label),
-                        layout: Some(&pl),
-                        module: &module,
-                        entry_point: Some("cs_main"),
-                        compilation_options: Default::default(),
-                        cache: None,
-                    }),
-                    invocations.max(1),
-                )),
-                SceneKind::Fragment => None,
+            let compute_pipe = |entry| {
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pl),
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+            let (compute, step) = match m.kind {
+                SceneKind::Compute { invocations } => {
+                    (Some((compute_pipe("cs_main"), invocations.max(1))), None)
+                }
+                SceneKind::Automaton {
+                    theta,
+                    rings,
+                    substeps,
+                    ..
+                } => (
+                    None,
+                    Some((compute_pipe("cs_step"), (theta, rings), substeps.max(1))),
+                ),
+                SceneKind::Fragment => (None, None),
             };
             Self {
                 render,
                 compute,
+                step,
                 layout,
                 param_slots: param_slots(m),
             }
@@ -358,6 +413,10 @@ impl SceneProgram {
 
     pub fn is_compute(&self) -> bool {
         self.compute.is_some()
+    }
+
+    pub fn is_automaton(&self) -> bool {
+        self.step.is_some()
     }
 }
 
@@ -396,13 +455,87 @@ fn fullscreen_pipeline(
     })
 }
 
+/// An automaton's state: a ping-pong pair of cell textures, private to one layer, and the
+/// per-step uniform slots.
+struct AutoGrid {
+    /// Kept for reading the state back (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+    /// Which of `views` holds the current state.
+    cur: usize,
+    uniform: wgpu::Buffer,
+    stride: u64,
+}
+
+impl AutoGrid {
+    /// A zeroed (empty) grid.
+    fn new(gpu: &Gpu, (w, h): (u32, u32)) -> Self {
+        let texture = |label| {
+            gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: AUTOMATON_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let stride =
+            (gpu.device.limits().min_uniform_buffer_offset_alignment as u64).max(AUTOMATON_UNIFORM);
+        let textures = [texture("automaton-0"), texture("automaton-1")];
+        Self {
+            views: textures
+                .each_ref()
+                .map(|t| t.create_view(&Default::default())),
+            textures,
+            cur: 0,
+            uniform: gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("automaton"),
+                size: stride * AUTOMATON_SLOTS as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            stride,
+        }
+    }
+
+    /// Writes the tick of each step run this frame, and the last one with the phase for the
+    /// scene pass.
+    fn write_uniforms(&self, gpu: &Gpu, f: &AutoFrame, steps: u32) {
+        let mut data = vec![0u8; (self.stride * AUTOMATON_SLOTS as u64) as usize];
+        let mut put = |slot: u32, tick: i64, phase: f32| {
+            let at = (slot as u64 * self.stride) as usize;
+            data[at..at + 4].copy_from_slice(&(tick as i32).to_le_bytes());
+            data[at + 4..at + 8].copy_from_slice(&phase.to_le_bytes());
+            data[at + 8..at + 12].copy_from_slice(&((tick - f.origin) as i32).to_le_bytes());
+        };
+        for i in 0..steps {
+            put(i, f.first + i as i64, 0.0);
+        }
+        put(MAX_CATCHUP, f.first + steps as i64 - 1, f.phase);
+        gpu.queue.write_buffer(&self.uniform, 0, &data);
+    }
+}
+
 /// One scene instance being drawn (A or B): its own uniforms and, for compute scenes, its
-/// accumulation buffer.
+/// accumulation buffer, and for automata, its state grid.
 pub struct Layer {
     pub program: Rc<SceneProgram>,
     music: wgpu::Buffer,
     params: wgpu::Buffer,
     accum: Option<(wgpu::Buffer, u64)>,
+    grid: Option<AutoGrid>,
+    /// Automaton work queued for the next encode.
+    pending: AutoFrame,
 }
 
 impl Layer {
@@ -420,6 +553,23 @@ impl Layer {
             params: buf("params", (program.param_slots * 16) as u64),
             program,
             accum: None,
+            grid: None,
+            pending: AutoFrame::default(),
+        }
+    }
+
+    /// Queues automaton steps (from `AutomatonClock`) for the next encode; ignored by other
+    /// kinds. Work queued twice before an encode is combined.
+    pub fn advance(&mut self, f: AutoFrame) {
+        let p = &mut self.pending;
+        if f.reset || p.steps == 0 {
+            *p = AutoFrame {
+                reset: p.reset || f.reset,
+                ..f
+            };
+        } else {
+            p.steps += f.steps;
+            p.phase = f.phase;
         }
     }
 
@@ -474,11 +624,67 @@ impl Layer {
                 resource: buf.as_entire_binding(),
             });
         }
-        let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene"),
-            layout: &self.program.layout,
-            entries: &entries,
-        });
+        let make = |entries: &[wgpu::BindGroupEntry]| {
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scene"),
+                layout: &self.program.layout,
+                entries,
+            })
+        };
+        if let Some((pipe, size, substeps)) = &self.program.step {
+            let f = std::mem::take(&mut self.pending);
+            if f.reset || self.grid.is_none() {
+                self.grid = Some(AutoGrid::new(gpu, *size));
+            }
+            let grid = self.grid.as_mut().expect("just made");
+            let steps = f.steps.min(MAX_CATCHUP);
+            grid.write_uniforms(gpu, &f, steps);
+            // Bind group k reads state k and writes the other one.
+            let bgs = [0, 1].map(|k| {
+                let mut e = entries.clone();
+                e.extend([
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&grid.views[k]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&grid.views[1 - k]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &grid.uniform,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(AUTOMATON_UNIFORM),
+                        }),
+                    },
+                ]);
+                make(&e)
+            });
+            if steps > 0 {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("step"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipe);
+                for i in 0..steps {
+                    let offset = (i as u64 * grid.stride) as u32;
+                    for _ in 0..*substeps {
+                        pass.set_bind_group(0, &bgs[grid.cur], &[offset]);
+                        pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
+                        grid.cur = 1 - grid.cur;
+                    }
+                }
+            }
+            let offset = (MAX_CATCHUP as u64 * grid.stride) as u32;
+            let mut pass = begin(enc, "scene", &target.view);
+            pass.set_pipeline(&self.program.render);
+            pass.set_bind_group(0, &bgs[grid.cur], &[offset]);
+            pass.draw(0..3, 0..1);
+            return;
+        }
+        let bg = make(&entries);
         if let (Some((pipe, invocations)), Some((buf, _))) = (&self.program.compute, &self.accum) {
             enc.clear_buffer(buf, 0, None);
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1080,8 +1286,22 @@ fn scene(uv: vec2f, m: Music, p: Params) -> vec4f {
             ] {
                 m[music_index(k)] = v;
             }
-            for f in 0..3 {
+            // Automata: some loud bars (arcs of births), and enough steps for the cells to
+            // reach the middle of the screen.
+            let bands = crate::codegen::MUSIC_FIELDS.len();
+            for (i, b) in m[bands..].iter_mut().enumerate() {
+                *b = if i % 4 == 0 { 0.8 } else { 0.1 };
+            }
+            let frames = if layer.program.is_automaton() { 6 } else { 3 };
+            for f in 0..frames {
                 m[music_index("frame")] = f as f32;
+                // Step 1 is the first after a reset, so an automaton seeds its start state.
+                layer.advance(AutoFrame {
+                    first: f as i64 * 8 + 1,
+                    steps: 8,
+                    origin: 1,
+                    ..Default::default()
+                });
                 gpu.render(
                     &mut t,
                     LayerDraw {
@@ -1122,6 +1342,406 @@ fn scene(uv: vec2f, m: Music, p: Params) -> vec4f {
         );
         let c = render_final(&gpu, &t);
         assert!(c[1] > 0.4 && c[0] < 0.05, "red → green: {c:?}");
+    }
+
+    fn f16(bits: u16) -> f32 {
+        let (sign, exp, frac) = (bits >> 15, (bits >> 10) & 0x1f, (bits & 0x3ff) as f32);
+        let v = match exp {
+            0 => frac * 2f32.powi(-24),
+            31 => f32::INFINITY,
+            e => (1.0 + frac / 1024.0) * 2f32.powi(e as i32 - 15),
+        };
+        if sign == 1 { -v } else { v }
+    }
+
+    /// A layer's current automaton state, as rows of rings (`[ring][theta]`, first channel).
+    fn read_grid(gpu: &Gpu, layer: &Layer) -> Vec<Vec<f32>> {
+        read_channel(gpu, layer, 0)
+    }
+
+    /// One channel (0..4) of a layer's current automaton state, as `[ring][theta]`.
+    fn read_channel(gpu: &Gpu, layer: &Layer, ch: u32) -> Vec<Vec<f32>> {
+        let grid = layer.grid.as_ref().expect("a grid");
+        let tex = &grid.textures[grid.cur];
+        let (w, h) = (tex.width(), tex.height());
+        let row = (w * 8).div_ceil(256) * 256;
+        let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            tex.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
+            },
+            tex.size(),
+        );
+        gpu.queue.submit([enc.finish()]);
+        buf.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let data = buf.get_mapped_range(..).unwrap();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| {
+                        let i = (y * row + x * 8 + ch * 2) as usize;
+                        f16(u16::from_le_bytes([data[i], data[i + 1]]))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Live cells as (theta, ring).
+    fn alive(grid: &[Vec<f32>]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (r, row) in grid.iter().enumerate() {
+            for (t, v) in row.iter().enumerate() {
+                if *v > 0.5 {
+                    out.push((t, r));
+                }
+            }
+        }
+        out
+    }
+
+    const GRID8: &str = "(name: \"g\", kind: Automaton(theta: 8, rings: 8, steps_per_beat: 1.0))";
+    /// Step 1 seeds (theta 0, ring 0); afterwards everything moves one ring outward per step.
+    const OUTWARD: &str = "fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f {
+    if (c.y == 0) {
+        return vec4f(select(0.0, 1.0, tick() == 1 && c.x == 0));
+    }
+    return cell(c - vec2<i32>(0, 1));
+}
+fn scene(uv: vec2f, m: Music, p: Params) -> vec4f {
+    return vec4f(vec3f(state_at(length(uv) * 8.0 - tick_phase(), atan2(uv.y, uv.x) / 6.2831853).x), 1.0);
+}";
+
+    fn step_frame(gpu: &mut Gpu, t: &mut Targets, layer: &mut Layer, f: AutoFrame) {
+        layer.advance(f);
+        let m = music(t.size);
+        gpu.render(
+            t,
+            LayerDraw {
+                layer,
+                music: &m,
+                params: &[],
+            },
+            None,
+            &quiet(),
+        );
+    }
+
+    fn frame(first: i64, steps: u32) -> AutoFrame {
+        AutoFrame {
+            first,
+            steps,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn automaton_state_persists_and_moves_one_ring_per_step() {
+        let Some(mut gpu) = headless() else { return };
+        let prog = program(&gpu, GRID8, OUTWARD).unwrap();
+        assert!(prog.is_automaton());
+        let mut t = Targets::new(&gpu, (32, 32));
+        let mut layer = Layer::new(&gpu, prog);
+        step_frame(&mut gpu, &mut t, &mut layer, frame(1, 1));
+        assert_eq!(alive(&read_grid(&gpu, &layer)), [(0, 0)]);
+        step_frame(&mut gpu, &mut t, &mut layer, frame(2, 0));
+        assert_eq!(
+            alive(&read_grid(&gpu, &layer)),
+            [(0, 0)],
+            "no step, no change"
+        );
+        step_frame(&mut gpu, &mut t, &mut layer, frame(2, 1));
+        assert_eq!(alive(&read_grid(&gpu, &layer)), [(0, 1)]);
+        step_frame(&mut gpu, &mut t, &mut layer, frame(3, 3));
+        assert_eq!(
+            alive(&read_grid(&gpu, &layer)),
+            [(0, 4)],
+            "three steps in a frame"
+        );
+        // A render-scale change resizes the targets, not the grid.
+        let mut small = Targets::new(&gpu, (19, 11));
+        step_frame(&mut gpu, &mut small, &mut layer, frame(6, 0));
+        assert_eq!(alive(&read_grid(&gpu, &layer)), [(0, 4)]);
+        let lum = render_final(&gpu, &small).iter().sum::<f32>();
+        assert!(lum > 0.0, "the scene draws the grid");
+        // Reset: empty again.
+        step_frame(
+            &mut gpu,
+            &mut t,
+            &mut layer,
+            AutoFrame {
+                reset: true,
+                ..frame(6, 0)
+            },
+        );
+        assert!(alive(&read_grid(&gpu, &layer)).is_empty());
+    }
+
+    #[test]
+    fn automaton_theta_wraps() {
+        let Some(mut gpu) = headless() else { return };
+        let src = "fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f {
+    if (tick() == 1) {
+        return vec4f(select(0.0, 1.0, all(c == vec2<i32>(0, 0))));
+    }
+    return cell(c + vec2<i32>(1, 0));
+}
+fn scene(uv: vec2f, m: Music, p: Params) -> vec4f { return vec4f(0.0); }";
+        let mut t = Targets::new(&gpu, (8, 8));
+        let mut layer = Layer::new(&gpu, program(&gpu, GRID8, src).unwrap());
+        step_frame(&mut gpu, &mut t, &mut layer, frame(1, 2));
+        assert_eq!(alive(&read_grid(&gpu, &layer)), [(7, 0)]);
+    }
+
+    #[test]
+    fn automaton_layers_keep_separate_state() {
+        let Some(mut gpu) = headless() else { return };
+        let prog = program(&gpu, GRID8, OUTWARD).unwrap();
+        let mut t = Targets::new(&gpu, (16, 16));
+        let (mut a, mut b) = (Layer::new(&gpu, prog.clone()), Layer::new(&gpu, prog));
+        a.advance(frame(1, 2));
+        b.advance(frame(5, 1));
+        let m = music(t.size);
+        gpu.render(
+            &mut t,
+            LayerDraw {
+                layer: &mut a,
+                music: &m,
+                params: &[],
+            },
+            Some(LayerDraw {
+                layer: &mut b,
+                music: &m,
+                params: &[],
+            }),
+            &PostParams {
+                mix_b: 0.5,
+                ..quiet()
+            },
+        );
+        assert_eq!(alive(&read_grid(&gpu, &a)), [(0, 1)]);
+        assert!(alive(&read_grid(&gpu, &b)).is_empty(), "B never seeded");
+    }
+
+    /// `polar_life` stepped one step per frame at 8 steps per beat, with a kick on every beat
+    /// for `kick_steps` steps, then silence for `quiet_steps`. Returns, per step, the outermost
+    /// ring holding any live or dying cell, the live cells on ring 0, and the cells still live
+    /// or dying at the end.
+    fn run_polar_life(
+        kick_steps: i64,
+        quiet_steps: i64,
+    ) -> Option<(Vec<Option<usize>>, Vec<usize>, usize)> {
+        let mut gpu = headless()?;
+        let dir = crate::library::tests::temp_dir("polar-life");
+        crate::library::install(&dir).unwrap();
+        let prelude = crate::library::load_prelude(&dir);
+        let src = crate::library::load_scene(&dir, "polar_life", &prelude).unwrap();
+        let prog =
+            Rc::new(SceneProgram::new(&gpu, "polar_life", &src.assembled, &src.manifest).unwrap());
+        let params =
+            crate::codegen::pack_params(&src.manifest.defaults(), src.manifest.params.len());
+        let mut t = Targets::new(&gpu, (32, 32));
+        let mut layer = Layer::new(&gpu, prog);
+        let (mut outer, mut inner, mut left) = (Vec::new(), Vec::new(), 0);
+        for tick in 1..=kick_steps + quiet_steps {
+            let mut m = music(t.size);
+            m[music_index("seed")] = 0.37;
+            // Beats since the last kick: 0 on the beat, growing by a quarter per step; far
+            // away once the music stops.
+            m[music_index("kick")] = if tick <= kick_steps {
+                ((tick - 1) % 8) as f32 / 8.0
+            } else {
+                1e4
+            };
+            layer.advance(frame(tick, 1));
+            gpu.render(
+                &mut t,
+                LayerDraw {
+                    layer: &mut layer,
+                    music: &m,
+                    params: &params,
+                },
+                None,
+                &quiet(),
+            );
+            let g = read_grid(&gpu, &layer);
+            outer.push(g.iter().rposition(|row| row.iter().any(|&v| v > 0.0)));
+            inner.push(g[0].iter().filter(|&&v| v > 0.99).count());
+            left = g.iter().flatten().filter(|&&v| v > 0.0).count();
+        }
+        std::fs::remove_dir_all(dir).ok();
+        Some((outer, inner, left))
+    }
+
+    #[test]
+    fn polar_life_grows_from_kicks_and_silence_empties_it() {
+        // One ring outward every step: 96 rings take 96 steps; cells live 240 steps at most.
+        let (rings, kicks) = (96, 96 + 32);
+        let Some((outer, inner, left)) = run_polar_life(kicks, 96 + 240) else {
+            return;
+        };
+        assert!(inner[0] > 0, "a kick gives birth on ring 0");
+        let reached = outer[..kicks as usize].iter().flatten().max().copied();
+        assert!(
+            reached.is_some_and(|r| r >= rings - 4),
+            "life reaches the outer rings: {reached:?}"
+        );
+        assert_eq!(left, 0, "silence empties the tunnel");
+    }
+
+    #[test]
+    fn polar_life_starts_from_a_soup() {
+        let Some(mut gpu) = headless() else { return };
+        let dir = crate::library::tests::temp_dir("polar-soup");
+        crate::library::install(&dir).unwrap();
+        let prelude = crate::library::load_prelude(&dir);
+        let src = crate::library::load_scene(&dir, "polar_life", &prelude).unwrap();
+        let prog =
+            Rc::new(SceneProgram::new(&gpu, "polar_life", &src.assembled, &src.manifest).unwrap());
+        let params =
+            crate::codegen::pack_params(&src.manifest.defaults(), src.manifest.params.len());
+        let mut t = Targets::new(&gpu, (32, 32));
+        let mut layer = Layer::new(&gpu, prog);
+        // The first step after a reset seeds the soup (35% of the cells by default).
+        layer.advance(AutoFrame {
+            reset: true,
+            first: 100,
+            steps: 1,
+            origin: 100,
+            ..Default::default()
+        });
+        let m = music(t.size);
+        gpu.render(
+            &mut t,
+            LayerDraw {
+                layer: &mut layer,
+                music: &m,
+                params: &params,
+            },
+            None,
+            &quiet(),
+        );
+        let g = read_grid(&gpu, &layer);
+        let share = alive(&g).len() as f32 / (g.len() * g[0].len()) as f32;
+        assert!((share - 0.35).abs() < 0.03, "soup density {share}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn coral_tunnel_grows_a_kick_splash_and_stays_in_range() {
+        let Some(mut gpu) = headless() else { return };
+        let dir = crate::library::tests::temp_dir("coral");
+        crate::library::install(&dir).unwrap();
+        let prelude = crate::library::load_prelude(&dir);
+        let src = crate::library::load_scene(&dir, "coral_tunnel", &prelude).unwrap();
+        let prog = Rc::new(
+            SceneProgram::new(&gpu, "coral_tunnel", &src.assembled, &src.manifest).unwrap(),
+        );
+        // No seeds at the start: only the kick puts growth in.
+        let mut values = src.manifest.defaults();
+        values[src.manifest.param_index("soup").unwrap()][0] = 0.0;
+        let params = crate::codegen::pack_params(&values, src.manifest.params.len());
+        let mut t = Targets::new(&gpu, (32, 32));
+        let mut layer = Layer::new(&gpu, prog);
+        let growth = |g: &[Vec<f32>]| g.iter().flatten().filter(|&&b| b > 0.1).count();
+        let mut after_kick = 0;
+        // Step 1 seeds the substrate, step 2 is on a kick, then 33 steps (396 passes) of silence.
+        for tick in 1..=35 {
+            let mut m = music(t.size);
+            m[music_index("seed")] = 0.37;
+            m[music_index("kick")] = if tick == 2 { 0.0 } else { 1e4 };
+            layer.advance(AutoFrame {
+                first: tick,
+                steps: 1,
+                origin: 1,
+                ..Default::default()
+            });
+            gpu.render(
+                &mut t,
+                LayerDraw {
+                    layer: &mut layer,
+                    music: &m,
+                    params: &params,
+                },
+                None,
+                &quiet(),
+            );
+            if tick == 2 {
+                after_kick = growth(&read_channel(&gpu, &layer, 1));
+                assert!(after_kick > 0, "the kick splashes growth");
+            }
+        }
+        let (a, b) = (read_channel(&gpu, &layer, 0), read_channel(&gpu, &layer, 1));
+        for v in a.iter().chain(&b).flatten() {
+            assert!((0.0..=1.0).contains(v), "chemistry out of range: {v}");
+        }
+        let grown = growth(&b);
+        assert!(
+            grown > 0,
+            "the growth survives ({after_kick} cells after the kick)"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn coral_mitosis_survives_the_flow() {
+        let Some(mut gpu) = headless() else { return };
+        let dir = crate::library::tests::temp_dir("mitosis");
+        crate::library::install(&dir).unwrap();
+        let prelude = crate::library::load_prelude(&dir);
+        let src = crate::library::load_scene(&dir, "coral_tunnel", &prelude).unwrap();
+        let prog = Rc::new(
+            SceneProgram::new(&gpu, "coral_tunnel", &src.assembled, &src.manifest).unwrap(),
+        );
+        let (vars, _) = crate::library::load_variants(&dir, "coral_tunnel");
+        let mitosis = vars.iter().find(|v| v.name == "mitosis").unwrap();
+        let params =
+            crate::codegen::pack_params(&mitosis.values(&src.manifest), src.manifest.params.len());
+        let mut t = Targets::new(&gpu, (32, 32));
+        let mut layer = Layer::new(&gpu, prog);
+        for tick in 1..=60 {
+            let mut m = music(t.size);
+            m[music_index("seed")] = 0.37;
+            m[music_index("kick")] = 1e4;
+            layer.advance(AutoFrame {
+                first: tick,
+                steps: 1,
+                origin: 1,
+                ..Default::default()
+            });
+            gpu.render(
+                &mut t,
+                LayerDraw {
+                    layer: &mut layer,
+                    music: &m,
+                    params: &params,
+                },
+                None,
+                &quiet(),
+            );
+        }
+        // Growth in every band of 20 rings: the cells divide faster than the flow flushes them.
+        let b = read_channel(&gpu, &layer, 1);
+        for (k, band) in b.chunks(20).enumerate() {
+            let n = band.iter().flatten().filter(|&&v| v > 0.1).count();
+            assert!(n > 0, "rings {}..{}: no growth", k * 20, k * 20 + 20);
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

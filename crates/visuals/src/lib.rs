@@ -1,5 +1,6 @@
 //! The fullscreen visual engine: signals, modulation, scenes, variants, director, compositor.
 
+pub mod automaton;
 pub mod codegen;
 pub mod compositor;
 pub mod deck;
