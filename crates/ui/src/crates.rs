@@ -868,7 +868,7 @@ mod tests {
         assert_eq!(p.len(), 300);
         for (i, e) in p.entries().iter().enumerate() {
             assert_eq!(e.track.0, format!("/music/{i:03}.flac"));
-            assert_eq!(e.display_name(), format!("Artist - Track {i}"));
+            assert_eq!(e.display_name(), format!("Artist: Track {i}"));
             assert_eq!(e.duration, Some(i as f64 + 60.0));
         }
         assert_eq!(p.current_index(), Some(123));

@@ -147,6 +147,8 @@ pub struct WinampApp {
     /// Engine track instances → files, from `TrackLoaded` events.
     track_refs: std::collections::HashMap<audio::TrackId, TrackRef>,
     score: Option<Arc<analysis::SongScore>>,
+    /// The last playing track whose tempo was given to its entries.
+    bpm_track: Option<TrackRef>,
     strip: bool,
     annotating: Option<analysis::eval::Annotations>,
     annotations_dir: Option<PathBuf>,
@@ -184,7 +186,8 @@ impl WinampApp {
             .expect("spawn engine starter");
 
         let wake_ctx = egui_ctx.clone();
-        let meta = MetaWorker::start(&*ctx.spawner, ctx.files.clone(), move || {
+        let scores = ctx.analysis.as_ref().and_then(|a| a.cache().cloned());
+        let meta = MetaWorker::start(&*ctx.spawner, ctx.files.clone(), scores, move || {
             wake_ctx.request_repaint()
         })
         .ok();
@@ -283,6 +286,7 @@ impl WinampApp {
             files: ctx.files.clone(),
             track_refs: std::collections::HashMap::new(),
             score: None,
+            bpm_track: None,
             strip: false,
             annotating: None,
             annotations_dir: ctx.annotations_dir,
@@ -333,6 +337,58 @@ impl WinampApp {
         self.crates.touch(id);
         if id == self.crates.playing_id() {
             self.queue_dirty = true;
+        }
+    }
+
+    /// A tempo is known for this audio: every entry with the same audio (the same clip, or the
+    /// same file), in every loaded crate, shows it.
+    fn set_track_bpm(&mut self, track: &TrackRef, raw_bpm: f64) {
+        let Some(bpm) = format::dj_bpm(raw_bpm) else {
+            return;
+        };
+        let ids = self.crates.loaded_ids();
+        let keys: std::collections::HashSet<_> = ids
+            .iter()
+            .filter_map(|&c| self.crates.get(c))
+            .flat_map(|p| p.entries().iter().filter(|e| e.track == *track))
+            .map(crate::playlist::Entry::duplicate_key)
+            .collect();
+        for c in ids {
+            let changed = self
+                .crates
+                .get_mut(c)
+                .is_some_and(|p| keys.iter().fold(false, |ch, k| p.set_bpm(k, bpm) | ch));
+            // Saved soon; the play order doesn't change, so the engine queue stays.
+            if changed {
+                self.crates.touch(c);
+            }
+        }
+    }
+
+    /// Once the playing track's score is whole (at once for a cached one), its entries show
+    /// its tempo. Done once per track.
+    fn show_playing_bpm(&mut self) {
+        if self.position.state == PlayState::Stopped {
+            return;
+        }
+        let Some(track) = self.track_refs.get(&self.position.track) else {
+            return;
+        };
+        if self.bpm_track.as_ref() == Some(track) {
+            return;
+        }
+        let Some(bpm) = self
+            .score
+            .as_ref()
+            .filter(|s| s.complete)
+            .map(|s| s.dominant_bpm())
+        else {
+            return;
+        };
+        let track = track.clone();
+        self.bpm_track = Some(track.clone());
+        if let Some(bpm) = bpm {
+            self.set_track_bpm(&track, bpm);
         }
     }
 
@@ -581,7 +637,9 @@ impl WinampApp {
             meta.request(self.crates.take_pending_meta());
             for r in meta.poll() {
                 let (c, id) = match r {
-                    MetaResult::Info(key, _) | MetaResult::Failed(key) => key,
+                    MetaResult::Info(key, _)
+                    | MetaResult::Failed(key)
+                    | MetaResult::Bpm(key, _) => key,
                 };
                 let Some(playlist) = self.crates.get_mut(c) else {
                     continue; // deleted meanwhile
@@ -591,6 +649,13 @@ impl WinampApp {
                         playlist.set_info(id, i.title, i.artist, i.duration_secs)
                     }
                     MetaResult::Failed(_) => playlist.set_failed(id),
+                    MetaResult::Bpm(_, bpm) => {
+                        if let Some(key) = playlist.get(id).map(|e| e.duplicate_key())
+                            && let Some(bpm) = format::dj_bpm(bpm)
+                        {
+                            playlist.set_bpm(&key, bpm);
+                        }
+                    }
                 }
                 self.crates.touch(c);
             }
@@ -1289,21 +1354,9 @@ impl WinampApp {
 
             // Title, kbps, kHz, mono/stereo.
             let tt = sk.def.at("title_text");
-            let number = self.crates.playing().current_index().map_or(0, |i| i + 1);
-            let title = match self.now_playing_names() {
-                Some((artist, title, duration)) => {
-                    let mut line = format::title_line(number, &artist, &title, duration);
-                    let playing = self.crates.playing();
-                    if let Some(o) = playing
-                        .current()
-                        .and_then(|id| playing.get(id)?.origin.as_ref())
-                    {
-                        line += &format::origin_details(o);
-                    }
-                    line
-                }
-                None => engine_status(&self.engine),
-            };
+            let title = self
+                .now_playing_line()
+                .unwrap_or_else(|| engine_status(&self.engine));
             let width = (tt.w / sk.def.font.advance) as usize;
             let shown = format::scroll(&title, width, self.title_offset);
             let lcd = color([0, 236, 0]);
@@ -1468,6 +1521,23 @@ impl WinampApp {
             (None, Some(e)) => Some((e.artist.clone(), e.title.clone(), e.duration)),
             (None, None) => None,
         }
+    }
+
+    /// The main window's title line: `N. (catno) Artist: Title (N BPM) (m:ss)`, then the
+    /// record's side, year and for-sale summary for an entry from a catalogue page.
+    fn now_playing_line(&self) -> Option<String> {
+        let (artist, title, duration) = self.now_playing_names()?;
+        let playing = self.crates.playing();
+        let number = playing.current_index().map_or(0, |i| i + 1);
+        let entry = playing.current().and_then(|id| playing.get(id));
+        let origin = entry.and_then(|e| e.origin.as_ref());
+        let catno = origin.map_or("", |o| o.catno.as_str());
+        let name = format::entry_name(catno, &artist, &title, entry.and_then(|e| e.bpm));
+        let mut line = format::title_line(number, &name, duration);
+        if let Some(o) = origin {
+            line += &format::origin_details(o);
+        }
+        Some(line)
     }
 
     fn draw_vis(&self, sk: &Skinned) {
@@ -2524,6 +2594,7 @@ impl WinampApp {
         let dt = (now - self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
         self.update_audio(dt);
+        self.show_playing_bpm();
         self.handle_keys(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_update();
@@ -3425,10 +3496,7 @@ mod headless_tests {
         let out = rig.double_click(rig.row(1));
         assert_eq!(rig.app.armed, Some((PLAYLIST, waiting)));
         assert!(
-            shows(
-                &out,
-                "Waiting for Nightcraft - Glasshouse (downloading 40%)"
-            ),
+            shows(&out, "Waiting for Nightcraft: Glasshouse (downloading 40%)"),
             "{:?}",
             text_list(&out)
         );
@@ -3580,11 +3648,11 @@ mod headless_tests {
                 .color
         };
         assert_eq!(color_of("downloading 40%"), Some(dim));
-        assert_eq!(color_of("3. Nightcraft - Glasshouse"), Some(dim));
+        assert_eq!(color_of("3. Nightcraft: Glasshouse"), Some(dim));
         assert_eq!(color_of("no clip"), Some(dim));
-        assert_eq!(color_of("4. Nightcraft - B-side"), Some(dim));
+        assert_eq!(color_of("4. Nightcraft: B-side"), Some(dim));
         assert_eq!(color_of("2. garbage"), Some(Color32::from_rgb(170, 60, 60)));
-        let normal = color_of("1. M83 - Midnight_City");
+        let normal = color_of("1. M83: Midnight_City");
         assert!(normal == Some(color(colors.pl_text)) || normal == Some(color(colors.pl_current)));
     }
 
@@ -3619,12 +3687,78 @@ mod headless_tests {
             ("Nightcraft", "Glasshouse")
         );
         assert!(duration.is_some_and(|d| (d - 2.0).abs() < 0.05));
+        assert_eq!(
+            rig.app.now_playing_line().as_deref(),
+            Some("1. Nightcraft: Glasshouse (0:02)")
+        );
         let e = &rig.app.crates.shown().entries()[0];
-        assert_eq!(e.display_name(), "Nightcraft - Glasshouse");
+        assert_eq!(e.display_name(), "Nightcraft: Glasshouse");
         assert!(
             e.duration.is_some_and(|d| (d - 2.0).abs() < 0.05),
             "takes the duration"
         );
+    }
+
+    #[test]
+    fn a_known_tempo_shows_on_every_entry_with_that_audio_and_is_saved() {
+        let mut rig = Rig::new("bpm", Vec::new(), |_| {});
+        let origin = Origin {
+            catno: "LT-012".into(),
+            clip: Some("aaaaaaaaaaa".into()),
+            ..Default::default()
+        };
+        let p = rig.app.crates.shown_mut();
+        let a = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(origin.clone()),
+            "listed",
+        );
+        p.add_waiting("Nightcraft", "Glasshouse", None, Some(origin), "listed");
+        let track = TrackRef::new(fixture("tone.flac").to_string_lossy());
+        rig.app.set_audio(PLAYLIST, a, track.clone());
+        // A preview prepared at half time.
+        rig.app.set_track_bpm(&track, 62.1);
+        let out = rig.frame(Vec::new());
+        for n in 1..=2 {
+            let row = format!("{n}. (LT-012) Nightcraft: Glasshouse (124 BPM)");
+            assert!(shows(&out, &row), "{row}: {:?}", text_list(&out));
+        }
+        rig.app.crates.save_due(true, Duration::ZERO);
+        let reopened = Crates::open(&Store::new(rig.dir.join("config")));
+        let bpms: Vec<_> = reopened.shown().entries().iter().map(|e| e.bpm).collect();
+        assert_eq!(bpms, [Some(124), Some(124)]);
+    }
+
+    #[test]
+    fn the_playing_tracks_whole_score_gives_its_entry_a_tempo() {
+        let mut rig = Rig::new("playing-bpm", vec![fixture("tone.flac")], |_| {});
+        rig.until(
+            |r| {
+                r.app.position.state == PlayState::Playing
+                    && r.app.track_refs.contains_key(&r.app.position.track)
+            },
+            "the clock reports the playing track",
+        );
+        let mut score = analysis::SongScore {
+            tempo_segments: vec![analysis::score::TempoSegment {
+                start: 0.0,
+                end: 2.0,
+                t0: 0.0,
+                period: 60.0 / 128.0,
+                confidence: 1.0,
+            }],
+            ..Default::default()
+        };
+        rig.app.score = Some(Arc::new(score.clone()));
+        rig.app.show_playing_bpm();
+        let bpm = |r: &Rig| r.app.crates.playing().entries()[0].bpm;
+        assert_eq!(bpm(&rig), None, "not while the score is partial");
+        score.complete = true;
+        rig.app.score = Some(Arc::new(score));
+        rig.app.show_playing_bpm();
+        assert_eq!(bpm(&rig), Some(128));
     }
 
     // ---- title bar and crate menu --------------------------------------------------------

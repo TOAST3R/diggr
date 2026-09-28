@@ -201,7 +201,7 @@ fn an_800_release_label_is_dug_while_playback_runs_without_underruns() {
         if more {
             prepare.prepare(downloaded.clone());
         }
-        prepared.extend(prepare.poll());
+        prepared.extend(prepare.poll().into_iter().map(|p| p.track));
     }
     assert_eq!(records, RELEASES, "every release expanded");
     assert_eq!(clips.len(), RELEASES as usize);

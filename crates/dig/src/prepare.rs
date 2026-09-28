@@ -5,7 +5,8 @@
 //! One preview at a time, in horizon order, on a low-priority thread. The work waits on a gate
 //! the UI holds open only while the playing track's own analysis is well under way (32 bars) or
 //! nothing plays, so preparing never competes with a track start. Previews whose score and
-//! overview are already cached (the same file downloaded again) are skipped.
+//! overview are already cached (the same file downloaded again) are skipped. Each prepared
+//! preview is reported with its tempo, so its entry can show it before it plays.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,9 +20,17 @@ use platform::{FileSource, Priority, Spawner, TrackRef};
 
 const GATE_POLL: Duration = Duration::from_millis(100);
 
+/// A preview whose score and overview are ready.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prepared {
+    pub track: TrackRef,
+    /// The analysed tempo of its longest steady stretch, if it has a beat.
+    pub bpm: Option<f64>,
+}
+
 pub struct PrepareHandle {
     requests: Sender<Vec<TrackRef>>,
-    done: Receiver<TrackRef>,
+    done: Receiver<Prepared>,
     gate: Arc<AtomicBool>,
 }
 
@@ -68,13 +77,15 @@ impl PrepareHandle {
                     if !wait_for(&g, &req_rx, &mut queue) {
                         continue;
                     }
-                    let hash = content_hash(&*files, &track);
-                    let scored = hash
+                    let cached = content_hash(&*files, &track)
                         .and_then(|h| scores.load(h))
-                        .is_some_and(|s| s.complete);
-                    if !scored && let Some(score) = analysis::eval::analyze_file(&*files, &track) {
+                        .filter(|s| s.complete);
+                    let score = cached.or_else(|| {
+                        let score = analysis::eval::analyze_file(&*files, &track)?;
                         let _ = scores.save(&score);
-                    }
+                        Some(score)
+                    });
+                    let bpm = score.as_ref().and_then(|s| s.dominant_bpm());
                     if !wait_for(&g, &req_rx, &mut queue) {
                         continue;
                     }
@@ -82,7 +93,7 @@ impl PrepareHandle {
                         analysis::overview::precompute(&*files, &cache_dir, &track);
                     }
                     prepared.insert(track.clone());
-                    if done_tx.send(track).is_err() {
+                    if done_tx.send(Prepared { track, bpm }).is_err() {
                         return;
                     }
                     wake();
@@ -111,7 +122,7 @@ impl PrepareHandle {
     }
 
     /// Previews prepared since the last call.
-    pub fn poll(&self) -> Vec<TrackRef> {
+    pub fn poll(&self) -> Vec<Prepared> {
         self.done.try_iter().collect()
     }
 }
@@ -164,14 +175,20 @@ mod tests {
 
         h.set_gate(true);
         let t = Instant::now();
-        while h.poll().is_empty() {
+        let done = loop {
+            let done = h.poll();
+            if !done.is_empty() {
+                break done;
+            }
             assert!(t.elapsed() < Duration::from_secs(20), "prepared in time");
             std::thread::sleep(Duration::from_millis(10));
-        }
+        };
+        assert_eq!(done[0].track, track);
         let score = ScoreCache::new(cache.path())
             .load(hash)
             .expect("score cached");
         assert!(score.complete, "the whole file");
+        assert_eq!(done[0].bpm, score.dominant_bpm(), "reported with its tempo");
         assert!(analysis::overview::is_cached(&*files, &cache, &track));
     }
 }

@@ -72,6 +72,11 @@ impl AnalysisService {
         }
     }
 
+    /// Where scores are cached, if anywhere.
+    pub fn cache(&self) -> Option<&ScoreCache> {
+        self.shared.cache.as_ref()
+    }
+
     /// The audible track and position; call every frame (cheap: no locks, no I/O).
     pub fn playhead(&self, track: &TrackRef, secs: f64) {
         let st = self.state(track);

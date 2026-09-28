@@ -31,7 +31,8 @@ fn adding_2000_files_during_playback_causes_no_underruns() {
     engine.set_queue(vec![fixture("tone.flac")]);
     engine.play_index(0);
 
-    let worker = MetaWorker::start(&NativeSpawner, Arc::new(NativeFileSource), || {}).unwrap();
+    let worker =
+        MetaWorker::start(&NativeSpawner, Arc::new(NativeFileSource), None, || {}).unwrap();
     let names = ["tone.mp3", "tone.flac", "tone.ogg", "tone.wav", "tone.m4a"];
     worker.request(
         (0..2000)

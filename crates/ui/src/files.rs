@@ -110,7 +110,7 @@ pub fn m3u_entries(playlist: &crate::playlist::Playlist) -> Vec<M3uEntry> {
         .filter(|e| !matches!(e.status, crate::playlist::EntryStatus::Unavailable(_)))
         .map(|e| M3uEntry {
             path: e.source.clone().unwrap_or_else(|| e.track.0.clone()).into(),
-            title: Some(e.display_name()),
+            title: Some(e.plain_name()),
             duration: e.duration,
         })
         .collect()

@@ -120,6 +120,10 @@ playlist).
   - Right-click entries for **Send to crate**: it copies the selection, in order, to another
     crate or a new one, skipping entries that crate already holds.
 - **Playlist window:**
+  - entries read `(catno) Artist: Title (124 BPM)`. The catalog number appears for entries from
+    Discogs. The BPM appears once the track has been analysed (when a preview is prepared, when
+    a track plays, or from the analysis cache), folded into 88–176 so half and double time read
+    alike (87 shows as 174). Nothing is downloaded just to find a BPM;
   - double-click an entry to play it;
   - Shift/Cmd-click to select several;
   - drag to reorder;
@@ -187,8 +191,8 @@ ahead of what plays. Other pasted text is ignored.
   Pressing `Y` again undoes this, and the release comes off the wantlist only if the app put it
   there. `N` passes it: it's dimmed, the next track starts, and later sends leave it out.
   `I` opens the release's for-sale page in your browser. A Discogs entry's title line shows its
-  side, catalog number, year and what's for sale (`· A1 · LT-012 · 1994 · 6 for sale from
-  €9.00`). The entry menu (right-click) has Keep, Pass (or Undo pass) and Open for-sale page.
+  catalog number and BPM, then its side, year and what's for sale (`(LT-012) Nightcraft:
+  Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00`). The entry menu (right-click) has Keep, Pass (or Undo pass) and Open for-sale page.
 - **Setup (OPT ▸ Discogs…):**
   - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
     instead of 60).
@@ -603,7 +607,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 442 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 452 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
