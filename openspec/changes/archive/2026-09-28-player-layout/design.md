@@ -37,7 +37,8 @@ Any leftover space under the left column is filled with the skin's panel backgro
 **3. Focus is a small enum on `App`: `Focus::Player | Focus::Playlist`.**
 - A primary click anywhere in a section sets it; `Tab` toggles.
 - Fullscreen ignores focus: ↑ and ↓ there stay volume.
-- Title bars get a dimmed sprite variant, drawn when their side isn't focused. Main and EQ light together, because the player side is one focus zone.
+- The title bars of the side without focus are dimmed by a translucent black overlay, drawn over the bar before its buttons. This works for the tiled playlist bar and for any skin, without extra sprites. Main and EQ light together, because the player side is one focus zone.
+- egui moves its own widget focus on Tab, and a focused widget blocks every shortcut. So the app cancels that move (`move_focus(None)`) whenever it takes Tab, unless a text field has focus.
 - Hover never moves focus, and the mouse wheel scrolls whatever is under the pointer.
 
 **4. Cursor versus selection.**
@@ -58,7 +59,7 @@ The cursor is an `EntryId`, not an index, so progressive dig filling doesn't mak
 - `Settings.balance` is removed. serde ignores the unknown key in old files.
 - At startup the engine is never given a balance, so it stays at its default of 0.
 - `Action::Balance`, the balance sprites and the layout entries go.
-- The waveform button takes the balance track's rectangle. It is a two-state skin button (`wave_btn`, `wave_btn_on`), and a click toggles `show_waveform` exactly like `W`.
+- The waveform button takes the balance slider's place. It is a "WAVE" toggle drawn like EQ and PL (`tog_wave_off`, `tog_wave_on`), and a click toggles `show_waveform` exactly like `W`.
 
 ## Risks / Trade-offs
 
