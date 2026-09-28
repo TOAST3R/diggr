@@ -531,8 +531,16 @@ impl WinampApp {
         for e in events {
             self.dig_preview_event(e);
         }
-        if let Some(p) = self.dig.as_ref().and_then(|d| d.prepare.as_ref()) {
-            p.poll();
+        let prepared = self
+            .dig
+            .as_ref()
+            .and_then(|d| d.prepare.as_ref())
+            .map(PrepareHandle::poll)
+            .unwrap_or_default();
+        for p in prepared {
+            if let Some(bpm) = p.bpm {
+                self.set_track_bpm(&p.track, bpm);
+            }
         }
         let commands = self
             .dig

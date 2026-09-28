@@ -33,28 +33,57 @@ pub fn lcd(secs: f64) -> (String, String) {
     (format!("{:02}", s / 60), format!("{:02}", s % 60))
 }
 
-/// Winamp's title line: `N. Artist - Title (m:ss)`.
-pub fn title_line(number: usize, artist: &str, title: &str, duration: Option<f64>) -> String {
-    let name = if artist.is_empty() {
-        title.to_owned()
-    } else {
-        format!("{artist} - {title}")
-    };
+/// Lowest and highest tempo a DJ reads: a track outside is shown at half or double time.
+pub const DJ_BPM: (f64, f64) = (88.0, 176.0);
+
+/// An analysed tempo folded into [`DJ_BPM`] by halving or doubling, as a whole number, so
+/// half-time and double-time readings of the same groove agree (87 → 174, 280 → 140).
+pub fn dj_bpm(raw: f64) -> Option<u16> {
+    if !raw.is_finite() || raw <= 0.0 {
+        return None;
+    }
+    let mut bpm = raw;
+    while bpm < DJ_BPM.0 {
+        bpm *= 2.0;
+    }
+    while bpm > DJ_BPM.1 {
+        bpm /= 2.0;
+    }
+    Some(bpm.round() as u16)
+}
+
+/// An entry's name: `(catno) Artist: Title (N BPM)`. The catalog number, artist and tempo are
+/// left out when they aren't known, so a local file reads `Artist: Title`.
+pub fn entry_name(catno: &str, artist: &str, title: &str, bpm: Option<u16>) -> String {
+    let mut name = String::new();
+    if !catno.trim().is_empty() {
+        name += &format!("({}) ", catno.trim());
+    }
+    if !artist.is_empty() {
+        name += &format!("{artist}: ");
+    }
+    name += title;
+    if let Some(b) = bpm {
+        name += &format!(" ({b} BPM)");
+    }
+    name
+}
+
+/// Winamp's title line: `N. name (m:ss)`, with the name from [`entry_name`].
+pub fn title_line(number: usize, name: &str, duration: Option<f64>) -> String {
     match duration {
         Some(d) => format!("{number}. {name} ({})", clock(d)),
         None => format!("{number}. {name}"),
     }
 }
 
-/// What the title line adds for an entry from a catalogue page: its side, catalog number,
-/// year and a for-sale summary, e.g. ` · A1 · LT-012 · 1994 · 6 for sale from €9.00`. Parts that
-/// aren't known are left out; a count of 0 reads "none for sale".
+/// What the title line adds for an entry from a catalogue page: its side, year and a for-sale
+/// summary, e.g. ` · A1 · 1994 · 6 for sale from €9.00` (the catalog number already leads the
+/// name). Parts that aren't known are left out; a count of 0 reads "none for sale".
 pub fn origin_details(o: &crate::playlist::Origin) -> String {
     let mut parts: Vec<String> = Vec::new();
-    for p in [o.position.trim(), o.catno.trim()] {
-        if !p.is_empty() {
-            parts.push(p.to_owned());
-        }
+    if !o.position.trim().is_empty() {
+        parts.push(o.position.trim().to_owned());
     }
     if let Some(y) = o.year {
         parts.push(y.to_string());
@@ -124,12 +153,40 @@ mod tests {
     }
 
     #[test]
+    fn tempo_folds_into_the_dj_range() {
+        assert_eq!(dj_bpm(124.3), Some(124));
+        assert_eq!(dj_bpm(87.0), Some(174));
+        assert_eq!(dj_bpm(280.0), Some(140));
+        assert_eq!(dj_bpm(176.0), Some(176));
+        assert_eq!(dj_bpm(88.0), Some(88));
+        assert_eq!(dj_bpm(43.0), Some(172));
+        assert_eq!(dj_bpm(0.0), None);
+        assert_eq!(dj_bpm(f64::NAN), None);
+    }
+
+    #[test]
+    fn entry_names_leave_out_what_isnt_known() {
+        assert_eq!(
+            entry_name("LT-012", "Nightcraft", "Glasshouse", Some(124)),
+            "(LT-012) Nightcraft: Glasshouse (124 BPM)"
+        );
+        assert_eq!(
+            entry_name("", "Mira Sol", "Coastline", None),
+            "Mira Sol: Coastline"
+        );
+        assert_eq!(
+            entry_name(" ", "", "untitled", Some(128)),
+            "untitled (128 BPM)"
+        );
+    }
+
+    #[test]
     fn title_lines() {
         assert_eq!(
-            title_line(4, "Crusher-P", "Echo", Some(230.0)),
-            "4. Crusher-P - Echo (3:50)"
+            title_line(4, &entry_name("", "Crusher-P", "Echo", None), Some(230.0)),
+            "4. Crusher-P: Echo (3:50)"
         );
-        assert_eq!(title_line(1, "", "untitled", None), "1. untitled");
+        assert_eq!(title_line(1, "untitled", None), "1. untitled");
     }
 
     #[test]
@@ -148,19 +205,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            title_line(3, "Nightcraft", "Glasshouse", Some(372.0)) + &origin_details(&o),
-            "3. Nightcraft - Glasshouse (6:12) · A1 · LT-012 · 1994 · 6 for sale from €9.00"
+            title_line(
+                3,
+                &entry_name(&o.catno, "Nightcraft", "Glasshouse", Some(124)),
+                Some(372.0)
+            ) + &origin_details(&o),
+            "3. (LT-012) Nightcraft: Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00"
         );
         o.for_sale.as_mut().unwrap().count = 0;
-        assert_eq!(origin_details(&o), " · A1 · LT-012 · 1994 · none for sale");
+        assert_eq!(origin_details(&o), " · A1 · 1994 · none for sale");
         o.for_sale = None;
-        o.position.clear();
         o.year = None;
-        assert_eq!(
-            origin_details(&o),
-            " · LT-012",
-            "unknown numbers are left out"
-        );
+        assert_eq!(origin_details(&o), " · A1", "unknown numbers are left out");
+        o.position.clear();
+        assert_eq!(origin_details(&o), "", "the catalog number isn't repeated");
         assert_eq!(origin_details(&Origin::default()), "");
     }
 

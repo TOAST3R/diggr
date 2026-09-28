@@ -169,16 +169,7 @@ fn play_mode_names_a_new_crate_after_the_page_and_plays_its_first_preview() {
         "the crate takes the page's name",
     );
     // The title line carries the side, year and for-sale summary.
-    let (artist, title, duration) = rig.app.now_playing_names().unwrap();
-    let mut line = format::title_line(1, &artist, &title, duration);
-    let p = rig.app.crates.playing();
-    line += &format::origin_details(
-        p.get(p.current().unwrap())
-            .unwrap()
-            .origin
-            .as_ref()
-            .unwrap(),
-    );
+    let line = rig.app.now_playing_line().unwrap();
     assert!(line.contains(" · A1"), "{line}");
     assert!(line.contains("6 for sale from"), "{line}");
 }

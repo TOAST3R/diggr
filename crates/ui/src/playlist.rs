@@ -102,12 +102,20 @@ pub struct Entry {
     pub title: String,
     pub artist: String,
     pub duration: Option<f64>,
+    /// Tempo from analysis, folded into the DJ range (see [`crate::format::dj_bpm`]).
+    pub bpm: Option<u16>,
     pub status: EntryStatus,
 }
 
 impl Entry {
-    /// "Artist - Title", or just the title.
+    /// "(catno) Artist: Title (N BPM)", leaving out what isn't known.
     pub fn display_name(&self) -> String {
+        let catno = self.origin.as_ref().map_or("", |o| o.catno.as_str());
+        crate::format::entry_name(catno, &self.artist, &self.title, self.bpm)
+    }
+
+    /// "Artist - Title", or just the title: the plain name other players expect (M3U).
+    pub fn plain_name(&self) -> String {
         if self.artist.is_empty() {
             self.title.clone()
         } else {
@@ -129,6 +137,7 @@ impl Entry {
             title: self.title.clone(),
             artist: self.artist.clone(),
             duration: self.duration,
+            bpm: self.bpm,
             source: self.source.clone(),
             origin: self.origin.clone(),
             status: match &self.status {
@@ -162,6 +171,8 @@ pub struct SavedEntry {
     pub artist: String,
     #[serde(default)]
     pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpm: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,6 +244,7 @@ impl Playlist {
                 title: track.stem().to_owned(),
                 artist: String::new(),
                 duration: None,
+                bpm: None,
                 status: EntryStatus::Pending,
                 source: None,
                 origin: None,
@@ -286,6 +298,19 @@ impl Playlist {
         }
     }
 
+    /// Sets the tempo of every entry with this audio (a clip, or a local file); returns whether
+    /// any entry changed.
+    pub fn set_bpm(&mut self, key: &DuplicateKey, bpm: u16) -> bool {
+        let mut changed = false;
+        for e in &mut self.entries {
+            if e.bpm != Some(bpm) && e.duplicate_key() == *key {
+                e.bpm = Some(bpm);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn set_failed(&mut self, id: EntryId) {
         if let Some(e) = self.entry_mut(id)
             && e.status.note().is_none()
@@ -314,6 +339,7 @@ impl Playlist {
             title: title.into(),
             artist: artist.into(),
             duration: None,
+            bpm: None,
             status: EntryStatus::Waiting(status.into()),
         });
         id
@@ -355,6 +381,7 @@ impl Playlist {
             title: n.title,
             artist: n.artist,
             duration: n.duration,
+            bpm: None,
             status: EntryStatus::Waiting(n.status),
         });
         self.entries.splice(at..=at, entries);
@@ -596,6 +623,7 @@ impl Entry {
             },
             artist: s.artist,
             duration: s.duration,
+            bpm: s.bpm,
             status,
             source: s.source,
             origin: s.origin,
@@ -665,7 +693,7 @@ mod tests {
             "M83".into(),
             Some(243.0),
         );
-        assert_eq!(p.entries()[0].display_name(), "M83 - Midnight City");
+        assert_eq!(p.entries()[0].display_name(), "M83: Midnight City");
         assert_eq!(p.entries()[0].status, EntryStatus::Ready);
     }
 
@@ -755,6 +783,63 @@ mod tests {
     }
 
     #[test]
+    fn a_tempo_reaches_every_entry_with_that_audio_and_is_saved() {
+        let mut p = pl(2);
+        let clip = |c: &str| Origin {
+            catno: "LT-012".into(),
+            clip: Some(c.into()),
+            ..Default::default()
+        };
+        let a = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(clip("aaaaaaaaaaa")),
+            "listed",
+        );
+        let b = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(clip("aaaaaaaaaaa")),
+            "listed",
+        );
+        let other = p.add_waiting(
+            "Nightcraft",
+            "Undertow",
+            None,
+            Some(clip("bbbbbbbbbbb")),
+            "listed",
+        );
+        assert!(p.set_bpm(&DuplicateKey::Clip("aaaaaaaaaaa".into()), 124));
+        assert!(
+            !p.set_bpm(&DuplicateKey::Clip("aaaaaaaaaaa".into()), 124),
+            "no change"
+        );
+        assert_eq!(p.get(a).unwrap().bpm, Some(124));
+        assert_eq!(p.get(b).unwrap().bpm, Some(124));
+        assert_eq!(p.get(other).unwrap().bpm, None);
+        let file = p.entries()[0].track.clone();
+        assert!(p.set_bpm(&DuplicateKey::File(file.0.clone()), 128));
+        assert_eq!(p.entries()[0].bpm, Some(128));
+        assert_eq!(p.entries()[1].bpm, None);
+
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(
+            restored.get(a).map(Entry::display_name).as_deref(),
+            Some("(LT-012) Nightcraft: Glasshouse (124 BPM)")
+        );
+        assert_eq!(restored.entries()[0].bpm, Some(128));
+        assert!(
+            !ron::to_string(&restored.entries()[1].to_saved())
+                .unwrap()
+                .contains("bpm"),
+            "an unknown tempo isn't written"
+        );
+    }
+
+    #[test]
     fn save_and_restore() {
         let mut p = pl(3);
         let id = p.entries()[0].id;
@@ -764,7 +849,7 @@ mod tests {
         let text = ron::to_string(&saved).unwrap();
         let (restored, pending) = Playlist::from_saved(ron::from_str(&text).unwrap());
         assert_eq!(restored.len(), 3);
-        assert_eq!(restored.entries()[0].display_name(), "Crusher-P - Echo");
+        assert_eq!(restored.entries()[0].display_name(), "Crusher-P: Echo");
         assert_eq!(restored.current_index(), Some(2));
         assert_eq!(
             pending.len(),
@@ -821,7 +906,7 @@ mod tests {
 )"#;
         let saved: SavedPlaylist = ron::from_str(text).unwrap();
         let (p, pending) = Playlist::from_saved(saved.clone());
-        assert_eq!(p.entries()[0].display_name(), "Crusher-P - Echo");
+        assert_eq!(p.entries()[0].display_name(), "Crusher-P: Echo");
         assert_eq!(p.entries()[0].status, EntryStatus::Ready);
         assert_eq!(p.entries()[1].status, EntryStatus::Pending);
         assert!(
@@ -956,12 +1041,12 @@ mod tests {
             Some(301.0),
         );
         let e = p.get(id).unwrap();
-        assert_eq!(e.display_name(), "Nightcraft - Glasshouse");
+        assert_eq!(e.display_name(), "(LT-012) Nightcraft: Glasshouse");
         assert_eq!((e.duration, &e.status), (Some(301.0), &EntryStatus::Ready));
         // Entries without an origin still take the tags.
         let plain = p.add([TrackRef::new("/m/x.mp3")])[0].0;
         p.set_info(plain, "Title".into(), "Artist".into(), None);
-        assert_eq!(p.get(plain).unwrap().display_name(), "Artist - Title");
+        assert_eq!(p.get(plain).unwrap().display_name(), "Artist: Title");
     }
 
     /// Entries 0..6, with 3 waiting and 4 unavailable.

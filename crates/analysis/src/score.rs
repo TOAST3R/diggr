@@ -213,6 +213,14 @@ impl SongScore {
             .find(|s| t >= s.start && t < s.end)
             .map(TempoSegment::bpm)
     }
+
+    /// The tempo (BPM) of the longest steady-tempo stretch, the one that names the track.
+    pub fn dominant_bpm(&self) -> Option<f64> {
+        self.tempo_segments
+            .iter()
+            .max_by(|a, b| (a.end - a.start).total_cmp(&(b.end - b.start)))
+            .map(TempoSegment::bpm)
+    }
 }
 
 #[cfg(test)]
@@ -292,5 +300,27 @@ mod tests {
         let bytes = postcard::to_stdvec(&s).unwrap();
         let back: SongScore = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, s);
+    }
+
+    fn seg(start: f64, end: f64, bpm: f64) -> TempoSegment {
+        TempoSegment {
+            start,
+            end,
+            t0: start,
+            period: 60.0 / bpm,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn dominant_bpm_is_the_longest_stretch() {
+        let mut s = SongScore::default();
+        assert_eq!(s.dominant_bpm(), None);
+        s.tempo_segments = vec![
+            seg(0.0, 30.0, 90.0),
+            seg(30.0, 200.0, 124.0),
+            seg(200.0, 220.0, 140.0),
+        ];
+        assert!((s.dominant_bpm().unwrap() - 124.0).abs() < 1e-9);
     }
 }
