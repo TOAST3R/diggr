@@ -1,0 +1,970 @@
+//! Crates: named playlists. The playlist window shows one crate and playback follows another
+//! (usually the same one), so you can look through a crate without interrupting what plays.
+//!
+//! Each crate is a [`Playlist`] saved as `crates/<id>.ron` in the config folder; the list of
+//! crates is `crates/index.ron`. Only the index and the shown crate are read at launch, others
+//! when they are first shown, played or sent to, so many large crates don't slow launch. A crate
+//! file that can't be read is reported once, left on disk and never overwritten.
+
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use platform::TrackRef;
+use serde::{Deserialize, Serialize};
+
+use crate::playlist::{EntryId, Playlist, SavedPlaylist};
+use crate::settings::{PLAYLIST_FILE, Store};
+
+pub type CrateId = u64;
+
+/// The scratch crate: files opened with Eject or on the command line replace it. It always
+/// exists and can't be renamed or deleted.
+pub const PLAYLIST: CrateId = 1;
+pub const PLAYLIST_NAME: &str = "Playlist";
+pub const CRATES_DIR: &str = "crates";
+pub const INDEX_FILE: &str = "index.ron";
+pub const MAX_NAME: usize = 40;
+
+/// Metadata lookups are keyed by crate as well as entry: entry ids are per crate.
+pub type MetaKey = (CrateId, EntryId);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrateInfo {
+    pub id: CrateId,
+    pub name: String,
+    /// As of the last save (the menu and the delete confirmation use it for unloaded crates).
+    pub entries: usize,
+    /// Seconds since the Unix epoch.
+    pub created: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Index {
+    next_id: CrateId,
+    shown: CrateId,
+    /// In creation order, Playlist first.
+    crates: Vec<CrateInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct CrateFile {
+    name: String,
+    playlist: SavedPlaylist,
+}
+
+pub struct Crates {
+    /// The `crates/` folder; `None` keeps everything in memory.
+    store: Option<Store>,
+    index: Index,
+    loaded: HashMap<CrateId, Playlist>,
+    unreadable: HashSet<CrateId>,
+    dirty: HashMap<CrateId, Instant>,
+    index_dirty: Option<Instant>,
+    playing: CrateId,
+    pending_meta: Vec<(MetaKey, TrackRef)>,
+    messages: Vec<String>,
+}
+
+impl Crates {
+    /// Crates kept in memory only (no config folder).
+    pub fn in_memory() -> Self {
+        let mut c = Self::empty(None);
+        c.loaded.insert(PLAYLIST, Playlist::default());
+        c
+    }
+
+    fn empty(store: Option<Store>) -> Self {
+        Self {
+            store,
+            index: Index {
+                next_id: PLAYLIST + 1,
+                shown: PLAYLIST,
+                crates: vec![CrateInfo {
+                    id: PLAYLIST,
+                    name: PLAYLIST_NAME.into(),
+                    entries: 0,
+                    created: now_secs(),
+                }],
+            },
+            loaded: HashMap::new(),
+            unreadable: HashSet::new(),
+            dirty: HashMap::new(),
+            index_dirty: None,
+            playing: PLAYLIST,
+            pending_meta: Vec::new(),
+            messages: Vec::new(),
+        }
+    }
+
+    /// Opens the crates in `config`'s `crates/` folder: reads the index (rebuilding it from the
+    /// crate files if it is damaged, or migrating the single `playlist.ron` on first launch)
+    /// and the crate that was shown.
+    pub fn open(config: &Store) -> Self {
+        let store = Store::new(config.dir().join(CRATES_DIR));
+        let mut c = Self::empty(Some(store.clone()));
+        match store.try_load::<Index>(INDEX_FILE) {
+            Ok(Some(index)) => c.index = index,
+            Ok(None) if crate_files(&store).is_empty() => c.migrate(config),
+            Ok(None) => c.rebuild_index(),
+            Err(_) => {
+                c.rebuild_index();
+                c.messages
+                    .push("The list of crates was damaged and has been rebuilt".into());
+            }
+        }
+        c.sanitize_index();
+        if !c.load(c.index.shown) {
+            c.index.shown = PLAYLIST;
+            c.load_playlist();
+        }
+        c.playing = c.index.shown;
+        c
+    }
+
+    /// First launch with crates: the single playlist becomes the Playlist crate. The old file
+    /// is only read, so the previous version still finds it as it was.
+    fn migrate(&mut self, config: &Store) {
+        let saved = match config.try_load::<SavedPlaylist>(PLAYLIST_FILE) {
+            Ok(Some(saved)) => saved,
+            Ok(None) => return self.mark_index(), // fresh install
+            Err(e) => {
+                self.messages
+                    .push(format!("The old playlist could not be read: {e}"));
+                return self.mark_index();
+            }
+        };
+        let file = CrateFile {
+            name: PLAYLIST_NAME.into(),
+            playlist: saved,
+        };
+        self.index.crates[0].entries = file.playlist.entries.len();
+        if let Some(store) = &self.store
+            && let Err(e) = store
+                .save(&file_name(PLAYLIST), &file)
+                .and_then(|()| store.save(INDEX_FILE, &self.index))
+        {
+            self.messages
+                .push(format!("Could not save the Playlist crate: {e}"));
+        }
+    }
+
+    /// Rebuilds the index from the name stored in each crate file.
+    fn rebuild_index(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        self.index.crates.clear();
+        for id in crate_files(&store) {
+            let name = match store.try_load::<CrateFile>(&file_name(id)) {
+                Ok(Some(f)) => f.name,
+                _ => {
+                    self.unreadable.insert(id);
+                    self.messages.push(unreadable_message(id, None));
+                    if id == PLAYLIST {
+                        PLAYLIST_NAME.into()
+                    } else {
+                        format!("Crate {id}")
+                    }
+                }
+            };
+            self.index.crates.push(CrateInfo {
+                id,
+                name,
+                entries: 0,
+                created: id,
+            });
+        }
+        self.index.shown = PLAYLIST;
+        self.mark_index();
+    }
+
+    /// Makes a hand-edited or rebuilt index usable: Playlist first, unique ids, a shown crate
+    /// that exists.
+    fn sanitize_index(&mut self) {
+        let mut seen = HashSet::new();
+        self.index.crates.retain(|c| seen.insert(c.id));
+        match self.index.crates.iter().position(|c| c.id == PLAYLIST) {
+            Some(0) => {}
+            Some(i) => {
+                let p = self.index.crates.remove(i);
+                self.index.crates.insert(0, p);
+            }
+            None => {
+                self.index.crates.insert(
+                    0,
+                    CrateInfo {
+                        id: PLAYLIST,
+                        name: PLAYLIST_NAME.into(),
+                        entries: 0,
+                        created: now_secs(),
+                    },
+                );
+                self.mark_index();
+            }
+        }
+        self.index.crates[0].name = PLAYLIST_NAME.into();
+        let max = self
+            .index
+            .crates
+            .iter()
+            .map(|c| c.id)
+            .max()
+            .unwrap_or(PLAYLIST);
+        self.index.next_id = self.index.next_id.max(max + 1);
+        if self.info(self.index.shown).is_none() {
+            self.index.shown = PLAYLIST;
+        }
+    }
+
+    /// Loads the Playlist crate, which must exist: if its file can't be read, it is kept next
+    /// to the others as `1.ron.unreadable` and an empty one takes its place.
+    pub fn load_playlist(&mut self) {
+        if self.load(PLAYLIST) {
+            return;
+        }
+        if let Some(store) = &self.store {
+            let from = store.dir().join(file_name(PLAYLIST));
+            let to = store
+                .dir()
+                .join(format!("{}.unreadable", file_name(PLAYLIST)));
+            if std::fs::rename(&from, &to).is_ok() {
+                self.messages.push(format!(
+                    "The Playlist crate could not be read; it was kept as {}",
+                    to.display()
+                ));
+            }
+        }
+        self.unreadable.remove(&PLAYLIST);
+        self.loaded.insert(PLAYLIST, Playlist::default());
+    }
+
+    // ---- loading ---------------------------------------------------------------------------
+
+    /// Loads a crate if it isn't yet. False if it doesn't exist or can't be read.
+    pub fn load(&mut self, id: CrateId) -> bool {
+        if self.loaded.contains_key(&id) {
+            return true;
+        }
+        if self.unreadable.contains(&id) || self.info(id).is_none() {
+            return false;
+        }
+        let file = match &self.store {
+            Some(store) => store.try_load::<CrateFile>(&file_name(id)),
+            None => Ok(None),
+        };
+        let saved = match file {
+            Ok(Some(f)) => f.playlist,
+            // Listed but never saved (created just before a crash): empty.
+            Ok(None) => SavedPlaylist::default(),
+            Err(_) => {
+                self.unreadable.insert(id);
+                let name = self.info(id).map(|c| c.name.clone());
+                self.messages.push(unreadable_message(id, name.as_deref()));
+                return false;
+            }
+        };
+        let (playlist, pending) = Playlist::from_saved(saved);
+        self.pending_meta
+            .extend(pending.into_iter().map(|(e, t)| ((id, e), t)));
+        self.loaded.insert(id, playlist);
+        true
+    }
+
+    pub fn is_loaded(&self, id: CrateId) -> bool {
+        self.loaded.contains_key(&id)
+    }
+
+    pub fn is_unreadable(&self, id: CrateId) -> bool {
+        self.unreadable.contains(&id)
+    }
+
+    /// Entries whose metadata has to be read, from crates loaded since the last call.
+    pub fn take_pending_meta(&mut self) -> Vec<(MetaKey, TrackRef)> {
+        std::mem::take(&mut self.pending_meta)
+    }
+
+    /// Problems to show the user (unreadable crates), once each.
+    pub fn take_messages(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.messages)
+    }
+
+    // ---- the list --------------------------------------------------------------------------
+
+    /// Every crate, Playlist first, then in creation order.
+    pub fn list(&self) -> &[CrateInfo] {
+        &self.index.crates
+    }
+
+    pub fn info(&self, id: CrateId) -> Option<&CrateInfo> {
+        self.index.crates.iter().find(|c| c.id == id)
+    }
+
+    pub fn name(&self, id: CrateId) -> &str {
+        self.info(id).map_or("", |c| c.name.as_str())
+    }
+
+    /// Current entry count, or the saved one for a crate that isn't loaded.
+    pub fn entry_count(&self, id: CrateId) -> usize {
+        match self.loaded.get(&id) {
+            Some(p) => p.len(),
+            None => self.info(id).map_or(0, |c| c.entries),
+        }
+    }
+
+    // ---- shown and playing -----------------------------------------------------------------
+
+    pub fn shown_id(&self) -> CrateId {
+        self.index.shown
+    }
+
+    pub fn playing_id(&self) -> CrateId {
+        self.playing
+    }
+
+    /// Shows another crate in the window. Playback isn't touched.
+    pub fn show(&mut self, id: CrateId) -> bool {
+        if !self.load(id) {
+            return false;
+        }
+        if self.index.shown != id {
+            self.index.shown = id;
+            self.mark_index();
+        }
+        true
+    }
+
+    /// Makes `id` the crate the engine queue is built from.
+    pub fn set_playing(&mut self, id: CrateId) -> bool {
+        if !self.load(id) {
+            return false;
+        }
+        self.playing = id;
+        true
+    }
+
+    pub fn shown(&self) -> &Playlist {
+        &self.loaded[&self.index.shown]
+    }
+
+    pub fn shown_mut(&mut self) -> &mut Playlist {
+        self.loaded
+            .get_mut(&self.index.shown)
+            .expect("the shown crate is loaded")
+    }
+
+    pub fn playing(&self) -> &Playlist {
+        &self.loaded[&self.playing]
+    }
+
+    pub fn playing_mut(&mut self) -> &mut Playlist {
+        self.loaded
+            .get_mut(&self.playing)
+            .expect("the playing crate is loaded")
+    }
+
+    pub fn get(&self, id: CrateId) -> Option<&Playlist> {
+        self.loaded.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: CrateId) -> Option<&mut Playlist> {
+        self.loaded.get_mut(&id)
+    }
+
+    // ---- create, rename, delete ------------------------------------------------------------
+
+    /// Checks a crate name: 1 to 40 characters, unique ignoring case (`except` is the crate
+    /// being renamed). Returns it trimmed.
+    pub fn validate_name(&self, name: &str, except: Option<CrateId>) -> Result<String, String> {
+        let name = name.trim();
+        let len = name.chars().count();
+        if len == 0 || len > MAX_NAME {
+            return Err(format!("A crate name needs 1 to {MAX_NAME} characters"));
+        }
+        let lower = name.to_lowercase();
+        if let Some(other) = self
+            .index
+            .crates
+            .iter()
+            .find(|c| Some(c.id) != except && c.name.to_lowercase() == lower)
+        {
+            return Err(format!("A crate named \"{}\" already exists", other.name));
+        }
+        Ok(name.to_owned())
+    }
+
+    /// Creates an empty crate (at the end of the list); it isn't shown.
+    pub fn create(&mut self, name: &str) -> Result<CrateId, String> {
+        let name = self.validate_name(name, None)?;
+        let id = self.index.next_id;
+        self.index.next_id += 1;
+        self.index.crates.push(CrateInfo {
+            id,
+            name,
+            entries: 0,
+            created: now_secs(),
+        });
+        self.loaded.insert(id, Playlist::default());
+        self.touch(id);
+        self.mark_index();
+        Ok(id)
+    }
+
+    pub fn rename(&mut self, id: CrateId, name: &str) -> Result<(), String> {
+        if id == PLAYLIST {
+            return Err("The Playlist crate can't be renamed".into());
+        }
+        if !self.load(id) {
+            return Err("That crate can't be read".into());
+        }
+        let name = self.validate_name(name, Some(id))?;
+        if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id) {
+            c.name = name;
+        }
+        self.touch(id);
+        self.mark_index();
+        Ok(())
+    }
+
+    /// Deletes a crate and its file. A shown or playing crate hands over to Playlist (the
+    /// caller stops playback first when it was playing).
+    pub fn delete(&mut self, id: CrateId) -> Result<(), String> {
+        if id == PLAYLIST {
+            return Err("The Playlist crate can't be deleted".into());
+        }
+        if self.info(id).is_none() {
+            return Err("No such crate".into());
+        }
+        if let Some(store) = &self.store {
+            match std::fs::remove_file(store.dir().join(file_name(id))) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Could not delete the crate: {e}")),
+            }
+        }
+        self.index.crates.retain(|c| c.id != id);
+        self.loaded.remove(&id);
+        self.dirty.remove(&id);
+        self.unreadable.remove(&id);
+        if self.index.shown == id {
+            self.index.shown = PLAYLIST;
+        }
+        if self.playing == id {
+            self.playing = PLAYLIST;
+        }
+        // Save the list now, so the deleted crate can't come back.
+        self.mark_index();
+        self.save_index();
+        Ok(())
+    }
+
+    /// Eject and command-line files: they replace the Playlist crate, which becomes both
+    /// shown and playing. No other crate is ever replaced. Returns the new entries (first one
+    /// first) for metadata lookup.
+    pub fn replace_playlist(
+        &mut self,
+        tracks: impl IntoIterator<Item = TrackRef>,
+    ) -> Vec<(MetaKey, TrackRef)> {
+        self.load_playlist();
+        self.show(PLAYLIST);
+        self.playing = PLAYLIST;
+        let playlist = self.loaded.get_mut(&PLAYLIST).expect("loaded above");
+        playlist.clear();
+        let added = playlist.add(tracks);
+        self.touch(PLAYLIST);
+        added.into_iter().map(|(e, t)| ((PLAYLIST, e), t)).collect()
+    }
+
+    // ---- send to crate ---------------------------------------------------------------------
+
+    /// Copies entries of `from` (in its order, with fresh ids) to the end of `to`, skipping
+    /// those `to` already holds (the same origin clip, or the same file). Returns how many were
+    /// added; `from` is unchanged.
+    pub fn send(&mut self, from: CrateId, ids: &[EntryId], to: CrateId) -> Result<usize, String> {
+        if from == to {
+            return Ok(0);
+        }
+        if !self.load(to) {
+            return Err(format!("Crate \"{}\" can't be read", self.name(to)));
+        }
+        let Some(source) = self.loaded.get(&from) else {
+            return Ok(0);
+        };
+        let copies: Vec<_> = source
+            .entries()
+            .iter()
+            .filter(|e| ids.contains(&e.id))
+            .map(|e| (e.duplicate_key(), e.id))
+            .collect();
+        let target = &self.loaded[&to];
+        let mut have: HashSet<_> = target.entries().iter().map(|e| e.duplicate_key()).collect();
+        let keep: Vec<EntryId> = copies
+            .into_iter()
+            .filter(|(key, _)| have.insert(key.clone()))
+            .map(|(_, id)| id)
+            .collect();
+        let saved = self.loaded[&from].saved_entries(&keep);
+        let pending = self
+            .loaded
+            .get_mut(&to)
+            .expect("loaded above")
+            .add_saved(saved);
+        self.pending_meta
+            .extend(pending.into_iter().map(|(e, t)| ((to, e), t)));
+        if !keep.is_empty() {
+            self.touch(to);
+        }
+        Ok(keep.len())
+    }
+
+    // ---- saving ----------------------------------------------------------------------------
+
+    /// Marks a crate as changed; it is saved once `delay` has passed (see [`Crates::save_due`]).
+    pub fn touch(&mut self, id: CrateId) {
+        self.dirty.entry(id).or_insert_with(Instant::now);
+    }
+
+    fn mark_index(&mut self) {
+        self.index_dirty.get_or_insert_with(Instant::now);
+    }
+
+    /// Something is waiting to be saved.
+    pub fn is_dirty(&self) -> bool {
+        !self.dirty.is_empty() || self.index_dirty.is_some()
+    }
+
+    /// Saves every crate changed more than `delay` ago (all of them with `force`, on quit), and
+    /// the index with them. Writes are atomic. Returns the errors to show.
+    pub fn save_due(&mut self, force: bool, delay: Duration) -> Vec<String> {
+        let due = |t: &Instant| force || t.elapsed() >= delay;
+        let ids: Vec<CrateId> = self
+            .dirty
+            .iter()
+            .filter(|(_, t)| due(t))
+            .map(|(&id, _)| id)
+            .collect();
+        let mut errors = Vec::new();
+        for id in ids {
+            self.dirty.remove(&id);
+            let (Some(store), Some(playlist)) = (&self.store, self.loaded.get(&id)) else {
+                continue;
+            };
+            let file = CrateFile {
+                name: self.name(id).to_owned(),
+                playlist: playlist.to_saved(),
+            };
+            let count = playlist.len();
+            match store.save(&file_name(id), &file) {
+                Ok(()) => {
+                    if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
+                        && c.entries != count
+                    {
+                        c.entries = count;
+                        self.mark_index();
+                    }
+                }
+                Err(e) => errors.push(format!("Could not save crate \"{}\": {e}", file.name)),
+            }
+        }
+        if self.index_dirty.as_ref().is_some_and(due) {
+            errors.extend(self.save_index());
+        }
+        errors
+    }
+
+    fn save_index(&mut self) -> Option<String> {
+        self.index_dirty = None;
+        let store = self.store.as_ref()?;
+        store
+            .save(INDEX_FILE, &self.index)
+            .err()
+            .map(|e| format!("Could not save the list of crates: {e}"))
+    }
+}
+
+fn file_name(id: CrateId) -> String {
+    format!("{id}.ron")
+}
+
+fn unreadable_message(id: CrateId, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("Crate \"{name}\" could not be read ({CRATES_DIR}/{id}.ron)"),
+        None => format!("{CRATES_DIR}/{id}.ron could not be read"),
+    }
+}
+
+/// Ids of the `<id>.ron` files in the crates folder, in order.
+fn crate_files(store: &Store) -> Vec<CrateId> {
+    let Ok(read) = std::fs::read_dir(store.dir()) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<CrateId> = read
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".ron")?.parse().ok()
+        })
+        .filter(|&id| id > 0)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playlist::Origin;
+
+    fn config(name: &str) -> Store {
+        let d = std::env::temp_dir().join(format!("ui-crates-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        Store::new(d)
+    }
+
+    fn tracks(names: &[&str]) -> Vec<TrackRef> {
+        names
+            .iter()
+            .map(|n| TrackRef::new(format!("/m/{n}.mp3")))
+            .collect()
+    }
+
+    fn names(p: &Playlist) -> Vec<String> {
+        p.entries()
+            .iter()
+            .map(|e| e.track.stem().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_install_has_an_empty_playlist_crate() {
+        let c = Crates::open(&config("fresh"));
+        assert_eq!(c.list().len(), 1);
+        assert_eq!(c.name(PLAYLIST), "Playlist");
+        assert_eq!((c.shown_id(), c.playing_id()), (PLAYLIST, PLAYLIST));
+        assert!(c.shown().is_empty());
+    }
+
+    #[test]
+    fn create_rename_delete_follow_the_name_rules() {
+        let mut c = Crates::open(&config("names"));
+        let keepers = c.create("Keepers").unwrap();
+        assert_eq!(
+            c.create("keepers").unwrap_err(),
+            "A crate named \"Keepers\" already exists"
+        );
+        assert!(c.create("  ").is_err(), "empty");
+        assert!(c.create(&"x".repeat(41)).is_err(), "too long");
+        let gig = c.create(&"é".repeat(40)).unwrap();
+        assert!(c.create("PLAYLIST").is_err(), "clashes with Playlist");
+        assert_eq!(c.list().len(), 3);
+        assert_eq!(c.shown_id(), PLAYLIST, "a new crate isn't shown by itself");
+
+        assert!(c.rename(PLAYLIST, "Scratch").is_err());
+        assert!(c.delete(PLAYLIST).is_err());
+        assert!(c.rename(gig, "Keepers").is_err());
+        c.rename(keepers, "KEEPERS")
+            .expect("a crate can change its own case");
+        c.rename(gig, "  Gig 12 Oct ").unwrap();
+        assert_eq!(c.name(gig), "Gig 12 Oct");
+
+        c.show(gig);
+        c.set_playing(gig);
+        c.delete(gig).unwrap();
+        assert_eq!((c.shown_id(), c.playing_id()), (PLAYLIST, PLAYLIST));
+        let order: Vec<&str> = c.list().iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(order, ["Playlist", "KEEPERS"]);
+    }
+
+    #[test]
+    fn crates_load_lazily_and_restart_where_they_were() {
+        let cfg = config("restart");
+        {
+            let mut c = Crates::open(&cfg);
+            c.shown_mut().add(tracks(&["a", "b"]));
+            c.touch(PLAYLIST);
+            let lt = c.create("Lowtide Tapes").unwrap();
+            c.show(lt);
+            c.shown_mut()
+                .add(tracks(&["1", "2", "3", "4", "5", "6", "7", "8"]));
+            let seventh = c.shown().entries()[6].id;
+            c.shown_mut().set_current(Some(seventh));
+            c.touch(lt);
+            assert!(c.save_due(true, Duration::ZERO).is_empty());
+        }
+        let c = Crates::open(&cfg);
+        assert_eq!(c.name(c.shown_id()), "Lowtide Tapes");
+        assert_eq!(names(c.shown()), ["1", "2", "3", "4", "5", "6", "7", "8"]);
+        assert_eq!(c.shown().current_index(), Some(6));
+        assert!(
+            !c.is_loaded(PLAYLIST),
+            "only the shown crate is read at launch"
+        );
+        assert_eq!(c.entry_count(PLAYLIST), 2, "counts come from the index");
+    }
+
+    #[test]
+    fn saving_waits_for_the_delay_and_is_atomic() {
+        let cfg = config("delay");
+        let mut c = Crates::open(&cfg);
+        c.shown_mut().add(tracks(&["a"]));
+        c.touch(PLAYLIST);
+        let file = cfg.dir().join(CRATES_DIR).join("1.ron");
+        assert!(c.save_due(false, Duration::from_secs(60)).is_empty());
+        assert!(!file.exists(), "not saved before the delay");
+        assert!(c.is_dirty());
+        assert!(c.save_due(false, Duration::ZERO).is_empty());
+        assert!(file.exists());
+        assert!(!c.is_dirty());
+        let left: Vec<_> = std::fs::read_dir(cfg.dir().join(CRATES_DIR))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("tmp"))
+            .collect();
+        assert!(
+            left.is_empty(),
+            "temp files are renamed into place: {left:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_crate_is_listed_reported_once_and_left_alone() {
+        let cfg = config("unreadable");
+        let broken = {
+            let mut c = Crates::open(&cfg);
+            let a = c.create("Keepers").unwrap();
+            let b = c.create("Broken").unwrap();
+            c.get_mut(a).unwrap().add(tracks(&["k"]));
+            c.get_mut(b).unwrap().add(tracks(&["x"]));
+            c.touch(a);
+            c.touch(b);
+            c.show(b);
+            c.save_due(true, Duration::ZERO);
+            b
+        };
+        let path = cfg.dir().join(CRATES_DIR).join(format!("{broken}.ron"));
+        std::fs::write(&path, "not ron {").unwrap();
+
+        let mut c = Crates::open(&cfg);
+        assert_eq!(c.shown_id(), PLAYLIST, "launch falls back to Playlist");
+        assert_eq!(c.list().len(), 3, "still listed");
+        assert!(c.is_unreadable(broken));
+        let msgs = c.take_messages();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("Broken"), "{msgs:?}");
+        assert!(!c.show(broken));
+        assert!(c.take_messages().is_empty(), "reported once");
+        let keepers = c.list()[1].id;
+        assert!(c.show(keepers), "the other crates load");
+        assert_eq!(names(c.shown()), ["k"]);
+        c.save_due(true, Duration::ZERO);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not ron {");
+    }
+
+    #[test]
+    fn an_unreadable_playlist_crate_is_kept_aside_and_replaced() {
+        let cfg = config("playlist-broken");
+        {
+            let mut c = Crates::open(&cfg);
+            c.shown_mut().add(tracks(&["a"]));
+            c.touch(PLAYLIST);
+            c.save_due(true, Duration::ZERO);
+        }
+        let dir = cfg.dir().join(CRATES_DIR);
+        std::fs::write(dir.join("1.ron"), "broken").unwrap();
+        let mut c = Crates::open(&cfg);
+        assert_eq!(c.shown_id(), PLAYLIST);
+        assert!(c.shown().is_empty());
+        assert_eq!(
+            c.take_messages().len(),
+            2,
+            "unreadable, and where it was kept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("1.ron.unreadable")).unwrap(),
+            "broken"
+        );
+    }
+
+    #[test]
+    fn a_damaged_index_is_rebuilt_from_the_crate_files() {
+        let cfg = config("index");
+        let lt = {
+            let mut c = Crates::open(&cfg);
+            c.shown_mut().add(tracks(&["a"]));
+            c.touch(PLAYLIST);
+            let lt = c.create("Lowtide Tapes").unwrap();
+            c.save_due(true, Duration::ZERO);
+            lt
+        };
+        let index = cfg.dir().join(CRATES_DIR).join(INDEX_FILE);
+        for damage in ["garbage (", ""] {
+            if damage.is_empty() {
+                std::fs::remove_file(&index).unwrap();
+            } else {
+                std::fs::write(&index, damage).unwrap();
+            }
+            let mut c = Crates::open(&cfg);
+            let got: Vec<(CrateId, &str)> =
+                c.list().iter().map(|i| (i.id, i.name.as_str())).collect();
+            assert_eq!(got, [(PLAYLIST, "Playlist"), (lt, "Lowtide Tapes")]);
+            assert_eq!(names(c.shown()), ["a"]);
+            assert_eq!(
+                c.create("Next").unwrap(),
+                lt + 1,
+                "new ids follow the existing ones"
+            );
+            c.save_due(true, Duration::ZERO);
+            assert!(c.delete(lt + 1).is_ok());
+        }
+    }
+
+    fn write_old_playlist(cfg: &Store, n: usize) -> Vec<u8> {
+        let mut p = Playlist::default();
+        let ids: Vec<EntryId> = p
+            .add((0..n).map(|i| TrackRef::new(format!("/music/{i:03}.flac"))))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            p.set_info(
+                *id,
+                format!("Track {i}"),
+                "Artist".into(),
+                Some(i as f64 + 60.0),
+            );
+        }
+        p.set_current(Some(ids[n * 41 / 100])); // entry 123 of 300
+        cfg.save(PLAYLIST_FILE, &p.to_saved()).unwrap();
+        std::fs::read(cfg.dir().join(PLAYLIST_FILE)).unwrap()
+    }
+
+    #[test]
+    fn the_single_playlist_becomes_the_playlist_crate() {
+        let cfg = config("migrate");
+        let before = write_old_playlist(&cfg, 300);
+        let c = Crates::open(&cfg);
+        let p = c.shown();
+        assert_eq!(c.shown_id(), PLAYLIST);
+        assert_eq!(p.len(), 300);
+        for (i, e) in p.entries().iter().enumerate() {
+            assert_eq!(e.track.0, format!("/music/{i:03}.flac"));
+            assert_eq!(e.display_name(), format!("Artist - Track {i}"));
+            assert_eq!(e.duration, Some(i as f64 + 60.0));
+        }
+        assert_eq!(p.current_index(), Some(123));
+        assert!(
+            cfg.dir().join(CRATES_DIR).join(INDEX_FILE).exists(),
+            "written at once"
+        );
+        assert_eq!(
+            std::fs::read(cfg.dir().join(PLAYLIST_FILE)).unwrap(),
+            before,
+            "the old file is untouched"
+        );
+        // Only once: later edits to playlist.ron are no longer read.
+        drop(c);
+        write_old_playlist(&cfg, 5);
+        assert_eq!(Crates::open(&cfg).shown().len(), 300);
+    }
+
+    #[test]
+    fn opening_files_replaces_only_the_playlist_crate() {
+        let cfg = config("replace");
+        let lt = {
+            let mut c = Crates::open(&cfg);
+            c.shown_mut().add(tracks(&["old"]));
+            c.touch(PLAYLIST);
+            let lt = c.create("Lowtide Tapes").unwrap();
+            c.show(lt);
+            c.shown_mut().add(tracks(&["x", "y"]));
+            c.touch(lt);
+            c.save_due(true, Duration::ZERO);
+            lt
+        };
+        let mut c = Crates::open(&cfg);
+        assert_eq!(c.shown_id(), lt);
+        let added = c.replace_playlist(tracks(&["one", "two"]));
+        assert_eq!(added.len(), 2);
+        assert!(added.iter().all(|((id, _), _)| *id == PLAYLIST));
+        assert_eq!((c.shown_id(), c.playing_id()), (PLAYLIST, PLAYLIST));
+        assert_eq!(names(c.shown()), ["one", "two"]);
+        assert_eq!(names(c.get(lt).unwrap()), ["x", "y"], "unchanged");
+        c.save_due(true, Duration::ZERO);
+        let mut c = Crates::open(&cfg);
+        c.show(lt);
+        assert_eq!(names(c.shown()), ["x", "y"]);
+    }
+
+    #[test]
+    fn send_copies_in_order_without_duplicates() {
+        let mut c = Crates::in_memory();
+        c.shown_mut().add(tracks(&["a", "b", "c", "d"]));
+        let origin = Origin {
+            release: Some(123456),
+            catno: "LT-012".into(),
+            position: "A1".into(),
+            clip: Some("abcdefghijk".into()),
+            ..Default::default()
+        };
+        let remote = c.shown_mut().add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(origin.clone()),
+            "listed",
+        );
+        let ids: Vec<EntryId> = c.shown().entries().iter().map(|e| e.id).collect();
+        let keepers = c.create("Keepers").unwrap();
+        c.get_mut(keepers).unwrap().add(tracks(&["c"]));
+
+        let before = c.shown().to_saved();
+        // Three selected entries (a, c, d), one already in Keepers.
+        assert_eq!(c.send(PLAYLIST, &[ids[3], ids[0], ids[2]], keepers), Ok(2));
+        assert_eq!(names(c.get(keepers).unwrap()), ["c", "a", "d"]);
+        assert_eq!(c.shown().to_saved(), before, "the source is unchanged");
+
+        // The origin travels; the same clip isn't sent twice even from another entry.
+        assert_eq!(c.send(PLAYLIST, &[remote], keepers), Ok(1));
+        let copy = c.get(keepers).unwrap().entries().last().unwrap().clone();
+        assert_eq!(copy.origin, Some(origin.clone()));
+        assert_ne!(copy.id, remote, "fresh id");
+        let again = c
+            .shown_mut()
+            .add_waiting("x", "y", None, Some(origin), "listed");
+        assert_eq!(c.send(PLAYLIST, &[again], keepers), Ok(0));
+        assert!(c.is_dirty());
+    }
+
+    #[test]
+    fn an_origin_survives_a_send_and_a_restart() {
+        let cfg = config("origin");
+        let keepers = {
+            let mut c = Crates::open(&cfg);
+            let origin = Origin {
+                release: Some(123456),
+                catno: "LT-012".into(),
+                position: "A1".into(),
+                ..Default::default()
+            };
+            let id =
+                c.shown_mut()
+                    .add_waiting("Nightcraft", "Glasshouse", None, Some(origin), "listed");
+            let keepers = c.create("Keepers").unwrap();
+            c.send(PLAYLIST, &[id], keepers).unwrap();
+            c.save_due(true, Duration::ZERO);
+            keepers
+        };
+        let mut c = Crates::open(&cfg);
+        c.show(keepers);
+        let o = c.shown().entries()[0].origin.clone().unwrap();
+        assert_eq!(
+            (o.release, o.catno.as_str(), o.position.as_str()),
+            (Some(123456), "LT-012", "A1")
+        );
+    }
+}

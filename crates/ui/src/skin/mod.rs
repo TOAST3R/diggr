@@ -51,6 +51,13 @@ pub struct Colors {
     pub vis_peak: [u8; 3],
     pub vis_scope: [u8; 3],
     pub eq_curve: [u8; 3],
+    /// The crate name on the playlist title bar.
+    #[serde(default = "title_gold")]
+    pub pl_title: [u8; 3],
+}
+
+fn title_gold() -> [u8; 3] {
+    [236, 204, 90]
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

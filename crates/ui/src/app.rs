@@ -12,15 +12,14 @@ use egui::{
 };
 use platform::{FileSource, Spawner, TrackRef};
 
+use crate::crates::{CrateId, Crates, MetaKey, PLAYLIST};
 use crate::eqcurve;
 use crate::files;
 use crate::format;
 use crate::fullscreen::{SceneFrame, VisualScene};
 use crate::metadata::{MetaResult, MetaWorker};
-use crate::playlist::{ClickMods, EntryId, Playlist, SavedPlaylist, play_order};
-use crate::settings::{
-    PLAYLIST_FILE, PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode,
-};
+use crate::playlist::{ClickMods, EntryId, EntryStatus};
+use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
 use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
 use crate::widgets::{self, Skinned, SliderSprites, color};
@@ -34,7 +33,7 @@ pub struct AppContext {
     pub files: Arc<dyn FileSource>,
     /// Where settings/playlist/presets live; `None` disables persistence.
     pub store: Option<Store>,
-    /// Files from the command line: replace the playlist and play.
+    /// Files from the command line: replace the Playlist crate and play.
     pub open: Vec<PathBuf>,
     pub scene: Box<dyn VisualScene>,
     pub startup: Startup,
@@ -76,16 +75,21 @@ pub struct WinampApp {
     store: Option<Store>,
     settings: Settings,
     presets: EqPresets,
-    playlist: Playlist,
-    /// Playlist entry ids in engine-queue order.
+    /// The crates: the window edits the shown one, the engine queue comes from the playing one.
+    crates: Crates,
+    /// Entry ids in engine-queue order, and the crate they belong to.
     queue: Vec<EntryId>,
+    queue_crate: CrateId,
     queue_dirty: bool,
     shuffle_seed: u64,
     engine: EngineSlot,
-    pending_play: Option<Option<EntryId>>,
+    /// Play once the engine is up: an entry, or whatever Play would start.
+    pending_play: Option<Option<(CrateId, EntryId)>>,
+    /// A waiting entry that starts as soon as its audio arrives.
+    armed: Option<(CrateId, EntryId)>,
     tap: Option<TapReader>,
     analyzer: Analyzer,
-    meta: Option<MetaWorker>,
+    meta: Option<MetaWorker<MetaKey>>,
     now_playing: Option<TrackInfo>,
     position: Position,
     seek_drag: Option<f32>,
@@ -94,7 +98,9 @@ pub struct WinampApp {
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
     pl_resize_acc: f32,
-    preset_name: Option<String>,
+    name_dialog: Option<NameDialog>,
+    /// A crate with entries waiting for "Delete crate…" to be confirmed.
+    confirm_delete: Option<CrateId>,
     fullscreen: Option<Fullscreen>,
     scene: Box<dyn VisualScene>,
     scene_ready: bool,
@@ -126,7 +132,6 @@ pub struct WinampApp {
     /// `WINAMP_AUTO_QUIT_SECS=n`: close the app after n seconds.
     auto_quit: Option<Instant>,
     settings_dirty: Option<Instant>,
-    playlist_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
     message: Option<(String, Instant)>,
     analysis: Option<analysis::AnalysisService>,
@@ -143,28 +148,32 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 
 impl WinampApp {
     pub fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> Self {
+        Self::build(cc.egui_ctx.clone(), cc.wgpu_render_state.clone(), ctx)
+    }
+
+    fn build(
+        egui_ctx: egui::Context,
+        render_state: Option<eframe::egui_wgpu::RenderState>,
+        ctx: AppContext,
+    ) -> Self {
         let store = ctx.store;
         let settings = store.as_ref().map(Store::load_settings).unwrap_or_default();
         let presets = store.as_ref().map(Store::load_presets).unwrap_or_default();
-        let saved: SavedPlaylist = store
-            .as_ref()
-            .map(|s| s.load(PLAYLIST_FILE))
-            .unwrap_or_default();
-        let (mut playlist, mut pending_meta) = Playlist::from_saved(saved);
+        let mut crates = store.as_ref().map_or_else(Crates::in_memory, Crates::open);
 
         // Open the audio device in the background: the window must not wait for it.
         let (tx, rx) = std::sync::mpsc::channel();
         let factory = ctx.engine;
-        let egui_ctx = cc.egui_ctx.clone();
+        let wake_ctx = egui_ctx.clone();
         std::thread::Builder::new()
             .name("engine-start".into())
             .spawn(move || {
                 let _ = tx.send(factory());
-                egui_ctx.request_repaint();
+                wake_ctx.request_repaint();
             })
             .expect("spawn engine starter");
 
-        let wake_ctx = cc.egui_ctx.clone();
+        let wake_ctx = egui_ctx.clone();
         let meta = MetaWorker::start(&*ctx.spawner, ctx.files.clone(), move || {
             wake_ctx.request_repaint()
         })
@@ -172,18 +181,22 @@ impl WinampApp {
 
         let mut pending_play = None;
         if !ctx.open.is_empty() {
-            playlist.clear();
-            let added = playlist.add(
+            let added = crates.replace_playlist(
                 files::expand(&ctx.open)
                     .into_iter()
                     .map(|p| TrackRef::new(p.to_string_lossy())),
             );
-            pending_play = Some(added.first().map(|(id, _)| *id));
-            pending_meta = added;
+            pending_play = Some(added.first().map(|(key, _)| *key));
+            if let Some(m) = &meta {
+                m.request(added);
+            }
         }
         if let Some(m) = &meta {
-            m.request(pending_meta);
+            m.request(crates.take_pending_meta());
         }
+        let message = Some(crates.take_messages().join("\n"))
+            .filter(|m| !m.is_empty())
+            .map(|m| (m, Instant::now()));
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(1, |d| d.as_nanos() as u64);
@@ -204,12 +217,14 @@ impl WinampApp {
             analyzer: Analyzer::new(48_000),
             settings,
             presets,
-            playlist,
             queue: Vec::new(),
+            queue_crate: crates.playing_id(),
+            crates,
             queue_dirty: true,
             shuffle_seed: seed,
             engine: EngineSlot::Starting(rx),
             pending_play,
+            armed: None,
             tap: None,
             meta,
             now_playing: None,
@@ -226,11 +241,12 @@ impl WinampApp {
             pl_scroll: 0,
             pl_drag_from: None,
             pl_resize_acc: 0.0,
-            preset_name: None,
+            name_dialog: None,
+            confirm_delete: None,
             fullscreen: None,
             scene: ctx.scene,
             scene_ready: false,
-            render_state: cc.wgpu_render_state.clone(),
+            render_state,
             last_frame: Instant::now(),
             startup: ctx.startup,
             first_frame_done: false,
@@ -241,9 +257,8 @@ impl WinampApp {
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|s| Instant::now() + Duration::from_secs(s)),
             settings_dirty: None,
-            playlist_dirty: None,
             last_size: None,
-            message: None,
+            message,
             analysis: ctx.analysis,
             files: ctx.files.clone(),
             track_refs: std::collections::HashMap::new(),
@@ -291,9 +306,16 @@ impl WinampApp {
         self.settings_dirty.get_or_insert_with(Instant::now);
     }
 
-    fn mark_playlist(&mut self) {
-        self.queue_dirty = true;
-        self.playlist_dirty.get_or_insert_with(Instant::now);
+    /// A crate's entries changed: save it soon, and rebuild the engine queue if it is playing.
+    fn mark_crate(&mut self, id: CrateId) {
+        self.crates.touch(id);
+        if id == self.crates.playing_id() {
+            self.queue_dirty = true;
+        }
+    }
+
+    fn mark_shown(&mut self) {
+        self.mark_crate(self.crates.shown_id());
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -325,30 +347,48 @@ impl WinampApp {
         }
     }
 
-    /// Rebuilds the engine queue from the playlist (and shuffle order).
+    /// Rebuilds the engine queue from the playing crate (and shuffle order).
     fn sync_queue(&mut self, first: Option<EntryId>) {
-        let first_index = first
-            .or(self.playlist.current())
-            .and_then(|id| self.playlist.index_of(id));
-        let order = play_order(
-            self.playlist.len(),
+        let playing = self.crates.playing();
+        let queue = playing.queue(
             self.settings.shuffle,
-            first_index,
+            first.or(playing.current()),
             self.shuffle_seed,
         );
-        let entries = self.playlist.entries();
-        self.queue = order.iter().map(|&i| entries[i].id).collect();
-        let tracks: Vec<TrackRef> = order.iter().map(|&i| entries[i].track.clone()).collect();
+        let tracks: Vec<TrackRef>;
+        (self.queue, tracks) = queue.into_iter().unzip();
+        self.queue_crate = self.crates.playing_id();
         self.queue_dirty = false;
         if let EngineSlot::Ready(e) = &mut self.engine {
             e.set_queue(tracks);
         }
     }
 
-    fn play_entry(&mut self, id: EntryId) {
-        if self.engine().is_none() {
-            self.pending_play = Some(Some(id));
+    /// Starts an entry, which makes its crate the playing one. A waiting entry is armed
+    /// instead: it starts when its audio arrives, and the current track plays on meanwhile.
+    fn play_entry(&mut self, crate_id: CrateId, id: EntryId) {
+        let Some(entry) = self.crates.get(crate_id).and_then(|p| p.get(id)) else {
             return;
+        };
+        match &entry.status {
+            EntryStatus::Waiting(_) => {
+                self.armed = Some((crate_id, id));
+                return;
+            }
+            EntryStatus::Unavailable(reason) => {
+                let text = format!("{}: {reason}", entry.display_name());
+                self.notify(text);
+                return;
+            }
+            _ => {}
+        }
+        if self.engine().is_none() {
+            self.pending_play = Some(Some((crate_id, id)));
+            return;
+        }
+        self.armed = None;
+        if self.crates.playing_id() != crate_id && self.crates.set_playing(crate_id) {
+            self.queue_dirty = true;
         }
         // In shuffle mode the chosen track starts a fresh shuffled order.
         if self.queue_dirty || self.settings.shuffle || !self.queue.contains(&id) {
@@ -359,16 +399,18 @@ impl WinampApp {
             self.sync_queue(Some(id));
         }
         if let Some(q) = self.queue.iter().position(|&x| x == id) {
-            self.playlist.set_current(Some(id));
+            self.crates.playing_mut().set_current(Some(id));
             if let Some(e) = self.engine() {
                 e.play_index(q);
             }
         }
     }
 
+    /// Play: resumes when paused, restarts the playing track, and when stopped starts the
+    /// shown crate (at its current entry).
     fn play(&mut self) {
-        if self.playlist.is_empty() {
-            self.open_files_dialog(true);
+        if self.crates.shown().is_empty() {
+            self.open_files_dialog(Open::AddAndPlay);
             return;
         }
         let Some(e) = self.engine() else {
@@ -378,17 +420,17 @@ impl WinampApp {
         match e.state() {
             PlayState::Paused => e.resume(),
             PlayState::Playing => {
-                if let Some(id) = self.playlist.current() {
-                    self.play_entry(id);
+                if let Some(id) = self.crates.playing().current() {
+                    self.play_entry(self.crates.playing_id(), id);
                 }
             }
             PlayState::Stopped => {
-                let id = self
-                    .playlist
+                let shown = self.crates.shown();
+                let id = shown
                     .current()
-                    .or_else(|| self.playlist.entries().first().map(|e| e.id));
+                    .or_else(|| shown.queue(false, None, 0).first().map(|(id, _)| *id));
                 if let Some(id) = id {
-                    self.play_entry(id);
+                    self.play_entry(self.crates.shown_id(), id);
                 }
             }
         }
@@ -506,7 +548,7 @@ impl WinampApp {
         if let Some(p) = self.pending_play.take() {
             if self.engine().is_some() {
                 match p {
-                    Some(id) => self.play_entry(id),
+                    Some((c, id)) => self.play_entry(c, id),
                     None => self.play(),
                 }
             } else {
@@ -514,30 +556,40 @@ impl WinampApp {
             }
         }
         if let Some(meta) = &self.meta {
-            let results = meta.poll();
-            let got = !results.is_empty();
-            for r in results {
+            meta.request(self.crates.take_pending_meta());
+            for r in meta.poll() {
+                let (c, id) = match r {
+                    MetaResult::Info(key, _) | MetaResult::Failed(key) => key,
+                };
+                let Some(playlist) = self.crates.get_mut(c) else {
+                    continue; // deleted meanwhile
+                };
                 match r {
-                    MetaResult::Info(id, i) => {
-                        self.playlist
-                            .set_info(id, i.title, i.artist, i.duration_secs)
+                    MetaResult::Info(_, i) => {
+                        playlist.set_info(id, i.title, i.artist, i.duration_secs)
                     }
-                    MetaResult::Failed(id) => self.playlist.set_failed(id),
+                    MetaResult::Failed(_) => playlist.set_failed(id),
                 }
-            }
-            if got {
-                self.playlist_dirty.get_or_insert_with(Instant::now);
+                self.crates.touch(c);
             }
         }
+        let messages = self.crates.take_messages();
+        if !messages.is_empty() {
+            self.notify(messages.join("\n"));
+        }
+        self.check_armed();
         let queue = self.queue.clone();
+        let queue_crate = self.queue_crate;
         let EngineSlot::Ready(engine) = &mut self.engine else {
             return;
         };
         for ev in engine.poll_events() {
             match ev {
                 EngineEvent::TrackInfo { index, info, .. } => {
-                    if let Some(&id) = queue.get(index) {
-                        self.playlist.set_info(
+                    if let (Some(&id), Some(p)) =
+                        (queue.get(index), self.crates.get_mut(queue_crate))
+                    {
+                        p.set_info(
                             id,
                             info.title.clone(),
                             info.artist.clone(),
@@ -546,8 +598,10 @@ impl WinampApp {
                     }
                 }
                 EngineEvent::TrackFailed { index, .. } => {
-                    if let Some(&id) = queue.get(index) {
-                        self.playlist.set_failed(id);
+                    if let (Some(&id), Some(p)) =
+                        (queue.get(index), self.crates.get_mut(queue_crate))
+                    {
+                        p.set_failed(id);
                     }
                 }
                 EngineEvent::TrackLoaded { id, track, .. } => {
@@ -633,39 +687,102 @@ impl WinampApp {
         }
         if self.position.state != PlayState::Stopped
             && let Some(&id) = engine.current_index().and_then(|q| queue.get(q))
+            && let Some(p) = self.crates.get_mut(queue_crate)
         {
-            self.playlist.set_current(Some(id));
+            p.set_current(Some(id));
         }
+    }
+
+    // ---- entries waiting for their audio ---------------------------------------------------
+
+    /// An audio producer delivered a waiting entry's file: it becomes playable, joins the
+    /// queue if its crate is playing, and starts at once if it was armed.
+    pub fn set_audio(&mut self, crate_id: CrateId, id: EntryId, track: TrackRef) {
+        let Some(p) = self.crates.get_mut(crate_id) else {
+            return;
+        };
+        if !p.set_audio(id, track.clone()) {
+            return;
+        }
+        if let Some(m) = &self.meta {
+            m.request(vec![((crate_id, id), track)]);
+        }
+        self.mark_crate(crate_id);
+        self.check_armed();
+    }
+
+    /// Starts the armed entry once it can play, and forgets it if it never will.
+    fn check_armed(&mut self) {
+        let Some((c, id)) = self.armed else {
+            return;
+        };
+        let status = self
+            .crates
+            .get(c)
+            .and_then(|p| p.get(id))
+            .map(|e| &e.status);
+        let (waiting, playable) = (
+            matches!(status, Some(EntryStatus::Waiting(_))),
+            status.is_some_and(EntryStatus::is_playable),
+        );
+        if playable && matches!(self.engine, EngineSlot::Ready(_)) {
+            self.play_entry(c, id);
+        } else if !waiting && !playable {
+            self.armed = None; // removed, or it will never play
+        }
+    }
+
+    /// "Waiting for ‹title› (downloading 40%)" while an entry is armed.
+    fn armed_line(&self) -> Option<String> {
+        let (c, id) = self.armed?;
+        let e = self.crates.get(c)?.get(id)?;
+        Some(match e.status.note() {
+            Some(note) => format!("Waiting for {} ({note})", e.display_name()),
+            None => format!("Waiting for {}", e.display_name()),
+        })
     }
 
     // ---- files -----------------------------------------------------------------------------
 
-    fn add_paths(&mut self, paths: Vec<PathBuf>, play_first: bool) {
-        let found = files::expand(&paths);
+    /// Adds music to the shown crate (ADD, drag-and-drop, Cmd+O, M3U import), or replaces the
+    /// Playlist crate (Eject). Adding to an empty crate plays it if nothing else is playing.
+    fn add_paths(&mut self, paths: Vec<PathBuf>, open: Open) {
+        let found: Vec<TrackRef> = files::expand(&paths)
+            .into_iter()
+            .map(|p| TrackRef::new(p.to_string_lossy()))
+            .collect();
         if found.is_empty() {
             return;
         }
-        let was_empty = self.playlist.is_empty();
-        let added = self.playlist.add(
-            found
-                .into_iter()
-                .map(|p| TrackRef::new(p.to_string_lossy())),
-        );
-        let first = added.first().map(|(id, _)| *id);
+        let (crate_id, added, play) = if open == Open::Replace {
+            let added = self.crates.replace_playlist(found);
+            self.queue_dirty = true;
+            (PLAYLIST, added, true)
+        } else {
+            let crate_id = self.crates.shown_id();
+            let was_empty = self.crates.shown().is_empty();
+            let added = self.crates.shown_mut().add(found);
+            let added: Vec<_> = added.into_iter().map(|(e, t)| ((crate_id, e), t)).collect();
+            self.mark_shown();
+            let idle = self.position.state == PlayState::Stopped;
+            (
+                crate_id,
+                added,
+                open == Open::AddAndPlay || (was_empty && idle),
+            )
+        };
+        let first = added.first().map(|((_, id), _)| *id);
         if let Some(m) = &self.meta {
             m.request(added);
         }
-        self.mark_playlist();
-        if (play_first || was_empty)
-            && let Some(id) = first
-        {
-            self.play_entry(id);
+        if play && let Some(id) = first {
+            self.play_entry(crate_id, id);
         }
     }
 
     /// Opens the "Render show" dialog for a playlist entry.
     fn open_render_dialog(&mut self, id: EntryId) {
-        let (Some(renderer), Some(e)) = (&self.show_renderer, self.playlist.get(id)) else {
+        let (Some(renderer), Some(e)) = (&self.show_renderer, self.crates.shown().get(id)) else {
             return;
         };
         self.render_looks = renderer.looks();
@@ -735,7 +852,7 @@ impl WinampApp {
         }
     }
 
-    fn open_files_dialog(&mut self, play: bool) {
+    fn open_files_dialog(&mut self, open: Open) {
         let exts: Vec<&str> = files::AUDIO_EXTENSIONS
             .iter()
             .copied()
@@ -745,34 +862,25 @@ impl WinampApp {
             .add_filter("Audio", &exts)
             .pick_files()
         {
-            self.add_paths(paths, play);
+            self.add_paths(paths, open);
         }
     }
 
     fn open_folder_dialog(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-            self.add_paths(vec![dir], false);
+            self.add_paths(vec![dir], Open::Add);
         }
     }
 
     fn export_m3u(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Playlist", &["m3u8", "m3u"])
-            .set_file_name("playlist.m3u8")
+            .set_file_name(format!("{}.m3u8", self.crates.name(self.crates.shown_id())))
             .save_file()
         else {
             return;
         };
-        let entries: Vec<files::M3uEntry> = self
-            .playlist
-            .entries()
-            .iter()
-            .map(|e| files::M3uEntry {
-                path: e.track.0.clone().into(),
-                title: Some(e.display_name()),
-                duration: e.duration,
-            })
-            .collect();
+        let entries = files::m3u_entries(self.crates.shown());
         match std::fs::write(&path, files::write_m3u(&entries)) {
             Ok(()) => self.notify(format!("Saved {}", path.display())),
             Err(e) => self.notify(format!("Could not save: {e}")),
@@ -918,19 +1026,21 @@ impl WinampApp {
                 self.mark_settings();
             }
             Key::S if !mods.command => self.spectro_open = !self.spectro_open,
-            Key::Delete | Key::Backspace => {
-                if self.playlist.remove_selected() > 0 {
-                    self.mark_playlist();
-                }
-            }
-            Key::O if mods.command => self.open_files_dialog(false),
-            Key::A if mods.command => self.playlist.select_all(),
+            Key::Delete | Key::Backspace => self.remove_selected(),
+            Key::O if mods.command => self.open_files_dialog(Open::Add),
+            Key::A if mods.command => self.crates.shown_mut().select_all(),
             Key::Enter => {
-                if let Some(&id) = self.playlist.selected_ids().first() {
-                    self.play_entry(id);
+                if let Some(&id) = self.crates.shown().selected_ids().first() {
+                    self.play_entry(self.crates.shown_id(), id);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn remove_selected(&mut self) {
+        if self.crates.shown_mut().remove_selected() > 0 {
+            self.mark_shown();
         }
     }
 
@@ -980,10 +1090,9 @@ impl WinampApp {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
-        let (artist, title, duration) = match &self.now_playing {
-            Some(i) => (i.artist.clone(), i.title.clone(), i.duration_secs),
-            None => (String::new(), "Nothing playing".into(), None),
-        };
+        let (artist, title, duration) = self
+            .now_playing_names()
+            .unwrap_or_else(|| (String::new(), "Nothing playing".into(), None));
         let bars = *self.analyzer.bars();
         let frame = SceneFrame {
             position: self.position,
@@ -1120,15 +1229,12 @@ impl WinampApp {
 
             // Title, kbps, kHz, mono/stereo.
             let tt = sk.def.at("title_text");
-            let number = self.playlist.current_index().map_or(0, |i| i + 1);
-            let title = match &info {
-                Some(i) => format::title_line(number, &i.artist, &i.title, i.duration_secs),
-                None => self
-                    .playlist
-                    .current()
-                    .and_then(|id| self.playlist.get(id))
-                    .map(|e| format::title_line(number, &e.artist, &e.title, e.duration))
-                    .unwrap_or_else(|| engine_status(&self.engine)),
+            let number = self.crates.playing().current_index().map_or(0, |i| i + 1);
+            let title = match self.now_playing_names() {
+                Some((artist, title, duration)) => {
+                    format::title_line(number, &artist, &title, duration)
+                }
+                None => engine_status(&self.engine),
             };
             let width = (tt.w / sk.def.font.advance) as usize;
             let shown = format::scroll(&title, width, self.title_offset);
@@ -1279,6 +1385,23 @@ impl WinampApp {
         }
     }
 
+    /// Artist, title and duration of what plays: the file's tags, except that an entry with
+    /// an origin keeps its own artist and title (the record, not the file, is the truth).
+    fn now_playing_names(&self) -> Option<(String, String, Option<f64>)> {
+        let playing = self.crates.playing();
+        let entry = playing.current().and_then(|id| playing.get(id));
+        match (&self.now_playing, entry) {
+            (Some(i), Some(e)) if e.origin.is_some() => Some((
+                e.artist.clone(),
+                e.title.clone(),
+                i.duration_secs.or(e.duration),
+            )),
+            (Some(i), _) => Some((i.artist.clone(), i.title.clone(), i.duration_secs)),
+            (None, Some(e)) => Some((e.artist.clone(), e.title.clone(), e.duration)),
+            (None, None) => None,
+        }
+    }
+
     fn draw_vis(&self, sk: &Skinned) {
         let v = sk.def.at("vis");
         let c = &sk.def.colors;
@@ -1409,14 +1532,27 @@ impl WinampApp {
         let d = self.skin.def.clone();
         let list_h = (rows * d.pl_row_h as usize) as f32;
         let mut actions = Vec::new();
-        let len = self.playlist.len();
+        let len = self.crates.shown().len();
         self.pl_scroll = self.pl_scroll.min(len.saturating_sub(rows));
         {
             let def = self.def.clone();
             let sk = self.skinned(&def, ui, origin);
             let scale = sk.scale;
             sk.sprite("pl_top", 0.0, 0.0);
-            Self::titlebar_drag(ui, &sk, "pl_title", "pl_titlebar");
+            // The title bar names the shown crate: a click opens the crate menu, a drag still
+            // moves the window.
+            let title = ui.interact(
+                sk.at("pl_titlebar"),
+                Id::new("pl_title"),
+                Sense::click_and_drag(),
+            );
+            if title.drag_started() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+            draw_crate_name(&sk, self.crates.name(self.crates.shown_id()));
+            egui::Popup::menu(&title)
+                .id(Id::new("crate_menu"))
+                .show(|ui| self.crate_menu(ui, &mut actions));
             if widgets::button(ui, &sk, "pl_close", "pl_close", "btn_close").clicked() {
                 actions.push(Action::TogglePlaylist);
             }
@@ -1440,25 +1576,18 @@ impl WinampApp {
                 command: i.modifiers.command,
             });
             let mut drop_target = None;
+            let shown = self.crates.shown();
             for r in 0..rows {
                 let idx = self.pl_scroll + r;
-                let Some(e) = self.playlist.entries().get(idx) else {
+                let Some(e) = shown.entries().get(idx) else {
                     break;
                 };
                 let rr = sk.rect(l.x as f32, top + r as f32 * row_h, l.w as f32, row_h);
-                if self.playlist.is_selected(e.id) {
+                if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
                 }
-                let current = self.playlist.current() == Some(e.id);
-                let mut col = color(if current {
-                    d.colors.pl_current
-                } else {
-                    d.colors.pl_text
-                });
-                if e.status == crate::playlist::EntryStatus::Failed {
-                    col = Color32::from_rgb(170, 60, 60);
-                }
-                let dur = e.duration.map(format::clock).unwrap_or_default();
+                let current = shown.current() == Some(e.id);
+                let (col, dur) = row_look(e, current, &d.colors);
                 let dur_w = clip
                     .text(
                         pos2(rr.right() - 3.0 * scale, rr.center().y),
@@ -1490,34 +1619,54 @@ impl WinampApp {
                 } else if resp.clicked() && !menu_click {
                     actions.push(Action::Select(idx, mods));
                 }
-                if self.show_renderer.is_some() {
-                    let rendering = self
-                        .render_job
-                        .as_ref()
-                        .is_some_and(|(j, _)| !j.status().finished());
-                    // egui's context menu opens only on the secondary button; on a Mac,
-                    // Control-click is the usual right-click too.
-                    let open = if menu_click {
-                        Some(egui::SetOpenCommand::Bool(true))
-                    } else if resp.clicked() {
-                        Some(egui::SetOpenCommand::Bool(false))
-                    } else {
-                        None
-                    };
-                    egui::Popup::context_menu(&resp)
-                        .open_memory(open)
-                        .show(|ui| {
-                            if rendering {
-                                if ui.button("Cancel show render").clicked() {
-                                    actions.push(Action::CancelRender);
+                let rendering = self
+                    .render_job
+                    .as_ref()
+                    .is_some_and(|(j, _)| !j.status().finished());
+                // egui's context menu opens only on the secondary button; on a Mac,
+                // Control-click is the usual right-click too.
+                let open = if menu_click {
+                    Some(egui::SetOpenCommand::Bool(true))
+                } else if resp.clicked() {
+                    Some(egui::SetOpenCommand::Bool(false))
+                } else {
+                    None
+                };
+                egui::Popup::context_menu(&resp)
+                    .open_memory(open)
+                    .show(|ui| {
+                        ui.menu_button("Send to crate", |ui| {
+                            for c in self.crates.list() {
+                                if c.id == self.crates.shown_id() {
+                                    continue;
+                                }
+                                let readable = !self.crates.is_unreadable(c.id);
+                                if ui
+                                    .add_enabled(readable, egui::Button::new(&c.name))
+                                    .clicked()
+                                {
+                                    actions.push(Action::SendTo(e.id, Some(c.id)));
                                     ui.close();
                                 }
-                            } else if ui.button("Render show…").clicked() {
-                                actions.push(Action::RenderShow(e.id));
+                            }
+                            ui.separator();
+                            if ui.button("New crate…").clicked() {
+                                actions.push(Action::SendTo(e.id, None));
                                 ui.close();
                             }
                         });
-                }
+                        if self.show_renderer.is_some() {
+                            let (label, action) = if rendering {
+                                ("Cancel show render", Action::CancelRender)
+                            } else {
+                                ("Render show…", Action::RenderShow(e.id))
+                            };
+                            if ui.button(label).clicked() {
+                                actions.push(action);
+                                ui.close();
+                            }
+                        }
+                    });
                 if resp.drag_started() {
                     self.pl_drag_from = Some(idx);
                 }
@@ -1592,7 +1741,7 @@ impl WinampApp {
                 if ui.button("Remove selected").clicked() {
                     actions.push(Action::RemoveSelected);
                 }
-                if ui.button("Clear playlist").clicked() {
+                if ui.button("Clear crate").clicked() {
                     actions.push(Action::Clear);
                 }
             });
@@ -1633,8 +1782,8 @@ impl WinampApp {
             });
 
             // "selected/total" time, Winamp style.
-            let (total, t_unknown) = self.playlist.total_duration();
-            let (seltime, s_unknown) = self.playlist.selected_duration();
+            let (total, t_unknown) = self.crates.shown().total_duration();
+            let (seltime, s_unknown) = self.crates.shown().selected_duration();
             let info = format!(
                 "{}{}/{}{}",
                 format::clock(seltime),
@@ -1665,21 +1814,28 @@ impl WinampApp {
         }
     }
 
-    fn preset_dialog(&mut self, ctx: &egui::Context) {
-        let Some(name) = &mut self.preset_name else {
+    /// The name dialog: EQ preset names, and new or renamed crates. A refused name keeps the
+    /// dialog open with the reason.
+    fn name_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.name_dialog else {
             return;
         };
+        let (title, verb) = dialog.purpose.labels();
         let mut done = None;
-        egui::Window::new("Save EQ preset")
+        egui::Window::new(title)
+            .id(Id::new("name-dialog"))
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                let r = ui.text_edit_singleline(name);
+                let r = ui.text_edit_singleline(&mut dialog.text);
+                // Enter makes the field lose focus; check that before taking focus back.
+                let entered = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 r.request_focus();
+                if let Some(e) = &dialog.error {
+                    ui.colored_label(Color32::from_rgb(230, 90, 90), e);
+                }
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked()
-                        || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
-                    {
+                    if ui.button(verb).clicked() || entered {
                         done = Some(true);
                     }
                     if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -1689,15 +1845,147 @@ impl WinampApp {
             });
         match done {
             Some(true) => {
-                let name = self.preset_name.take().unwrap_or_default();
+                let Some(dialog) = self.name_dialog.take() else {
+                    return;
+                };
+                if let Err(e) = self.apply_name(&dialog.purpose, &dialog.text) {
+                    self.name_dialog = Some(NameDialog {
+                        error: Some(e),
+                        ..dialog
+                    });
+                }
+            }
+            Some(false) => self.name_dialog = None,
+            None => {}
+        }
+    }
+
+    fn apply_name(&mut self, purpose: &NameFor, name: &str) -> Result<(), String> {
+        match purpose {
+            NameFor::Preset => {
                 if !name.trim().is_empty() {
                     self.presets
                         .save(EqPreset::from_settings(name.trim(), &self.settings.eq));
                     self.save_presets();
                 }
             }
-            Some(false) => self.preset_name = None,
-            None => {}
+            NameFor::NewCrate => {
+                let id = self.crates.create(name)?;
+                self.show_crate(id);
+            }
+            NameFor::RenameCrate(id) => self.crates.rename(*id, name)?,
+            NameFor::SendToNew(ids) => {
+                let to = self.crates.create(name)?;
+                self.send_to(ids, to);
+            }
+        }
+        Ok(())
+    }
+
+    /// "Delete crate "X" (40 entries)?" before deleting a crate that has entries.
+    fn delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.confirm_delete else {
+            return;
+        };
+        let question = format!(
+            "Delete crate \"{}\" ({})?",
+            self.crates.name(id),
+            entries_label(self.crates.entry_count(id))
+        );
+        let mut choice = None;
+        let modal = egui::Modal::new(Id::new("delete-crate")).show(ctx, |ui| {
+            ui.label(question);
+            ui.horizontal(|ui| {
+                if ui.button("Delete").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        if modal.should_close() && choice.is_none() {
+            choice = Some(false);
+        }
+        if let Some(delete) = choice {
+            self.confirm_delete = None;
+            if delete {
+                self.delete_crate(id);
+            }
+        }
+    }
+
+    // ---- crates ------------------------------------------------------------------------------
+
+    /// The crate menu under the playlist title bar.
+    fn crate_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
+        for c in self.crates.list() {
+            let unreadable = self.crates.is_unreadable(c.id);
+            let label = crate_menu_label(&c.name, c.id == shown, c.id == playing, unreadable);
+            if ui
+                .add_enabled(!unreadable, egui::Button::selectable(c.id == shown, label))
+                .clicked()
+            {
+                actions.push(Action::ShowCrate(c.id));
+            }
+        }
+        ui.separator();
+        if ui.button("New crate…").clicked() {
+            actions.push(Action::NewCrate);
+        }
+        let editable = shown != PLAYLIST;
+        if ui
+            .add_enabled(editable, egui::Button::new("Rename crate…"))
+            .clicked()
+        {
+            actions.push(Action::RenameCrate);
+        }
+        if ui
+            .add_enabled(editable, egui::Button::new("Delete crate…"))
+            .clicked()
+        {
+            actions.push(Action::DeleteCrate);
+        }
+    }
+
+    /// Shows a crate in the window; playback carries on with its own crate.
+    fn show_crate(&mut self, id: CrateId) {
+        if self.crates.show(id) {
+            self.pl_scroll = 0;
+            self.pl_drag_from = None;
+        }
+    }
+
+    /// Deletes a crate; deleting the playing crate stops playback.
+    fn delete_crate(&mut self, id: CrateId) {
+        if id == self.crates.playing_id() {
+            self.with_engine(|e| e.stop());
+            self.queue_dirty = true;
+        }
+        if self.armed.is_some_and(|(c, _)| c == id) {
+            self.armed = None;
+        }
+        if let Err(e) = self.crates.delete(id) {
+            self.notify(e);
+        }
+    }
+
+    /// Copies entries of the shown crate to another one.
+    fn send_to(&mut self, ids: &[EntryId], to: CrateId) {
+        match self.crates.send(self.crates.shown_id(), ids, to) {
+            Ok(sent) => {
+                if sent > 0 && to == self.crates.playing_id() {
+                    self.queue_dirty = true;
+                }
+                let skipped = ids.len() - sent;
+                let mut text = format!("Sent {} to {}", entries_label(sent), self.crates.name(to));
+                if skipped > 0 {
+                    text += &format!(" ({skipped} already there)");
+                }
+                self.notify(text);
+            }
+            Err(e) => self.notify(e),
         }
     }
 
@@ -1711,12 +1999,18 @@ impl WinampApp {
 
     fn apply(&mut self, a: Action, ctx: &egui::Context) {
         match a {
-            Action::Prev => self.with_engine(|e| e.previous()),
+            Action::Prev => {
+                self.armed = None;
+                self.with_engine(|e| e.previous());
+            }
             Action::Play => self.play(),
             Action::Pause => self.with_engine(|e| e.toggle_pause()),
             Action::Stop => self.with_engine(|e| e.stop()),
-            Action::Next => self.with_engine(|e| e.next()),
-            Action::Eject => self.open_files_dialog(true),
+            Action::Next => {
+                self.armed = None;
+                self.with_engine(|e| e.next());
+            }
+            Action::Eject => self.open_files_dialog(Open::Replace),
             Action::Seek(s) => self.with_engine(|e| e.seek(s)),
             Action::Volume(v) => self.set_volume(v),
             Action::Balance(b) => {
@@ -1761,39 +2055,64 @@ impl WinampApp {
                     (self.settings.playlist_rows as i32 + d).clamp(4, 60) as u16;
                 self.mark_settings();
             }
-            Action::SavePreset => self.preset_name = Some(String::new()),
+            Action::SavePreset => self.name_dialog = Some(NameDialog::new(NameFor::Preset, "")),
             Action::DeletePreset(name) => {
                 self.presets.remove(&name);
                 self.save_presets();
             }
-            Action::PlayEntry(id) => self.play_entry(id),
+            Action::PlayEntry(id) => self.play_entry(self.crates.shown_id(), id),
             Action::RenderShow(id) => self.open_render_dialog(id),
             Action::CancelRender => {
                 if let Some((job, _)) = &self.render_job {
                     job.cancel();
                 }
             }
-            Action::Select(i, m) => self.playlist.click(i, m),
+            Action::Select(i, m) => self.crates.shown_mut().click(i, m),
             Action::Move(from, to) => {
-                self.playlist.move_entry(from, to);
-                self.mark_playlist();
+                self.crates.shown_mut().move_entry(from, to);
+                self.mark_shown();
             }
-            Action::AddFiles => self.open_files_dialog(false),
+            Action::AddFiles => self.open_files_dialog(Open::Add),
             Action::AddFolder => self.open_folder_dialog(),
-            Action::RemoveSelected => {
-                if self.playlist.remove_selected() > 0 {
-                    self.mark_playlist();
+            Action::RemoveSelected => self.remove_selected(),
+            Action::Clear => {
+                self.crates.shown_mut().clear();
+                if self.crates.shown_id() == self.crates.playing_id() {
+                    self.with_engine(|e| e.stop());
+                }
+                self.mark_shown();
+            }
+            Action::SelectAll => self.crates.shown_mut().select_all(),
+            Action::SelectNone => self.crates.shown_mut().select_none(),
+            Action::InvertSelection => self.crates.shown_mut().invert_selection(),
+            Action::ExportM3u => self.export_m3u(),
+            Action::ShowCrate(id) => self.show_crate(id),
+            Action::NewCrate => self.name_dialog = Some(NameDialog::new(NameFor::NewCrate, "")),
+            Action::RenameCrate => {
+                let id = self.crates.shown_id();
+                let name = self.crates.name(id).to_owned();
+                self.name_dialog = Some(NameDialog::new(NameFor::RenameCrate(id), name));
+            }
+            Action::DeleteCrate => {
+                let id = self.crates.shown_id();
+                if self.crates.entry_count(id) > 0 {
+                    self.confirm_delete = Some(id);
+                } else {
+                    self.delete_crate(id);
                 }
             }
-            Action::Clear => {
-                self.playlist.clear();
-                self.with_engine(|e| e.stop());
-                self.mark_playlist();
+            Action::SendTo(entry, to) => {
+                let shown = self.crates.shown();
+                let ids = if shown.is_selected(entry) {
+                    shown.selected_ids()
+                } else {
+                    vec![entry]
+                };
+                match to {
+                    Some(to) => self.send_to(&ids, to),
+                    None => self.name_dialog = Some(NameDialog::new(NameFor::SendToNew(ids), "")),
+                }
             }
-            Action::SelectAll => self.playlist.select_all(),
-            Action::SelectNone => self.playlist.select_none(),
-            Action::InvertSelection => self.playlist.invert_selection(),
-            Action::ExportM3u => self.export_m3u(),
         }
         let _ = ctx;
     }
@@ -1809,11 +2128,8 @@ impl WinampApp {
                 self.notify(format!("Could not save settings: {e}"));
             }
         }
-        if due(self.playlist_dirty) {
-            self.playlist_dirty = None;
-            if let Err(e) = store.save(PLAYLIST_FILE, &self.playlist.to_saved()) {
-                self.notify(format!("Could not save playlist: {e}"));
-            }
+        for e in self.crates.save_due(force, SAVE_DELAY) {
+            self.notify(e);
         }
     }
 }
@@ -1853,6 +2169,143 @@ enum Action {
     SelectNone,
     InvertSelection,
     ExportM3u,
+    ShowCrate(CrateId),
+    NewCrate,
+    /// Rename or delete the shown crate.
+    RenameCrate,
+    DeleteCrate,
+    /// Send an entry (with the rest of the selection, when it is selected) to a crate, or to
+    /// a new one.
+    SendTo(EntryId, Option<CrateId>),
+}
+
+/// How opened files are used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Open {
+    /// Add to the shown crate.
+    Add,
+    /// Add to the shown crate and play the first one.
+    AddAndPlay,
+    /// Replace the Playlist crate and play it (Eject).
+    Replace,
+}
+
+struct NameDialog {
+    purpose: NameFor,
+    text: String,
+    error: Option<String>,
+}
+
+impl NameDialog {
+    fn new(purpose: NameFor, text: impl Into<String>) -> Self {
+        Self {
+            purpose,
+            text: text.into(),
+            error: None,
+        }
+    }
+}
+
+enum NameFor {
+    Preset,
+    NewCrate,
+    RenameCrate(CrateId),
+    /// A new crate for these entries of the shown crate.
+    SendToNew(Vec<EntryId>),
+}
+
+impl NameFor {
+    /// Window title and confirm button.
+    fn labels(&self) -> (&'static str, &'static str) {
+        match self {
+            NameFor::Preset => ("Save EQ preset", "Save"),
+            NameFor::NewCrate | NameFor::SendToNew(_) => ("New crate", "Create"),
+            NameFor::RenameCrate(_) => ("Rename crate", "Rename"),
+        }
+    }
+}
+
+fn entries_label(n: usize) -> String {
+    if n == 1 {
+        "1 entry".into()
+    } else {
+        format!("{n} entries")
+    }
+}
+
+/// A crate in the crate menu: • marks the shown crate, ⏵ the playing one (marks egui's default
+/// fonts can draw).
+fn crate_menu_label(name: &str, shown: bool, playing: bool, unreadable: bool) -> String {
+    let mut label = format!("{} {name}", if shown { "•" } else { "  " });
+    if playing {
+        label += "  ⏵";
+    }
+    if unreadable {
+        label += " (unreadable)";
+    }
+    label
+}
+
+/// Colour and right-hand text of a playlist row: the duration, or a waiting or unavailable
+/// entry's note, dimmed. Only files that couldn't be opened are drawn in the error colour.
+fn row_look(
+    e: &crate::playlist::Entry,
+    current: bool,
+    colors: &crate::skin::Colors,
+) -> (Color32, String) {
+    let base = if current {
+        colors.pl_current
+    } else {
+        colors.pl_text
+    };
+    match (&e.status, e.status.note()) {
+        (EntryStatus::Failed, _) => (Color32::from_rgb(170, 60, 60), duration_text(e)),
+        (_, Some(note)) => (lerp_color(base, colors.pl_bg, 0.55), note.to_owned()),
+        _ => (color(base), duration_text(e)),
+    }
+}
+
+fn duration_text(e: &crate::playlist::Entry) -> String {
+    e.duration.map(format::clock).unwrap_or_default()
+}
+
+/// The playlist title bar's text: the crate name folded to the skin font's upper case, without
+/// characters the font lacks, cut to `max_w` skin pixels.
+pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String {
+    let advance = def.font.advance as f32;
+    let fit = ((max_w + 1.0) / advance).floor().max(0.0) as usize;
+    let text: String = name
+        .chars()
+        .map(crate::skin::fold)
+        .filter(|&c| def.glyph(c).is_some())
+        .take(fit)
+        .collect();
+    text.trim().to_owned()
+}
+
+/// Draws the shown crate's name centred on the playlist title bar, over a plain strip that
+/// hides the bar's decorative lines behind it.
+fn draw_crate_name(sk: &Skinned, name: &str) {
+    const PAD: f32 = 5.0; // plain title bar either side of the name
+    const SIDE: f32 = 40.0; // decoration left visible at each end (the close button's side)
+    let bar = sk.def.at("pl_titlebar");
+    let text = crate_title(sk.def, name, bar.w as f32 - 2.0 * (SIDE + PAD));
+    if text.is_empty() {
+        return;
+    }
+    let w = sk.text_width(&text);
+    let x = ((bar.w as f32 - w) / 2.0).round();
+    sk.sprite_in(
+        "pl_title_fill",
+        sk.rect(
+            bar.x as f32 + x - PAD,
+            bar.y as f32,
+            w + 2.0 * PAD,
+            bar.h as f32,
+        ),
+    );
+    let y = bar.y as f32 + ((bar.h - sk.def.font.glyph_h) / 2) as f32;
+    sk.text(bar.x as f32 + x, y, &text, color(sk.def.colors.pl_title));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1927,6 +2380,24 @@ fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
 
 impl eframe::App for WinampApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.logic_inner(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ui_start = Instant::now();
+        self.ui_inner(ui);
+        if let Some(p) = &mut self.profile {
+            p.ui_done(ui_start, self.fullscreen.is_some());
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.exit();
+    }
+}
+
+impl WinampApp {
+    fn logic_inner(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         if let Some(p) = &mut self.profile {
             p.logic_start(now);
@@ -1966,7 +2437,7 @@ impl eframe::App for WinampApp {
                 .collect()
         });
         if !dropped.is_empty() {
-            self.add_paths(dropped, false);
+            self.add_paths(dropped, Open::Add);
         }
 
         // Scroll the title while playing (Winamp scrolls ~5 characters per second).
@@ -2008,7 +2479,7 @@ impl eframe::App for WinampApp {
         if let Some(after) = repaint_after(activity) {
             ctx.request_repaint_after(after);
         }
-        if self.settings_dirty.is_some() || self.playlist_dirty.is_some() {
+        if self.settings_dirty.is_some() || self.crates.is_dirty() {
             ctx.request_repaint_after(SAVE_DELAY);
         }
         self.save_now(false);
@@ -2017,20 +2488,6 @@ impl eframe::App for WinampApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        let ui_start = Instant::now();
-        self.ui_inner(ui);
-        if let Some(p) = &mut self.profile {
-            p.ui_done(ui_start, self.fullscreen.is_some());
-        }
-    }
-
-    fn on_exit(&mut self) {
-        self.exit();
-    }
-}
-
-impl WinampApp {
     fn ui_inner(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if self.tex.is_none() {
@@ -2060,20 +2517,28 @@ impl WinampApp {
             if self.settings.show_playlist {
                 self.playlist_section(ui, origin + vec2(0.0, y * scale));
             }
-            if let Some((text, at)) = &self.message {
-                if at.elapsed() < Duration::from_secs(4) {
-                    egui::Tooltip::always_open(
-                        ctx.clone(),
-                        ui.layer_id(),
-                        Id::new("msg"),
-                        egui::PopupAnchor::Position(origin),
-                    )
-                    .show(|ui| ui.label(text.as_str()));
-                } else {
-                    self.message = None;
-                }
+            if self
+                .message
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(4))
+            {
+                self.message = None;
             }
-            self.preset_dialog(&ctx);
+            // An armed entry's "Waiting for …" stays up until it plays.
+            let line = self
+                .armed_line()
+                .or_else(|| self.message.as_ref().map(|(text, _)| text.clone()));
+            if let Some(text) = line {
+                egui::Tooltip::always_open(
+                    ctx.clone(),
+                    ui.layer_id(),
+                    Id::new("msg"),
+                    egui::PopupAnchor::Position(origin),
+                )
+                .show(|ui| ui.label(text));
+            }
+            self.name_dialog(&ctx);
+            self.delete_dialog(&ctx);
             self.render_dialog_ui(&ctx);
         }
         if self.help {
@@ -2442,6 +2907,809 @@ mod tests {
         assert_eq!(
             WinampApp::window_size(&s, &skin),
             vec2(550.0, 840.0 + 116.0)
+        );
+    }
+}
+
+/// The player driven headlessly: a real engine on a `ManualSink`, crates in a temp config
+/// folder, and egui frames fed with synthetic pointer and key events.
+#[cfg(test)]
+mod headless_tests {
+    use super::*;
+    use crate::crates::PLAYLIST;
+    use crate::playlist::Origin;
+    use egui::{Event, PointerButton};
+    use platform::CallbackInfo;
+    use platform::native::{NativeFileSource, NativeSpawner};
+    use platform::testing::ManualSink;
+    use std::path::Path;
+
+    const BUF: usize = 512;
+    /// Classic size, main window and playlist only: the playlist starts at y = 116.
+    const PL_TOP: f32 = 116.0;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "{}/../audio/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ui-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    struct Rig {
+        app: WinampApp,
+        ctx: egui::Context,
+        sink: ManualSink,
+        now_ns: u64,
+        dir: PathBuf,
+        /// Modifier keys held during the next frames.
+        mods: Modifiers,
+    }
+
+    impl Rig {
+        /// `prepare` may fill the config folder before the app starts.
+        fn new(name: &str, open: Vec<PathBuf>, prepare: impl FnOnce(&Store)) -> Self {
+            let dir = temp(name);
+            let store = Store::new(dir.join("config"));
+            store
+                .save(
+                    SETTINGS_FILE,
+                    &Settings {
+                        scale: 1,
+                        show_eq: false,
+                        show_waveform: false,
+                        repeat: Repeat::One, // the 2 s fixtures keep playing
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            prepare(&store);
+            let sink = ManualSink::new(48_000, 2);
+            let engine_sink = sink.clone();
+            let ctx = egui::Context::default();
+            let app = WinampApp::build(
+                ctx.clone(),
+                None,
+                AppContext {
+                    engine: Box::new(move || {
+                        Engine::new(
+                            Arc::new(engine_sink),
+                            &NativeSpawner,
+                            Arc::new(NativeFileSource),
+                            audio::EngineConfig::default(),
+                        )
+                        .map_err(|e| e.to_string())
+                    }),
+                    spawner: Arc::new(NativeSpawner),
+                    files: Arc::new(NativeFileSource),
+                    store: Some(store),
+                    open,
+                    scene: Box::new(crate::fullscreen::BeatFlash::default()),
+                    startup: Startup {
+                        process_start: Instant::now(),
+                        report: false,
+                        exit_after_first_frame: false,
+                    },
+                    analysis: None,
+                    annotations_dir: None,
+                    overviews: None,
+                    show_renderer: None,
+                },
+            );
+            let mut rig = Rig {
+                app,
+                ctx,
+                sink,
+                now_ns: 0,
+                dir,
+                mods: Modifiers::NONE,
+            };
+            rig.until(|r| r.app.engine().is_some(), "the engine starts");
+            rig
+        }
+
+        fn frame(&mut self, mut events: Vec<Event>) -> egui::FullOutput {
+            events.insert(0, Event::ModifiersChanged(self.mods));
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(275.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let app = &mut self.app;
+            let mut out = self.ctx.run_ui(input, |ui| {
+                app.logic_inner(ui.ctx());
+                app.ui_inner(ui);
+            });
+            out.textures_delta.clear();
+            out
+        }
+
+        /// One device callback (advancing fake time by a buffer), then a UI frame.
+        fn pump(&mut self) -> egui::FullOutput {
+            std::thread::sleep(Duration::from_micros(BUF as u64 * 1_000_000 / 48_000 / 2));
+            self.now_ns += BUF as u64 * 1_000_000_000 / 48_000;
+            self.sink.set_now_ns(self.now_ns);
+            self.sink.pull(
+                BUF,
+                CallbackInfo {
+                    host_ns: self.now_ns,
+                    output_latency_ns: 0,
+                },
+            );
+            self.frame(Vec::new())
+        }
+
+        fn until(&mut self, mut done: impl FnMut(&mut Self) -> bool, what: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !done(self) {
+                assert!(Instant::now() < deadline, "timed out: {what}");
+                self.pump();
+            }
+        }
+
+        fn engine(&mut self) -> &mut Engine {
+            self.app.engine().expect("engine ready")
+        }
+
+        fn engine_queue(&mut self) -> Vec<TrackRef> {
+            self.engine().queue().to_vec()
+        }
+
+        fn press(&mut self, pos: Pos2, button: PointerButton, pressed: bool) -> egui::FullOutput {
+            self.frame(vec![Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: self.mods,
+            }])
+        }
+
+        fn click_with(&mut self, pos: Pos2, button: PointerButton) -> egui::FullOutput {
+            self.frame(vec![Event::PointerMoved(pos)]);
+            self.press(pos, button, true);
+            self.press(pos, button, false);
+            self.frame(Vec::new())
+        }
+
+        fn click(&mut self, pos: Pos2) -> egui::FullOutput {
+            self.click_with(pos, PointerButton::Primary)
+        }
+
+        fn double_click(&mut self, pos: Pos2) -> egui::FullOutput {
+            self.frame(vec![Event::PointerMoved(pos)]);
+            for _ in 0..2 {
+                self.press(pos, PointerButton::Primary, true);
+                self.press(pos, PointerButton::Primary, false);
+            }
+            self.frame(Vec::new())
+        }
+
+        /// Clicks the text `label` wherever it is drawn (menu items, buttons).
+        fn click_text(&mut self, label: &str) -> egui::FullOutput {
+            let out = self.frame(Vec::new());
+            let rect = texts(&out)
+                .into_iter()
+                .find(|t| t.text == label)
+                .unwrap_or_else(|| panic!("{label:?} is not on screen: {:?}", text_list(&out)))
+                .rect;
+            self.click(rect.center())
+        }
+
+        fn type_text(&mut self, text: &str) {
+            self.frame(vec![Event::Text(text.into())]);
+            self.frame(vec![Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }]);
+            self.frame(Vec::new());
+        }
+
+        /// Cmd+A in the focused text field.
+        fn select_all_text(&mut self) {
+            self.mods = Modifiers::COMMAND;
+            self.frame(vec![Event::Key {
+                key: Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            }]);
+            self.mods = Modifiers::NONE;
+        }
+
+        fn title_bar(&self) -> Pos2 {
+            pos2(60.0, PL_TOP + 10.0)
+        }
+
+        fn row(&self, index: usize) -> Pos2 {
+            pos2(60.0, PL_TOP + 20.0 + index as f32 * 13.0 + 6.5)
+        }
+
+        fn ids(&self, crate_id: CrateId) -> Vec<EntryId> {
+            let p = self.app.crates.get(crate_id).expect("loaded");
+            p.entries().iter().map(|e| e.id).collect()
+        }
+
+        /// A new crate holding these fixtures (not shown).
+        fn crate_with(&mut self, name: &str, files: &[&str]) -> CrateId {
+            let id = self.app.crates.create(name).unwrap();
+            let tracks = files
+                .iter()
+                .map(|f| TrackRef::new(fixture(f).to_string_lossy()));
+            self.app.crates.get_mut(id).unwrap().add(tracks);
+            id
+        }
+
+        fn menu_open(&self) -> bool {
+            egui::Popup::is_id_open(&self.ctx, Id::new("crate_menu"))
+        }
+    }
+
+    struct Text {
+        text: String,
+        rect: Rect,
+        color: Option<Color32>,
+    }
+
+    fn texts(out: &egui::FullOutput) -> Vec<Text> {
+        fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {
+            match shape {
+                egui::Shape::Text(t) => acc.push(Text {
+                    text: t.galley.text().to_owned(),
+                    rect: t.visual_bounding_rect(),
+                    color: t.galley.job.sections.first().map(|s| s.format.color),
+                }),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        for s in &out.shapes {
+            walk(&s.shape, &mut acc);
+        }
+        acc
+    }
+
+    fn text_list(out: &egui::FullOutput) -> Vec<String> {
+        texts(out).into_iter().map(|t| t.text).collect()
+    }
+
+    fn shows(out: &egui::FullOutput, text: &str) -> bool {
+        texts(out).iter().any(|t| t.text == text)
+    }
+
+    fn start_drag(out: &egui::FullOutput) -> bool {
+        out.viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, ViewportCommand::StartDrag))
+        })
+    }
+
+    // ---- playback follows its crate -------------------------------------------------------
+
+    #[test]
+    fn switching_crates_leaves_the_engine_queue_alone() {
+        let mut rig = Rig::new("switch", Vec::new(), |_| {});
+        rig.app.add_paths(
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            Open::Add,
+        );
+        rig.until(|r| r.engine().state() == PlayState::Playing, "playing");
+        let queue = rig.engine_queue();
+        assert_eq!(queue.len(), 3);
+
+        let b = rig.crate_with("B", &["tone.mp3", "tone.m4a"]);
+        rig.app.apply(Action::ShowCrate(b), &rig.ctx.clone());
+        // Edits to a crate that isn't playing don't touch the queue either.
+        rig.app.add_paths(vec![fixture("mono48k.wav")], Open::Add);
+        for _ in 0..5 {
+            rig.pump();
+        }
+        assert_eq!(rig.app.crates.shown_id(), b);
+        assert_eq!(rig.app.crates.playing_id(), PLAYLIST);
+        assert_eq!(
+            rig.engine_queue(),
+            queue,
+            "the queue still is the Playlist crate"
+        );
+        assert_eq!(rig.engine().state(), PlayState::Playing);
+        assert_eq!(rig.engine().current_index(), Some(0));
+    }
+
+    #[test]
+    fn starting_a_track_in_another_crate_retargets_next_and_previous() {
+        let mut rig = Rig::new("retarget", Vec::new(), |_| {});
+        rig.app
+            .add_paths(vec![fixture("tone.flac"), fixture("tone.wav")], Open::Add);
+        rig.until(|r| r.engine().state() == PlayState::Playing, "playing");
+        let b = rig.crate_with("B", &["tone.mp3", "tone.ogg", "tone.m4a"]);
+        rig.app.apply(Action::ShowCrate(b), &rig.ctx.clone());
+        rig.frame(Vec::new());
+
+        rig.double_click(rig.row(0));
+        assert_eq!(rig.app.crates.playing_id(), b);
+        let b_tracks: Vec<TrackRef> = rig
+            .app
+            .crates
+            .get(b)
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|e| e.track.clone())
+            .collect();
+        assert_eq!(rig.engine_queue(), b_tracks, "the queue is crate B");
+
+        rig.app.apply(Action::Next, &rig.ctx.clone());
+        let second = rig.ids(b)[1];
+        rig.until(
+            |r| r.app.crates.get(b).unwrap().current() == Some(second),
+            "next plays B's second entry",
+        );
+        rig.app.apply(Action::Prev, &rig.ctx.clone());
+        let first = rig.ids(b)[0];
+        rig.until(
+            |r| r.app.crates.get(b).unwrap().current() == Some(first),
+            "previous goes back within B",
+        );
+
+        // Deleting the playing crate stops playback.
+        rig.app.delete_crate(b);
+        rig.frame(Vec::new());
+        assert_eq!(rig.engine().state(), PlayState::Stopped);
+        assert_eq!(rig.app.crates.playing_id(), PLAYLIST);
+        assert_eq!(rig.app.crates.shown_id(), PLAYLIST);
+    }
+
+    // ---- entries waiting for their audio ------------------------------------------------
+
+    #[test]
+    fn an_armed_entry_starts_within_100_ms_of_its_audio_arriving() {
+        let mut rig = Rig::new("armed", Vec::new(), |_| {});
+        rig.app.add_paths(vec![fixture("tone.flac")], Open::Add);
+        rig.until(|r| r.engine().state() == PlayState::Playing, "playing");
+        let waiting = rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            Some("https://www.youtube.com/watch?v=abcdefghijk".into()),
+            None,
+            "downloading 40%",
+        );
+        rig.app.mark_shown();
+        rig.frame(Vec::new());
+
+        let out = rig.double_click(rig.row(1));
+        assert_eq!(rig.app.armed, Some((PLAYLIST, waiting)));
+        assert!(
+            shows(
+                &out,
+                "Waiting for Nightcraft - Glasshouse (downloading 40%)"
+            ),
+            "{:?}",
+            text_list(&out)
+        );
+        for _ in 0..10 {
+            rig.pump();
+        }
+        assert_eq!(
+            rig.engine().state(),
+            PlayState::Playing,
+            "the current track plays on"
+        );
+        assert_eq!(rig.engine().current_index(), Some(0));
+        assert_eq!(
+            rig.engine_queue().len(),
+            1,
+            "the waiting entry isn't queued"
+        );
+
+        // The download finishes: the file lands in the cache and the producer reports it.
+        let cached = rig.dir.join("abcdefghijk.wav");
+        std::fs::copy(fixture("tone.wav"), &cached).unwrap();
+        let before = rig.app.position.track;
+        let arrived_ns = rig.now_ns;
+        rig.app
+            .set_audio(PLAYLIST, waiting, TrackRef::new(cached.to_string_lossy()));
+        assert_eq!(rig.app.armed, None);
+        // Audible: the clock runs on a new track instance, past its first frames.
+        rig.until(
+            |r| {
+                let p = r.app.position;
+                p.track != before && p.state == PlayState::Playing && p.frame > 0
+            },
+            "the armed entry plays",
+        );
+        assert_eq!(rig.app.crates.playing().current(), Some(waiting));
+        let ms = (rig.now_ns - arrived_ns) as f64 / 1e6;
+        assert!(ms < 100.0, "audible {ms:.1} ms after its audio arrived");
+        assert_eq!(rig.engine().stats().underruns, 0);
+    }
+
+    #[test]
+    fn starting_another_track_cancels_the_arming() {
+        let mut rig = Rig::new("disarm", Vec::new(), |_| {});
+        rig.app
+            .add_paths(vec![fixture("tone.flac"), fixture("tone.wav")], Open::Add);
+        rig.until(|r| r.engine().state() == PlayState::Playing, "playing");
+        let waiting = rig
+            .app
+            .crates
+            .shown_mut()
+            .add_waiting("", "Later", None, None, "listed");
+        rig.app.apply(Action::PlayEntry(waiting), &rig.ctx.clone());
+        assert!(rig.app.armed.is_some());
+        rig.double_click(rig.row(1));
+        assert_eq!(rig.app.armed, None);
+        rig.frame(Vec::new());
+        assert!(rig.app.armed_line().is_none());
+    }
+
+    #[test]
+    fn opening_files_replaces_only_the_playlist_crate() {
+        let lowtide = std::cell::Cell::new(0);
+        let mut rig = Rig::new(
+            "open",
+            vec![fixture("tone.flac"), fixture("tone.wav")],
+            |store| {
+                let mut c = Crates::open(store);
+                c.shown_mut()
+                    .add([TrackRef::new(fixture("tone.ogg").to_string_lossy())]);
+                c.touch(PLAYLIST);
+                let lt = c.create("Lowtide Tapes").unwrap();
+                c.get_mut(lt)
+                    .unwrap()
+                    .add([TrackRef::new(fixture("tone.mp3").to_string_lossy())]);
+                c.touch(lt);
+                c.show(lt);
+                c.save_due(true, Duration::ZERO);
+                lowtide.set(lt);
+            },
+        );
+        let lt = lowtide.get();
+        let stem = |r: &Rig, c: CrateId| -> Vec<String> {
+            r.app
+                .crates
+                .get(c)
+                .unwrap()
+                .entries()
+                .iter()
+                .map(|e| e.track.stem().to_owned())
+                .collect()
+        };
+        assert_eq!(rig.app.crates.shown_id(), PLAYLIST);
+        assert_eq!(rig.app.crates.playing_id(), PLAYLIST);
+        rig.until(
+            |r| r.engine().state() == PlayState::Playing,
+            "plays the first file",
+        );
+        let first = rig.ids(PLAYLIST)[0];
+        assert_eq!(rig.app.crates.playing().current(), Some(first));
+        assert_eq!(rig.app.crates.shown().len(), 2, "exactly the opened files");
+        rig.app.crates.load(lt);
+        assert_eq!(stem(&rig, lt), ["tone"], "Lowtide Tapes is unchanged");
+        assert!(
+            rig.app.crates.get(lt).unwrap().entries()[0]
+                .track
+                .0
+                .ends_with("tone.mp3")
+        );
+
+        // Eject does the same while another crate is shown.
+        rig.app.apply(Action::ShowCrate(lt), &rig.ctx.clone());
+        rig.app.add_paths(vec![fixture("tone.m4a")], Open::Replace);
+        assert_eq!(
+            (rig.app.crates.shown_id(), rig.app.crates.playing_id()),
+            (PLAYLIST, PLAYLIST)
+        );
+        assert_eq!(rig.app.crates.shown().len(), 1);
+        assert!(
+            rig.app.crates.get(lt).unwrap().entries()[0]
+                .track
+                .0
+                .ends_with("tone.mp3")
+        );
+    }
+
+    #[test]
+    fn waiting_and_unavailable_rows_are_dimmed_and_failed_rows_red() {
+        let mut rig = Rig::new("rows", Vec::new(), |_| {});
+        rig.app.add_paths(
+            vec![fixture("tone.flac"), fixture("garbage.mp3")],
+            Open::Add,
+        );
+        let p = rig.app.crates.shown_mut();
+        p.add_waiting("Nightcraft", "Glasshouse", None, None, "downloading 40%");
+        let gone = p.add_waiting("Nightcraft", "B-side", None, None, "listed");
+        p.set_unavailable(gone, "no clip");
+        rig.until(
+            |r| r.app.crates.shown().entries()[1].status == EntryStatus::Failed,
+            "the broken file is found",
+        );
+        let out = rig.frame(Vec::new());
+        let colors = rig.app.skin.def.colors.clone();
+        let dim = lerp_color(colors.pl_text, colors.pl_bg, 0.55);
+        let color_of = |text: &str| {
+            texts(&out)
+                .into_iter()
+                .find(|t| t.text == text)
+                .unwrap_or_else(|| panic!("{text:?} not drawn: {:?}", text_list(&out)))
+                .color
+        };
+        assert_eq!(color_of("downloading 40%"), Some(dim));
+        assert_eq!(color_of("3. Nightcraft - Glasshouse"), Some(dim));
+        assert_eq!(color_of("no clip"), Some(dim));
+        assert_eq!(color_of("4. Nightcraft - B-side"), Some(dim));
+        assert_eq!(color_of("2. garbage"), Some(Color32::from_rgb(170, 60, 60)));
+        let normal = color_of("1. M83 - Midnight_City");
+        assert!(normal == Some(color(colors.pl_text)) || normal == Some(color(colors.pl_current)));
+    }
+
+    #[test]
+    fn the_title_line_keeps_an_origin_entrys_own_names() {
+        let mut rig = Rig::new("origin-title", Vec::new(), |_| {});
+        let id = rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(Origin {
+                release: Some(123456),
+                ..Default::default()
+            }),
+            "listed",
+        );
+        rig.app.apply(Action::PlayEntry(id), &rig.ctx.clone());
+        // The fixture's tags say "M83 - Midnight_City".
+        rig.app.set_audio(
+            PLAYLIST,
+            id,
+            TrackRef::new(fixture("tone.flac").to_string_lossy()),
+        );
+        rig.until(
+            |r| r.app.now_playing.is_some() && r.app.crates.shown().entries()[0].duration.is_some(),
+            "playing, with its duration read",
+        );
+        assert_eq!(rig.app.now_playing.as_ref().unwrap().artist, "M83");
+        let (artist, title, duration) = rig.app.now_playing_names().unwrap();
+        assert_eq!(
+            (artist.as_str(), title.as_str()),
+            ("Nightcraft", "Glasshouse")
+        );
+        assert!(duration.is_some_and(|d| (d - 2.0).abs() < 0.05));
+        let e = &rig.app.crates.shown().entries()[0];
+        assert_eq!(e.display_name(), "Nightcraft - Glasshouse");
+        assert!(
+            e.duration.is_some_and(|d| (d - 2.0).abs() < 0.05),
+            "takes the duration"
+        );
+    }
+
+    // ---- title bar and crate menu --------------------------------------------------------
+
+    #[test]
+    fn the_title_bar_names_the_crate_in_the_skin_font() {
+        let def = LoadedSkin::default_skin().def;
+        assert_eq!(crate_title(&def, "Lowtide Tapes", 200.0), "LOWTIDE TAPES");
+        assert_eq!(
+            crate_title(&def, "Canción €5", 200.0),
+            "CANCION 5",
+            "folded, € skipped"
+        );
+        // 6 px per character, the last one without its gap: 29 px fit five, 28 px four.
+        assert_eq!(crate_title(&def, "Keepers", 29.0), "KEEPE");
+        assert_eq!(crate_title(&def, "Keepers", 28.0), "KEEP");
+        let long = crate_title(&def, &"x".repeat(40), 275.0 - 90.0);
+        assert!(
+            long.len() < 40 && long.len() * 6 - 1 <= 185,
+            "cut to fit: {long}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_title_bar_opens_the_crate_menu_and_a_drag_moves_the_window() {
+        let mut rig = Rig::new("titlebar", Vec::new(), |_| {});
+        let at = rig.title_bar();
+        rig.frame(vec![Event::PointerMoved(at)]);
+        rig.press(at, PointerButton::Primary, true);
+        let mut moved = false;
+        for i in 1..=4 {
+            let out = rig.frame(vec![Event::PointerMoved(at + vec2(8.0 * i as f32, 3.0))]);
+            moved |= start_drag(&out);
+        }
+        rig.press(at + vec2(32.0, 3.0), PointerButton::Primary, false);
+        let out = rig.frame(Vec::new());
+        assert!(moved, "dragging the title bar moves the window");
+        assert!(
+            !rig.menu_open() && !shows(&out, "New crate…"),
+            "and opens no menu"
+        );
+
+        let out = rig.click(at);
+        assert!(!start_drag(&out));
+        assert!(rig.menu_open(), "a click opens the crate menu");
+        let out = rig.frame(Vec::new());
+        for item in ["New crate…", "Rename crate…", "Delete crate…"] {
+            assert!(shows(&out, item), "{item} in {:?}", text_list(&out));
+        }
+        assert!(shows(
+            &out,
+            &crate_menu_label("Playlist", true, true, false)
+        ));
+        let font = egui::FontId::proportional(14.0);
+        assert!(
+            rig.ctx.fonts_mut(|f| f.has_glyphs(&font, "•⏵")),
+            "the menu's marks have glyphs"
+        );
+    }
+
+    #[test]
+    fn the_crate_menu_switches_creates_and_refuses_duplicate_names() {
+        let mut rig = Rig::new("menu", Vec::new(), |_| {});
+        let keepers = rig.crate_with("Keepers", &["tone.flac"]);
+        rig.click(rig.title_bar());
+        rig.click_text(&crate_menu_label("Keepers", false, false, false));
+        assert_eq!(rig.app.crates.shown_id(), keepers);
+        assert!(!rig.menu_open(), "choosing a crate closes the menu");
+
+        // Marks: ✔ on the shown crate, ▶ on the playing one.
+        rig.click(rig.title_bar());
+        let out = rig.frame(Vec::new());
+        assert!(shows(
+            &out,
+            &crate_menu_label("Keepers", true, false, false)
+        ));
+        assert!(shows(
+            &out,
+            &crate_menu_label("Playlist", false, true, false)
+        ));
+
+        rig.click_text("New crate…");
+        rig.type_text("keepers");
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "A crate named \"Keepers\" already exists"),
+            "{:?}",
+            text_list(&out)
+        );
+        assert_eq!(rig.app.crates.list().len(), 2, "no crate is created");
+        rig.select_all_text();
+        rig.type_text("Gig 12 Oct");
+        let names: Vec<&str> = rig
+            .app
+            .crates
+            .list()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["Playlist", "Keepers", "Gig 12 Oct"]);
+        let gig = rig.app.crates.list()[2].id;
+        assert_eq!(rig.app.crates.shown_id(), gig, "the new crate is shown");
+        assert!(rig.app.crates.shown().is_empty());
+        assert!(rig.app.name_dialog.is_none());
+
+        // Rename the shown crate.
+        rig.click(rig.title_bar());
+        rig.click_text("Rename crate…");
+        rig.select_all_text();
+        rig.type_text("Gig 13 Oct");
+        assert_eq!(rig.app.crates.name(gig), "Gig 13 Oct");
+    }
+
+    #[test]
+    fn deleting_a_crate_with_entries_asks_first_and_playlist_cannot_go() {
+        let mut rig = Rig::new("delete", Vec::new(), |_| {});
+        // Playlist: Rename and Delete are unavailable.
+        rig.click(rig.title_bar());
+        rig.click_text("Delete crate…");
+        assert!(rig.app.confirm_delete.is_none());
+        rig.click(rig.title_bar());
+        rig.click_text("Rename crate…");
+        assert!(rig.app.name_dialog.is_none());
+        assert_eq!(rig.app.crates.list().len(), 1);
+
+        let keepers = rig.crate_with("Keepers", &["tone.flac", "tone.wav"]);
+        rig.app.apply(Action::ShowCrate(keepers), &rig.ctx.clone());
+        rig.click(rig.title_bar());
+        rig.click_text("Delete crate…");
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "Delete crate \"Keepers\" (2 entries)?"),
+            "{:?}",
+            text_list(&out)
+        );
+        assert_eq!(rig.app.crates.list().len(), 2, "nothing deleted yet");
+        rig.click_text("Cancel");
+        assert_eq!(rig.app.crates.list().len(), 2, "cancelled");
+
+        rig.click(rig.title_bar());
+        rig.click_text("Delete crate…");
+        rig.click_text("Delete");
+        assert_eq!(rig.app.crates.list().len(), 1, "deleted after confirming");
+        assert_eq!(rig.app.crates.shown_id(), PLAYLIST);
+
+        // An empty crate goes without asking.
+        let empty = rig.app.crates.create("Empty").unwrap();
+        rig.app.apply(Action::ShowCrate(empty), &rig.ctx.clone());
+        rig.click(rig.title_bar());
+        rig.click_text("Delete crate…");
+        assert_eq!(rig.app.crates.list().len(), 1);
+    }
+
+    #[test]
+    fn send_to_crate_copies_the_selection_from_the_entry_menu() {
+        let mut rig = Rig::new("send", Vec::new(), |_| {});
+        rig.app.crates.shown_mut().add(
+            ["tone.flac", "tone.wav", "tone.ogg"]
+                .iter()
+                .map(|f| TrackRef::new(fixture(f).to_string_lossy())),
+        );
+        let keepers = rig.crate_with("Keepers", &["tone.wav"]);
+        rig.frame(Vec::new());
+        // Select all three, then right-click one of them.
+        rig.click(rig.row(0));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(rig.row(2));
+        rig.mods = Modifiers::NONE;
+        assert_eq!(rig.app.crates.shown().selected_ids().len(), 3);
+        let before = rig.app.crates.shown().to_saved();
+
+        rig.click_with(rig.row(1), PointerButton::Secondary);
+        rig.click_text("Send to crate");
+        rig.click_text("Keepers");
+        let files: Vec<String> = rig
+            .app
+            .crates
+            .get(keepers)
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|e| {
+                Path::new(&e.track.0)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            files,
+            ["tone.wav", "tone.flac", "tone.ogg"],
+            "two appended, in order"
+        );
+        assert_eq!(
+            rig.app.crates.shown().to_saved(),
+            before,
+            "the source is unchanged"
+        );
+        assert_eq!(
+            rig.app.message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Sent 2 entries to Keepers (1 already there)")
+        );
+
+        // New crate… names a new crate for them.
+        rig.click_with(rig.row(1), PointerButton::Secondary);
+        rig.click_text("Send to crate");
+        rig.click_text("New crate…");
+        rig.type_text("Gig 12 Oct");
+        let gig = rig.app.crates.list().last().unwrap().id;
+        assert_eq!(rig.app.crates.name(gig), "Gig 12 Oct");
+        assert_eq!(rig.app.crates.get(gig).unwrap().len(), 3);
+        assert_eq!(
+            rig.app.crates.shown_id(),
+            PLAYLIST,
+            "the source stays shown"
         );
     }
 }

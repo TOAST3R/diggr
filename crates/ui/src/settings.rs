@@ -155,6 +155,16 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// `Ok(None)` if the file doesn't exist; `Err` if it exists but can't be read or parsed.
+    pub fn try_load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+        let text = match std::fs::read_to_string(self.dir.join(name)) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        ron::from_str(&text).map(Some).map_err(|e| e.to_string())
+    }
+
     pub fn save<T: Serialize>(&self, name: &str, value: &T) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let text = ron::ser::to_string_pretty(value, ron::ser::PrettyConfig::default())

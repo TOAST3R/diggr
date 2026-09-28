@@ -93,8 +93,8 @@ builds are incremental. Dependencies are compiled with optimizations even in deb
 ### The player
 
 ```sh
-cargo run --release -p winamp-native                          # opens with your last playlist
-cargo run --release -p winamp-native -- ~/Music/album/*.flac  # replaces the playlist and plays
+cargo run --release -p winamp-native                          # opens with the crate you last had open
+cargo run --release -p winamp-native -- ~/Music/album/*.flac  # replaces the Playlist crate and plays
 ```
 
 No music handy? The repo includes short test tones:
@@ -105,14 +105,32 @@ drawn from an original pixel-art skin, at double size by default (switch with **
 playlist).
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
-  playlists are expanded), use **ADD**, or press Cmd+O. **Eject** opens files and plays them.
-- **Playlist:**
+  playlists are expanded), use **ADD**, or press Cmd+O. These add to the crate on screen.
+  **Eject** (and files given on the command line) replace the Playlist crate and play it.
+- **Crates:** the playlist window shows one of several named playlists, and its title bar shows
+  that crate's name.
+  - Click the title bar for the crate menu: switch crate (• marks the one shown, ⏵ the one
+    playing), **New crate…**, **Rename crate…** and **Delete crate…** (which asks first when
+    the crate has entries). Dragging the title bar still moves the window.
+  - Switching crates never interrupts playback: next, previous, shuffle and repeat follow the
+    crate the playing track came from, until you start a track in another crate.
+  - **Playlist** is the scratch crate. It always exists, can be cleared but not renamed or
+    deleted, and is the only crate that Eject and command-line files replace. Your playlist
+    from earlier versions becomes this crate on the first launch.
+  - Right-click entries for **Send to crate**: it copies the selection, in order, to another
+    crate or a new one, skipping entries that crate already holds.
+- **Playlist window:**
   - double-click an entry to play it;
   - Shift/Cmd-click to select several;
   - drag to reorder;
   - Delete removes the selection;
   - drag the bottom-right grip to show more rows;
-  - **MISC** imports and exports M3U/M3U8.
+  - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
+  - Entries can wait for their audio (dimmed, with a status such as "downloading 40%" where
+    the duration goes) or be unavailable (dimmed, with the reason). Both are skipped by next,
+    previous and shuffle. Double-clicking a waiting entry arms it: the current track plays on,
+    the main window says it is waiting, and the entry starts as soon as its audio arrives. Only
+    files that can't be opened are drawn in red.
 - **Main window:**
   - click the time to switch between elapsed and remaining;
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
@@ -123,7 +141,7 @@ playlist).
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
   - **PRESETS** loads the built-in presets, and can save or delete your own.
-- **Move the window** by dragging any title bar. Your playlist, settings and presets are saved
+- **Move the window** by dragging any title bar. Your crates, settings and presets are saved
   in the config folder (see [Where files are kept](#where-files-are-kept)). Set
   `WINAMP_CONFIG_DIR=/some/dir` to use another folder, for example for testing.
 
@@ -436,11 +454,17 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
-| config (settings, playlist, presets, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
+| config (settings, presets, `crates/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
 | cache (analysis scores, waveform `overviews/`, `annotations/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
-\* `WINAMP_CONFIG_DIR` covers settings, playlist and presets; the editable `visuals/` folder
+\* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
+
+Crates are kept in `crates/`: `index.ron` lists them and each crate is `<id>.ron`. A crate file
+that can't be read is reported once and left as it is; a damaged `index.ron` is rebuilt from the
+crate files. The single `playlist.ron` of earlier versions is read once, on the first launch
+with crates, to create the Playlist crate, and is then left untouched as a backup (the previous
+version still opens it); the Playlist crate is now the one that counts.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -456,7 +480,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 303 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 335 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -487,14 +511,22 @@ What's covered:
   never allocates on any path.
 - **`crates/ui`** (unit tests):
   - playlist selection, reordering and totals;
-  - shuffle order;
-  - folder scanning and M3U round trip;
-  - settings, playlist and preset persistence;
+  - shuffle order, and a play order that skips entries waiting for their audio;
+  - folder scanning and M3U round trip (remote entries exported as their source URL);
+  - settings, crate and preset persistence;
+  - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
+    300-entry `playlist.ron`, and Send to crate without duplicates;
   - spectrum bars following the *audible* frame;
   - EQ curve;
   - skin validation, and that the committed skin matches its generator;
   - repaint policy;
-  - headless egui click/drag tests of the skinned widgets.
+  - headless egui click/drag tests of the skinned widgets;
+  - the whole player driven headlessly against `ManualSink`: switching crates leaves playback
+    alone, starting a track re-targets next/previous, an armed entry is audible within 100 ms
+    of its audio arriving, Eject replaces only the Playlist crate, dimmed rows, the title bar's
+    click (crate menu) versus drag (move), and the crate and entry menus.
+- **`crates/ui/tests/waiting_skip.rs`**: track 3 is followed sample-exactly by track 5 while
+  track 4 waits for its audio, and track 4 is not marked failed.
 - **`crates/ui/tests/large_add.rs`**: 2,000 files get their metadata read while the engine plays
   in real time, with zero underruns.
 - **`crates/analysis`**: generated electronica with exact ground truth, testing:

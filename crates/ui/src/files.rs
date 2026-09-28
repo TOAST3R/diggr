@@ -100,6 +100,22 @@ pub fn parse_m3u(text: &str, base: Option<&Path>) -> Vec<M3uEntry> {
     out
 }
 
+/// A playlist's M3U lines. An entry whose audio comes from a remote source is written as that
+/// source's URL, whether or not its audio has arrived, so an export never points at downloaded
+/// audio; unavailable entries are left out.
+pub fn m3u_entries(playlist: &crate::playlist::Playlist) -> Vec<M3uEntry> {
+    playlist
+        .entries()
+        .iter()
+        .filter(|e| !matches!(e.status, crate::playlist::EntryStatus::Unavailable(_)))
+        .map(|e| M3uEntry {
+            path: e.source.clone().unwrap_or_else(|| e.track.0.clone()).into(),
+            title: Some(e.display_name()),
+            duration: e.duration,
+        })
+        .collect()
+}
+
 /// Writes an extended M3U (UTF-8, suitable for `.m3u8`).
 pub fn write_m3u(entries: &[M3uEntry]) -> String {
     let mut s = String::from("#EXTM3U\n");
@@ -202,6 +218,58 @@ mod tests {
         let text = write_m3u(&entries);
         assert!(text.starts_with("#EXTM3U\n#EXTINF:243,M83 - Midnight City\n/music/a.mp3\n"));
         assert_eq!(parse_m3u(&text, None), entries);
+    }
+
+    #[test]
+    fn exported_crates_list_sources_not_downloads() {
+        use crate::playlist::Playlist;
+        use platform::TrackRef;
+        let url = "https://www.youtube.com/watch?v=abcdefghijk";
+        let mut p = Playlist::default();
+        p.add([TrackRef::new("/music/a.mp3")]);
+        let remote = p.add_waiting("Nightcraft", "Glasshouse", Some(url.into()), None, "listed");
+        let gone = p.add_waiting("Nightcraft", "Untitled", None, None, "listed");
+        p.set_unavailable(gone, "no clip");
+        let paths =
+            |p: &Playlist| -> Vec<PathBuf> { m3u_entries(p).into_iter().map(|e| e.path).collect() };
+        assert_eq!(
+            paths(&p),
+            [PathBuf::from("/music/a.mp3"), PathBuf::from(url)]
+        );
+        // Still the URL once the audio has been downloaded.
+        p.set_audio(remote, TrackRef::new("/cache/abcdefghijk.m4a"));
+        assert_eq!(
+            paths(&p),
+            [PathBuf::from("/music/a.mp3"), PathBuf::from(url)]
+        );
+        let text = write_m3u(&m3u_entries(&p));
+        assert!(
+            text.contains(&format!("Nightcraft - Glasshouse\n{url}\n")),
+            "{text}"
+        );
+        assert!(!text.contains("/cache/"));
+    }
+
+    #[test]
+    fn exported_local_crate_reimports_in_order() {
+        use crate::playlist::Playlist;
+        use platform::TrackRef;
+        let mut p = Playlist::default();
+        p.add(["/m/b.mp3", "/m/a é.flac", "/m/c.ogg"].map(TrackRef::new));
+        let text = write_m3u(&m3u_entries(&p));
+        let mut back = Playlist::default();
+        back.add(
+            parse_m3u(&text, None)
+                .into_iter()
+                .map(|e| TrackRef::new(e.path.to_string_lossy())),
+        );
+        let tracks = |p: &Playlist| {
+            p.entries()
+                .iter()
+                .map(|e| e.track.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tracks(&back), tracks(&p));
     }
 
     #[test]
