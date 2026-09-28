@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn annotations_round_trip_sorted() {
-        let dir = std::env::temp_dir().join(format!("analysis-ann-{}", std::process::id()));
+        let dir = platform::testing::TestDir::new("analysis-ann");
         let mut a = Annotations::new(&TrackRef::new("/m/a.mp3"), 0xabc);
         a.tap(2.0);
         a.tap(1.0);
@@ -237,8 +237,7 @@ mod tests {
 
     #[test]
     fn evaluating_a_synthetic_track_against_its_truth() {
-        let dir = std::env::temp_dir().join(format!("analysis-eval-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = platform::testing::TestDir::new("analysis-eval");
         let s = synth::render(&synth::standard_track(126.0), 44_100, 13);
         let path = dir.join("t.wav");
         let spec = hound::WavSpec {

@@ -1,0 +1,40 @@
+{
+ "pagination": {
+  "page": 1,
+  "pages": 3,
+  "per_page": 100,
+  "items": 6
+ },
+ "releases": [
+  {
+   "id": 1001,
+   "status": "Accepted",
+   "format": "12\", EP",
+   "catno": "LT-012",
+   "artist": "Nightcraft",
+   "title": "Glasshouse EP",
+   "year": 1994,
+   "resource_url": "https://api.discogs.com/releases/1001"
+  },
+  {
+   "id": 1002,
+   "status": "Accepted",
+   "format": "CD, Album",
+   "catno": "LTCD-1",
+   "artist": "Nightcraft",
+   "title": "Glasshouse",
+   "year": 1995,
+   "resource_url": "https://api.discogs.com/releases/1002"
+  },
+  {
+   "id": 1003,
+   "status": "Accepted",
+   "format": "LP, Album",
+   "catno": "LT-013",
+   "artist": "Nightcraft",
+   "title": "Silent Tide",
+   "year": 1995,
+   "resource_url": "https://api.discogs.com/releases/1003"
+  }
+ ]
+}

@@ -1,0 +1,40 @@
+{
+ "id": 98765,
+ "main_release": 1001,
+ "title": "Glasshouse EP",
+ "year": 1994,
+ "artists": [
+  {
+   "name": "Nightcraft",
+   "anv": "",
+   "join": "",
+   "id": 4242
+  }
+ ],
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Glasshouse",
+   "duration": "6:12"
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "Tidal Pull",
+   "duration": ""
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=GLASShouse1",
+   "title": "Nightcraft - Glasshouse",
+   "duration": 371
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=TIDALpull01",
+   "title": "Nightcraft - Tidal Pull",
+   "duration": 340
+  }
+ ]
+}

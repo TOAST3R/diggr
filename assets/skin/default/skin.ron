@@ -841,7 +841,7 @@
         glyph_h: 7,
         advance: 6,
         per_row: 32,
-        chars: " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/\'!?&+#%*\"=<>@",
+        chars: " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/\'!?&+#%*\"=<>@·€£$¥",
     ),
     colors: (
         pl_bg: (0, 0, 0),

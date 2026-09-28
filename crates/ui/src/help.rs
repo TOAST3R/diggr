@@ -58,6 +58,18 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Digging (Discogs)",
+        &[
+            (
+                "Cmd+V",
+                "paste a Discogs page: its tracks' previews go into the shown crate",
+            ),
+            ("Y", "keep the playing track (again: undo)"),
+            ("N", "pass: dimmed, skipped, left out of later sends"),
+            ("I", "open the release's for-sale page"),
+        ],
+    ),
+    (
         "Mouse",
         &[
             (
@@ -68,7 +80,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Entry: double-click",
                 "play (a waiting entry plays as soon as its audio arrives)",
             ),
-            ("Entry: right-click", "Send to crate (a crate or a new one)"),
+            (
+                "Entry: right-click",
+                "Send to crate (a crate or a new one); keep, pass, for-sale page",
+            ),
             ("Waveform: click / drag", "seek"),
             ("Waveform: scroll wheel", "zoom 1–64 bars"),
             ("Spectrogram: click / drag", "seek / pan"),
@@ -163,6 +178,7 @@ mod tests {
             .collect();
         for k in [
             "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
+            "Cmd+V", "Y", "N", "I",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

@@ -135,11 +135,8 @@ pub fn write_m3u(entries: &[M3uEntry]) -> String {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ui-files-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("ui-files-{name}"))
     }
 
     #[test]
@@ -156,7 +153,7 @@ mod tests {
         ] {
             std::fs::write(d.join(f), b"x").unwrap();
         }
-        let found: Vec<String> = expand(std::slice::from_ref(&d))
+        let found: Vec<String> = expand(&[d.to_path_buf()])
             .iter()
             .map(|p| p.strip_prefix(&d).unwrap().to_string_lossy().into_owned())
             .collect();
@@ -198,7 +195,7 @@ mod tests {
                 std::fs::write(d.join(format!("{i:03}.png")), b"x").unwrap();
             }
         }
-        assert_eq!(expand(&[d]).len(), 200);
+        assert_eq!(expand(&[d.to_path_buf()]).len(), 200);
     }
 
     #[test]

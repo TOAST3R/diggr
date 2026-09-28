@@ -21,8 +21,7 @@ fn fixture(name: &str) -> TrackRef {
 #[test]
 fn playback_has_no_underruns_while_a_show_renders() {
     let Ok(gpu) = headless_gpu() else { return };
-    let dir = std::env::temp_dir().join(format!("render-playback-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = platform::testing::TestDir::new("render-playback");
 
     let sink = ManualSink::new(48_000, 2);
     let mut engine = Engine::new(

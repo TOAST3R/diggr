@@ -143,7 +143,8 @@
 - **`Fetcher` trait:** `fetch(clip, dest, progress, cancel) -> Result<(), FetchError>`, implemented by `YtDlp { program }` and, for tests, `FakeFetcher`, which copies a fixture file with scripted progress, delays and failures.
 - **Invocation:**
   - `Command::new(program)` with an argument list and no shell:
-    `--ignore-config --no-playlist --no-mtime --no-warnings --newline -f "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]" --progress-template "download:%(progress._percent_str)s" -o <previews>/<id>.%(ext)s -- https://www.youtube.com/watch?v=<id>`
+    `--ignore-config --no-playlist --no-mtime --no-warnings --newline -f "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]" --progress-template "download:progress %(progress._percent_str)s" -o <previews>/<id>.%(ext)s -- https://www.youtube.com/watch?v=<id>`
+  - As built: yt-dlp reads the `download:` prefix as the template's type and doesn't print it, so the template itself starts with `progress ` to tell progress lines from the rest of the output.
   - The URL is rebuilt from the validated id, never copied from Discogs.
   - `--ignore-config` means a user config can't change paths or formats.
   - AAC in M4A is what symphonia decodes, and YouTube offers it for nearly every clip.
@@ -203,7 +204,7 @@
 
   The scheduler is tested with `FakeFetcher`: the horizon, 2 slots, cancelling, retrying, and a hanging fetch for the timeout.
 - **`crates/ui/tests/dig_playback.rs`:** like `large_add.rs`, an 800-release fake label expands while the engine plays, and its previews come from `FakeFetcher` and get prepared.
-- **Manual checks:** one `#[ignore]` test calls real Discogs and yt-dlp, using `WINAMP_DISCOGS_TOKEN`, when run by hand.
+- **Manual checks:** `#[ignore]` tests call real Discogs (`crates/dig/tests/intake.rs`, using `WINAMP_DISCOGS_TOKEN` if set) and a real yt-dlp (`preview::fetcher`), when run by hand.
 
 ## Risks / Trade-offs
 
@@ -216,6 +217,15 @@
 - [`beatmatch-automix` also modifies the Keyboard shortcuts requirement] → Whichever change is archived second merges the two key lists.
 - [The Discogs cache has no size limit] → Entries are small and the folder is safe to delete. A limit can come later.
 - [The token sits in a plain file] → Only the user can read it. The OS keychain is a candidate before the app is shared.
+
+## Verification
+
+Measured on an Apple M2 MacBook with release builds, on 2026-09-28:
+
+- **Preparing a preview (D10):** a 6-minute, 128 kb/s AAC preview had its full score and overview cached in **3.5 s** while another track played, with 0 underruns (target: 20 s or less). The overview doesn't need to go first. The measurement is the ignored test `preparing_a_long_preview_while_a_track_plays` in `crates/ui/tests/dig_playback.rs`, run with `DIG_PREPARE_FILE=<file>`.
+- **Digging during playback:** an 800-release label expanded, and 4 previews were downloaded and prepared, with 0 underruns (`dig_playback.rs`). A prepared preview then started in **15.5 ms**, the same as a local copy of the file (budget: 30 ms). Unoptimized test builds hold the preview to the local file's time instead, because the `audio` crate isn't optimized there and a start takes about 30 ms.
+- **Launch:** `--startup-time` with a saved token and an interrupted label send took **148–182 ms** over 5 runs (target: under 300 ms). No request left before the process exited after its first frame, and no `discogs/` cache was written. Digging starts on the frame after the first; the headless test `nothing_reaches_discogs_before_the_window_is_interactive` checks the same thing with the fake transport.
+- **By hand, against real Discogs and YouTube (2026-09-28):** release, label and artist pages were pasted and their previews played. Master, wantlist and list pages, and `Y` / `N` / `I` against the live wantlist, are covered by the fixture and headless tests only so far. The hand test also found that an out-of-date yt-dlp gets HTTP 403 from YouTube for every clip, and that a clip that failed is never retried in that session.
 
 ## Open Questions
 

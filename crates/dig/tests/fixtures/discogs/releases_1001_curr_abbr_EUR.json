@@ -1,0 +1,79 @@
+{
+ "id": 1001,
+ "title": "Glasshouse EP",
+ "year": 1994,
+ "artists": [
+  {
+   "name": "Nightcraft",
+   "anv": "",
+   "join": "",
+   "id": 4242
+  }
+ ],
+ "labels": [
+  {
+   "name": "Lowtide Tapes",
+   "catno": "LT-012",
+   "id": 12345
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "1",
+   "descriptions": [
+    "12\"",
+    "EP"
+   ]
+  }
+ ],
+ "master_id": 98765,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Glasshouse",
+   "duration": "6:12"
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "Tidal Pull",
+   "duration": "5:40"
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Glasshouse (Lumen Remix)",
+   "duration": "7:02"
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "Last Light",
+   "duration": ""
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=GLASShouse1",
+   "title": "Nightcraft - Glasshouse [HQ] 1994",
+   "duration": 371,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=LUMENremix1",
+   "title": "Nightcraft - Glasshouse (Lumen Remix)",
+   "duration": 422,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=LASTlight01",
+   "title": "Nightcraft – Last Light (Vinyl Rip)",
+   "duration": 300,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 6,
+ "lowest_price": 9.0
+}

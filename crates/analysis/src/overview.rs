@@ -522,7 +522,7 @@ impl OverviewService {
             "overview",
             Priority::Low,
             Box::new(move || {
-                build(&*files, dir.as_deref(), &track2, &e2.overview);
+                build(&*files, dir.as_deref(), &track2, Some(&e2.overview));
                 e2.running.store(false, Ordering::Release);
             }),
         );
@@ -538,21 +538,36 @@ impl OverviewService {
     }
 }
 
+/// Builds a track's overview and caches it in `dir`, without keeping it in memory (previews
+/// prepared before they play). Returns false if the file couldn't be decoded; a cached one is
+/// left as it is.
+pub fn precompute(files: &dyn FileSource, dir: &Path, track: &TrackRef) -> bool {
+    build(files, Some(dir), track, None)
+}
+
+/// Whether `dir` has this track's overview.
+pub fn is_cached(files: &dyn FileSource, dir: &Path, track: &TrackRef) -> bool {
+    crate::cache::content_hash(files, track).is_some_and(|h| cache_path(dir, h).exists())
+}
+
+/// Builds (or loads) the overview, publishing it to `out` as it grows when there is one.
 fn build(
     files: &dyn FileSource,
     dir: Option<&Path>,
     track: &TrackRef,
-    out: &ArcSwapOption<Overview>,
-) {
+    out: Option<&ArcSwapOption<Overview>>,
+) -> bool {
     let hash = dir.and(crate::cache::content_hash(files, track));
     if let (Some(dir), Some(h)) = (dir, hash)
         && let Some(o) = load_cached(dir, h)
     {
-        out.store(Some(Arc::new(o)));
-        return;
+        if let Some(out) = out {
+            out.store(Some(Arc::new(o)));
+        }
+        return true;
     }
     let Ok(mut dec) = TrackDecoder::open(files, track) else {
-        return;
+        return false;
     };
     let mut builder = OverviewBuilder::new(dec.src_rate());
     let mut buf = Vec::new();
@@ -565,7 +580,9 @@ fn build(
             break;
         }
         if last.elapsed() >= PUBLISH_EVERY {
-            out.store(Some(Arc::new(builder.snapshot())));
+            if let Some(out) = out {
+                out.store(Some(Arc::new(builder.snapshot())));
+            }
             last = Instant::now();
             std::thread::yield_now();
         }
@@ -574,7 +591,10 @@ fn build(
     if let (Some(dir), Some(h)) = (dir, hash) {
         let _ = save_cached(dir, h, &done);
     }
-    out.store(Some(Arc::new(done)));
+    if let Some(out) = out {
+        out.store(Some(Arc::new(done)));
+    }
+    true
 }
 
 #[cfg(test)]
@@ -673,12 +693,11 @@ mod tests {
         let mut b = OverviewBuilder::new(SR);
         b.push(&sine(100.0, 3.0, 0.8));
         let o = b.finish();
-        let dir = std::env::temp_dir().join(format!("overview-cache-{}", std::process::id()));
+        let dir = platform::testing::TestDir::new("overview-cache");
         save_cached(&dir, 42, &o).unwrap();
         let back = load_cached(&dir, 42).unwrap();
         assert_eq!(back, o);
         assert!(load_cached(&dir, 43).is_none());
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -696,6 +715,38 @@ mod tests {
         assert!((o.seconds() - 7200.0).abs() < 1.0);
     }
 
+    #[test]
+    fn a_precomputed_overview_is_there_on_first_play() {
+        let dir = platform::testing::TestDir::new("overview-pre");
+        let track = TrackRef::new(format!(
+            "{}/../audio/tests/fixtures/tone.m4a",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        let files: Arc<dyn FileSource> = Arc::new(platform::native::NativeFileSource);
+        assert!(!is_cached(&*files, &dir, &track));
+        assert!(precompute(&*files, &dir, &track));
+        assert!(is_cached(&*files, &dir, &track));
+        let svc = OverviewService::new(Arc::new(Threads), files, Some(dir.to_path_buf()));
+        svc.request(&track);
+        let t = Instant::now();
+        let o = loop {
+            if let Some(o) = svc.get(&track) {
+                break o;
+            }
+            assert!(
+                t.elapsed() < Duration::from_millis(500),
+                "loaded, not rebuilt"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(o.complete, "whole from the start");
+        assert!(!precompute(
+            &platform::native::NativeFileSource,
+            &dir,
+            &TrackRef::new("/no/such/file.m4a")
+        ));
+    }
+
     struct Threads;
     impl Spawner for Threads {
         fn spawn(
@@ -711,8 +762,7 @@ mod tests {
 
     #[test]
     fn service_builds_then_serves_from_cache() {
-        let dir = std::env::temp_dir().join(format!("overview-svc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = platform::testing::TestDir::new("overview-svc");
         let wav = dir.join("t.wav");
         let spec = hound::WavSpec {
             channels: 2,
@@ -727,7 +777,7 @@ mod tests {
         w.finalize().unwrap();
         let track = TrackRef::new(wav.to_string_lossy());
         let files: Arc<dyn FileSource> = Arc::new(platform::native::NativeFileSource);
-        let svc = OverviewService::new(Arc::new(Threads), files.clone(), Some(dir.clone()));
+        let svc = OverviewService::new(Arc::new(Threads), files.clone(), Some(dir.to_path_buf()));
         svc.request(&track);
         let start = Instant::now();
         let done = loop {
@@ -739,7 +789,7 @@ mod tests {
         };
         assert!((done.seconds() - 5.0).abs() < 0.01);
         // A fresh service finds it in the cache at once.
-        let svc2 = OverviewService::new(Arc::new(Threads), files, Some(dir.clone()));
+        let svc2 = OverviewService::new(Arc::new(Threads), files, Some(dir.to_path_buf()));
         svc2.request(&track);
         let t = Instant::now();
         while svc2.get(&track).is_none() {
@@ -747,6 +797,5 @@ mod tests {
         }
         assert!(t.elapsed() < Duration::from_millis(500));
         assert_eq!(*svc2.get(&track).unwrap(), *done);
-        std::fs::remove_dir_all(dir).ok();
     }
 }

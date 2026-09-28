@@ -1602,7 +1602,7 @@ mod tests {
     use crate::library::tests::temp_dir;
     use audio::{PlayState, Position};
 
-    fn engine(name: &str) -> (VisualEngine, PathBuf) {
+    fn engine(name: &str) -> (VisualEngine, platform::testing::TestDir) {
         let dir = temp_dir(name);
         let mut e = VisualEngine::with_dir(&dir);
         e.ensure_loaded();

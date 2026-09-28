@@ -336,11 +336,8 @@ impl Watcher {
 pub(crate) mod tests {
     use super::*;
 
-    pub fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("visuals-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    pub fn temp_dir(name: &str) -> platform::testing::TestDir {
+        platform::testing::TestDir::new(&format!("visuals-test-{name}"))
     }
 
     #[test]

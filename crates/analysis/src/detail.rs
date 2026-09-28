@@ -272,9 +272,7 @@ mod tests {
 
     const SR: u32 = 44_100;
 
-    fn wav(name: &str, mono: &[f32]) -> TrackRef {
-        let dir = std::env::temp_dir().join(format!("detail-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn wav(dir: &std::path::Path, name: &str, mono: &[f32]) -> TrackRef {
         let path = dir.join(name);
         let spec = hound::WavSpec {
             channels: 2,
@@ -330,6 +328,7 @@ mod tests {
 
     #[test]
     fn clicks_10_ms_apart_are_resolved() {
+        let dir = platform::testing::TestDir::new("analysis-detail-clicks");
         // Clicks every 10 ms from 0.5 s to 2.5 s.
         let mut x = vec![0.0f32; 3 * SR as usize];
         let mut clicks = 0;
@@ -339,7 +338,7 @@ mod tests {
             clicks += 1;
             t += 0.010;
         }
-        let d = run(req(wav("clicks.wav", &x), 0.5, 2.5, 1000));
+        let d = run(req(wav(&dir, "clicks.wav", &x), 0.5, 2.5, 1000));
         assert!(d.complete() && !d.failed);
         assert_eq!(d.seeks, 1, "one seek to the range, then straight through");
         assert_eq!(d.fft, 512);
@@ -359,13 +358,14 @@ mod tests {
 
     #[test]
     fn a_tone_lands_on_its_row_in_a_sparse_view() {
+        let dir = platform::testing::TestDir::new("analysis-detail-tone");
         // 60 s of 440 Hz with a silent gap in the middle; 100 columns (0.6 s apart), so the
         // worker seeks between windows.
         let mut x: Vec<f32> = (0..60 * SR as usize)
             .map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin())
             .collect();
         x[25 * SR as usize..35 * SR as usize].fill(0.0);
-        let mut r = req(wav("tone.wav", &x), 0.0, 60.0, 100);
+        let mut r = req(wav(&dir, "tone.wav", &x), 0.0, 60.0, 100);
         r.rows = 256;
         let d = run(r);
         assert_eq!(d.fft, 8192);
@@ -385,8 +385,9 @@ mod tests {
 
     #[test]
     fn past_the_end_is_silence() {
+        let dir = platform::testing::TestDir::new("analysis-detail-short");
         let x = vec![0.5f32; SR as usize];
-        let d = run(req(wav("short.wav", &x), 0.5, 2.0, 30));
+        let d = run(req(wav(&dir, "short.wav", &x), 0.5, 2.0, 30));
         assert!(d.complete());
         assert!(d.column(29).unwrap().iter().all(|&b| b < 10));
     }
@@ -406,10 +407,11 @@ mod tests {
 
     #[test]
     fn service_supersedes_and_caches() {
+        let dir = platform::testing::TestDir::new("analysis-detail-svc");
         let x: Vec<f32> = (0..10 * SR as usize)
             .map(|i| 0.3 * (i as f32 * 0.05).sin())
             .collect();
-        let t = wav("svc.wav", &x);
+        let t = wav(&dir, "svc.wav", &x);
         let svc = DetailService::new(
             Arc::new(Threads),
             Arc::new(platform::native::NativeFileSource),

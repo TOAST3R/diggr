@@ -46,6 +46,42 @@ pub fn title_line(number: usize, artist: &str, title: &str, duration: Option<f64
     }
 }
 
+/// What the title line adds for an entry from a catalogue page: its side, catalog number,
+/// year and a for-sale summary, e.g. ` · A1 · LT-012 · 1994 · 6 for sale from €9.00`. Parts that
+/// aren't known are left out; a count of 0 reads "none for sale".
+pub fn origin_details(o: &crate::playlist::Origin) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for p in [o.position.trim(), o.catno.trim()] {
+        if !p.is_empty() {
+            parts.push(p.to_owned());
+        }
+    }
+    if let Some(y) = o.year {
+        parts.push(y.to_string());
+    }
+    match &o.for_sale {
+        Some(fs) if fs.count == 0 => parts.push("none for sale".into()),
+        Some(fs) => parts.push(match fs.lowest_cents {
+            Some(c) => format!("{} for sale from {}", fs.count, price(c, &fs.currency)),
+            None => format!("{} for sale", fs.count),
+        }),
+        None => {}
+    }
+    parts.iter().map(|p| format!(" · {p}")).collect()
+}
+
+/// `€9.00`, `£12.50`, `$7.00`, `¥1500`; other currencies by their ISO code (`CHF 12.00`).
+pub fn price(cents: u64, currency: &str) -> String {
+    let units = format!("{}.{:02}", cents / 100, cents % 100);
+    match currency {
+        "EUR" => format!("€{units}"),
+        "GBP" => format!("£{units}"),
+        "USD" => format!("${units}"),
+        "JPY" => format!("¥{}", (cents + 50) / 100),
+        other => format!("{other} {units}"),
+    }
+}
+
 /// A window of `width` characters into `text`, scrolled by `offset` characters. Text that fits
 /// is returned unchanged; longer text loops with a `  ***  ` separator.
 pub fn scroll(text: &str, width: usize, offset: usize) -> String {
@@ -94,6 +130,47 @@ mod tests {
             "4. Crusher-P - Echo (3:50)"
         );
         assert_eq!(title_line(1, "", "untitled", None), "1. untitled");
+    }
+
+    #[test]
+    fn discogs_details_follow_the_title() {
+        use crate::playlist::{ForSale, Origin};
+        let mut o = Origin {
+            position: "A1".into(),
+            catno: "LT-012".into(),
+            year: Some(1994),
+            for_sale: Some(ForSale {
+                count: 6,
+                lowest_cents: Some(900),
+                currency: "EUR".into(),
+                fetched_at: 0,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            title_line(3, "Nightcraft", "Glasshouse", Some(372.0)) + &origin_details(&o),
+            "3. Nightcraft - Glasshouse (6:12) · A1 · LT-012 · 1994 · 6 for sale from €9.00"
+        );
+        o.for_sale.as_mut().unwrap().count = 0;
+        assert_eq!(origin_details(&o), " · A1 · LT-012 · 1994 · none for sale");
+        o.for_sale = None;
+        o.position.clear();
+        o.year = None;
+        assert_eq!(
+            origin_details(&o),
+            " · LT-012",
+            "unknown numbers are left out"
+        );
+        assert_eq!(origin_details(&Origin::default()), "");
+    }
+
+    #[test]
+    fn prices_use_a_symbol_or_the_iso_code() {
+        assert_eq!(price(900, "EUR"), "€9.00");
+        assert_eq!(price(1250, "GBP"), "£12.50");
+        assert_eq!(price(705, "USD"), "$7.05");
+        assert_eq!(price(150_000, "JPY"), "¥1500");
+        assert_eq!(price(1200, "CHF"), "CHF 12.00");
     }
 
     #[test]

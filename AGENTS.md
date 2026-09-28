@@ -75,7 +75,8 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
 - Data files are RON (serde). User-editable visuals live in `<config>/winamp_rust/visuals/`, are
   hot-reloaded with `notify`, and must fail soft: keep the last good version and show the error.
 - Paths come from `dirs` (config/cache), overridable by `WINAMP_CONFIG_DIR` / `WINAMP_CACHE_DIR`.
-  Tests must use temp dirs, never the user's real folders.
+  Tests must use temp dirs, never the user's real folders: take one from
+  `platform::testing::TestDir`, which deletes its folder when the test ends (even on failure).
 - eframe/egui are used with `default-features = false`. On Linux, `crates/ui/Cargo.toml` enables
   the `x11` and `wayland` features, without which winit doesn't compile. Keep that when touching
   UI dependencies.

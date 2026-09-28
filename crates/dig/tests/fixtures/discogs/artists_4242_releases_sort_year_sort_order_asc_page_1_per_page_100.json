@@ -1,0 +1,49 @@
+{
+ "pagination": {
+  "page": 1,
+  "pages": 1,
+  "per_page": 100,
+  "items": 4
+ },
+ "releases": [
+  {
+   "id": 98765,
+   "type": "master",
+   "role": "Main",
+   "title": "Glasshouse EP",
+   "year": 1994,
+   "artist": "Nightcraft",
+   "label": "Lowtide Tapes"
+  },
+  {
+   "id": 3001,
+   "type": "release",
+   "role": "Appearance",
+   "title": "Compilation",
+   "year": 1995,
+   "artist": "Nightcraft",
+   "format": "CD, Comp",
+   "label": "Lowtide Tapes"
+  },
+  {
+   "id": 2001,
+   "type": "release",
+   "role": "Remix",
+   "title": "Currents",
+   "year": 1998,
+   "artist": "Nightcraft",
+   "format": "12\"",
+   "label": "Lowtide Tapes"
+  },
+  {
+   "id": 1004,
+   "type": "release",
+   "role": "Main",
+   "title": "Tidal",
+   "year": 1996,
+   "artist": "Nightcraft",
+   "format": "12\"",
+   "label": "Lowtide Tapes"
+  }
+ ]
+}

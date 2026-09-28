@@ -1,0 +1,99 @@
+{
+ "pagination": {
+  "page": 1,
+  "pages": 1,
+  "per_page": 100,
+  "items": 2
+ },
+ "wants": [
+  {
+   "id": 1004,
+   "basic_information": {
+    "id": 1004,
+    "master_id": 0,
+    "title": "Tidal",
+    "year": 1996,
+    "formats": [
+     {
+      "name": "Vinyl",
+      "qty": "1"
+     }
+    ],
+    "labels": [
+     {
+      "name": "Lowtide Tapes",
+      "catno": "LT-014",
+      "id": 12345
+     }
+    ],
+    "artists": [
+     {
+      "name": "Nightcraft",
+      "anv": "",
+      "join": "",
+      "id": 4242
+     }
+    ]
+   }
+  },
+  {
+   "id": 1002,
+   "basic_information": {
+    "id": 1002,
+    "master_id": 0,
+    "title": "Glasshouse",
+    "year": 1996,
+    "formats": [
+     {
+      "name": "CD",
+      "qty": "1"
+     }
+    ],
+    "labels": [
+     {
+      "name": "Lowtide Tapes",
+      "catno": "LTCD-1",
+      "id": 12345
+     }
+    ],
+    "artists": [
+     {
+      "name": "Nightcraft",
+      "anv": "",
+      "join": "",
+      "id": 4242
+     }
+    ]
+   }
+  },
+  {
+   "id": 1006,
+   "basic_information": {
+    "id": 1006,
+    "master_id": 0,
+    "title": "Last Light",
+    "year": 1996,
+    "formats": [
+     {
+      "name": "Vinyl"
+     }
+    ],
+    "labels": [
+     {
+      "name": "Lowtide Tapes",
+      "catno": "LT-016",
+      "id": 12345
+     }
+    ],
+    "artists": [
+     {
+      "name": "Nightcraft",
+      "anv": "",
+      "join": "",
+      "id": 4242
+     }
+    ]
+   }
+  }
+ ]
+}
