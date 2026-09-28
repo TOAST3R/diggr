@@ -22,7 +22,7 @@
 **1. The format is computed when the entry is drawn, not stored in the title.**
 `artist`, `title` and `origin.catno` stay separate fields, and `display_name()` builds the string. Rejected alternative: writing the string into `title`. That would break the "tags don't overwrite an origin" rule, M3U export and later format changes.
 
-**2. The BPM is a field on the entry (`bpm: Option<f32>`), saved with the crate.**
+**2. The BPM is a field on the entry (`bpm: Option<u16>`, already folded), saved with the crate.**
 It is set whenever a score for the entry's audio becomes known:
 - a preview is prepared (the prepare worker reports `(clip, bpm)`);
 - the playing track's score is available (from the cache or finished);
