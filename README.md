@@ -586,6 +586,15 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
 9. `show-render`: render a track's visual show to an MP4, from the command line or the playlist
    ✅ (done and archived)
+10. `crates`: named playlists ("crates") switched from the playlist's title bar, with entries that
+    remember the record they came from and can wait for their audio (proposed)
+11. `discogs-digging`: paste a Discogs page (label, artist, release, master, wantlist or list) to
+    dig it in a crate. Previews are downloaded and analyzed a few tracks ahead, so each one opens
+    ready to navigate. `Y` keeps a track (and adds it to your Discogs wantlist), `N` passes and
+    `I` opens its for-sale page (proposed; needs `crates`)
+12. `browser-bridge`: a Chrome extension with Play in / Enqueue in / Send to crate on Discogs pages
+    and links, talking to the player through a paired local bridge (proposed; needs
+    `discogs-digging`)
 
 Finished changes move to `openspec/changes/archive/`, and their requirements become the living
 specs in `openspec/specs/`.
