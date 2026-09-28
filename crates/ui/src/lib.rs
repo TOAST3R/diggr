@@ -8,6 +8,7 @@ pub mod files;
 pub mod format;
 pub mod fullscreen;
 pub mod help;
+pub mod layout;
 pub mod metadata;
 pub mod navigation;
 pub mod playlist;

@@ -13,7 +13,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("V", "stop"),
             ("Z / B", "previous / next track"),
             ("← / →", "seek −5 s / +5 s"),
-            ("↑ / ↓", "volume"),
+            (
+                "↑ / ↓",
+                "volume (with the playlist focused: move in the list)",
+            ),
         ],
     ),
     (
@@ -32,11 +35,24 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Player window",
         &[
-            ("W", "show / hide the waveform"),
+            (
+                "Tab",
+                "switch the keyboard between the player and the playlist",
+            ),
+            ("W", "show / hide the waveform (also the WAVE button)"),
             ("S", "spectrogram window (also in the playlist's OPT menu)"),
             ("F", "fullscreen visuals"),
             ("H or F1", "this help"),
-            ("Enter", "play the selected entry"),
+            (
+                "↑ / ↓ (playlist focused)",
+                "move in the list (Shift: extend the selection)",
+            ),
+            (
+                "PgUp / PgDn, Home / End",
+                "a page up / down, first / last entry",
+            ),
+            ("Enter", "play the entry under the cursor"),
+            ("P", "show the playing entry"),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
         ],
@@ -72,6 +88,14 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Mouse",
         &[
+            (
+                "Click in the player or the playlist",
+                "give it the keyboard (its title lights up)",
+            ),
+            (
+                "Playlist corner grip: drag",
+                "resize the playlist: wider or narrower, and rows",
+            ),
             (
                 "Playlist title: click / drag",
                 "crate menu (switch, new, rename, delete) / move the window",
@@ -178,7 +202,7 @@ mod tests {
             .collect();
         for k in [
             "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
-            "Cmd+V", "Y", "N", "I",
+            "Cmd+V", "Y", "N", "I", "Tab", "P",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

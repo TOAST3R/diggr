@@ -209,7 +209,20 @@ pub struct Playlist {
     selected: BTreeSet<EntryId>,
     anchor: Option<EntryId>,
     current: Option<EntryId>,
+    /// The keyboard cursor: an entry, so it stays put while entries arrive around it.
+    cursor: Option<EntryId>,
     next_id: EntryId,
+}
+
+/// How far the keyboard cursor moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMove {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
 }
 
 impl Playlist {
@@ -389,6 +402,10 @@ impl Playlist {
         if self.current == Some(id) {
             self.current = first;
         }
+        if self.cursor == Some(id) {
+            // Onto the entry now in its place.
+            self.cursor = first.or_else(|| self.entry_near(at));
+        }
         if self.selected.remove(&id)
             && let Some(f) = first
         {
@@ -455,11 +472,13 @@ impl Playlist {
             .collect()
     }
 
-    /// Plain click selects one; Shift extends from the anchor; Cmd/Ctrl toggles.
+    /// Plain click selects one; Shift extends from the anchor; Cmd/Ctrl toggles. The keyboard
+    /// cursor goes to the clicked entry.
     pub fn click(&mut self, index: usize, mods: ClickMods) {
         let Some(id) = self.entries.get(index).map(|e| e.id) else {
             return;
         };
+        self.cursor = Some(id);
         if mods.shift {
             let anchor = self.anchor.and_then(|a| self.index_of(a)).unwrap_or(index);
             let (a, b) = (anchor.min(index), anchor.max(index));
@@ -498,12 +517,95 @@ impl Playlist {
             .collect();
     }
 
+    // ---- keyboard cursor ---------------------------------------------------------------
+
+    pub fn cursor(&self) -> Option<EntryId> {
+        self.cursor
+    }
+
+    pub fn cursor_index(&self) -> Option<usize> {
+        self.cursor.and_then(|c| self.index_of(c))
+    }
+
+    /// Puts the cursor on an entry without touching the selection.
+    pub fn set_cursor(&mut self, id: Option<EntryId>) {
+        self.cursor = id.filter(|&i| self.index_of(i).is_some());
+    }
+
+    /// Moves the cursor (`page` entries for a page) and selects what it passes: only the new
+    /// entry, or with `extend` everything from the anchor to it. Without a cursor, ↑ or ↓ lands
+    /// on `start` (the playing entry), or on the first entry; the other moves go from there.
+    pub fn move_cursor(
+        &mut self,
+        mv: CursorMove,
+        extend: bool,
+        page: usize,
+        start: Option<EntryId>,
+    ) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let last = self.entries.len() - 1;
+        let page = page.max(1);
+        let to = match (self.cursor_index(), mv) {
+            (None, CursorMove::Up | CursorMove::Down) => {
+                start.and_then(|s| self.index_of(s)).unwrap_or(0)
+            }
+            (i, _) => {
+                let i = i
+                    .or_else(|| start.and_then(|s| self.index_of(s)))
+                    .unwrap_or(0);
+                match mv {
+                    CursorMove::Up => i.saturating_sub(1),
+                    CursorMove::Down => (i + 1).min(last),
+                    CursorMove::PageUp => i.saturating_sub(page),
+                    CursorMove::PageDown => (i + page).min(last),
+                    CursorMove::Home => 0,
+                    CursorMove::End => last,
+                }
+            }
+        };
+        let id = self.entries[to].id;
+        if extend {
+            let from = self.anchor.or(self.cursor).unwrap_or(id);
+            self.anchor = Some(from);
+            let a = self.index_of(from).unwrap_or(to);
+            let (a, b) = (a.min(to), a.max(to));
+            self.selected = self.entries[a..=b].iter().map(|e| e.id).collect();
+        } else {
+            self.selected = [id].into();
+            self.anchor = Some(id);
+        }
+        self.cursor = Some(id);
+    }
+
+    /// The entry at `index`, or the last one when the list is shorter.
+    fn entry_near(&self, index: usize) -> Option<EntryId> {
+        self.entries
+            .get(index)
+            .or_else(|| self.entries.last())
+            .map(|e| e.id)
+    }
+
     // ---- editing -----------------------------------------------------------------------
 
     /// Removes the selected entries. The current track may be among them.
     pub fn remove_selected(&mut self) -> usize {
         let before = self.entries.len();
         let sel = std::mem::take(&mut self.selected);
+        if let Some(at) = self
+            .cursor
+            .filter(|c| sel.contains(c))
+            .and_then(|c| self.index_of(c))
+        {
+            // Onto the first entry left after it, else the last one left before it.
+            let kept = |e: &&Entry| !sel.contains(&e.id);
+            self.cursor = self.entries[at..]
+                .iter()
+                .find(kept)
+                .or_else(|| self.entries[..at].iter().rev().find(kept))
+                .map(|e| e.id);
+        }
         self.entries.retain(|e| !sel.contains(&e.id));
         if self.current.is_some_and(|c| sel.contains(&c)) {
             self.current = None;
@@ -516,6 +618,7 @@ impl Playlist {
         self.selected.clear();
         self.anchor = None;
         self.current = None;
+        self.cursor = None;
     }
 
     /// Moves entry `from` so it ends up at index `to` (drag-to-reorder).
@@ -837,6 +940,96 @@ mod tests {
                 .contains("bpm"),
             "an unknown tempo isn't written"
         );
+    }
+
+    fn cursor_at(p: &Playlist) -> Option<usize> {
+        p.cursor_index()
+    }
+
+    #[test]
+    fn the_cursor_walks_pages_and_ends_and_selects_as_it_goes() {
+        let mut p = pl(40);
+        let playing = p.entries()[22].id;
+        p.move_cursor(CursorMove::Down, false, 10, Some(playing));
+        assert_eq!(
+            cursor_at(&p),
+            Some(22),
+            "the first press lands on the playing entry"
+        );
+        assert_eq!(sel(&p), [22]);
+        p.move_cursor(CursorMove::Down, false, 10, None);
+        p.move_cursor(CursorMove::Down, false, 10, None);
+        assert_eq!((cursor_at(&p), sel(&p)), (Some(24), vec![24]));
+        p.move_cursor(CursorMove::PageUp, false, 10, None);
+        assert_eq!(cursor_at(&p), Some(14));
+        p.move_cursor(CursorMove::End, false, 10, None);
+        assert_eq!(cursor_at(&p), Some(39));
+        p.move_cursor(CursorMove::Down, false, 10, None);
+        assert_eq!(cursor_at(&p), Some(39), "stops at the end");
+        p.move_cursor(CursorMove::PageDown, false, 10, None);
+        assert_eq!(cursor_at(&p), Some(39));
+        p.move_cursor(CursorMove::Home, false, 10, None);
+        p.move_cursor(CursorMove::Up, false, 10, None);
+        assert_eq!(cursor_at(&p), Some(0), "stops at the start");
+
+        let mut fresh = pl(3);
+        fresh.move_cursor(CursorMove::Up, false, 10, None);
+        assert_eq!(
+            cursor_at(&fresh),
+            Some(0),
+            "nothing playing: the first entry"
+        );
+    }
+
+    #[test]
+    fn shift_extends_the_selection_from_the_anchor() {
+        let mut p = pl(10);
+        p.click(4, ClickMods::default());
+        assert_eq!(cursor_at(&p), Some(4), "a click moves the cursor");
+        for _ in 0..3 {
+            p.move_cursor(CursorMove::Down, true, 10, None);
+        }
+        assert_eq!((cursor_at(&p), sel(&p)), (Some(7), vec![4, 5, 6, 7]));
+        p.move_cursor(CursorMove::Up, true, 10, None);
+        assert_eq!(sel(&p), [4, 5, 6]);
+        p.move_cursor(CursorMove::Down, false, 10, None);
+        assert_eq!(sel(&p), [7], "a plain move selects one again");
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_entry_while_entries_change_around_it() {
+        let mut p = pl(3);
+        let listed = p.add_waiting("Nightcraft", "Glasshouse EP", None, None, "listed");
+        let after = p.add_waiting("Nightcraft", "Undertow", None, None, "listed");
+        p.move_cursor(CursorMove::End, false, 10, None);
+        assert_eq!(p.cursor(), Some(after));
+        // A listed record above it becomes three clips.
+        let clip = |t: &str| NewEntry {
+            artist: "Nightcraft".into(),
+            title: t.into(),
+            source: None,
+            origin: None,
+            duration: None,
+            status: "queued".into(),
+        };
+        p.replace(listed, vec![clip("A1"), clip("A2"), clip("B1")]);
+        assert_eq!((p.cursor(), cursor_at(&p)), (Some(after), Some(6)));
+        // Reordering carries it along.
+        p.move_entry(6, 0);
+        assert_eq!((p.cursor(), cursor_at(&p)), (Some(after), Some(0)));
+        // A replaced cursor entry hands over to its first replacement; a removed one to the
+        // entry now in its place.
+        let a1 = p.entries()[4].id;
+        p.set_cursor(Some(a1));
+        let a2 = p.entries()[5].id;
+        p.remove(a1);
+        assert_eq!(p.cursor(), Some(a2));
+        p.click(4, ClickMods::default());
+        let next = p.entries()[5].id;
+        p.remove_selected();
+        assert_eq!(p.cursor(), Some(next));
+        p.clear();
+        assert_eq!(p.cursor(), None);
     }
 
     #[test]

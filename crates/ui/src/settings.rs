@@ -67,8 +67,9 @@ pub struct Settings {
     pub render_overlay: bool,
     /// Visible playlist rows.
     pub playlist_rows: u16,
+    /// Playlist width in skin pixels (it sits right of the player column and can grow).
+    pub playlist_width: u16,
     pub volume: f32,
-    pub balance: f32,
     pub eq: EqSettings,
     pub shuffle: bool,
     pub repeat: Repeat,
@@ -92,8 +93,8 @@ impl Default for Settings {
             render_fps: 60,
             render_overlay: false,
             playlist_rows: 10,
+            playlist_width: MIN_PLAYLIST_WIDTH,
             volume: 0.8,
-            balance: 0.0,
             eq: EqSettings::default(),
             shuffle: false,
             repeat: Repeat::Off,
@@ -110,8 +111,10 @@ impl Settings {
     pub fn sanitized(mut self) -> Self {
         self.scale = self.scale.clamp(1, 3);
         self.playlist_rows = self.playlist_rows.clamp(4, 60);
+        self.playlist_width = self
+            .playlist_width
+            .clamp(MIN_PLAYLIST_WIDTH, MAX_PLAYLIST_WIDTH);
         self.volume = self.volume.clamp(0.0, 1.0);
-        self.balance = self.balance.clamp(-1.0, 1.0);
         self.eq = self.eq.clamped();
         self.spectrogram = self.spectrogram.sanitized();
         if !crate::render_job::size_ok(self.render_size) {
@@ -121,6 +124,10 @@ impl Settings {
         self
     }
 }
+
+/// The playlist's narrowest width, in skin pixels: the classic skin's.
+pub const MIN_PLAYLIST_WIDTH: u16 = 275;
+pub const MAX_PLAYLIST_WIDTH: u16 = 4000;
 
 pub const SETTINGS_FILE: &str = "settings.ron";
 pub const PLAYLIST_FILE: &str = "playlist.ron";
@@ -247,6 +254,15 @@ mod tests {
         std::fs::write(s.dir().join(SETTINGS_FILE), "(volume: 0.5)").unwrap();
         assert_eq!(s.load_settings().volume, 0.5);
         assert!(s.load_settings().show_playlist);
+        assert_eq!(s.load_settings().playlist_width, MIN_PLAYLIST_WIDTH);
+        // The balance they may hold is gone: the file still loads, and playback is centred.
+        std::fs::write(
+            s.dir().join(SETTINGS_FILE),
+            "(volume: 0.5, balance: -0.6, playlist_rows: 20)",
+        )
+        .unwrap();
+        let old = s.load_settings();
+        assert_eq!((old.volume, old.playlist_rows), (0.5, 20));
     }
 
     #[test]
@@ -270,10 +286,12 @@ mod tests {
             scale: 9,
             volume: 3.0,
             playlist_rows: 0,
+            playlist_width: 10,
             ..Default::default()
         }
         .sanitized();
         assert_eq!((s.scale, s.volume, s.playlist_rows), (3, 1.0, 4));
+        assert_eq!(s.playlist_width, MIN_PLAYLIST_WIDTH);
     }
 
     #[test]

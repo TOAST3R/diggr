@@ -18,7 +18,7 @@ use crate::files;
 use crate::format;
 use crate::fullscreen::{SceneFrame, VisualScene};
 use crate::metadata::{MetaResult, MetaWorker};
-use crate::playlist::{ClickMods, EntryId, EntryStatus};
+use crate::playlist::{ClickMods, CursorMove, EntryId, EntryStatus};
 use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
 use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
@@ -105,7 +105,13 @@ pub struct WinampApp {
     title_tick: f64,
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
-    pl_resize_acc: f32,
+    pl_resize_acc: egui::Vec2,
+    /// Which side the arrow keys work on.
+    focus: Focus,
+    /// The shown crate's playing entry when the list last looked (see `follow_playing_entry`).
+    pl_follow: Option<(CrateId, EntryId)>,
+    /// The playlist width has been fitted to the monitor.
+    width_fitted: bool,
     name_dialog: Option<NameDialog>,
     /// A crate with entries waiting for "Delete crate…" to be confirmed.
     confirm_delete: Option<CrateId>,
@@ -263,7 +269,10 @@ impl WinampApp {
             title_tick: 0.0,
             pl_scroll: 0,
             pl_drag_from: None,
-            pl_resize_acc: 0.0,
+            pl_resize_acc: egui::Vec2::ZERO,
+            focus: Focus::Player,
+            pl_follow: None,
+            width_fitted: false,
             name_dialog: None,
             confirm_delete: None,
             fullscreen: None,
@@ -307,18 +316,8 @@ impl WinampApp {
 
     /// Window size in points for the current settings.
     pub fn window_size(settings: &Settings, skin: &LoadedSkin) -> egui::Vec2 {
-        let d = &skin.def;
-        let mut h = d.main_size.1 as f32;
-        if settings.show_waveform {
-            h += crate::waveform::HEIGHT as f32;
-        }
-        if settings.show_eq {
-            h += d.eq_size.1 as f32;
-        }
-        if settings.show_playlist {
-            h += (d.pl_top_h + d.pl_bottom_h + settings.playlist_rows * d.pl_row_h) as f32;
-        }
-        vec2(d.main_size.0 as f32, h) * settings.scale as f32
+        let (w, h) = crate::layout::window_size(settings, &skin.def);
+        vec2(w as f32, h as f32) * settings.scale as f32
     }
 
     fn engine(&mut self) -> Option<&mut Engine> {
@@ -410,7 +409,6 @@ impl WinampApp {
             Ok(Ok(mut engine)) => {
                 let s = &self.settings;
                 engine.set_volume(s.volume);
-                engine.set_balance(s.balance);
                 engine.set_eq(s.eq);
                 engine.set_repeat(s.repeat.to_engine());
                 engine.set_av_offset_ms(s.av_offset_ms);
@@ -999,6 +997,15 @@ impl WinampApp {
     // ---- keyboard ----------------------------------------------------------------------------
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Tab switches between the player and the playlist. egui would otherwise move its
+        // widget focus, and a focused widget holds the keyboard until Esc.
+        if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Tab) && !i.modifiers.any())
+        {
+            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+            if self.fullscreen.is_none() && self.settings.show_playlist {
+                self.focus = self.focus.other();
+            }
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -1050,7 +1057,7 @@ impl WinampApp {
                         self.scene.key(key, mods);
                     }
                 } else {
-                    self.window_key(key, mods);
+                    self.window_key(ctx, key, mods);
                 }
             }
         }
@@ -1130,6 +1137,8 @@ impl WinampApp {
             Key::B => self.with_engine(|e| e.next()),
             Key::ArrowLeft => self.with_engine(|e| e.seek((secs - 5.0).max(0.0))),
             Key::ArrowRight => self.with_engine(|e| e.seek(secs + 5.0)),
+            // With the playlist focused, the arrows move its cursor instead (`window_key`).
+            Key::ArrowUp | Key::ArrowDown if self.arrows_move_cursor() => return false,
             Key::ArrowUp => self.set_volume(self.settings.volume + 0.05),
             Key::ArrowDown => self.set_volume(self.settings.volume - 0.05),
             Key::F => self.toggle_fullscreen(ctx),
@@ -1144,22 +1153,76 @@ impl WinampApp {
         true
     }
 
-    fn window_key(&mut self, key: Key, mods: Modifiers) {
+    fn window_key(&mut self, ctx: &egui::Context, key: Key, mods: Modifiers) {
         match key {
-            Key::W if !mods.command => {
-                self.settings.show_waveform = !self.settings.show_waveform;
-                self.mark_settings();
-            }
+            Key::W if !mods.command => self.apply(Action::ToggleWaveform, ctx),
             Key::S if !mods.command => self.spectro_open = !self.spectro_open,
             Key::Delete | Key::Backspace => self.remove_selected(),
             Key::O if mods.command => self.open_files_dialog(Open::Add),
             Key::A if mods.command => self.crates.shown_mut().select_all(),
             Key::Enter => {
-                if let Some(&id) = self.crates.shown().selected_ids().first() {
+                let shown = self.crates.shown();
+                if let Some(id) = shown
+                    .cursor()
+                    .or_else(|| shown.selected_ids().first().copied())
+                {
                     self.play_entry(self.crates.shown_id(), id);
                 }
             }
+            Key::P if !mods.command => self.show_playing_entry(),
+            _ if !mods.command && self.arrows_move_cursor() => {
+                let mv = match key {
+                    Key::ArrowUp => CursorMove::Up,
+                    Key::ArrowDown => CursorMove::Down,
+                    Key::PageUp => CursorMove::PageUp,
+                    Key::PageDown => CursorMove::PageDown,
+                    Key::Home => CursorMove::Home,
+                    Key::End => CursorMove::End,
+                    _ => return,
+                };
+                let page = self.pl_rows();
+                let start = (self.crates.shown_id() == self.crates.playing_id()
+                    && self.position.state != PlayState::Stopped)
+                    .then(|| self.crates.shown().current())
+                    .flatten();
+                let p = self.crates.shown_mut();
+                p.move_cursor(mv, mods.shift, page, start);
+                if let Some(i) = p.cursor_index() {
+                    self.scroll_into_view(i);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// ↑/↓ move the playlist cursor while the playlist has the keyboard (not in fullscreen).
+    fn arrows_move_cursor(&self) -> bool {
+        self.focus == Focus::Playlist && self.fullscreen.is_none() && self.settings.show_playlist
+    }
+
+    /// Scrolls the playlist by the least amount that shows entry `index`.
+    fn scroll_into_view(&mut self, index: usize) {
+        let rows = self.pl_rows();
+        if index < self.pl_scroll {
+            self.pl_scroll = index;
+        } else if index >= self.pl_scroll + rows {
+            self.pl_scroll = index + 1 - rows;
+        }
+    }
+
+    /// `P`: the playing crate, scrolled to its playing entry, with the cursor on it.
+    fn show_playing_entry(&mut self) {
+        let playing = self.crates.playing_id();
+        let Some(id) = self.crates.playing().current() else {
+            return;
+        };
+        if self.crates.shown_id() != playing {
+            self.show_crate(playing);
+        }
+        let p = self.crates.shown_mut();
+        p.set_cursor(Some(id));
+        if let Some(i) = p.index_of(id) {
+            self.scroll_into_view(i);
         }
     }
 
@@ -1286,6 +1349,7 @@ impl WinampApp {
             let def = self.def.clone();
             let sk = self.skinned(&def, ui, origin);
             sk.sprite("main_bg", 0.0, 0.0);
+            dim_title(&sk, "titlebar", self.focus == Focus::Player);
             Self::titlebar_drag(ui, &sk, "main_title", "titlebar");
             if widgets::button(ui, &sk, "min", "btn_min", "btn_min").clicked() {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
@@ -1410,21 +1474,18 @@ impl WinampApp {
             {
                 actions.push(Action::Volume(v));
             }
-            let bal = SliderSprites {
-                track: "balance_track",
-                fill: None,
-                thumb: "balance_thumb",
-            };
-            if let (_, Some(v)) = widgets::hslider(
+            // Where Winamp had balance: the waveform section, as with `W`.
+            if widgets::toggle(
                 ui,
                 &sk,
-                "balance",
-                "balance",
-                bal,
-                (self.settings.balance + 1.0) / 2.0,
-            ) {
-                let b = v * 2.0 - 1.0;
-                actions.push(Action::Balance(if b.abs() < 0.08 { 0.0 } else { b }));
+                "wave_tog",
+                "wave_toggle",
+                "tog_wave",
+                self.settings.show_waveform,
+            )
+            .clicked()
+            {
+                actions.push(Action::ToggleWaveform);
             }
             if widgets::toggle(
                 ui,
@@ -1585,6 +1646,7 @@ impl WinampApp {
             let def = self.def.clone();
             let sk = self.skinned(&def, ui, origin);
             sk.sprite("eq_bg", 0.0, 0.0);
+            dim_title(&sk, "eq_titlebar", self.focus == Focus::Player);
             Self::titlebar_drag(ui, &sk, "eq_title", "eq_titlebar");
             if widgets::button(ui, &sk, "eq_close", "eq_close", "btn_close").clicked() {
                 actions.push(Action::ToggleEq);
@@ -1665,18 +1727,51 @@ impl WinampApp {
         }
     }
 
+    /// Rows the playlist shows now (see [`crate::layout::playlist_rows`]).
+    fn pl_rows(&self) -> usize {
+        crate::layout::playlist_rows(&self.settings, &self.skin.def) as usize
+    }
+
+    /// When the playing entry of the shown crate changes and the previous one was on screen,
+    /// the list follows the new one; otherwise the user's scroll is left alone.
+    fn follow_playing_entry(&mut self) {
+        let shown_id = self.crates.shown_id();
+        let now = (shown_id == self.crates.playing_id())
+            .then(|| self.crates.shown().current())
+            .flatten()
+            .map(|id| (shown_id, id));
+        if now == self.pl_follow {
+            return;
+        }
+        let rows = self.pl_rows();
+        let shown = self.crates.shown();
+        let target = match (self.pl_follow, now) {
+            (Some((c0, prev)), Some((c1, new))) if c0 == c1 => shown
+                .index_of(prev)
+                .filter(|&i| i >= self.pl_scroll && i < self.pl_scroll + rows)
+                .and_then(|_| shown.index_of(new)),
+            _ => None,
+        };
+        self.pl_follow = now;
+        if let Some(i) = target {
+            self.scroll_into_view(i);
+        }
+    }
+
     fn playlist_section(&mut self, ui: &mut Ui, origin: Pos2) {
-        let rows = self.settings.playlist_rows as usize;
-        let d = self.skin.def.clone();
+        self.follow_playing_entry();
+        let rows = self.pl_rows();
+        let d = crate::layout::playlist_def(&self.def, self.settings.playlist_width);
+        let width = d.pl_width as f32;
         let list_h = (rows * d.pl_row_h as usize) as f32;
         let mut actions = Vec::new();
         let len = self.crates.shown().len();
         self.pl_scroll = self.pl_scroll.min(len.saturating_sub(rows));
         {
-            let def = self.def.clone();
+            let def = d.clone();
             let sk = self.skinned(&def, ui, origin);
             let scale = sk.scale;
-            sk.sprite("pl_top", 0.0, 0.0);
+            draw_stretched_bar(&sk, "pl_top", 0.0, width, d.pl_top_h as f32);
             // The title bar names the shown crate: a click opens the crate menu, a drag still
             // moves the window.
             let title = ui.interact(
@@ -1688,6 +1783,7 @@ impl WinampApp {
                 ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
             }
             draw_crate_name(&sk, self.crates.name(self.crates.shown_id()));
+            dim_title(&sk, "pl_titlebar", self.focus == Focus::Playlist);
             egui::Popup::menu(&title)
                 .id(Id::new("crate_menu"))
                 .show(|ui| self.crate_menu(ui, &mut actions));
@@ -1723,6 +1819,14 @@ impl WinampApp {
                 let rr = sk.rect(l.x as f32, top + r as f32 * row_h, l.w as f32, row_h);
                 if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
+                }
+                if self.focus == Focus::Playlist && shown.cursor() == Some(e.id) {
+                    clip.rect_stroke(
+                        rr,
+                        0.0,
+                        egui::Stroke::new(scale, color(d.colors.pl_text)),
+                        egui::StrokeKind::Inside,
+                    );
                 }
                 let current = shown.current() == Some(e.id);
                 let (mut col, dur) = row_look(e, current, &d.colors);
@@ -1877,7 +1981,7 @@ impl WinampApp {
                 origin: sk.origin + vec2(0.0, bottom_y * scale),
                 ..self.skinned(&def, ui, origin)
             };
-            bsk.sprite("pl_bottom", 0.0, 0.0);
+            draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
             let add = widgets::button(ui, &bsk, "pl_add", "pl_add", "pl_add");
             egui::Popup::menu(&add).show(|ui| {
                 if ui.button("Add files…").clicked() {
@@ -1953,7 +2057,7 @@ impl WinampApp {
             let pi = d.at("pl_info");
             bsk.text(pi.x as f32, pi.y as f32, &info, color([0, 236, 0]));
 
-            // Resize handle changes the number of visible rows.
+            // The resize grip: whole rows down, any width sideways.
             let rz = bsk.at("pl_resize");
             bsk.sprite(
                 "pl_resize",
@@ -1961,11 +2065,15 @@ impl WinampApp {
                 d.at("pl_resize").y as f32,
             );
             let (_, delta) = widgets::drag_area(ui, &bsk, "pl_resize", rz);
-            self.pl_resize_acc += delta.y;
-            let step = (self.pl_resize_acc / row_h).trunc();
-            if step != 0.0 {
-                self.pl_resize_acc -= step * row_h;
-                actions.push(Action::Rows(step as i32));
+            self.pl_resize_acc += delta;
+            let rows = (self.pl_resize_acc.y / row_h).trunc();
+            let width = self.pl_resize_acc.x.trunc();
+            if rows != 0.0 || width != 0.0 {
+                self.pl_resize_acc -= vec2(width, rows * row_h);
+                actions.push(Action::ResizePlaylist {
+                    rows: rows as i32,
+                    width: width as i32,
+                });
             }
         }
         for a in actions {
@@ -2178,11 +2286,6 @@ impl WinampApp {
             Action::Eject => self.open_files_dialog(Open::Replace),
             Action::Seek(s) => self.with_engine(|e| e.seek(s)),
             Action::Volume(v) => self.set_volume(v),
-            Action::Balance(b) => {
-                self.settings.balance = b;
-                self.with_engine(|e| e.set_balance(b));
-                self.mark_settings();
-            }
             Action::Shuffle => {
                 self.settings.shuffle = !self.settings.shuffle;
                 self.queue_dirty = true;
@@ -2192,6 +2295,10 @@ impl WinampApp {
                 self.settings.repeat = self.settings.repeat.cycle();
                 let r = self.settings.repeat.to_engine();
                 self.with_engine(|e| e.set_repeat(r));
+                self.mark_settings();
+            }
+            Action::ToggleWaveform => {
+                self.settings.show_waveform = !self.settings.show_waveform;
                 self.mark_settings();
             }
             Action::ToggleEq => {
@@ -2215,9 +2322,15 @@ impl WinampApp {
                 self.settings.scale = if self.settings.scale >= 2 { 1 } else { 2 };
                 self.mark_settings();
             }
-            Action::Rows(d) => {
-                self.settings.playlist_rows =
-                    (self.settings.playlist_rows as i32 + d).clamp(4, 60) as u16;
+            Action::ResizePlaylist { rows, width } => {
+                // From the rows shown, which may be more than chosen (never shorter than the
+                // player column).
+                let shown = crate::layout::playlist_rows(&self.settings, &self.skin.def);
+                self.settings.playlist_rows = (shown as i32 + rows).clamp(4, 60) as u16;
+                self.settings.playlist_width = (self.settings.playlist_width as i32 + width).clamp(
+                    crate::settings::MIN_PLAYLIST_WIDTH as i32,
+                    crate::settings::MAX_PLAYLIST_WIDTH as i32,
+                ) as u16;
                 self.mark_settings();
             }
             Action::SavePreset => self.name_dialog = Some(NameDialog::new(NameFor::Preset, "")),
@@ -2308,7 +2421,7 @@ enum Action {
     Eject,
     Seek(f64),
     Volume(f32),
-    Balance(f32),
+    ToggleWaveform,
     Shuffle,
     Repeat,
     ToggleEq,
@@ -2317,7 +2430,11 @@ enum Action {
     CycleVis,
     ToggleScale,
     ToggleSpectrogram,
-    Rows(i32),
+    /// Rows and skin pixels to add to the playlist.
+    ResizePlaylist {
+        rows: i32,
+        width: i32,
+    },
     SavePreset,
     DeletePreset(String),
     PlayEntry(EntryId),
@@ -2452,6 +2569,46 @@ pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String
 
 /// Draws the shown crate's name centred on the playlist title bar, over a plain strip that
 /// hides the bar's decorative lines behind it.
+/// The side that has the keyboard: the player (main, waveform, EQ) or the playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Player,
+    Playlist,
+}
+
+impl Focus {
+    fn other(self) -> Self {
+        match self {
+            Focus::Player => Focus::Playlist,
+            Focus::Playlist => Focus::Player,
+        }
+    }
+}
+
+/// Title bars of the side without the keyboard are drawn dimmed, as Winamp 2 did with its
+/// inactive windows. Drawn over the bar, before its buttons.
+fn dim_title(sk: &Skinned, layout: &str, lit: bool) {
+    if !lit {
+        sk.painter
+            .rect_filled(sk.at(layout), 0.0, Color32::from_black_alpha(140));
+    }
+}
+
+/// A playlist bar (`{base}_l`, `{base}_fill`, `{base}_r`) stretched to `width`: the end pieces
+/// as drawn, the middle column tiled between them.
+fn draw_stretched_bar(sk: &Skinned, base: &str, y: f32, width: f32, h: f32) {
+    let (l, r) = (
+        sk.def.sprite(&format!("{base}_l")).w as f32,
+        sk.def.sprite(&format!("{base}_r")).w as f32,
+    );
+    sk.sprite(&format!("{base}_l"), 0.0, y);
+    sk.sprite_in(
+        &format!("{base}_fill"),
+        sk.rect(l, y, (width - l - r).max(0.0), h),
+    );
+    sk.sprite(&format!("{base}_r"), width - r, y);
+}
+
 fn draw_crate_name(sk: &Skinned, name: &str) {
     const PAD: f32 = 5.0; // plain title bar either side of the name
     const SIDE: f32 = 40.0; // decoration left visible at each end (the close button's side)
@@ -2619,6 +2776,22 @@ impl WinampApp {
             }
         }
 
+        // A playlist width saved on a bigger screen is narrowed to fit this one, once.
+        if !self.width_fitted
+            && let Some(m) = ctx.input(|i| i.viewport().monitor_size)
+        {
+            self.width_fitted = true;
+            let fit = crate::layout::fit_playlist_width(
+                self.settings.playlist_width,
+                &self.skin.def,
+                self.settings.scale as f32,
+                m.x,
+            );
+            if fit != self.settings.playlist_width {
+                self.settings.playlist_width = fit;
+                self.mark_settings();
+            }
+        }
         // Keep the window sized to the visible sections (not in fullscreen).
         if self.fullscreen.is_none() {
             let size = Self::window_size(&self.settings, &self.skin);
@@ -2670,6 +2843,23 @@ impl WinampApp {
             let origin = ui.max_rect().min;
             let scale = self.settings.scale as f32;
             let d = self.skin.def.clone();
+            // A click gives its side the keyboard (lit in this same frame).
+            if let Some(p) = ctx.input(|i| {
+                i.pointer
+                    .primary_pressed()
+                    .then(|| i.pointer.interact_pos())
+                    .flatten()
+            }) {
+                let playlist_x = origin.x + d.main_size.0 as f32 * scale;
+                self.focus = if self.settings.show_playlist && p.x >= playlist_x {
+                    Focus::Playlist
+                } else {
+                    Focus::Player
+                };
+            }
+            if !self.settings.show_playlist {
+                self.focus = Focus::Player;
+            }
             self.main_section(ui, origin);
             let mut y = d.main_size.1 as f32;
             if self.settings.show_waveform {
@@ -2685,7 +2875,18 @@ impl WinampApp {
                 y += d.eq_size.1 as f32;
             }
             if self.settings.show_playlist {
-                self.playlist_section(ui, origin + vec2(0.0, y * scale));
+                // The playlist sits right of the player column; below a shorter player column,
+                // plain panel.
+                let (_, h) = crate::layout::window_size(&self.settings, &d);
+                if (h as f32) > y {
+                    let def = self.def.clone();
+                    let sk = self.skinned(&def, ui, origin);
+                    sk.sprite_in(
+                        "pl_bottom_fill",
+                        sk.rect(0.0, y, d.main_size.0 as f32, h as f32 - y),
+                    );
+                }
+                self.playlist_section(ui, origin + vec2(d.main_size.0 as f32 * scale, 0.0));
             }
             if self
                 .message
@@ -3062,30 +3263,20 @@ mod tests {
     }
 
     #[test]
-    fn window_size_follows_sections() {
+    fn window_size_is_in_points() {
         let skin = LoadedSkin::default_skin();
-        let mut s = Settings {
-            scale: 1,
-            show_eq: false,
-            show_playlist: false,
+        let s = Settings {
+            scale: 2,
+            show_eq: true,
             show_waveform: false,
+            show_playlist: true,
+            playlist_rows: 20,
+            playlist_width: 300,
             ..Default::default()
         };
-        assert_eq!(WinampApp::window_size(&s, &skin), vec2(275.0, 116.0));
-        s.show_eq = true;
-        assert_eq!(WinampApp::window_size(&s, &skin), vec2(275.0, 232.0));
-        s.show_playlist = true;
-        s.playlist_rows = 10;
         assert_eq!(
             WinampApp::window_size(&s, &skin),
-            vec2(275.0, 232.0 + 20.0 + 130.0 + 38.0)
-        );
-        s.scale = 2;
-        assert_eq!(WinampApp::window_size(&s, &skin), vec2(550.0, 840.0));
-        s.show_waveform = true;
-        assert_eq!(
-            WinampApp::window_size(&s, &skin),
-            vec2(550.0, 840.0 + 116.0)
+            vec2(575.0, 20.0 + 260.0 + 38.0) * 2.0
         );
     }
 }
@@ -3104,8 +3295,10 @@ mod headless_tests {
     use std::path::Path;
 
     const BUF: usize = 512;
-    /// Classic size, main window and playlist only: the playlist starts at y = 116.
-    const PL_TOP: f32 = 116.0;
+    /// Classic size, main window and playlist only.
+    /// The playlist's top-left at 1×: right of the player column.
+    const PL_LEFT: f32 = 275.0;
+    const PL_TOP: f32 = 0.0;
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(format!(
@@ -3216,7 +3409,7 @@ mod headless_tests {
         fn frame(&mut self, mut events: Vec<Event>) -> egui::FullOutput {
             events.insert(0, Event::ModifiersChanged(self.mods));
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(275.0, 400.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(550.0, 400.0))),
                 events,
                 ..Default::default()
             };
@@ -3325,12 +3518,34 @@ mod headless_tests {
             self.mods = Modifiers::NONE;
         }
 
+        /// A key press, with `modifiers` held for that frame.
+        fn key(&mut self, key: Key, modifiers: Modifiers) -> egui::FullOutput {
+            self.mods = modifiers;
+            let out = self.frame(vec![Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }]);
+            self.mods = Modifiers::NONE;
+            out
+        }
+
+        /// A crate of `n` entries (the same fixture) shown in the playlist.
+        fn fill_playlist(&mut self, n: usize) -> Vec<EntryId> {
+            let t = TrackRef::new(fixture("tone.flac").to_string_lossy());
+            let p = self.app.crates.shown_mut();
+            p.add(std::iter::repeat_n(t, n));
+            p.entries().iter().map(|e| e.id).collect()
+        }
+
         fn title_bar(&self) -> Pos2 {
-            pos2(60.0, PL_TOP + 10.0)
+            pos2(PL_LEFT + 60.0, PL_TOP + 10.0)
         }
 
         fn row(&self, index: usize) -> Pos2 {
-            pos2(60.0, PL_TOP + 20.0 + index as f32 * 13.0 + 6.5)
+            pos2(PL_LEFT + 60.0, PL_TOP + 20.0 + index as f32 * 13.0 + 6.5)
         }
 
         fn ids(&self, crate_id: CrateId) -> Vec<EntryId> {
@@ -3697,6 +3912,105 @@ mod headless_tests {
             e.duration.is_some_and(|d| (d - 2.0).abs() < 0.05),
             "takes the duration"
         );
+    }
+
+    #[test]
+    fn a_click_or_tab_gives_a_side_the_arrow_keys() {
+        let mut rig = Rig::new("focus", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(12);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.focus, Focus::Player, "the player at launch");
+        let v = rig.app.settings.volume;
+        rig.key(Key::ArrowUp, Modifiers::NONE);
+        assert!(rig.app.settings.volume > v, "↑ is volume");
+        assert_eq!(rig.app.crates.shown().cursor(), None);
+
+        rig.click(rig.row(2));
+        assert_eq!(rig.app.focus, Focus::Playlist);
+        let v = rig.app.settings.volume;
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(rig.app.settings.volume, v, "↓ no longer touches the volume");
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[3]));
+        rig.key(Key::ArrowDown, Modifiers::SHIFT);
+        assert_eq!(rig.app.crates.shown().selected_ids(), &ids[3..=4]);
+
+        // Tab hands the keyboard back, and egui's own widget focus doesn't swallow it.
+        rig.key(Key::Tab, Modifiers::NONE);
+        assert_eq!(rig.app.focus, Focus::Player);
+        assert!(!rig.ctx.egui_wants_keyboard_input());
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        assert!(rig.app.settings.volume < v);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[4]));
+        rig.key(Key::Tab, Modifiers::NONE);
+        assert_eq!(rig.app.focus, Focus::Playlist);
+
+        // A click on the player (on a bare spot of its panel) takes it back.
+        rig.click(pos2(190.0, 45.0));
+        assert_eq!(rig.app.focus, Focus::Player);
+    }
+
+    #[test]
+    fn the_cursor_scrolls_the_list_and_enter_plays_it() {
+        let mut rig = Rig::new("cursor", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(40);
+        rig.click(rig.row(8));
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(rig.app.pl_scroll, 0, "entry 9 is still on screen");
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[11]));
+        assert_eq!(
+            rig.app.pl_scroll, 2,
+            "scrolled just enough to show entry 12"
+        );
+        rig.key(Key::End, Modifiers::NONE);
+        assert_eq!(rig.app.pl_scroll, 30);
+        rig.key(Key::PageUp, Modifiers::NONE);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[29]));
+        rig.key(Key::Home, Modifiers::NONE);
+        assert_eq!(rig.app.pl_scroll, 0);
+        rig.key(Key::Enter, Modifiers::NONE);
+        rig.until(
+            |r| r.app.crates.playing().current() == Some(ids[0]),
+            "the cursor's entry plays",
+        );
+    }
+
+    #[test]
+    fn p_shows_the_playing_entry_and_the_list_follows_it_only_from_view() {
+        let mut rig = Rig::new("follow", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(40);
+        rig.app.crates.shown_mut().set_current(Some(ids[25]));
+        rig.frame(Vec::new());
+        rig.key(Key::P, Modifiers::NONE);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[25]));
+        assert_eq!(rig.app.pl_scroll, 16, "entry 26 in the last row");
+
+        // The next track, one row below the view: the list follows.
+        rig.app.crates.shown_mut().set_current(Some(ids[26]));
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.pl_scroll, 17);
+        // Scrolled away by the user: the list stays.
+        rig.app.pl_scroll = 0;
+        rig.frame(Vec::new());
+        rig.app.crates.shown_mut().set_current(Some(ids[27]));
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.pl_scroll, 0);
+    }
+
+    #[test]
+    fn the_waveform_button_shows_and_hides_the_waveform_like_w() {
+        let mut rig = Rig::new("wave-button", Vec::new(), |_| {});
+        let b = rig.app.skin.def.at("wave_toggle");
+        let at = pos2(b.x as f32 + 5.0, b.y as f32 + 5.0);
+        assert!(!rig.app.settings.show_waveform);
+        rig.click(at);
+        assert!(rig.app.settings.show_waveform);
+        // Main + waveform (174) still fits beside the playlist's 10 rows (188).
+        let size = WinampApp::window_size(&rig.app.settings, &rig.app.skin);
+        assert_eq!(size, vec2(550.0, 188.0));
+        rig.click(at);
+        assert!(!rig.app.settings.show_waveform);
     }
 
     #[test]
