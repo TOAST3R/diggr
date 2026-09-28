@@ -103,7 +103,18 @@ Each fallback is reported as `MixFallback { reason }` and shown for 3 s in the m
 - **Turning SYNC off:** before a mix starts, this cancels it. During a mix, the mix completes.
 
 ### D10. SYNC button and indicator
-- **Button:** a SYNC toggle in the main window, in the skin's style (new sprites from the skin generator). It lights when on, and its state persists in the settings. Its position is decided while implementing: the main window's button row is nearly full, so the layout must be checked (next to REP, the left end of that row, or near the EQ/PL toggles).
+- **Room for it:** the button row had only ~24 px free after REP. SHUFFLE (47 px) and REP (28 px) become 23×15 icon buttons, the size of the transport buttons, which frees space for SYNC at the right end of the row:
+  ```
+  x: 136    164     188        217                  264
+     ┌───┐  ┌─────┐┌─────┐     ┌────────────────────┐
+     │ ⏏ │  │  ⤮  ││  ⟲  │     │        SYNC        │   right edge aligned with the seek bar
+     └───┘  └─────┘└─────┘     └────────────────────┘
+     22×16   23×15  23×15              47×15
+  ```
+  - Shuffle: two crossed arrows. Repeat: a loop arrow; repeat one adds a "1" inside the loop. The icon is drawn green when on, the same rule as the text toggles (`shuffle_on/off`, `repeat_off/all/one` and their `_p` sprites keep their names).
+  - SYNC: a text toggle (`sync_off`, `sync_on`, and `_p`), lit green when on.
+- **One mode:** SYNC is vinyl only (D3). There is no mode switch; key-lock remains a non-goal.
+- **Button:** a SYNC toggle in the skin's style (new sprites from the skin generator). It lights when on, and its state persists in the settings.
 - **Indicator:** while a mix is planned or running, the time display area shows `MIX 0:12`, the time until the mix starts or until the handover.
 
 ### D11. Two waveforms while mixing
@@ -122,4 +133,4 @@ Each fallback is reported as `MixFallback { reason }` and shown for 3 s in the m
 
 ## Open Questions
 
-- The SYNC button's exact position in the main window (D10).
+- None. The SYNC button's position is settled in D10.

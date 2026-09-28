@@ -7,7 +7,8 @@ The player already knows every track's beat grid, phrases, sections and energy a
 
 ## What Changes
 
-- **SYNC button:** a new button in the main window (position to be decided with the layout), persisted and off by default, switches SYNC mode on and off.
+- **SYNC button:** a new SYNC button in the main window's button row, right of shuffle and repeat, persisted and off by default, switches SYNC mode on and off. SYNC has one mode, vinyl: pitch follows tempo.
+- **Icon shuffle and repeat:** to make room, the SHUFFLE and REP text buttons become icon buttons (crossed arrows; a loop, with a "1" for repeat one), lit green when on.
 - **Continuous set:** in SYNC mode, consecutive tracks are mixed, not joined by gapless cuts. `Shift+B` mixes into the next track at the next phrase whether or not SYNC is on. `B` still cuts straight to the next track.
 - **Held set tempo, vinyl-style:** the set keeps one tempo. The incoming track is sped up or slowed down to the set tempo, and its pitch follows, like vinyl. It stays at that tempo for the whole track. Tempos within ±8% are matched, with half/double time accepted (e.g. 87↔174). In SYNC mode, a next track whose tempo can't be matched is skipped, and the set continues with the next one that can. If none of the rest can be matched, the next track is crossfaded at its own tempo, and the set continues at that tempo.
 - **Mixes of about 30 s:** the length is rounded to whole 8-bar phrases at the set tempo.
@@ -33,7 +34,7 @@ The player already knows every track's beat grid, phrases, sections and energy a
 ### Modified Capabilities
 - `audio-playback`: in SYNC mode, tracks overlap in planned mixes and the next track is pre-warmed earlier. The engine executes mix plans (two decks, a tempo ratio, band gains).
 - `playback-clock`: during a mix, the clock reports one track at a time, switches at the handover, and follows the incoming track's speed.
-- `player-window`: a SYNC button, `Shift+B` (mix now) and `E` (swap the kick and bass during a mix).
+- `player-window`: icon shuffle and repeat buttons, a SYNC button to their right, `Shift+B` (mix now) and `E` (swap the kick and bass during a mix).
 - `waveform-view`: two stacked waveforms during a mix.
 
 ## Impact
@@ -45,7 +46,7 @@ The player already knows every track's beat grid, phrases, sections and energy a
   - a speed factor per ring segment for the clock (one float, safe in the audio callback).
 - **`crates/ui`:**
   - orchestration: early pre-warm, planning, rescheduling and fallbacks;
-  - the SYNC button (skin generator plus layout), `Shift+B`, `E`, a MIX indicator;
+  - icon sprites for shuffle and repeat, the SYNC button (skin generator plus layout), `Shift+B`, `E`, a MIX indicator;
   - the two-deck waveform.
 - **`crates/visuals`:** nothing new. The director's track-change rule fires at the handover because the clock switches there.
 - **Builds on** frame-exact splicing (`waveform-navigation`) and the track overview (for the incoming track's waveform).

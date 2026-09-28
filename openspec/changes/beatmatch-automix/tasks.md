@@ -18,11 +18,11 @@
 
 ## 3. Player (ui)
 
-- [ ] 3.1 SYNC setting and button (skin generator sprites; choose the position in the main window), MIX countdown indicator
+- [ ] 3.1 Icon shuffle and repeat buttons (23×15 at x 164 and 188; crossed arrows, loop, loop with "1"; green when on), SYNC setting and button (47×15 at x 217, text sprites lit when on), layout in the skin generator and regenerated skin; MIX countdown indicator
 - [ ] 3.2 Orchestration: provisional mix point, early pre-warm (engine and analysis), planning when both scores cover the points, rescheduling, 2 s deadline, fallbacks with a 3 s message; SYNC off cancels a pending mix
 - [ ] 3.3 `Shift+B` mix now; `B` cuts straight during a mix; `E` swaps the lows; skipped-track message; help panel and README keys
 - [ ] 3.4 Two-lane zoomed waveform during a mix: aligned grids at the set tempo, mix region, handover line, dimmed bass while cut, gain-following brightness; the incoming track's overview requested on pre-warm
-- [ ] 3.5 Headless tests: SYNC toggle persists, countdown text, other-deck position from the plan, lane grid alignment
+- [ ] 3.5 Headless tests: SYNC toggle persists, the main button row's rects don't overlap and stay inside the window, countdown text, other-deck position from the plan, lane grid alignment
 
 ## 4. Docs and verification
 
