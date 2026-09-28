@@ -4,10 +4,12 @@
 //! nothing in this crate can ever touch the playback path:
 //! - [`intake`]: one worker makes every Discogs request in turn (so the rate limit is simple);
 //! - [`preview`]: fetches clips with the user's own yt-dlp, a few tracks ahead;
-//! - [`prepare`]: analyzes downloaded previews so they open with their waveform and sections.
+//! - [`prepare`]: analyzes downloaded previews so they open with their waveform and sections;
+//! - [`bridge`]: a loopback server through which a paired browser extension sends pages.
 //!
 //! Native only: the web build leaves this crate out.
 
+pub mod bridge;
 pub mod browser;
 pub mod clock;
 pub mod config;
@@ -17,6 +19,10 @@ pub mod jobs;
 pub mod memory;
 pub mod prepare;
 pub mod preview;
+
+/// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder
+/// until the rebrand.
+pub const APP_NAME: &str = "winamp_rust";
 
 /// Seconds since the Unix epoch (the timestamps stored in files).
 pub fn now_secs() -> u64 {

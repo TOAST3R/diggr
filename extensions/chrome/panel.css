@@ -1,0 +1,27 @@
+/* The options page and the popup: the player's dark panel and green LCD text. */
+:root { color-scheme: dark; }
+body {
+  margin: 0; background: #14141c; color: #d6f5dc;
+  font: 13px/1.4 "Trebuchet MS", Tahoma, sans-serif;
+}
+main { padding: 14px 16px; }
+h1 { font-size: 15px; margin: 0 0 10px; color: #2fe45a; letter-spacing: .03em; }
+h2 { font-size: 13px; margin: 14px 0 6px; color: #9fe8b0; }
+.lcd {
+  background: #07120a; color: #2fe45a; border: 1px solid #33334a; border-radius: 3px;
+  padding: 6px 8px; font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.bad { color: #ff8a80; }
+.dim { color: #8a8aa0; }
+input {
+  background: #07120a; color: #2fe45a; border: 1px solid #4a4a5e; border-radius: 3px;
+  padding: 4px 6px; font: 14px ui-monospace, Menlo, Consolas, monospace;
+}
+button {
+  background: #1b1b24; color: #2fe45a; border: 1px solid #4a4a5e; border-radius: 3px;
+  padding: 4px 10px; cursor: pointer;
+}
+button:hover { border-color: #2fe45a; }
+.row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+ul { margin: 4px 0; padding-left: 18px; }
+a { color: #9fe8b0; }

@@ -22,4 +22,4 @@ pub mod widgets;
 
 pub use app::{AppContext, Startup, WinampApp};
 #[cfg(not(target_arch = "wasm32"))]
-pub use app::{DigAction, DigSetup, SendMode};
+pub use app::{BridgeSetup, DigAction, DigSetup, SendMode};

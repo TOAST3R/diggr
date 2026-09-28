@@ -1,6 +1,7 @@
 //! Digging in the player, headless: pasted pages become crates of previews, Y / N / I decide,
 //! OPT ▸ Discogs… checks a token, and nothing reaches Discogs before the window is up.
 
+use super::digging::BridgeAction;
 use super::*;
 use ::dig::browser::{FakeBrowser, sell_url};
 use ::dig::clock::RealClock;
@@ -45,6 +46,7 @@ impl Fakes {
             finder,
             browser: self.browser.clone(),
             cache_root: Some(dir.join("cache")),
+            bridge: BridgeSetup::Off,
         }
     }
 
@@ -494,4 +496,239 @@ fn a_keep_while_discogs_is_offline_waits_as_wantlist_pending() {
         saved.is_want_pending(1001),
         "and saved for the next session"
     );
+}
+
+// ---- the browser bridge ------------------------------------------------------------------------
+
+const LABEL: &str = "https://www.discogs.com/label/12345-Lowtide-Tapes";
+
+fn bridge_rig(name: &str, fakes: &Fakes, bridge: BridgeSetup) -> Rig {
+    let f = fakes.clone();
+    Rig::with_dig(
+        name,
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            Some(DigSetup {
+                bridge,
+                ..f.setup(dir)
+            })
+        },
+    )
+}
+
+fn bridge_port(rig: &Rig) -> u16 {
+    rig.app
+        .dig
+        .as_ref()
+        .and_then(|d| d.bridge_port())
+        .expect("the bridge runs")
+}
+
+fn shared(rig: &Rig) -> Arc<::dig::bridge::Shared> {
+    rig.app
+        .dig
+        .as_ref()
+        .and_then(|d| d.bridge_shared.clone())
+        .unwrap()
+}
+
+/// As the extension calls: status and JSON body.
+fn http(port: u16, method: &str, path: &str, key: Option<&str>, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\
+         Origin: chrome-extension://abcdefghijklmnop\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    if let Some(k) = key {
+        req += &format!("X-Bridge-Key: {k}\r\n");
+    }
+    req += "\r\n";
+    req += body;
+    s.write_all(req.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let (head, body) = out.split_once("\r\n\r\n").unwrap();
+    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+    (status, body.to_owned())
+}
+
+fn pair(rig: &Rig) -> String {
+    let port = bridge_port(rig);
+    let code = shared(rig).pairing().ensure_code().unwrap().0;
+    let (status, body) = http(
+        port,
+        "POST",
+        "/v1/pair",
+        None,
+        &format!(r#"{{"code":"{code}"}}"#),
+    );
+    assert_eq!(status, 200, "{body}");
+    body.split('"').nth(3).unwrap().to_owned()
+}
+
+fn open_browser_dialog(rig: &mut Rig) {
+    rig.until(
+        |r| {
+            shows(
+                &r.frame(Vec::new()),
+                "Enter this code in the extension's options.",
+            )
+        },
+        "OPT ▸ Browser… shows",
+    );
+}
+
+#[test]
+fn the_bridge_starts_only_after_the_first_frame() {
+    let fakes = Fakes::new();
+    let f = fakes.clone();
+    let mut rig = Rig::build(
+        "dig-bridge-launch",
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            Some(DigSetup {
+                bridge: BridgeSetup::Port(0),
+                ..f.setup(dir)
+            })
+        },
+    );
+    assert!(rig.app.dig.as_ref().unwrap().bridge_port().is_none());
+    rig.until(|r| r.app.engine().is_some(), "the engine starts");
+    rig.frame(Vec::new());
+    bridge_port(&rig);
+}
+
+#[test]
+fn a_browser_send_is_answered_at_once_and_the_crate_fills_in_afterwards() {
+    let fakes = Fakes::new();
+    let mut rig = bridge_rig("dig-bridge-send", &fakes, BridgeSetup::Port(0));
+    let key = pair(&rig);
+    rig.frame(Vec::new());
+    // Discogs is slow: each of the next answers takes 250 ms.
+    for _ in 0..4 {
+        fakes
+            .transport
+            .fault(::dig::discogs::transport::Fault::Delay(
+                Duration::from_millis(250),
+            ));
+    }
+    let body =
+        format!(r#"{{"url":"{LABEL}","mode":"enqueue","vinyl_only":false,"skip_passed":true}}"#);
+    let t = Instant::now();
+    let (status, answer) = http(bridge_port(&rig), "POST", "/v1/send", Some(&key), &body);
+    let took = t.elapsed();
+    assert_eq!(status, 202, "{answer}");
+    assert!(took < Duration::from_millis(100), "answered in {took:?}");
+    assert!(
+        answer.contains(r#""page":"Label: Lowtide Tapes""#),
+        "{answer}"
+    );
+    assert!(answer.contains(r#""crate":"Playlist""#), "{answer}");
+
+    // Exactly as a paste: the label's records arrive in the shown crate.
+    rig.until(
+        |r| r.app.crates.get(PLAYLIST).is_some_and(|p| !p.is_empty()),
+        "the crate fills in",
+    );
+    let (status, crates) = http(bridge_port(&rig), "GET", "/v1/crates", Some(&key), "");
+    assert_eq!(status, 200);
+    assert!(
+        crates.contains(r#"{"name":"Playlist","playing":false,"shown":true}"#),
+        "{crates}"
+    );
+}
+
+#[test]
+fn opt_browser_shows_a_code_that_pairs_once_and_forget_browsers_revokes() {
+    let fakes = Fakes::new();
+    let mut rig = bridge_rig("dig-bridge-dialog", &fakes, BridgeSetup::Port(0));
+    let port = bridge_port(&rig);
+    let shared = shared(&rig);
+    assert!(
+        shared.pairing().code().is_none(),
+        "no code before the dialog opens"
+    );
+    rig.app.dig_act(PLAYLIST, DigAction::OpenBrowserDialog);
+    open_browser_dialog(&mut rig);
+    let out = rig.frame(Vec::new());
+    let (code, _) = shared
+        .pairing()
+        .code()
+        .map(|(c, l)| (c.to_owned(), l))
+        .unwrap();
+    let texts = text_list(&out);
+    let shown = format!("{} {}", &code[..3], &code[3..]);
+    assert!(texts.contains(&shown), "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Valid for 2:00") || t.starts_with("Valid for 1:5"))
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains(&format!("127.0.0.1:{port}")))
+    );
+
+    let pair_body = format!(r#"{{"code":"{code}"}}"#);
+    let (status, body) = http(port, "POST", "/v1/pair", None, &pair_body);
+    assert_eq!(status, 200);
+    let key = body.split('"').nth(3).unwrap().to_owned();
+    let out = rig.frame(Vec::new());
+    assert_eq!(message(&rig), "A browser was paired");
+    let texts = text_list(&out);
+    assert!(texts.iter().any(|t| t == "1 paired browser"), "{texts:?}");
+    // The used code no longer works; the dialog shows a fresh one.
+    assert_eq!(http(port, "POST", "/v1/pair", None, &pair_body).0, 401);
+    assert_ne!(shared.pairing().code().unwrap().0, code);
+    assert_eq!(http(port, "GET", "/v1/status", Some(&key), "").0, 200);
+
+    rig.click_text("Forget browsers");
+    assert_eq!(
+        message(&rig),
+        "Browsers forgotten: each one needs pairing again"
+    );
+    assert_eq!(http(port, "GET", "/v1/status", Some(&key), "").0, 401);
+    rig.frame(Vec::new());
+
+    // Closed, no code works.
+    let code = shared.pairing().code().unwrap().0.to_owned();
+    rig.app.dig_bridge_act(BridgeAction::Close);
+    let (status, _) = http(
+        port,
+        "POST",
+        "/v1/pair",
+        None,
+        &format!(r#"{{"code":"{code}"}}"#),
+    );
+    assert_eq!(status, 410);
+}
+
+#[test]
+fn a_taken_port_leaves_the_player_working_and_says_so() {
+    let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let fakes = Fakes::new();
+    let mut rig = bridge_rig("dig-bridge-taken", &fakes, BridgeSetup::Port(port));
+    assert!(rig.app.dig.as_ref().unwrap().bridge_port().is_none());
+    rig.app.dig_act(PLAYLIST, DigAction::OpenBrowserDialog);
+    open_browser_dialog(&mut rig);
+    let taken_text = format!("Port {port} is taken by another program");
+    assert!(shows(&rig.frame(Vec::new()), &taken_text));
+    // Pasting still works.
+    rig.frame(vec![Event::Paste(RELEASE.into())]);
+    rig.until(|r| all_playable(r, PLAYLIST, 3), "three previews ready");
+
+    // Another port, saved for next time.
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let other = free.local_addr().unwrap().port();
+    drop(free);
+    rig.app.dig_bridge_act(BridgeAction::SetPort(other));
+    assert_eq!(bridge_port(&rig), other);
+    let saved = ::dig::bridge::pairing::load(&rig.dir.join("config"));
+    assert_eq!(saved.port, other);
 }

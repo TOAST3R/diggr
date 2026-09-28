@@ -27,7 +27,7 @@ use crate::widgets::{self, Skinned, SliderSprites, color};
 #[cfg(not(target_arch = "wasm32"))]
 mod digging;
 #[cfg(not(target_arch = "wasm32"))]
-pub use digging::{DigAction, DigSetup, SendMode};
+pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
 
 pub type EngineFactory = Box<dyn FnOnce() -> Result<Engine, String> + Send>;
 
@@ -1864,6 +1864,10 @@ impl WinampApp {
                 if self.dig.is_some() && ui.button("Discogs…").clicked() {
                     actions.push(Action::Dig(DigAction::OpenDialog));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.dig.is_some() && ui.button("Browser…").clicked() {
+                    actions.push(Action::Dig(DigAction::OpenBrowserDialog));
+                }
             });
 
             // "selected/total" time, Winamp style.
@@ -2638,6 +2642,8 @@ impl WinampApp {
             self.render_dialog_ui(&ctx);
             #[cfg(not(target_arch = "wasm32"))]
             self.dig_dialog_ui(&ctx);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dig_bridge_dialog_ui(&ctx);
         }
         if self.help {
             crate::help::show(&ctx, &mut self.help);

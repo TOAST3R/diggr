@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pair with the player</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main style="max-width: 520px">
+    <h1 id="title">Pair with the player</h1>
+    <div id="state" class="lcd">Checking…</div>
+
+    <h2>Pairing code</h2>
+    <p class="dim" id="how">In the player, open OPT ▸ Browser… and enter the 6-digit code it shows.</p>
+    <form id="pair" class="row">
+      <input id="code" inputmode="numeric" autocomplete="off" maxlength="7" size="8"
+             placeholder="123 456" aria-label="Pairing code">
+      <button type="submit">Pair</button>
+    </form>
+    <div id="result"></div>
+
+    <h2>Port</h2>
+    <div class="row">
+      <input id="port" type="number" min="1024" max="65535" size="6" aria-label="Port">
+      <button id="savePort">Save</button>
+    </div>
+    <p class="dim">The same port as in OPT ▸ Browser… (47800 unless you changed it).</p>
+
+    <h2>This browser</h2>
+    <button id="unpair">Forget the pairing</button>
+    <p class="dim">
+      The extension sends the player only Discogs page addresses, the chosen action, the crate
+      and the two switches. It talks to no other server.
+    </p>
+  </main>
+  <script src="pages.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
