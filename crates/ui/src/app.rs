@@ -1835,15 +1835,7 @@ impl WinampApp {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
                 }
-                let dur_w = clip
-                    .text(
-                        pos2(rr.right() - 3.0 * scale, rr.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        &dur,
-                        font.clone(),
-                        col,
-                    )
-                    .width();
+                let dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
                 let name_clip = clip.with_clip_rect(Rect::from_min_max(
                     rr.min,
                     pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
@@ -1861,7 +1853,17 @@ impl WinampApp {
                     font.clone(),
                     col,
                 );
-                let resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
+                let mut resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
+                // Everything known about the entry, built only for the row under the pointer.
+                if resp.hovered() && self.pl_drag_from.is_none() {
+                    let marks = format::DigMarks {
+                        kept,
+                        passed,
+                        wantlist_pending: pending,
+                    };
+                    let details = format::entry_details(e, marks, unix_now());
+                    resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details));
+                }
                 let menu_click = opens_context_menu(
                     resp.secondary_clicked(),
                     resp.clicked(),
@@ -1871,6 +1873,9 @@ impl WinampApp {
                     actions.push(Action::PlayEntry(e.id));
                 } else if resp.clicked() && !menu_click {
                     actions.push(Action::Select(idx, mods));
+                } else if menu_click && !shown.is_selected(e.id) {
+                    // The menu acts on the selection, which becomes the clicked entry.
+                    actions.push(Action::Select(idx, ClickMods::default()));
                 }
                 let rendering = self
                     .render_job
@@ -1888,6 +1893,23 @@ impl WinampApp {
                 egui::Popup::context_menu(&resp)
                     .open_memory(open)
                     .show(|ui| {
+                        let waiting = matches!(e.status, EntryStatus::Waiting(_));
+                        let playable = e.status.in_play_order();
+                        if ui
+                            .add_enabled(
+                                playable,
+                                egui::Button::new(if waiting { "Arm" } else { "Play" }),
+                            )
+                            .clicked()
+                        {
+                            actions.push(Action::PlayEntry(e.id));
+                            ui.close();
+                        }
+                        if ui.button("Remove").clicked() {
+                            actions.push(Action::RemoveEntry(e.id));
+                            ui.close();
+                        }
+                        ui.separator();
                         ui.menu_button("Send to crate", |ui| {
                             for c in self.crates.list() {
                                 if c.id == self.crates.shown_id() {
@@ -2379,6 +2401,14 @@ impl WinampApp {
                     self.delete_crate(id);
                 }
             }
+            Action::RemoveEntry(entry) => {
+                let p = self.crates.shown_mut();
+                if p.is_selected(entry) {
+                    self.remove_selected();
+                } else if p.remove(entry) {
+                    self.mark_shown();
+                }
+            }
             Action::SendTo(entry, to) => {
                 let shown = self.crates.shown();
                 let ids = if shown.is_selected(entry) {
@@ -2422,6 +2452,8 @@ enum Action {
     Seek(f64),
     Volume(f32),
     ToggleWaveform,
+    /// Remove an entry, or the whole selection when it is part of it (the entry menu).
+    RemoveEntry(EntryId),
     Shuffle,
     Repeat,
     ToggleEq,
@@ -2532,20 +2564,122 @@ fn crate_menu_label(name: &str, shown: bool, playing: bool, unreadable: bool) ->
 
 /// Colour and right-hand text of a playlist row: the duration, or a waiting or unavailable
 /// entry's note, dimmed. Only files that couldn't be opened are drawn in the error colour.
+/// Seconds since the Unix epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// An entry's tooltip: its full name, then one labelled line per known detail.
+fn entry_tooltip(ui: &mut Ui, details: &[(&str, String)]) {
+    let mut lines = details.iter();
+    if let Some((_, name)) = lines.next() {
+        ui.label(egui::RichText::new(name).strong());
+    }
+    egui::Grid::new("entry_details")
+        .num_columns(2)
+        .spacing(vec2(10.0, 2.0))
+        .show(ui, |ui| {
+            for (label, value) in lines {
+                ui.label(egui::RichText::new(*label).weak());
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+}
+
+/// What a playlist row shows where its duration goes.
+#[derive(Debug, Clone, PartialEq)]
+enum RowEnd {
+    /// The duration (or nothing while it isn't known).
+    Text(String),
+    /// A status icon (a skin sprite, tinted with the row's colour).
+    Icon(&'static str),
+    /// A download's progress, in percent.
+    Bar(u8),
+}
+
+/// Width of the download bar, in skin pixels.
+const ROW_BAR_W: f32 = 30.0;
+
 fn row_look(
     e: &crate::playlist::Entry,
     current: bool,
     colors: &crate::skin::Colors,
-) -> (Color32, String) {
+) -> (Color32, RowEnd) {
+    use crate::playlist::{UnavailableKind as U, WaitKind as W};
     let base = if current {
         colors.pl_current
     } else {
         colors.pl_text
     };
-    match (&e.status, e.status.note()) {
-        (EntryStatus::Failed, _) => (Color32::from_rgb(170, 60, 60), duration_text(e)),
-        (_, Some(note)) => (lerp_color(base, colors.pl_bg, 0.55), note.to_owned()),
-        _ => (color(base), duration_text(e)),
+    let dim = lerp_color(base, colors.pl_bg, 0.55);
+    match &e.status {
+        EntryStatus::Failed => (
+            Color32::from_rgb(170, 60, 60),
+            RowEnd::Text(duration_text(e)),
+        ),
+        EntryStatus::Waiting(w) => (
+            dim,
+            match w {
+                W::Listed => RowEnd::Icon("st_listed"),
+                W::Queued => RowEnd::Icon("st_queued"),
+                W::Downloading(p) => RowEnd::Bar(*p),
+                W::NeedsYtDlp => RowEnd::Icon("st_needs_tool"),
+                W::Other(_) => RowEnd::Icon("st_other"),
+            },
+        ),
+        EntryStatus::Unavailable(u) => (
+            dim,
+            RowEnd::Icon(match u {
+                U::NoClip | U::ClipFailed => "st_unavailable",
+                U::Other(_) => "st_other",
+            }),
+        ),
+        _ => (color(base), RowEnd::Text(duration_text(e))),
+    }
+}
+
+/// Draws a row's end (duration, icon or download bar) against the right of `row`, in `col`;
+/// returns its width in points.
+fn draw_row_end(
+    sk: &Skinned,
+    painter: &egui::Painter,
+    row: Rect,
+    end: &RowEnd,
+    font: &egui::FontId,
+    col: Color32,
+) -> f32 {
+    let s = sk.scale;
+    let right = row.right() - 3.0 * s;
+    match end {
+        RowEnd::Text(t) => painter
+            .text(
+                pos2(right, row.center().y),
+                egui::Align2::RIGHT_CENTER,
+                t,
+                font.clone(),
+                col,
+            )
+            .width(),
+        RowEnd::Icon(name) => {
+            let size = 9.0 * s;
+            let r = Rect::from_min_size(
+                pos2(right - size, row.center().y - size / 2.0),
+                vec2(size, size),
+            );
+            sk.sprite_tinted(name, r, col);
+            size
+        }
+        RowEnd::Bar(pct) => {
+            let (w, h) = (ROW_BAR_W * s, 3.0 * s);
+            let track = Rect::from_min_size(pos2(right - w, row.center().y - h / 2.0), vec2(w, h));
+            painter.rect_filled(track, 0.0, col.gamma_multiply(0.35));
+            let done = w * (*pct).min(100) as f32 / 100.0;
+            painter.rect_filled(Rect::from_min_size(track.min, vec2(done, h)), 0.0, col);
+            w
+        }
     }
 }
 
@@ -3596,6 +3730,22 @@ mod headless_tests {
         acc
     }
 
+    /// Filled rectangles drawn, with their colour.
+    fn rects(out: &egui::FullOutput) -> Vec<(Rect, Color32)> {
+        fn walk(shape: &egui::Shape, acc: &mut Vec<(Rect, Color32)>) {
+            match shape {
+                egui::Shape::Rect(r) => acc.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        for s in &out.shapes {
+            walk(&s.shape, &mut acc);
+        }
+        acc
+    }
+
     fn text_list(out: &egui::FullOutput) -> Vec<String> {
         texts(out).into_iter().map(|t| t.text).collect()
     }
@@ -3862,13 +4012,59 @@ mod headless_tests {
                 .unwrap_or_else(|| panic!("{text:?} not drawn: {:?}", text_list(&out)))
                 .color
         };
-        assert_eq!(color_of("downloading 40%"), Some(dim));
         assert_eq!(color_of("3. Nightcraft: Glasshouse"), Some(dim));
-        assert_eq!(color_of("no clip"), Some(dim));
         assert_eq!(color_of("4. Nightcraft: B-side"), Some(dim));
+        // Their states are icons now, with the words in the tooltip.
+        assert!(!shows(&out, "downloading 40%") && !shows(&out, "no clip"));
+        // The download is a bar: 40% of its 30 pixels filled, in the dimmed colour.
+        let row = Rect::from_min_size(rig.row(2) - vec2(60.0, 6.5), vec2(243.0, 13.0));
+        let filled: Vec<Rect> = rects(&out)
+            .into_iter()
+            .filter(|(r, c)| *c == dim && row.contains_rect(*r) && (r.height() - 3.0).abs() < 0.01)
+            .map(|(r, _)| r)
+            .collect();
+        assert_eq!(filled.len(), 1, "{filled:?}");
+        assert!((filled[0].width() - 12.0).abs() < 0.01, "{filled:?}");
         assert_eq!(color_of("2. garbage"), Some(Color32::from_rgb(170, 60, 60)));
         let normal = color_of("1. M83: Midnight_City");
         assert!(normal == Some(color(colors.pl_text)) || normal == Some(color(colors.pl_current)));
+    }
+
+    #[test]
+    fn hovering_an_entry_shows_everything_known_about_it() {
+        let mut rig = Rig::new("tooltip", Vec::new(), |_| {});
+        rig.ctx.global_style_mut(|s| {
+            s.interaction.tooltip_delay = 0.0;
+            s.interaction.tooltip_grace_time = 0.0;
+        });
+        rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(Origin {
+                label: "Lowtide Tapes".into(),
+                catno: "LT-012".into(),
+                position: "A1".into(),
+                ..Default::default()
+            }),
+            "downloading 40%",
+        );
+        let at = rig.row(0);
+        let mut out = rig.frame(vec![Event::PointerMoved(at)]);
+        for _ in 0..10 {
+            if shows(&out, "Lowtide Tapes") {
+                break;
+            }
+            out = rig.frame(vec![Event::PointerMoved(at)]);
+        }
+        for t in [
+            "(LT-012) Nightcraft: Glasshouse",
+            "Lowtide Tapes",
+            "A1",
+            "downloading 40%",
+        ] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
     }
 
     #[test]
@@ -4224,6 +4420,60 @@ mod headless_tests {
         rig.click(rig.title_bar());
         rig.click_text("Delete crate…");
         assert_eq!(rig.app.crates.list().len(), 1);
+    }
+
+    #[test]
+    fn remove_in_the_entry_menu_takes_the_selection_or_just_the_clicked_entry() {
+        let mut rig = Rig::new("menu-remove", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(12);
+        rig.frame(Vec::new());
+        // Entries 3 to 6 selected; right-click entry 4: all four go.
+        rig.click(rig.row(2));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(rig.row(5));
+        rig.mods = Modifiers::NONE;
+        rig.click_with(rig.row(3), PointerButton::Secondary);
+        rig.click_text("Remove");
+        let left = |r: &Rig| -> Vec<EntryId> {
+            r.app
+                .crates
+                .shown()
+                .entries()
+                .iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        let mut expected: Vec<EntryId> = ids.clone();
+        expected.drain(2..6);
+        assert_eq!(left(&rig), expected);
+
+        // Entries 1 and 2 selected; right-click entry 6 (outside): only it goes, and it was
+        // selected first.
+        rig.click(rig.row(0));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(rig.row(1));
+        rig.mods = Modifiers::NONE;
+        rig.click_with(rig.row(5), PointerButton::Secondary);
+        assert_eq!(rig.app.crates.shown().selected_ids(), [expected[5]]);
+        rig.click_text("Remove");
+        expected.remove(5);
+        assert_eq!(left(&rig), expected);
+    }
+
+    #[test]
+    fn arm_in_the_entry_menu_arms_a_waiting_entry() {
+        let mut rig = Rig::new("menu-arm", Vec::new(), |_| {});
+        let waiting = rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            None,
+            "downloading 40%",
+        );
+        rig.frame(Vec::new());
+        rig.click_with(rig.row(0), PointerButton::Secondary);
+        rig.click_text("Arm");
+        assert_eq!(rig.app.armed, Some((PLAYLIST, waiting)));
     }
 
     #[test]

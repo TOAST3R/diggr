@@ -167,6 +167,11 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "pl_opts",
     "pl_opts_p",
     "pl_scroll_thumb",
+    "st_listed",
+    "st_queued",
+    "st_needs_tool",
+    "st_unavailable",
+    "st_other",
     "pl_resize",
 ];
 

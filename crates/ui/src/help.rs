@@ -106,7 +106,17 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Entry: right-click",
-                "Send to crate (a crate or a new one); keep, pass, for-sale page",
+                "play or arm, remove, Send to crate (the selection, when the entry is in it); \
+                 keep, pass, for-sale page, open or copy its Discogs link",
+            ),
+            (
+                "Entry: hover",
+                "everything known about it: label, cat#, side, year, BPM, status, for sale",
+            ),
+            (
+                "Entry status icons",
+                "hollow dot: listed · clock: queued · bar: downloading · warning sign: needs \
+                 yt-dlp · barred circle: no clip or clip failed",
             ),
             ("Waveform: click / drag", "seek"),
             ("Waveform: scroll wheel", "zoom 1–64 bars"),

@@ -897,6 +897,67 @@ pub fn generate() -> (RgbaImage, SkinDef) {
 
     b.sprite("pl_title_fill", 1, 20, |c, x, y| title_fill(c, x, y, 20));
 
+    // Playlist status icons, white: the app tints them with the row's colour.
+    const W: C = rgb(255, 255, 255);
+    let ring = |c: &mut Canvas, x: i32, y: i32| {
+        for (dx, dy) in [
+            (3, 0),
+            (4, 0),
+            (5, 0),
+            (2, 1),
+            (6, 1),
+            (1, 2),
+            (7, 2),
+            (0, 3),
+            (8, 3),
+            (0, 4),
+            (8, 4),
+            (0, 5),
+            (8, 5),
+            (1, 6),
+            (7, 6),
+            (2, 7),
+            (6, 7),
+            (3, 8),
+            (4, 8),
+            (5, 8),
+        ] {
+            c.px(x + dx, y + dy, W);
+        }
+    };
+    // Listed: a hollow dot.
+    b.sprite("st_listed", 9, 9, |c, x, y| ring(c, x, y));
+    // Queued: a clock.
+    b.sprite("st_queued", 9, 9, |c, x, y| {
+        ring(c, x, y);
+        c.fill(x + 4, y + 2, 1, 3, W);
+        c.fill(x + 5, y + 4, 2, 1, W);
+    });
+    // Needs yt-dlp: a warning sign.
+    b.sprite("st_needs_tool", 9, 9, |c, x, y| {
+        for row in 0..9 {
+            let half = row / 2;
+            c.px(x + 4 - half, y + row, W);
+            c.px(x + 4 + half, y + row, W);
+        }
+        c.fill(x, y + 8, 9, 1, W);
+        c.fill(x + 4, y + 4, 1, 2, W);
+        c.px(x + 4, y + 7, W);
+    });
+    // Unavailable: a barred circle.
+    b.sprite("st_unavailable", 9, 9, |c, x, y| {
+        ring(c, x, y);
+        for i in 2..7 {
+            c.px(x + i, y + 8 - i, W);
+        }
+    });
+    // Anything else: three dots.
+    b.sprite("st_other", 9, 9, |c, x, y| {
+        for dx in [1, 4, 7] {
+            c.px(x + dx, y + 4, W);
+        }
+    });
+
     // ---- font -----------------------------------------------------------------------------
     let per_row: u16 = 32;
     let rows = (FONT_CHARS.chars().count() as u16).div_ceil(per_row);

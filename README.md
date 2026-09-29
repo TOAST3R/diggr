@@ -123,8 +123,8 @@ and Home/End jump), and Enter plays the entry under it.
   - **Playlist** is the scratch crate. It always exists, can be cleared but not renamed or
     deleted, and is the only crate that Eject and command-line files replace. Your playlist
     from earlier versions becomes this crate on the first launch.
-  - Right-click entries for **Send to crate**: it copies the selection, in order, to another
-    crate or a new one, skipping entries that crate already holds.
+  - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
+    another crate or a new one, skipping entries that crate already holds.
 - **Playlist window:**
   - entries read `(catno) Artist: Title (124 BPM)`. The catalog number appears for entries from
     Discogs. The BPM appears once the track has been analysed (when a preview is prepared, when
@@ -139,11 +139,19 @@ and Home/End jump), and Enter plays the entry under it.
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
   - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
-  - Entries can wait for their audio (dimmed, with a status such as "downloading 40%" where
-    the duration goes) or be unavailable (dimmed, with the reason). Both are skipped by next,
-    previous and shuffle. Double-clicking a waiting entry arms it: the current track plays on,
-    the main window says it is waiting, and the entry starts as soon as its audio arrives. Only
-    files that can't be opened are drawn in red.
+  - Entries can wait for their audio or be unavailable. Both are dimmed, with an icon where the
+    duration goes: a hollow dot (listed), a clock (queued), a bar that fills as it downloads, a
+    warning sign (needs yt-dlp), or a barred circle (no clip, or the clip failed). Both are
+    skipped by next, previous and shuffle. Double-clicking a waiting entry arms it: the current
+    track plays on, the main window says it is waiting, and the entry starts as soon as its
+    audio arrives. Only files that can't be opened are drawn in red.
+  - Hover an entry to see everything known about it: its full name, label, catalog number,
+    side, year, BPM, duration, status, kept or passed, and what's for sale (with how long ago
+    that was fetched). A local file shows its path.
+  - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Send to
+    crate**, and for a Discogs entry Keep, Pass, Open for-sale page, **Open release on Discogs**
+    and **Copy Discogs link**. Remove and Send to crate act on the whole selection when the
+    entry is part of it; otherwise the entry you clicked becomes the selection.
 - **Main window:**
   - click the time to switch between elapsed and remaining;
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
@@ -618,7 +626,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 462 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 471 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

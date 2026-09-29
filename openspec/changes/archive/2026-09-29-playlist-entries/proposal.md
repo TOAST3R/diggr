@@ -8,12 +8,11 @@ In a dig crate, the duration column is mostly words: "listed", "downloading 40%"
   - listed: a hollow dot;
   - queued: a clock;
   - downloading: a mini progress bar;
-  - preparing: a spinner dot;
   - needs yt-dlp: a warning sign;
   - unavailable ("no clip", "clip failed"): a barred circle.
 
   Playable entries keep their duration. Decode failures keep the error colour. The reason text moves to the tooltip.
-- **Structured status:** waiting and unavailable reasons become an enum, not free text. Saved crates holding the old text still load (known strings map to their kind, anything else is kept as text).
+- **Structured status:** waiting and unavailable reasons become an enum, not free text. Crates keep storing the wording, which reads back to its kind, so old and new crate files match (anything unknown is kept as text).
 - **Hover tooltip:** hovering an entry shows everything known about it:
   - the full name, even when the row truncates it;
   - label, catalog number, side and year;
