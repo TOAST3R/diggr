@@ -19,6 +19,7 @@ var WR = (() => {
     [new RegExp(`^/${LANG}label/\\d+`), "Label"],
     [new RegExp(`^/${LANG}lists/(?:[^/]+/)?\\d+`), "List"],
     [new RegExp(`^/${LANG}user/[^/]+/wantlist`), "Wantlist"],
+    [new RegExp(`^/${LANG}user/[^/]+/collection`), "Collection"],
     [new RegExp(`^/${LANG}(?:shop|sell)/item/\\d+`), "Listing"],
   ];
 
@@ -49,10 +50,11 @@ var WR = (() => {
       LINK_PATTERNS.push(`${host}/${shop}/*`, `${host}/*/${shop}/*`);
     }
     LINK_PATTERNS.push(`${host}/wantlist*`, `${host}/*/wantlist*`);
+    LINK_PATTERNS.push(`${host}/user/*/collection*`, `${host}/*/user/*/collection*`);
   }
 
   const SUPPORTED =
-    "a release, master release, artist, label, wantlist, list or marketplace item";
+    "a release, master release, artist, label, wantlist, collection, list or marketplace item";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -63,6 +65,15 @@ var WR = (() => {
    * result fits the 40-character limit. Empty when nothing sensible is left.
    */
   function suggestName(title, kind, address) {
+    if (kind === "Collection") {
+      let m = null;
+      try {
+        m = new URL(address).pathname.match(/\/user\/([^/]+)\/collection/);
+      } catch {
+        // no address: no user
+      }
+      return m ? fit(`Collection: ${decodeURIComponent(m[1])}`) : "";
+    }
     if (kind === "Wantlist") {
       let user = null;
       try {
@@ -79,6 +90,17 @@ var WR = (() => {
     t = t.replace(/\s+[-–—]\s*Discogs\s*$/i, ""); // older "… - Discogs"
     t = t.replace(/\s+for sale\b.*$/i, ""); // marketplace items
     t = t.replace(/\s*\(\d{4}[^)]*\)\s*$/, ""); // older "(2015, Vinyl)"
+    // Release pages add the format: "Artist – Title – Vinyl, 12", EP". Artist and title are
+    // the first two parts (Discogs separates them with a long dash; titles use "-").
+    if (kind === "Release" || kind === "Master" || kind === "Listing") {
+      const parts = t.split(/\s+[–—]\s+/);
+      if (parts.length > 2) t = parts.slice(0, 2).join(" – ");
+    }
+    // …and a format after a plain "-" too ("Artist - Title - Vinyl").
+    t = t.replace(
+      /\s+[-–—]\s+(?:Vinyl|LP|CD|CDr|Cassette|Files?|FLAC|MP3|WAV|ALAC|DVD|Box Set|Shellac|Flexi-disc|Lathe Cut|\d+")\b.*$/i,
+      "",
+    );
     t = t.replace(/\*/g, "").replace(/\s*\(\d+\)/g, "");
     t = t.replace(/\s*[–—]\s*/g, " - ").replace(/\s+/g, " ").trim();
     return fit(t);

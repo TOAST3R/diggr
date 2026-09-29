@@ -1,5 +1,6 @@
 // On discogs.com: a button next to the page's title (floating in a corner when there is none)
-// with Play in ‹App›, Enqueue in ‹App›, Send to crate and the two switches. Only the address,
+// with Play in ‹App›, Enqueue in ‹App›, Send to crate (with a New crate… field) and the two
+// switches. Only the address,
 // the title's position and the document title (for New crate…'s suggested name) are read from
 // the page; everything goes to the player through the service worker.
 
@@ -35,6 +36,18 @@
       box-shadow: 0 6px 18px rgba(0,0,0,.45);
     }
     .toast.bad { color: #ff8a80; }
+    .owned { display: block; margin-top: 3px; color: #2fe45a; font-size: 11px; }
+    .owned.dim { color: #8a8aa0; }
+    .field { display: flex; gap: 6px; padding: 4px 12px 2px 24px; }
+    input.name {
+      flex: 1; min-width: 0; background: #0f0f16; color: #d6f5dc; border: 1px solid #4a4a5e;
+      border-radius: 3px; padding: 4px 6px; outline: none;
+    }
+    input.name:focus { border-color: #2fe45a; }
+    button.create {
+      background: #2a3a2e; color: #2fe45a; border: 1px solid #4a4a5e; border-radius: 3px;
+      padding: 3px 8px; cursor: pointer;
+    }
   `;
 
   let host = null; // the shadow host, while a button is shown
@@ -117,12 +130,43 @@
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
     place();
+    if (kind === "Release" || kind === "Master" || kind === "Listing") {
+      showOwned(wrap, location.href, true);
+    }
     main.addEventListener("click", (e) => {
       e.stopPropagation();
       const open = wrap.querySelector(".menu");
       if (open) open.remove();
       else openMenu(wrap);
     });
+  }
+
+  /**
+   * "✓ In your collection" under the button when the player says the page's record is owned
+   * (only the address is sent). A marketplace item the player doesn't know yet is "checking":
+   * it is asked once more, 3 s later.
+   */
+  async function showOwned(wrap, href, retry) {
+    const r = await ask({ type: "owned", url: href });
+    if (location.href !== href || !wrap.isConnected) return;
+    const owned = r.ok ? r.json.owned : null;
+    if (owned === "checking" && retry) {
+      setTimeout(() => showOwned(wrap, href, false), 3000);
+      return;
+    }
+    let text = null;
+    let dim = false;
+    if (owned === "no-token") {
+      text = `Add a Discogs token in ${appName} (OPT ▸ Discogs…) to see records you own`;
+      dim = true;
+    }
+    if (owned === "this") text = "✓ In your collection";
+    if (owned === "another") {
+      const what = [r.json.catno, r.json.year].filter(Boolean).join(", ");
+      text = `✓ Another pressing in your collection${what ? ` (${what})` : ""}`;
+    }
+    wrap.querySelector(".owned")?.remove();
+    if (text) wrap.append(el("div", { className: dim ? "owned dim" : "owned", textContent: text }));
   }
 
   function closeMenus() {
@@ -174,22 +218,49 @@
       const mark = c.playing ? " ▶" : c.shown ? " ●" : "";
       crates.append(item(c.name + mark, () => sendPage("crate", c.name), "item sub"));
     }
-    crates.append(
-      item(
-        "New crate…",
-        () => {
-          const kind = WR.pageKind(location.href);
-          const suggested = WR.suggestName(document.title, kind, location.href);
-          const name = (prompt(`New crate in ${appName}:`, suggested) || "").trim();
-          if (!name) return;
-          if ([...name].length > WR.MAX_NAME) {
-            return toast(`A crate name needs 1 to ${WR.MAX_NAME} characters`, false);
-          }
-          sendPage("crate", name);
-        },
-        "item sub",
-      ),
-    );
+    const newCrate = item("New crate…", () => newCrate.replaceWith(newCrateField()), "item sub");
+    crates.append(newCrate);
+  }
+
+  /**
+   * New crate…: a field in the menu holding the suggested name as real, editable text (the
+   * cursor at its end). Enter or Create sends; Esc closes the menu.
+   */
+  function newCrateField() {
+    const kind = WR.pageKind(location.href);
+    const input = el("input", {
+      type: "text",
+      className: "name",
+      value: WR.suggestName(document.title, kind, location.href),
+      maxLength: 200,
+      spellcheck: false,
+    });
+    const hint = el("div", { className: "note sub" });
+    const create = el("button", { className: "create", textContent: "Create" });
+    const submit = () => {
+      const name = input.value.trim();
+      const len = [...name].length;
+      if (len === 0 || len > WR.MAX_NAME) {
+        hint.textContent = `A crate name needs 1 to ${WR.MAX_NAME} characters (now ${len})`;
+        input.focus();
+        return;
+      }
+      sendPage("crate", name);
+    };
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // Discogs' own shortcuts stay out of the typing
+      if (e.key === "Enter") submit();
+      if (e.key === "Escape") closeMenus();
+    });
+    input.addEventListener("input", () => (hint.textContent = ""));
+    create.addEventListener("click", submit);
+    const row = el("div", { className: "field" }, input, create);
+    const box = el("div", {}, row, hint);
+    setTimeout(() => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return box;
   }
 
   async function sendPage(mode, crate) {

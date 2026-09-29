@@ -175,6 +175,33 @@ fn play_mode_names_a_new_crate_after_the_page_and_plays_its_first_preview() {
 }
 
 #[test]
+fn a_send_that_creates_a_crate_shows_it_and_one_to_an_existing_crate_does_not() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-new-crate-shown", &fakes, |_| {});
+    rig.app.settings.show_playlist = false;
+    rig.app.dig_send(
+        url::parse(RELEASE).unwrap(),
+        SendMode::Crate("Friday".into()),
+        None,
+    );
+    let friday = rig.app.crates.find("Friday").unwrap();
+    assert_eq!(
+        rig.app.crates.shown_id(),
+        friday,
+        "the new crate is on screen"
+    );
+    assert!(rig.app.settings.show_playlist, "with the playlist open");
+    // Sending again to it, while another crate is shown, leaves the view alone.
+    rig.app.show_crate(PLAYLIST);
+    rig.app.dig_send(
+        url::parse(RELEASE).unwrap(),
+        SendMode::Crate("Friday".into()),
+        None,
+    );
+    assert_eq!(rig.app.crates.shown_id(), PLAYLIST);
+}
+
+#[test]
 fn a_send_for_a_missing_page_takes_its_new_crate_away_again() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-missing", &fakes, |_| {});
@@ -765,4 +792,184 @@ fn a_taken_port_leaves_the_player_working_and_says_so() {
     assert_eq!(bridge_port(&rig), other);
     let saved = ::dig::bridge::pairing::load(&rig.dir.join("config"));
     assert_eq!(saved.port, other);
+}
+
+// ---- the collection -------------------------------------------------------------------
+
+const COLLECTION_PAGE: &str =
+    "/users/digger/collection/folders/0/releases?sort=added&sort_order=desc&page=1&per_page=100";
+
+/// The user owns release 1001 (the Glasshouse EP).
+fn owns_the_release(fakes: &Fakes) {
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1001, "instance_id": 1,
+                          "basic_information": {"id": 1001, "master_id": 0, "year": 1994,
+                                                "labels": [{"catno": "LT-001"}]}}]}"#,
+    );
+}
+
+fn collection_requests(fakes: &Fakes) -> usize {
+    fakes
+        .transport
+        .paths()
+        .iter()
+        .filter(|p| p.contains("/collection/"))
+        .count()
+}
+
+#[test]
+fn owned_records_are_marked_and_keeping_one_asks_first() {
+    let fakes = Fakes::new();
+    owns_the_release(&fakes);
+    let mut rig = rig("dig-owned", &fakes, with_token);
+    let c = play_release(&mut rig);
+    rig.until(
+        |r| r.app.dig.as_ref().is_some_and(|d| d.collection.is_some()),
+        "the collection is synced",
+    );
+    assert_eq!(collection_requests(&fakes), 1);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "OWNED"), "{:?}", text_list(&out));
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
+    rig.until(
+        |r| {
+            let out = r.frame(Vec::new());
+            shows(&out, "1 record, updated just now") && shows(&out, "Refresh collection")
+        },
+        "OPT ▸ Discogs… shows the collection",
+    );
+    rig.click_text("Open that page");
+    assert!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .contains(&"https://www.discogs.com/settings/developers".to_owned()),
+        "the token page opens"
+    );
+    rig.app.dig.as_mut().unwrap().dialog = None;
+    let first = rig.ids(c)[0];
+    let key_of_first = || {
+        let p = rig.app.crates.get(c).unwrap();
+        super::super::digging::key_of(p.get(first).unwrap())
+    };
+    let k = key_of_first();
+
+    // Y asks; Esc keeps nothing and sends nothing.
+    key(&mut rig, Key::Y);
+    assert!(rig.app.dig.as_ref().unwrap().confirm_keep.is_some());
+    assert!(shows(&rig.frame(Vec::new()), "Already in your collection"));
+    key(&mut rig, Key::Escape);
+    assert!(!memory(&rig).is_kept(&k));
+    assert!(fakes.changes().is_empty(), "no wantlist change");
+
+    // Y again, Enter: kept, and on the wantlist.
+    key(&mut rig, Key::Y);
+    key(&mut rig, Key::Enter);
+    assert!(memory(&rig).is_kept(&k));
+    rig.until(|_| !fakes.changes().is_empty(), "the wantlist is changed");
+}
+
+#[test]
+fn saving_a_token_makes_the_collection_a_crate_on_screen_once() {
+    let fakes = Fakes::new();
+    // digger owns releases 1001 and 1003.
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 2}, "releases": [{"id": 1001, "instance_id": 11, "basic_information": {"id": 1001, "master_id": 0, "title": "Glasshouse EP", "year": 1994, "formats": [{"name": "Vinyl", "qty": "1"}], "labels": [{"name": "Lowtide Tapes", "catno": "LT-012", "id": 12345}], "artists": [{"name": "Nightcraft", "anv": "", "join": "", "id": 4242}]}}, {"id": 1003, "instance_id": 12, "basic_information": {"id": 1003, "master_id": 0, "title": "Undertow", "year": 1995, "formats": [{"name": "Vinyl", "qty": "1"}], "labels": [{"name": "Lowtide Tapes", "catno": "LT-013", "id": 12345}], "artists": [{"name": "Nightcraft", "anv": "", "join": "", "id": 4242}]}}]}"#,
+    );
+    let mut rig = rig("dig-token-collection", &fakes, |_| {});
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Check and save"),
+        "the dialog shows",
+    );
+    let out = rig.frame(Vec::new());
+    let field = texts(&out)
+        .into_iter()
+        .find(|t| t.text == "Personal access token")
+        .unwrap()
+        .rect
+        .center();
+    rig.click(field);
+    rig.frame(vec![Event::Text("secrettoken1234".into())]);
+    rig.click_text("Check and save");
+    rig.until(
+        |r| r.app.crates.find("Collection: digger").is_some(),
+        "the collection crate is made",
+    );
+    let c = rig.app.crates.find("Collection: digger").unwrap();
+    assert_eq!(rig.app.crates.shown_id(), c, "and shown");
+    rig.until(
+        |r| r.app.crates.get(c).is_some_and(|p| p.len() >= 2),
+        "its records",
+    );
+    // No OWNED badge inside it, though every record is owned.
+    let cache = rig.dir.join("cache");
+    std::fs::write(
+        cache.join(::dig::collection::FILE),
+        r#"(username: "digger", fetched_at: 0, count: 1, instances: [11],
+            releases: {1001: (master: None, catno: "LT-012", year: Some(1994))})"#,
+    )
+    .unwrap();
+    rig.app.dig.as_mut().unwrap().collection =
+        ::dig::collection::Collection::load(&cache).map(Arc::new);
+    assert!(!shows(&rig.frame(Vec::new()), "OWNED"));
+    // Saving a token again doesn't make a second one.
+    rig.app.dig_token_checked(
+        "secrettoken1234".into(),
+        Ok(::dig::discogs::client::Identity {
+            username: "digger".into(),
+            currency: "EUR".into(),
+        }),
+    );
+    let n = rig
+        .app
+        .crates
+        .list()
+        .iter()
+        .filter(|i| i.name.starts_with("Collection"))
+        .count();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn no_collection_is_asked_for_without_a_token_or_a_crate_from_discogs() {
+    // No token: a dig marks nothing and never asks.
+    let fakes = Fakes::new();
+    owns_the_release(&fakes);
+    let mut rig = rig("dig-owned-no-token", &fakes, |_| {});
+    play_release(&mut rig);
+    for _ in 0..50 {
+        rig.pump();
+    }
+    assert_eq!(collection_requests(&fakes), 0);
+    assert!(
+        message(&rig).contains("Add a Discogs token"),
+        "says what's missing: {}",
+        message(&rig)
+    );
+    assert!(!shows(&rig.frame(Vec::new()), "OWNED"));
+
+    // A token, but only local files on screen: nothing to mark, nothing asked.
+    let fakes = Fakes::new();
+    owns_the_release(&fakes);
+    let f = fakes.clone();
+    let mut rig = Rig::with_dig(
+        "dig-owned-local",
+        vec![fixture("tone.wav")],
+        with_token,
+        move |dir| Some(f.setup(dir)),
+    );
+    for _ in 0..50 {
+        rig.pump();
+    }
+    assert_eq!(collection_requests(&fakes), 0);
 }

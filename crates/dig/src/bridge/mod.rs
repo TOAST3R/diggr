@@ -22,7 +22,9 @@ use platform::{Priority, Spawner};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::discogs::url::{self, Page};
+use crate::collection::{Collection, Owned};
+use crate::discogs::cache::{DiskCache, Kind};
+use crate::discogs::url::{self, Page, PageKind};
 use crate::jobs::Filters;
 pub use pairing::{DEFAULT_PORT, PairError, Pairing};
 
@@ -54,6 +56,9 @@ pub enum BridgeCommand {
     },
     /// A browser was paired.
     Paired,
+    /// The browser asked about a marketplace item whose release isn't known yet: look it up
+    /// (once; it is cached for good).
+    ResolveShopItem(u64),
 }
 
 /// What `/v1/crates` and `/v1/status` answer, kept up to date by the UI.
@@ -90,13 +95,29 @@ pub struct SendState {
 pub struct Shared {
     pub pairing: Mutex<Pairing>,
     pub snapshot: ArcSwap<Snapshot>,
+    /// The user's collection, for `/v1/owned` (`None`: no token, or none fetched yet).
+    pub collection: ArcSwap<Option<Arc<Collection>>>,
+    /// A Discogs token is set (without one, `/v1/owned` says so, so the browser can tell the
+    /// user what's missing).
+    pub has_token: std::sync::atomic::AtomicBool,
+    /// Discogs data already fetched (a release's master, a marketplace item's release), read
+    /// for `/v1/owned` without any request.
+    cache: DiskCache,
 }
 
 impl Shared {
     pub fn new(pairing: Pairing) -> Arc<Self> {
+        Self::with_cache(pairing, None)
+    }
+
+    /// `cache_root` is the app's cache folder (where the Discogs responses are).
+    pub fn with_cache(pairing: Pairing, cache_root: Option<&std::path::Path>) -> Arc<Self> {
         Arc::new(Self {
             pairing: Mutex::new(pairing),
             snapshot: ArcSwap::from_pointee(Snapshot::default()),
+            collection: ArcSwap::from_pointee(None),
+            has_token: std::sync::atomic::AtomicBool::new(false),
+            cache: DiskCache::new(cache_root),
         })
     }
 
@@ -254,6 +275,7 @@ fn answer(
         (Get, "/v1/crates") => "crates",
         (Get, "/v1/status") => "status",
         (Post, "/v1/send") => "send",
+        (Post, "/v1/owned") => "owned",
         _ => return error(404, "not found"),
     };
     if req.body_length().is_some_and(|n| n > MAX_BODY) {
@@ -306,8 +328,71 @@ fn answer(
                 None,
             )
         }
+        "owned" => owned(&body, shared),
         _ => send(&body, shared),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedBody {
+    url: String,
+}
+
+/// Is the page's record in the user's collection? Answered from the shared collection and
+/// the disk cache, never with a request to Discogs; a marketplace item whose release isn't
+/// known yet is "checking" (the app looks it up once) until it is.
+fn owned(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
+    let Ok(b) = serde_json::from_slice::<OwnedBody>(body) else {
+        return error(422, "invalid body");
+    };
+    let Ok(page) = url::parse(&b.url) else {
+        return error(422, "unsupported");
+    };
+    let answer = |v: Value| (200, v, None);
+    if !shared.has_token.load(std::sync::atomic::Ordering::Relaxed) {
+        return answer(json!({ "owned": "no-token" }));
+    }
+    let collection = shared.collection.load();
+    let Some(c) = collection.as_ref().as_ref() else {
+        return answer(json!({ "owned": "unknown" }));
+    };
+    let (release, master) = match page.kind {
+        PageKind::Release(id) => (Some(id), master_of(&shared.cache, id)),
+        PageKind::Master(id) => (None, Some(id)),
+        PageKind::ShopItem(id) => {
+            let release = shared
+                .cache
+                .get(Kind::ShopItem, &id.to_string())
+                .and_then(|c| serde_json::from_str::<Value>(&c.body).ok())
+                .and_then(|v| v["release"]["id"].as_u64());
+            match release {
+                Some(r) => (Some(r), master_of(&shared.cache, r)),
+                None => {
+                    return (
+                        200,
+                        json!({ "owned": "checking" }),
+                        Some(BridgeCommand::ResolveShopItem(id)),
+                    );
+                }
+            }
+        }
+        _ => return answer(json!({ "owned": "unknown" })),
+    };
+    answer(match c.owned(release, master) {
+        Some(Owned::ThisPressing) => json!({ "owned": "this" }),
+        Some(Owned::Another { catno, year }) => {
+            json!({ "owned": "another", "catno": catno, "year": year })
+        }
+        None => json!({ "owned": "no" }),
+    })
+}
+
+/// A release's master, when its data was fetched before (while digging).
+fn master_of(cache: &DiskCache, release: u64) -> Option<u64> {
+    let c = cache.get(Kind::Release, &release.to_string())?;
+    let v: Value = serde_json::from_str(&c.body).ok()?;
+    v["master_id"].as_u64().filter(|&m| m > 0)
 }
 
 fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {

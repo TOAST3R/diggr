@@ -12,6 +12,7 @@
 pub mod bridge;
 pub mod browser;
 pub mod clock;
+pub mod collection;
 pub mod config;
 pub mod discogs;
 pub mod intake;

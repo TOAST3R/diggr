@@ -211,7 +211,8 @@ on screen as previews. They're the clips the page links to, fetched with yt-dlp 
 ahead of what plays. Other pasted text is ignored.
 
 - **Pages:** a label, an artist (their own and remix credits, oldest first), a release, a
-  master, a user's wantlist, a list, or a marketplace item (`/shop/item/…` or `/sell/item/…`),
+  master, a user's wantlist or collection (`/user/‹name›/collection`), a list, or a marketplace
+  item (`/shop/item/…` or `/sell/item/…`),
   which is dug as the release it sells: one lookup, remembered for good. Addresses with or
   without a language prefix, the name part, a query or a fragment all work. Any other Discogs
   page shows which ones do.
@@ -231,12 +232,29 @@ ahead of what plays. Other pasted text is ignored.
   `I` opens the release's for-sale page in your browser. A Discogs entry's title line shows its
   catalog number and BPM, then its side, year and what's for sale (`(LT-012) Nightcraft:
   Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00`). The entry menu (right-click) has Keep, Pass (or Undo pass) and Open for-sale page.
+- **Records you already own:** with a token, entries whose record is in your Discogs
+  collection get an amber **OWNED** badge before the title. That covers the same release and
+  also another pressing of the same master; the tooltip says which ("Owned: another pressing
+  (AF014, 2018)"). Keeping an owned record asks first ("Already in your collection… Keep it
+  anyway?"), because a keep adds it to your wantlist.
+  - Saving a token also sends your whole collection into a crate "Collection: ‹you›" and
+    shows it (once; it isn't made again while it exists). Its entries carry no OWNED badge.
+    It can be sent again from your collection page with the browser extension. It's a
+    normal dig: one request per 100 records, then one per record, nearest the playhead first.
+  - The collection is synced only when a crate from Discogs is on screen and the cached copy
+    is missing or a week old, or from **Refresh collection** in OPT ▸ Discogs…, which also
+    shows how many records it holds and how old it is.
+  - The first sync reads 100 records a request. After that only what was added since is
+    read, newest first, which is usually one request; everything is read again only when
+    records were removed. Other pressings are never looked up, and without a token nothing
+    is fetched or marked (the main window says once that a token would do it).
 - **Setup (OPT ▸ Discogs…):**
   - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
     instead of 60).
   - For the wantlist and the full rate, paste a personal access token (discogs.com ▸
-    Settings ▸ Developers). It's checked before it's saved, is readable only by you, and is
-    shown only by its last 4 characters.
+    Settings ▸ Developers, <https://www.discogs.com/settings/developers>, **Generate new
+    token**; the dialog's **Open that page** goes there). It's checked before it's saved, is
+    readable only by you, and is shown only by its last 4 characters.
   - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp): `brew install yt-dlp` (or your
     package manager). The dialog shows the version found, and can take a path if it isn't on
     the `PATH`. Until it's found, entries say "needs yt-dlp". If clips keep failing, try
@@ -279,7 +297,13 @@ that the player starts once its window is up.
    button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
    in ‹App›** and **Send to crate** (the player's crates, or New crate…, which suggests a name
    from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the vinyl-only and
-   skip-passed switches, which it remembers. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
+   skip-passed switches, which it remembers. On a release, master or marketplace item page
+   of a record you own, a line under the button says "✓ In your collection" (or "✓ Another
+   pressing in your collection (AF014, 2018)"). The extension asks the player, which answers
+   from its cached collection: no Discogs request for a release or master, and one lookup the
+   first time a marketplace item is seen. Without a token in the player, a dimmed line says to
+   add one. A crate created from the browser (New crate…) comes on screen in the player, with
+   the playlist opened if it was hidden. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
    Tapes → Playlist").
 4. On any site, right-click a Discogs link for Play in ‹App› or Enqueue in ‹App›; the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -616,7 +640,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, your Discogs `collection.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -634,7 +658,8 @@ tracks, and wantlist changes still to be sent), `jobs.ron` (sends still in progr
 only by you). In the
 cache, `discogs/` keeps API responses: record details for good, listings for a day, and
 for-sale numbers refreshed once a day when their track plays. `previews/` holds the downloaded
-clips.
+clips. `collection.ron` is your Discogs collection (release ids, and each owned pressing's
+master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -650,7 +675,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 492 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 507 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

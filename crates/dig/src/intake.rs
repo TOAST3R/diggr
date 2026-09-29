@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use platform::{Priority, Spawner};
 
+use crate::collection::{self, Collection};
 use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
 use crate::discogs::matching::{self, ClipEntry};
@@ -53,6 +54,12 @@ pub enum Command {
     Keep(u64),
     /// Remove a release this app added to the wantlist.
     Unkeep(u64),
+    /// Bring the user's collection up to date from this cached one (or from nothing). Runs
+    /// only when no send is waiting.
+    SyncCollection(Option<Box<Collection>>),
+    /// Learn which release a marketplace item sells (for the browser's owned check). Runs
+    /// only when no send is waiting; cached for good.
+    ResolveShopItem(u64),
 }
 
 /// What became of a listed record.
@@ -148,6 +155,11 @@ pub enum Event {
     /// The saved token's account, or why it can't be used.
     Identity(Result<Identity, ApiError>),
     TokenChecked(String, Result<Identity, ApiError>),
+    /// A collection sync finished: the up-to-date collection, or why not (the previous one
+    /// stays in use).
+    Collection(Result<Box<Collection>, ApiError>),
+    /// A marketplace item's release (`None`: Discogs doesn't know the item).
+    ShopItem(u64, Option<u64>),
     /// A wantlist change: `Ok(true)` if the app changed the wantlist, `Ok(false)` if the
     /// release was already there.
     Wantlist {
@@ -172,6 +184,9 @@ pub struct Intake {
     unsaved: bool,
     events: Vec<Event>,
     now: fn() -> u64,
+    /// Waiting for a moment with no send: a collection sync, and items to resolve.
+    collection_sync: Option<Option<Box<Collection>>>,
+    shop_items: Vec<u64>,
 }
 
 impl Intake {
@@ -191,6 +206,8 @@ impl Intake {
             unsaved: false,
             events: Vec::new(),
             now: crate::now_secs,
+            collection_sync: None,
+            shop_items: Vec::new(),
         }
     }
 
@@ -287,14 +304,58 @@ impl Intake {
             }
             Command::Keep(release) => self.wantlist(release, true),
             Command::Unkeep(release) => self.wantlist(release, false),
+            Command::SyncCollection(cached) => self.collection_sync = Some(cached),
+            Command::ResolveShopItem(id) => {
+                if !self.shop_items.contains(&id) {
+                    self.shop_items.push(id);
+                }
+            }
         }
+    }
+
+    /// Work that waits for a moment with no send: an item someone is looking at first, then
+    /// the collection. False when there was none.
+    fn background_step(&mut self) -> bool {
+        let now = (self.now)();
+        if let Some(id) = self.shop_items.first().copied() {
+            match expand::shop_item_release(&mut self.client, id, now) {
+                Err(ApiError::Offline) => {
+                    self.went_offline();
+                    self.client.sleep(OFFLINE_RETRY);
+                    return true;
+                }
+                r => {
+                    self.online();
+                    self.shop_items.remove(0);
+                    self.events.push(Event::ShopItem(id, r.ok()));
+                }
+            }
+            return true;
+        }
+        let Some(cached) = self.collection_sync.take() else {
+            return false;
+        };
+        self.ensure_identity();
+        let Some(user) = self.client.identity().map(|i| i.username.clone()) else {
+            self.events
+                .push(Event::Collection(Err(ApiError::TokenNeeded)));
+            return true;
+        };
+        let result = collection::sync(&mut self.client, &user, cached.as_deref(), now);
+        match &result {
+            Ok(_) => self.online(),
+            Err(ApiError::Offline) => self.went_offline(),
+            Err(_) => {}
+        }
+        self.events.push(Event::Collection(result.map(Box::new)));
+        true
     }
 
     /// One request's worth of work. False when there is nothing to do.
     pub fn step(&mut self) -> bool {
         let Some(i) = self.next_job() else {
             self.save_if_due(true);
-            return false;
+            return self.background_step();
         };
         let now = (self.now)();
         let job = &self.jobs.jobs[i];

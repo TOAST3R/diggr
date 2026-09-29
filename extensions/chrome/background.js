@@ -92,6 +92,9 @@ async function handle(msg) {
       if (r.error === "not-paired") chrome.runtime.openOptionsPage();
       return r;
     }
+    case "owned":
+      // Quietly: no options page when unpaired, the button just shows no note.
+      return bridge("owned", { method: "POST", body: { url: msg.url } });
     case "pair":
       return pair(msg.code, msg.port);
     case "unpair":

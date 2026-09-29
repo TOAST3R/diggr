@@ -176,6 +176,24 @@ fn a_shop_item_discogs_does_not_know_is_not_found() {
     ));
 }
 
+/// digger's collection: releases 1001 and 1003 (served only where a test routes it, so
+/// other tests' users own nothing).
+const COLLECTION_PAGE: &str =
+    "/users/digger/collection/folders/0/releases?sort=added&sort_order=desc&page=1&per_page=100";
+const COLLECTION: &str = r#"{"pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 2}, "releases": [{"id": 1001, "instance_id": 11, "basic_information": {"id": 1001, "master_id": 0, "title": "Glasshouse EP", "year": 1994, "formats": [{"name": "Vinyl", "qty": "1"}], "labels": [{"name": "Lowtide Tapes", "catno": "LT-012", "id": 12345}], "artists": [{"name": "Nightcraft", "anv": "", "join": "", "id": 4242}]}}, {"id": 1003, "instance_id": 12, "basic_information": {"id": 1003, "master_id": 0, "title": "Undertow", "year": 1995, "formats": [{"name": "Vinyl", "qty": "1"}], "labels": [{"name": "Lowtide Tapes", "catno": "LT-013", "id": 12345}], "artists": [{"name": "Nightcraft", "anv": "", "join": "", "id": 4242}]}}]}"#;
+
+#[test]
+fn a_collection_lists_its_releases() {
+    let (mut c, t) = client(true, None);
+    t.route(COLLECTION_PAGE, 200, COLLECTION);
+    let page = parse("https://www.discogs.com/user/digger/collection").unwrap();
+    assert_eq!(
+        keys(&listing(&mut c, &page, 1, NOW).unwrap().items),
+        [RecordKey::Release(1001), RecordKey::Release(1003)]
+    );
+    assert_eq!(page_name(&mut c, &page, NOW).unwrap(), "Collection: digger");
+}
+
 #[test]
 fn a_wantlist_and_a_list() {
     let (mut c, _) = client(true, None);

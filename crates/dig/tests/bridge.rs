@@ -27,19 +27,22 @@ struct Rig {
     bridge: BridgeHandle,
     shared: Arc<Shared>,
     clock: Arc<FakeClock>,
-    _dir: platform::testing::TestDir,
+    dir: platform::testing::TestDir,
 }
 
 fn rig(name: &str) -> Rig {
     let dir = platform::testing::TestDir::new(&format!("dig-bridge-{name}"));
     let clock = Arc::new(FakeClock::default());
-    let shared = Shared::new(Pairing::load(Some(dir.path().to_path_buf()), clock.clone()));
+    let shared = Shared::with_cache(
+        Pairing::load(Some(dir.path().to_path_buf()), clock.clone()),
+        Some(dir.path()),
+    );
     let bridge = BridgeHandle::start(&NativeSpawner, shared.clone(), 0, || {}).unwrap();
     Rig {
         bridge,
         shared,
         clock,
-        _dir: dir,
+        dir,
     }
 }
 
@@ -462,4 +465,104 @@ fn a_send_is_answered_at_once_while_discogs_is_slow() {
             .sum::<usize>();
     }
     assert!(listed > 0, "the label's records arrive after the answer");
+}
+
+// ---- the owned check -------------------------------------------------------------------
+
+/// The user owns release 101 (AF014, 2018), a pressing of master 900.
+fn with_collection(r: &Rig) {
+    let path = r.dir.path().join("owned.ron");
+    std::fs::write(
+        path.with_file_name(dig::collection::FILE),
+        r#"(username: "digger", fetched_at: 0, count: 1, instances: [1],
+            releases: {101: (master: Some(900), catno: "AF014", year: Some(2018))})"#,
+    )
+    .unwrap();
+    let c = dig::collection::Collection::load(r.dir.path()).unwrap();
+    r.shared.collection.store(Arc::new(Some(Arc::new(c))));
+}
+
+fn owned(r: &Rig, key: &str, url: &str) -> Value {
+    let a = r.call(
+        "POST",
+        "/v1/owned",
+        Some(key),
+        &format!(r#"{{"url":"{url}"}}"#),
+    );
+    assert_eq!(a.status, 200, "{}", a.json);
+    a.json
+}
+
+#[test]
+fn the_owned_check_answers_from_the_collection_without_asking_discogs() {
+    let r = rig("owned");
+    let key = r.pair();
+    let url = "https://www.discogs.com/release/101";
+    assert_eq!(owned(&r, &key, url)["owned"], "no-token");
+    r.shared
+        .has_token
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        owned(&r, &key, url)["owned"],
+        "unknown",
+        "no collection yet"
+    );
+    with_collection(&r);
+    let t = Instant::now();
+    assert_eq!(owned(&r, &key, url)["owned"], "this");
+    assert!(t.elapsed() < Duration::from_millis(50));
+    assert_eq!(
+        owned(&r, &key, "https://www.discogs.com/master/900")["owned"],
+        "another"
+    );
+    // Another pressing, known to be of master 900 from data fetched while digging.
+    DiskCache::new(Some(r.dir.path())).put(
+        dig::discogs::cache::Kind::Release,
+        "555",
+        r#"{"id": 555, "master_id": 900}"#,
+        0,
+    );
+    let a = owned(&r, &key, "https://www.discogs.com/release/555");
+    assert_eq!(
+        (a["owned"].as_str(), a["catno"].as_str(), a["year"].as_u64()),
+        (Some("another"), Some("AF014"), Some(2018))
+    );
+    assert_eq!(
+        owned(&r, &key, "https://www.discogs.com/release/777")["owned"],
+        "no"
+    );
+    assert_eq!(
+        owned(&r, &key, "https://www.discogs.com/label/12345")["owned"],
+        "unknown"
+    );
+    // Unpaired: refused.
+    let a = r.call("POST", "/v1/owned", None, &format!(r#"{{"url":"{url}"}}"#));
+    assert_eq!(a.status, 401);
+    assert!(r.bridge.poll().iter().all(|c| *c == BridgeCommand::Paired));
+}
+
+#[test]
+fn a_new_shop_item_is_checking_until_its_release_is_known() {
+    let r = rig("owned-item");
+    let key = r.pair();
+    with_collection(&r);
+    r.shared
+        .has_token
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let item = "https://www.discogs.com/shop/item/3923678974";
+    assert_eq!(owned(&r, &key, item)["owned"], "checking");
+    assert!(
+        r.bridge
+            .poll()
+            .contains(&BridgeCommand::ResolveShopItem(3923678974)),
+        "the app is asked to look it up"
+    );
+    // Once looked up (the intake caches the item), the answer is immediate.
+    DiskCache::new(Some(r.dir.path())).put(
+        dig::discogs::cache::Kind::ShopItem,
+        "3923678974",
+        r#"{"id": 3923678974, "release": {"id": 101}}"#,
+        0,
+    );
+    assert_eq!(owned(&r, &key, item)["owned"], "this");
 }
