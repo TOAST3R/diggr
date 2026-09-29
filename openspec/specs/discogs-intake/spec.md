@@ -2,7 +2,6 @@
 
 ## Purpose
 Turns a Discogs page (a release, master release, artist, label, wantlist or list) into tracks in a crate. It respects Discogs' rate limit, caches what it learns, and never touches the playback path.
-
 ## Requirements
 ### Requirement: Discogs account
 The user SHALL be able to enter a Discogs personal access token in OPT ▸ Discogs…. The app SHALL check the token with Discogs and show the account's username, or say that the token was rejected. The token SHALL be stored only in the user's config folder, in a file only the user can read, and SHALL never be shown in full or written to a log. Without a token, pages SHALL still be expanded, at the unauthenticated rate limit, and actions that need an account (adding to the wantlist, reading a private wantlist) SHALL say that a token is needed.
@@ -16,7 +15,7 @@ The user SHALL be able to enter a Discogs personal access token in OPT ▸ Disco
 - **THEN** the dialog says the token was rejected, and the token is not saved
 
 ### Requirement: Supported pages
-The app SHALL accept Discogs web addresses of a release, a master release, an artist, a label, a user's wantlist and a user list, with or without `www.`, a language prefix (such as `/de/`), the name part after the id, a query string or a fragment. Any other address SHALL be refused with a message listing the supported kinds of page, and nothing SHALL be added.
+The app SHALL accept Discogs web addresses of a release, a master release, an artist, a label, a user's wantlist, a user list and a marketplace listing (`/shop/item/…` or `/sell/item/…`), with or without `www.`, a language prefix (such as `/de/`), the name part after the id, a query string or a fragment. A marketplace listing SHALL be treated as the release it sells, looked up with at most one request to Discogs (none when that listing was looked up before). Any other address SHALL be refused with a message listing the supported kinds of page, and nothing SHALL be added.
 
 #### Scenario: Language prefix
 - **WHEN** the address is `https://www.discogs.com/de/label/12345-Lowtide-Tapes`
@@ -25,6 +24,14 @@ The app SHALL accept Discogs web addresses of a release, a master release, an ar
 #### Scenario: No name part
 - **WHEN** the address is `https://discogs.com/release/123456`
 - **THEN** it is recognised as release 123456
+
+#### Scenario: Marketplace listing
+- **WHEN** the address is `https://www.discogs.com/shop/item/3923678974`, a listing of release 123456
+- **THEN** release 123456 is sent, exactly as if its release page had been sent
+
+#### Scenario: Listing gone
+- **WHEN** the address names a listing that Discogs doesn't know
+- **THEN** the main window says the page wasn't found, and no crate changes
 
 #### Scenario: Unsupported page
 - **WHEN** the address is a Discogs forum thread
@@ -149,3 +156,4 @@ Talking to Discogs, downloading previews and analyzing them SHALL never block or
 #### Scenario: Launch unaffected
 - **WHEN** the app is launched with a Discogs token and a crate whose expansion was interrupted
 - **THEN** the window is interactive within 300 ms, and requests to Discogs start only after that
+
