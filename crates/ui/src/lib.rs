@@ -2,6 +2,7 @@
 //! fullscreen host for the visual engine.
 
 pub mod app;
+pub mod columns;
 pub mod crates;
 pub mod eqcurve;
 pub mod files;

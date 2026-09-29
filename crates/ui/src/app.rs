@@ -12,6 +12,7 @@ use egui::{
 };
 use platform::{FileSource, Spawner, TrackRef};
 
+use crate::columns::{Col, Dir, Field};
 use crate::crates::{CrateId, Crates, MetaKey, PLAYLIST};
 use crate::eqcurve;
 use crate::files;
@@ -1180,7 +1181,7 @@ impl WinampApp {
                     Key::End => CursorMove::End,
                     _ => return,
                 };
-                let page = self.pl_rows();
+                let page = self.pl_visible_rows();
                 let start = (self.crates.shown_id() == self.crates.playing_id()
                     && self.position.state != PlayState::Stopped)
                     .then(|| self.crates.shown().current())
@@ -1202,7 +1203,7 @@ impl WinampApp {
 
     /// Scrolls the playlist by the least amount that shows entry `index`.
     fn scroll_into_view(&mut self, index: usize) {
-        let rows = self.pl_rows();
+        let rows = self.pl_visible_rows();
         if index < self.pl_scroll {
             self.pl_scroll = index;
         } else if index >= self.pl_scroll + rows {
@@ -1732,6 +1733,120 @@ impl WinampApp {
         crate::layout::playlist_rows(&self.settings, &self.skin.def) as usize
     }
 
+    /// The playlist is wide enough for columns (under a header row).
+    fn pl_columns(&self) -> bool {
+        self.settings.playlist_width >= crate::columns::COLUMNS_FROM_WIDTH
+    }
+
+    /// Rows of entries on screen: the playlist's rows, less the column header.
+    fn pl_visible_rows(&self) -> usize {
+        (self.pl_rows() - self.pl_columns() as usize).max(1)
+    }
+
+    /// The column header: names (with the sort arrow), a click sorts, dragging a divider
+    /// resizes the column to its left, and a right-click shows or hides columns.
+    fn column_header(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        head: Rect,
+        cols: &[(Col, f32, f32)],
+        font: &egui::FontId,
+        actions: &mut Vec<Action>,
+    ) {
+        let d = sk.def;
+        let s = sk.scale;
+        let painter = sk.painter.with_clip_rect(head);
+        painter.rect_filled(
+            head,
+            0.0,
+            lerp_color(d.colors.pl_text, d.colors.pl_bg, 0.85),
+        );
+        let label_col = lerp_color(d.colors.pl_text, d.colors.pl_bg, 0.3);
+        let sorted = self.crates.shown().sorted();
+        let cell = |x: f32, w: f32| {
+            Rect::from_min_size(
+                pos2(head.left() + x * s, head.top()),
+                vec2(w * s, head.height()),
+            )
+        };
+        for &(c, x, w) in cols {
+            let name = match c {
+                Col::Number => "#",
+                Col::Field(f) => f.label(),
+            };
+            let r = cell(x, w);
+            let cell_painter = painter.with_clip_rect(r.shrink2(vec2(1.5 * s, 0.0)));
+            let text = cell_painter.text(
+                pos2(r.left() + 3.0 * s, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                name,
+                font.clone(),
+                label_col,
+            );
+            // The sort direction, drawn as a small triangle (the font has no arrows).
+            if let (Col::Field(f), Some((sf, dir))) = (c, sorted)
+                && sf == f
+            {
+                let (cx, cy, h) = (text.right() + 5.0 * s, r.center().y, 2.5 * s);
+                let points = if dir == Dir::Asc {
+                    vec![pos2(cx - h, cy + h), pos2(cx + h, cy + h), pos2(cx, cy - h)]
+                } else {
+                    vec![pos2(cx - h, cy - h), pos2(cx + h, cy - h), pos2(cx, cy + h)]
+                };
+                cell_painter.add(egui::Shape::convex_polygon(
+                    points,
+                    label_col,
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
+        let resp = ui.interact(head, Id::new("pl_head"), Sense::click());
+        if resp.clicked()
+            && let Some(p) = resp.interact_pointer_pos()
+            && let Some(&(Col::Field(f), _, _)) =
+                cols.iter().find(|(_, x, w)| cell(*x, *w).contains(p))
+        {
+            actions.push(Action::Sort(f));
+        }
+        egui::Popup::context_menu(&resp)
+            .id(Id::new("pl_head_menu"))
+            .show(|ui| {
+                for f in Field::ALL.into_iter().filter(|f| f.hideable()) {
+                    let mut on = self.settings.columns.shows(f);
+                    if ui.checkbox(&mut on, f.label()).clicked() {
+                        actions.push(Action::ToggleColumn(f));
+                    }
+                }
+            });
+        // Dividers on each column's right edge (none after the last). Dragging the title's
+        // edge resizes the column after it instead, since the title takes what's left.
+        for (i, &(c, x, w)) in cols.iter().enumerate().take(cols.len().saturating_sub(1)) {
+            let Col::Field(f) = c else { continue };
+            let edge = head.left() + (x + w) * s;
+            let grip =
+                Rect::from_center_size(pos2(edge, head.center().y), vec2(4.0 * s, head.height()));
+            painter.vline(
+                edge,
+                head.y_range(),
+                egui::Stroke::new(1.0, label_col.gamma_multiply(0.5)),
+            );
+            let g = ui
+                .interact(grip, Id::new(("pl_col_edge", i)), Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeColumn);
+            let dx = g.drag_delta().x / s;
+            if dx != 0.0 {
+                let share = dx / head.width() * s;
+                match (f, cols.get(i + 1)) {
+                    (Field::Title, Some(&(Col::Field(next), _, _))) => {
+                        actions.push(Action::ResizeColumn(next, -share))
+                    }
+                    _ => actions.push(Action::ResizeColumn(f, share)),
+                }
+            }
+        }
+    }
+
     /// When the playing entry of the shown crate changes and the previous one was on screen,
     /// the list follows the new one; otherwise the user's scroll is left alone.
     fn follow_playing_entry(&mut self) {
@@ -1743,7 +1858,7 @@ impl WinampApp {
         if now == self.pl_follow {
             return;
         }
-        let rows = self.pl_rows();
+        let rows = self.pl_visible_rows();
         let shown = self.crates.shown();
         let target = match (self.pl_follow, now) {
             (Some((c0, prev)), Some((c1, new))) if c0 == c1 => shown
@@ -1766,7 +1881,10 @@ impl WinampApp {
         let list_h = (rows * d.pl_row_h as usize) as f32;
         let mut actions = Vec::new();
         let len = self.crates.shown().len();
-        self.pl_scroll = self.pl_scroll.min(len.saturating_sub(rows));
+        // Wide enough: columns under a header row, which takes the first row.
+        let columns = self.pl_columns();
+        let visible = self.pl_visible_rows();
+        self.pl_scroll = self.pl_scroll.min(len.saturating_sub(visible));
         {
             let def = d.clone();
             let sk = self.skinned(&def, ui, origin);
@@ -1810,13 +1928,27 @@ impl WinampApp {
                 command: i.modifiers.command,
             });
             let mut drop_target = None;
+            let rows_top = top + columns as usize as f32 * row_h;
+            let cols = if columns {
+                // The number column fits the biggest number.
+                let digits = len.max(1).to_string().len() as f32;
+                let cols = self
+                    .settings
+                    .columns
+                    .layout(l.w as f32, digits * 6.0 + 10.0);
+                let head = sk.rect(l.x as f32, top, l.w as f32, row_h);
+                self.column_header(ui, &sk, head, &cols, &font, &mut actions);
+                cols
+            } else {
+                Vec::new()
+            };
             let shown = self.crates.shown();
-            for r in 0..rows {
+            for r in 0..visible {
                 let idx = self.pl_scroll + r;
                 let Some(e) = shown.entries().get(idx) else {
                     break;
                 };
-                let rr = sk.rect(l.x as f32, top + r as f32 * row_h, l.w as f32, row_h);
+                let rr = sk.rect(l.x as f32, rows_top + r as f32 * row_h, l.w as f32, row_h);
                 if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
                 }
@@ -1835,24 +1967,51 @@ impl WinampApp {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
                 }
-                let dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
-                let name_clip = clip.with_clip_rect(Rect::from_min_max(
-                    rr.min,
-                    pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
-                ));
-                name_clip.text(
-                    pos2(rr.left() + 3.0 * scale, rr.center().y),
-                    egui::Align2::LEFT_CENTER,
+                let marked = |name: String| {
                     format!(
-                        "{}. {}{}{}",
-                        idx + 1,
+                        "{}{name}{}",
                         if kept { "✓ " } else { "" },
-                        e.display_name(),
                         if pending { " (wantlist pending)" } else { "" }
-                    ),
-                    font.clone(),
-                    col,
-                );
+                    )
+                };
+                if columns {
+                    for &(c, x, w) in &cols {
+                        let cell = Rect::from_min_size(
+                            pos2(rr.left() + x * scale, rr.top()),
+                            vec2(w * scale, rr.height()),
+                        );
+                        let cell_clip = clip.with_clip_rect(cell.shrink2(vec2(1.5 * scale, 0.0)));
+                        let text = match c {
+                            Col::Number => format!("{}.", idx + 1),
+                            Col::Field(Field::Time) => {
+                                draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
+                                continue;
+                            }
+                            Col::Field(Field::Title) => marked(e.title.clone()),
+                            Col::Field(f) => crate::columns::cell_text(e, f),
+                        };
+                        cell_clip.text(
+                            pos2(cell.left() + 3.0 * scale, cell.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            text,
+                            font.clone(),
+                            col,
+                        );
+                    }
+                } else {
+                    let dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
+                    let name_clip = clip.with_clip_rect(Rect::from_min_max(
+                        rr.min,
+                        pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
+                    ));
+                    name_clip.text(
+                        pos2(rr.left() + 3.0 * scale, rr.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{}. {}", idx + 1, marked(e.display_name())),
+                        font.clone(),
+                        col,
+                    );
+                }
                 let mut resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
@@ -2056,6 +2215,14 @@ impl WinampApp {
                 if ui.button("Spectrogram (S)").clicked() {
                     actions.push(Action::ToggleSpectrogram);
                 }
+                ui.menu_button("Sort", |ui| {
+                    for f in Field::ALL {
+                        if ui.button(f.label()).clicked() {
+                            actions.push(Action::Sort(f));
+                            ui.close();
+                        }
+                    }
+                });
                 #[cfg(not(target_arch = "wasm32"))]
                 if self.dig.is_some() && ui.button("Discogs…").clicked() {
                     actions.push(Action::Dig(DigAction::OpenDialog));
@@ -2372,6 +2539,27 @@ impl WinampApp {
                 self.crates.shown_mut().move_entry(from, to);
                 self.mark_shown();
             }
+            Action::ToggleColumn(f) => {
+                self.settings.columns.toggle(f);
+                self.mark_settings();
+            }
+            Action::ResizeColumn(f, share) => {
+                self.settings.columns.resize(f, share);
+                self.mark_settings();
+            }
+            Action::Sort(field) => {
+                // The same field again sorts the other way.
+                let p = self.crates.shown_mut();
+                let dir = match p.sorted() {
+                    Some((f, Dir::Asc)) if f == field => Dir::Desc,
+                    _ => Dir::Asc,
+                };
+                p.sort_by(field, dir);
+                if let Some(i) = p.cursor_index() {
+                    self.scroll_into_view(i);
+                }
+                self.mark_shown();
+            }
             Action::AddFiles => self.open_files_dialog(Open::Add),
             Action::AddFolder => self.open_folder_dialog(),
             Action::RemoveSelected => self.remove_selected(),
@@ -2452,6 +2640,11 @@ enum Action {
     Seek(f64),
     Volume(f32),
     ToggleWaveform,
+    /// Sort the shown crate by a column (again: the other way).
+    Sort(Field),
+    ToggleColumn(Field),
+    /// Widen a column by a share of the list's width.
+    ResizeColumn(Field, f32),
     /// Remove an entry, or the whole selection when it is part of it (the entry menu).
     RemoveEntry(EntryId),
     Shuffle,
@@ -3543,7 +3736,7 @@ mod headless_tests {
         fn frame(&mut self, mut events: Vec<Event>) -> egui::FullOutput {
             events.insert(0, Event::ModifiersChanged(self.mods));
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(550.0, 400.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 400.0))),
                 events,
                 ..Default::default()
             };
@@ -4192,6 +4385,155 @@ mod headless_tests {
         rig.app.crates.shown_mut().set_current(Some(ids[27]));
         rig.frame(Vec::new());
         assert_eq!(rig.app.pl_scroll, 0);
+    }
+
+    #[test]
+    fn a_sort_reorders_the_crate_and_next_follows_it() {
+        let mut rig = Rig::new(
+            "sort",
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        let set = |r: &mut Rig, i: usize, title: &str| {
+            let e = r
+                .app
+                .crates
+                .shown_mut()
+                .entries_mut()
+                .find(|e| e.id == ids[i])
+                .unwrap();
+            e.title = title.into();
+        };
+        set(&mut rig, 0, "b");
+        set(&mut rig, 1, "c");
+        set(&mut rig, 2, "a");
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::Sort(Field::Title), &ctx);
+        assert_eq!(rig.ids(PLAYLIST), [ids[2], ids[0], ids[1]]);
+        assert_eq!(
+            rig.app.crates.shown().sorted(),
+            Some((Field::Title, Dir::Asc))
+        );
+        rig.app.apply(Action::Sort(Field::Title), &ctx);
+        assert_eq!(
+            rig.ids(PLAYLIST),
+            [ids[1], ids[0], ids[2]],
+            "again: the other way"
+        );
+        // "b" keeps playing, and "a" (now after it) is next.
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.playing().current(), Some(ids[0]));
+        assert_eq!(rig.app.position.state, PlayState::Playing);
+        rig.app.apply(Action::Next, &ctx);
+        rig.until(
+            |r| r.app.crates.playing().current() == Some(ids[2]),
+            "next follows the new order",
+        );
+    }
+
+    #[test]
+    fn a_wide_playlist_shows_columns_that_sort_and_hide() {
+        let mut rig = Rig::new("columns", vec![fixture("tone.wav")], |_| {});
+        let p = rig.app.crates.shown_mut();
+        let dig = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(Origin {
+                catno: "LT-012".into(),
+                position: "A1".into(),
+                year: Some(1994),
+                ..Default::default()
+            }),
+            "listed",
+        );
+        p.entries_mut().find(|e| e.id == dig).unwrap().bpm = Some(124);
+        rig.app.settings.playlist_width = 700;
+        let out = rig.frame(Vec::new());
+        for t in [
+            "#", "Cat#", "Artist", "Title", "BPM", "Side", "Year", "For sale", "Time",
+        ] {
+            assert!(shows(&out, t), "header {t}: {:?}", text_list(&out));
+        }
+        for t in [
+            "LT-012",
+            "Nightcraft",
+            "Glasshouse",
+            "124",
+            "A1",
+            "1994",
+            "2.",
+        ] {
+            assert!(shows(&out, t), "cell {t}: {:?}", text_list(&out));
+        }
+        assert!(!shows(&out, "2. (LT-012) Nightcraft: Glasshouse (124 BPM)"));
+
+        // A click on BPM sorts (the tone has no tempo: it goes last); again, the other way.
+        rig.click_text("BPM");
+        assert_eq!(
+            rig.app.crates.shown().sorted(),
+            Some((Field::Bpm, Dir::Asc))
+        );
+        assert_eq!(rig.app.crates.shown().entries()[0].id, dig);
+        rig.click_text("BPM");
+        assert_eq!(
+            rig.app.crates.shown().sorted(),
+            Some((Field::Bpm, Dir::Desc))
+        );
+        // The direction is a drawn triangle, not a character the font may lack.
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "BPM"));
+        assert!(
+            !text_list(&out)
+                .iter()
+                .any(|t| t.contains('▼') || t.contains('▲'))
+        );
+
+        // Right-click the header to hide a column.
+        let year = texts(&rig.frame(Vec::new()))
+            .into_iter()
+            .find(|t| t.text == "Year")
+            .unwrap()
+            .rect
+            .center();
+        rig.click_with(year, PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "Cat#") && shows(&out, "Side"),
+            "{:?}",
+            text_list(&out)
+        );
+        // The menu's checkbox is drawn after the header's own "Year".
+        let check = texts(&out)
+            .into_iter()
+            .rfind(|t| t.text == "Year")
+            .unwrap()
+            .rect
+            .center();
+        assert_ne!(check, year, "the menu shows");
+        rig.click(check);
+        assert!(!rig.app.settings.columns.shows(Field::Year));
+        rig.key(Key::Escape, Modifiers::NONE);
+        assert!(!shows(&rig.frame(Vec::new()), "1994"));
+
+        // Narrow again: the single line, no header.
+        rig.app.settings.playlist_width = 400;
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Cat#"));
+        assert!(
+            shows(&out, "1. (LT-012) Nightcraft: Glasshouse (124 BPM)"),
+            "{:?}",
+            text_list(&out)
+        );
     }
 
     #[test]

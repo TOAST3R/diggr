@@ -136,6 +136,14 @@ and Home/End jump), and Enter plays the entry under it.
   - Delete removes the selection;
   - drag the bottom-right grip to make the playlist wider (any width) or taller (whole rows);
     its size is remembered, and narrowed to fit a smaller screen;
+  - once the playlist is at least 480 pixels wide (at 1×), entries are drawn as columns: #,
+    Cat#, Artist, Title, BPM, Side, Year, For sale and Time. Drag a divider in the header to
+    resize a column, and right-click the header to show or hide columns (#, Title and Time
+    always show); both are remembered. Click a column's name to **sort** the crate by it, and
+    click again for the other way (**OPT ▸ Sort** does the same at any width). A sort reorders
+    the crate itself, as in Winamp: the playing track plays on, and next, saving and export
+    follow the new order. Entries without a value (no BPM yet, no catalog number) go last
+    either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
   - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
@@ -626,7 +634,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 471 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 482 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
