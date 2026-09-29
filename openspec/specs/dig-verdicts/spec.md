@@ -2,7 +2,6 @@
 
 ## Purpose
 One-key decisions while digging: keep a record (collected in a Keepers crate and on the user's Discogs wantlist), pass on it (it isn't offered again), or open its for-sale page on Discogs.
-
 ## Requirements
 ### Requirement: Verdict keys
 `Y` (keep), `N` (pass) and `I` (open the for-sale page) SHALL act on the playing or paused entry, and SHALL do nothing while playback is stopped. The entry right-click menu SHALL offer the same actions for the entry clicked: Keep or Undo keep, Pass or Undo pass, and Open for-sale page.
@@ -21,11 +20,17 @@ Keeping an entry SHALL:
 - mark it kept (✓) wherever it appears;
 - when it comes from a Discogs release and a token is set, add that release to the user's Discogs wantlist.
 
-Keeping an entry that is already kept SHALL undo the keep: the entry leaves the Keepers crate, and its release is removed from the wantlist only if this app added it there. When the wantlist can't be reached, the change SHALL be retried later, and the entry SHALL show "wantlist pending" until it succeeds. Without a token, the entry SHALL be kept in the Keepers crate, and the main window SHALL say that a token is needed for the wantlist.
+When the entry is owned (see `discogs-collection`) and a token is set, keeping it SHALL first ask, in a dialog that names the owned pressing, whether to keep it anyway. Keep anyway SHALL keep it as above, and Cancel SHALL change nothing. While the dialog is open, no other shortcut SHALL act.
+
+Keeping an entry that is already kept SHALL undo the keep, without asking: the entry leaves the Keepers crate, and its release is removed from the wantlist only if this app added it there. When the wantlist can't be reached, the change SHALL be retried later, and the entry SHALL show "wantlist pending" until it succeeds. Without a token, the entry SHALL be kept in the Keepers crate, and the main window SHALL say that a token is needed for the wantlist.
 
 #### Scenario: Keep a track
 - **WHEN** the user presses Y while "Nightcraft - Glasshouse" from release 123456 plays
 - **THEN** the track is added to the end of the Keepers crate with its origin, its row shows ✓, and release 123456 is on the user's Discogs wantlist
+
+#### Scenario: Keep an owned record
+- **WHEN** the user presses Y on a track whose record is owned in another pressing (AF001R, 2019)
+- **THEN** a dialog says the record is already owned (AF001R, 2019); Cancel leaves the track un-kept and the wantlist unchanged, and Keep anyway keeps it and adds its release to the wantlist
 
 #### Scenario: Undo
 - **WHEN** the user presses Y again on that track
@@ -63,3 +68,4 @@ Kept and passed clips, and the releases this app added to the wantlist, SHALL be
 #### Scenario: After a restart
 - **WHEN** the app is restarted
 - **THEN** kept tracks still show ✓, passed tracks are still dimmed, and un-keeping still removes only releases the app added to the wantlist
+
