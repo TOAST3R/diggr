@@ -154,6 +154,28 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
 }
 
 #[test]
+fn a_shop_item_expands_exactly_like_its_release() {
+    let run_one = |url: &str| {
+        let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+        let mut i = intake(&t, true, None);
+        send(&mut i, url);
+        let ev = run(&mut i, 100);
+        let named: Vec<String> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::Named(j) => Some(j.name.clone()),
+                _ => None,
+            })
+            .collect();
+        (named, listed(&ev), records(&ev).len())
+    };
+    let item = run_one("https://www.discogs.com/shop/item/3923678974");
+    let release = run_one("https://www.discogs.com/release/1001");
+    assert_eq!(item, release);
+    assert_eq!(item.0, ["Release: Nightcraft – Glasshouse EP"]);
+}
+
+#[test]
 fn details_follow_the_focus() {
     let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
     let mut i = intake(&t, true, None);

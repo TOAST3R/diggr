@@ -19,6 +19,7 @@ var WR = (() => {
     [new RegExp(`^/${LANG}label/\\d+`), "Label"],
     [new RegExp(`^/${LANG}lists/(?:[^/]+/)?\\d+`), "List"],
     [new RegExp(`^/${LANG}user/[^/]+/wantlist`), "Wantlist"],
+    [new RegExp(`^/${LANG}(?:shop|sell)/item/\\d+`), "Listing"],
   ];
 
   /** "Label", "Release"… for a supported Discogs page, else null. */
@@ -44,10 +45,54 @@ var WR = (() => {
     for (const kind of ["release", "master", "artist", "label", "lists"]) {
       LINK_PATTERNS.push(`${host}/${kind}/*`, `${host}/*/${kind}/*`);
     }
+    for (const shop of ["shop/item", "sell/item"]) {
+      LINK_PATTERNS.push(`${host}/${shop}/*`, `${host}/*/${shop}/*`);
+    }
     LINK_PATTERNS.push(`${host}/wantlist*`, `${host}/*/wantlist*`);
   }
 
-  const SUPPORTED = "a release, master release, artist, label, wantlist or list";
+  const SUPPORTED =
+    "a release, master release, artist, label, wantlist, list or marketplace item";
+
+  const MAX_NAME = 40; // the player's limit for a crate name
+
+  /**
+   * A crate name for the page, from its title: "Artist - Title" for a release, master or
+   * marketplace item, the name for an artist, label or list, "Wantlist: user" for a wantlist.
+   * Discogs' name-variant asterisks and "(2)" numbers go, its long dash becomes "-", and the
+   * result fits the 40-character limit. Empty when nothing sensible is left.
+   */
+  function suggestName(title, kind, address) {
+    if (kind === "Wantlist") {
+      let user = null;
+      try {
+        const u = new URL(address);
+        const m = u.pathname.match(/\/user\/([^/]+)\/wantlist/);
+        user = m ? decodeURIComponent(m[1]) : u.searchParams.get("user");
+      } catch {
+        // no address: no user
+      }
+      return user ? fit(`Wantlist: ${user}`) : "";
+    }
+    let t = String(title || "");
+    t = t.split(" | ")[0]; // "… | Releases | Discogs"
+    t = t.replace(/\s+[-–—]\s*Discogs\s*$/i, ""); // older "… - Discogs"
+    t = t.replace(/\s+for sale\b.*$/i, ""); // marketplace items
+    t = t.replace(/\s*\(\d{4}[^)]*\)\s*$/, ""); // older "(2015, Vinyl)"
+    t = t.replace(/\*/g, "").replace(/\s*\(\d+\)/g, "");
+    t = t.replace(/\s*[–—]\s*/g, " - ").replace(/\s+/g, " ").trim();
+    return fit(t);
+  }
+
+  /** Cut to the crate-name limit, at a word when one is near. */
+  function fit(name) {
+    const chars = [...name];
+    if (chars.length <= MAX_NAME) return name;
+    let cut = chars.slice(0, MAX_NAME).join("");
+    const space = cut.lastIndexOf(" ");
+    if (space > MAX_NAME / 2) cut = cut.slice(0, space);
+    return cut.replace(/[\s-]+$/, "");
+  }
 
   /** What to tell the user for a failed bridge call. */
   function problem(error, app) {
@@ -69,5 +114,14 @@ var WR = (() => {
     }
   }
 
-  return { PLACEHOLDER, DEFAULT_PORT, pageKind, LINK_PATTERNS, SUPPORTED, problem };
+  return {
+    PLACEHOLDER,
+    DEFAULT_PORT,
+    pageKind,
+    LINK_PATTERNS,
+    SUPPORTED,
+    MAX_NAME,
+    suggestName,
+    problem,
+  };
 })();

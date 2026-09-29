@@ -211,8 +211,10 @@ on screen as previews. They're the clips the page links to, fetched with yt-dlp 
 ahead of what plays. Other pasted text is ignored.
 
 - **Pages:** a label, an artist (their own and remix credits, oldest first), a release, a
-  master, a user's wantlist, or a list. Addresses with or without a language prefix, the name
-  part, a query or a fragment all work. Any other Discogs page shows which ones do.
+  master, a user's wantlist, a list, or a marketplace item (`/shop/item/…` or `/sell/item/…`),
+  which is dug as the release it sells: one lookup, remembered for good. Addresses with or
+  without a language prefix, the name part, a query or a fragment all work. Any other Discogs
+  page shows which ones do.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
   (records near the selected or playing entry are fetched first). It then becomes one entry per
   clip, matched to its tracklist, or "no clip". A send that's still going when you quit resumes
@@ -273,10 +275,11 @@ that the player starts once its window is up.
    the `extensions/chrome/` folder. It asks for site access to discogs.com and 127.0.0.1 only.
 2. Start the player and open OPT ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
-3. On a Discogs release, master, artist, label, wantlist or list page, the button after the
-   title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue in ‹App›** and
-   **Send to crate** (the player's crates, or New crate…), and the vinyl-only and skip-passed
-   switches, which it remembers. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
+3. On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
+   button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
+   in ‹App›** and **Send to crate** (the player's crates, or New crate…, which suggests a name
+   from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the vinyl-only and
+   skip-passed switches, which it remembers. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
    Tapes → Playlist").
 4. On any site, right-click a Discogs link for Play in ‹App› or Enqueue in ‹App›; the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -287,7 +290,8 @@ rebrand), so renaming the player renames every label. The manifest's name is a p
 and must change before any store publishing. The extension is plain JavaScript with no build
 step and no dependencies: `manifest.json`, `background.js` (the only code that calls the
 player, with the key), `content.js` (the button), `pages.js` (which pages are supported),
-`options.*`, `popup.*` and `icons/`.
+`options.*`, `popup.*` and `icons/`. `pages.js` is plain enough to check with Node:
+`suggestName(title, kind, address)` is a pure function.
 
 **Manual checklist** (the extension has no automated tests):
 
@@ -295,8 +299,11 @@ player, with the key), `content.js` (the button), `pages.js` (which pages are su
       127.0.0.1 only.
 - [ ] Pair with the code from OPT ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
-- [ ] Release, master, artist, label, wantlist and list pages each show the button, and each of
-      Play, Enqueue, Send to crate and New crate… works; a forum thread shows no button.
+- [ ] Release, master, artist, label, wantlist, list and marketplace item pages each show the
+      button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
+      shows no button.
+- [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
+      artist or label, and "Wantlist: user" on a wantlist, within 40 characters.
 - [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
 - [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in ‹App› adds
       it and the toolbar shows ✓.
@@ -643,7 +650,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 489 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 492 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

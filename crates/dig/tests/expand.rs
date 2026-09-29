@@ -140,6 +140,43 @@ fn a_release_page_and_its_name() {
 }
 
 #[test]
+fn a_shop_item_is_dug_as_the_release_it_sells() {
+    let dir = platform::testing::TestDir::new("dig-expand-shop-item");
+    let (mut c, t) = client(false, Some(dir.path()));
+    let page = parse("https://www.discogs.com/shop/item/3923678974").unwrap();
+    assert_eq!(
+        keys(&listing(&mut c, &page, 1, NOW).unwrap().items),
+        [RecordKey::Release(1001)]
+    );
+    assert_eq!(
+        page_name(&mut c, &page, NOW).unwrap(),
+        "Release: Nightcraft – Glasshouse EP",
+        "named after the release"
+    );
+    let lookups = |t: &FakeTransport| {
+        t.paths()
+            .iter()
+            .filter(|p| p.starts_with("/marketplace/listings/"))
+            .count()
+    };
+    assert_eq!(lookups(&t), 1, "the item is looked up once");
+    // Sent again, even after a restart: the release is known without a request.
+    let (mut again, t2) = client(false, Some(dir.path()));
+    listing(&mut again, &page, 1, NOW).unwrap();
+    assert_eq!(lookups(&t2), 0);
+}
+
+#[test]
+fn a_shop_item_discogs_does_not_know_is_not_found() {
+    let (mut c, _) = client(false, None);
+    let page = parse("https://www.discogs.com/sell/item/1").unwrap();
+    assert!(matches!(
+        listing(&mut c, &page, 1, NOW),
+        Err(ApiError::NotFound)
+    ));
+}
+
+#[test]
 fn a_wantlist_and_a_list() {
     let (mut c, _) = client(true, None);
     let wl = parse("https://www.discogs.com/wantlist?user=digger").unwrap();
