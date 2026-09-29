@@ -8,6 +8,8 @@
 use std::collections::BTreeSet;
 
 use platform::TrackRef;
+
+use crate::columns::{Dir, Field};
 use serde::{Deserialize, Serialize};
 
 pub type EntryId = u64;
@@ -298,6 +300,8 @@ pub struct Playlist {
     current: Option<EntryId>,
     /// The keyboard cursor: an entry, so it stays put while entries arrive around it.
     cursor: Option<EntryId>,
+    /// The field the entries were last sorted by, until they are reordered otherwise.
+    sorted: Option<(Field, Dir)>,
     next_id: EntryId,
 }
 
@@ -335,6 +339,7 @@ impl Playlist {
 
     /// Appends tracks with file-name titles; returns the new entries for metadata lookup.
     pub fn add(&mut self, tracks: impl IntoIterator<Item = TrackRef>) -> Vec<(EntryId, TrackRef)> {
+        let from = self.entries.len();
         let mut added = Vec::new();
         for track in tracks {
             let id = self.alloc_id();
@@ -351,6 +356,7 @@ impl Playlist {
                 track,
             });
         }
+        self.check_sorted(from);
         added
     }
 
@@ -360,6 +366,7 @@ impl Playlist {
         &mut self,
         saved: impl IntoIterator<Item = SavedEntry>,
     ) -> Vec<(EntryId, TrackRef)> {
+        let from = self.entries.len();
         let mut pending = Vec::new();
         for s in saved {
             let id = self.alloc_id();
@@ -371,6 +378,7 @@ impl Playlist {
             }
             self.entries.push(entry);
         }
+        self.check_sorted(from);
         pending
     }
 
@@ -442,6 +450,7 @@ impl Playlist {
             bpm: None,
             status: EntryStatus::Waiting(status.into()),
         });
+        self.check_sorted(self.entries.len() - 1);
         id
     }
 
@@ -716,6 +725,36 @@ impl Playlist {
         let e = self.entries.remove(from);
         let to = to.min(self.entries.len());
         self.entries.insert(to, e);
+        self.sorted = None;
+    }
+
+    // ---- sorting -----------------------------------------------------------------------
+
+    /// Reorders the entries by `field` (stable; entries without a value last). The new order
+    /// is the crate's order: play order, saving and export follow it.
+    pub fn sort_by(&mut self, field: Field, dir: Dir) {
+        self.entries
+            .sort_by(|a, b| crate::columns::compare(a, b, field, dir));
+        self.sorted = Some((field, dir));
+    }
+
+    /// What the entries were last sorted by, while that order holds.
+    pub fn sorted(&self) -> Option<(Field, Dir)> {
+        self.sorted
+    }
+
+    /// Entries appended from `from` on keep the sort mark only if they land in order.
+    fn check_sorted(&mut self, from: usize) {
+        let Some((field, dir)) = self.sorted else {
+            return;
+        };
+        let start = from.max(1);
+        if (start..self.entries.len()).any(|i| {
+            crate::columns::compare(&self.entries[i - 1], &self.entries[i], field, dir)
+                == std::cmp::Ordering::Greater
+        }) {
+            self.sorted = None;
+        }
     }
 
     // ---- totals ------------------------------------------------------------------------
@@ -1175,6 +1214,178 @@ mod tests {
             ron::to_string(&p.to_saved()).unwrap(),
             ron::to_string(&ron::from_str::<SavedPlaylist>(text).unwrap()).unwrap()
         );
+    }
+
+    fn sorted_titles(p: &Playlist) -> Vec<String> {
+        p.entries().iter().map(|e| e.title.clone()).collect()
+    }
+
+    /// Entries titled by name, with the given BPM, catalog number, side, year and for-sale
+    /// snapshot (count, lowest cents).
+    fn dig_entry(
+        p: &mut Playlist,
+        title: &str,
+        bpm: Option<u16>,
+        catno: &str,
+        side: &str,
+        year: Option<u16>,
+        sale: Option<(u32, Option<u64>)>,
+    ) -> EntryId {
+        let id = p.add_waiting(
+            "",
+            title,
+            None,
+            Some(Origin {
+                catno: catno.into(),
+                position: side.into(),
+                year,
+                for_sale: sale.map(|(count, lowest_cents)| ForSale {
+                    count,
+                    lowest_cents,
+                    currency: "EUR".into(),
+                    fetched_at: 0,
+                }),
+                ..Default::default()
+            }),
+            "listed",
+        );
+        p.entries_mut().find(|e| e.id == id).unwrap().bpm = bpm;
+        id
+    }
+
+    #[test]
+    fn sorting_by_bpm_keeps_unknown_tempos_last_both_ways() {
+        let mut p = Playlist::default();
+        for (t, b) in [
+            ("a", Some(128)),
+            ("b", Some(122)),
+            ("c", None),
+            ("d", Some(140)),
+        ] {
+            dig_entry(&mut p, t, b, "", "", None, None);
+        }
+        p.sort_by(Field::Bpm, Dir::Asc);
+        assert_eq!(sorted_titles(&p), ["b", "a", "d", "c"]);
+        assert_eq!(p.sorted(), Some((Field::Bpm, Dir::Asc)));
+        p.sort_by(Field::Bpm, Dir::Desc);
+        assert_eq!(sorted_titles(&p), ["d", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn sorting_by_text_fields_is_natural_and_stable() {
+        let mut p = Playlist::default();
+        for (t, cat, side) in [
+            ("x", "LT-10", "B1"),
+            ("y", "LT-2", "A10"),
+            ("z", "LT-1", "A2"),
+            ("w", "LT-2", ""),
+        ] {
+            dig_entry(&mut p, t, None, cat, side, None, None);
+        }
+        p.sort_by(Field::CatNo, Dir::Asc);
+        assert_eq!(
+            sorted_titles(&p),
+            ["z", "y", "w", "x"],
+            "ties keep their order"
+        );
+        p.sort_by(Field::Side, Dir::Asc);
+        assert_eq!(sorted_titles(&p), ["z", "y", "x", "w"]);
+        p.sort_by(Field::Title, Dir::Desc);
+        assert_eq!(sorted_titles(&p), ["z", "y", "x", "w"]);
+    }
+
+    #[test]
+    fn sorting_by_year_time_and_artist() {
+        let mut p = Playlist::default();
+        let a = dig_entry(&mut p, "a", None, "", "", Some(1994), None);
+        let b = dig_entry(&mut p, "b", None, "", "", Some(1989), None);
+        let c = dig_entry(&mut p, "c", None, "", "", None, None);
+        p.sort_by(Field::Year, Dir::Asc);
+        assert_eq!(sorted_titles(&p), ["b", "a", "c"]);
+        for (id, d, artist) in [
+            (a, 300.0, "Mira Sol"),
+            (b, 200.0, ""),
+            (c, 100.0, "nightcraft"),
+        ] {
+            let e = p.entries_mut().find(|e| e.id == id).unwrap();
+            e.duration = Some(d);
+            e.artist = artist.into();
+        }
+        p.sort_by(Field::Time, Dir::Desc);
+        assert_eq!(sorted_titles(&p), ["a", "b", "c"]);
+        p.sort_by(Field::Artist, Dir::Asc);
+        assert_eq!(
+            sorted_titles(&p),
+            ["a", "c", "b"],
+            "case-insensitive, no artist last"
+        );
+    }
+
+    #[test]
+    fn for_sale_sorts_by_price_then_none_then_unknown() {
+        let mut p = Playlist::default();
+        for (t, sale) in [
+            ("unknown", None),
+            ("none", Some((0, None))),
+            ("cheap", Some((3, Some(500)))),
+            ("dear", Some((1, Some(4000)))),
+            ("unpriced", Some((2, None))),
+        ] {
+            dig_entry(&mut p, t, None, "", "", None, sale);
+        }
+        p.sort_by(Field::ForSale, Dir::Asc);
+        assert_eq!(
+            sorted_titles(&p),
+            ["cheap", "dear", "unpriced", "none", "unknown"]
+        );
+        p.sort_by(Field::ForSale, Dir::Desc);
+        assert_eq!(
+            sorted_titles(&p),
+            ["dear", "cheap", "unpriced", "none", "unknown"]
+        );
+    }
+
+    #[test]
+    fn the_sort_mark_lasts_until_the_order_is_changed_otherwise() {
+        let mut p = Playlist::default();
+        for (t, b) in [("a", Some(128)), ("b", Some(122))] {
+            dig_entry(&mut p, t, b, "", "", None, None);
+        }
+        p.sort_by(Field::Title, Dir::Asc);
+        dig_entry(&mut p, "c", None, "", "", None, None);
+        assert_eq!(
+            p.sorted(),
+            Some((Field::Title, Dir::Asc)),
+            "an add in order keeps it"
+        );
+        dig_entry(&mut p, "0", None, "", "", None, None);
+        assert_eq!(p.sorted(), None, "an add out of order clears it");
+        p.sort_by(Field::Title, Dir::Asc);
+        p.move_entry(0, 2);
+        assert_eq!(p.sorted(), None, "a drag clears it");
+    }
+
+    #[test]
+    fn sorting_a_thousand_entries_is_quick() {
+        let mut p = Playlist::default();
+        for i in 0..1000u32 {
+            let cat = format!("LT-{}", (i * 7919) % 1000);
+            dig_entry(
+                &mut p,
+                &format!("t{i}"),
+                Some((i % 90 + 90) as u16),
+                &cat,
+                "A1",
+                None,
+                None,
+            );
+        }
+        let t = std::time::Instant::now();
+        p.sort_by(Field::CatNo, Dir::Asc);
+        p.sort_by(Field::Bpm, Dir::Desc);
+        // < 16 ms each in release; debug builds get a looser bound.
+        let limit = if cfg!(debug_assertions) { 200 } else { 32 };
+        assert!(t.elapsed().as_millis() < limit, "{:?}", t.elapsed());
     }
 
     #[test]

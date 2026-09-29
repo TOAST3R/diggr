@@ -69,6 +69,8 @@ pub struct Settings {
     pub playlist_rows: u16,
     /// Playlist width in skin pixels (it sits right of the player column and can grow).
     pub playlist_width: u16,
+    /// The playlist's columns, shown once it is wide enough.
+    pub columns: crate::columns::ColumnSettings,
     pub volume: f32,
     pub eq: EqSettings,
     pub shuffle: bool,
@@ -94,6 +96,7 @@ impl Default for Settings {
             render_overlay: false,
             playlist_rows: 10,
             playlist_width: MIN_PLAYLIST_WIDTH,
+            columns: Default::default(),
             volume: 0.8,
             eq: EqSettings::default(),
             shuffle: false,
@@ -114,6 +117,7 @@ impl Settings {
         self.playlist_width = self
             .playlist_width
             .clamp(MIN_PLAYLIST_WIDTH, MAX_PLAYLIST_WIDTH);
+        self.columns = self.columns.sanitized();
         self.volume = self.volume.clamp(0.0, 1.0);
         self.eq = self.eq.clamped();
         self.spectrogram = self.spectrogram.sanitized();

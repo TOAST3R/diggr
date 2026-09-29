@@ -97,6 +97,14 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "resize the playlist: wider or narrower, and rows",
             ),
             (
+                "Column header (wide playlist): click",
+                "sort the crate by that column (again: the other way; also OPT ▸ Sort)",
+            ),
+            (
+                "Column header: drag a divider / right-click",
+                "resize a column / show or hide columns",
+            ),
+            (
                 "Playlist title: click / drag",
                 "crate menu (switch, new, rename, delete) / move the window",
             ),
