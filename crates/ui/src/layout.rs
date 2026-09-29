@@ -41,6 +41,24 @@ pub fn window_size(settings: &Settings, d: &SkinDef) -> (u16, u16) {
     (w, h)
 }
 
+/// Width of the player strip beside a maximized playlist, in skin pixels (the transport
+/// sprites are 23).
+pub const STRIP_W: u16 = 27;
+
+/// The maximized layout in a window `w` × `h` skin pixels: the playlist's width and rows,
+/// beside the strip and under the waveform band when it shows.
+pub fn maximized(settings: &Settings, d: &SkinDef, w: f32, h: f32) -> (u16, u16) {
+    let width = (w - STRIP_W as f32).max(d.pl_width as f32) as u16;
+    let band = if settings.show_waveform {
+        crate::waveform::HEIGHT as f32
+    } else {
+        0.0
+    };
+    let free = h - band - (d.pl_top_h + d.pl_bottom_h) as f32;
+    let rows = (free / d.pl_row_h as f32).floor().max(4.0) as u16;
+    (width, rows)
+}
+
 /// The widest playlist whose window still fits `screen_w` points at `scale`.
 pub fn fit_playlist_width(width: u16, d: &SkinDef, scale: f32, screen_w: f32) -> u16 {
     let room = (screen_w / scale).floor() - d.main_size.0 as f32;
@@ -60,7 +78,14 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
             r.w += extra;
         }
     }
-    for name in ["pl_close", "pl_scroll", "pl_info", "pl_opts", "pl_resize"] {
+    for name in [
+        "pl_close",
+        "pl_max",
+        "pl_scroll",
+        "pl_info",
+        "pl_opts",
+        "pl_resize",
+    ] {
         if let Some(r) = out.layout.get_mut(name) {
             r.x += extra;
         }
@@ -125,6 +150,18 @@ mod tests {
             275,
             "never narrower than the skin"
         );
+    }
+
+    #[test]
+    fn a_maximized_playlist_takes_the_window_beside_the_strip() {
+        let d = LoadedSkin::default_skin().def;
+        // 1440 × 870 points at 2×: 720 × 435 skin pixels.
+        let mut s = settings(true, false, true);
+        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 58) / 13));
+        s.show_waveform = true;
+        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 58 - 58) / 13));
+        // A tiny window still gets the minimum playlist.
+        assert_eq!(maximized(&s, &d, 100.0, 50.0), (275, 4));
     }
 
     #[test]

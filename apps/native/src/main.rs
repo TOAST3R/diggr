@@ -115,6 +115,10 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
     if let Some((x, y)) = settings.window_pos {
         viewport = viewport.with_position([x, y]);
     }
+    // A playlist left maximized opens maximized, from the first frame.
+    if settings.playlist_maximized {
+        viewport = viewport.with_maximized(true);
+    }
     // Scores and annotations: ~/Library/Caches/winamp_rust (WINAMP_CACHE_DIR overrides).
     let cache = analysis::cache::ScoreCache::platform_default();
     let options = eframe::NativeOptions {

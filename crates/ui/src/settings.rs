@@ -71,6 +71,8 @@ pub struct Settings {
     pub playlist_width: u16,
     /// The playlist's columns, shown once it is wide enough.
     pub columns: crate::columns::ColumnSettings,
+    /// The playlist fills the maximized window, beside a thin strip of the player.
+    pub playlist_maximized: bool,
     pub volume: f32,
     pub eq: EqSettings,
     pub shuffle: bool,
@@ -97,6 +99,7 @@ impl Default for Settings {
             playlist_rows: 10,
             playlist_width: MIN_PLAYLIST_WIDTH,
             columns: Default::default(),
+            playlist_maximized: false,
             volume: 0.8,
             eq: EqSettings::default(),
             shuffle: false,
@@ -259,6 +262,7 @@ mod tests {
         assert_eq!(s.load_settings().volume, 0.5);
         assert!(s.load_settings().show_playlist);
         assert_eq!(s.load_settings().playlist_width, MIN_PLAYLIST_WIDTH);
+        assert!(!s.load_settings().playlist_maximized);
         // The balance they may hold is gone: the file still loads, and playback is centred.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),

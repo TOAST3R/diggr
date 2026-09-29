@@ -144,6 +144,14 @@ and Home/End jump), and Enter plays the entry under it.
     the crate itself, as in Winamp: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
+  - **⇔** in the playlist's title bar (or `Shift+P`) maximizes the playlist: the window fills
+    the screen below the menu bar, the player folds into a thin strip on the left (play state,
+    elapsed time, previous, play/pause, next, and ⇔ to restore), the EQ hides, and the
+    waveform, when it's on, runs as a band across the full width above the playlist. Press
+    ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
+    app opens maximized next time;
+  - scrolling over the list works anywhere on it, and slow two-finger trackpad scrolling adds
+    up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
   - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
@@ -189,6 +197,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Y` | keep the playing track (again: undo) | | `Cmd+V` | paste a Discogs page into the crate on screen |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
+| `Shift+P` | maximize the playlist (again: restore) | | | |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -634,7 +643,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 482 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 489 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

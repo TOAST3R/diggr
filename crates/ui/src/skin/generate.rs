@@ -634,7 +634,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- title bar buttons ----------------------------------------------------------------
-    for (name, icon) in [("btn_min", 0), ("btn_close", 1)] {
+    for (name, icon) in [("btn_min", 0), ("btn_close", 1), ("btn_max", 2)] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -646,6 +646,13 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
+                } else if icon == 2 {
+                    // ⇔: a bar with a head at each end.
+                    c.fill(x + 2 + o, y + 4 + o, 5, 1, ICON);
+                    for (hx, dir) in [(2, 1), (6, -1)] {
+                        c.px(x + hx + dir + o, y + 3 + o, ICON);
+                        c.px(x + hx + dir + o, y + 5 + o, ICON);
+                    }
                 } else {
                     for i in 0..5 {
                         c.px(x + 2 + i + o, y + 2 + i + o, ICON);
@@ -1053,6 +1060,7 @@ fn layout() -> BTreeMap<String, R> {
         // resize relative to the bottom bar. A height of 0 means "stretch".
         ("pl_titlebar", R::new(0, 0, 275, 20)),
         ("pl_close", R::new(262, 6, 9, 9)),
+        ("pl_max", R::new(250, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_add", R::new(11, 12, 25, 18)),
