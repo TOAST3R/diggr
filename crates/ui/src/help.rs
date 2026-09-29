@@ -53,6 +53,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Enter", "play the entry under the cursor"),
             ("P", "show the playing entry"),
+            (
+                "Shift+P",
+                "maximize the playlist beside a thin player strip (again: restore)",
+            ),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
         ],
@@ -220,7 +224,7 @@ mod tests {
             .collect();
         for k in [
             "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
-            "Cmd+V", "Y", "N", "I", "Tab", "P",
+            "Cmd+V", "Y", "N", "I", "Tab", "P", "Shift+P",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

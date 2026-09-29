@@ -107,6 +107,13 @@ pub struct WinampApp {
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
     pl_resize_acc: egui::Vec2,
+    /// Scrolling not yet enough for a whole row, in points.
+    pl_scroll_acc: f32,
+    /// The window's content size in skin pixels (the maximized layout follows it).
+    win_px: egui::Vec2,
+    /// The OS has reported the window maximized since the playlist was maximized (so a
+    /// later "not maximized" means it was restored behind our back).
+    max_seen: bool,
     /// Which side the arrow keys work on.
     focus: Focus,
     /// The shown crate's playing entry when the list last looked (see `follow_playing_entry`).
@@ -271,6 +278,9 @@ impl WinampApp {
             pl_scroll: 0,
             pl_drag_from: None,
             pl_resize_acc: egui::Vec2::ZERO,
+            pl_scroll_acc: 0.0,
+            win_px: egui::Vec2::ZERO,
+            max_seen: false,
             focus: Focus::Player,
             pl_follow: None,
             width_fitted: false,
@@ -1170,6 +1180,7 @@ impl WinampApp {
                     self.play_entry(self.crates.shown_id(), id);
                 }
             }
+            Key::P if mods.shift && !mods.command => self.apply(Action::ToggleMaximized, ctx),
             Key::P if !mods.command => self.show_playing_entry(),
             _ if !mods.command && self.arrows_move_cursor() => {
                 let mv = match key {
@@ -1199,6 +1210,20 @@ impl WinampApp {
     /// ↑/↓ move the playlist cursor while the playlist has the keyboard (not in fullscreen).
     fn arrows_move_cursor(&self) -> bool {
         self.focus == Focus::Playlist && self.fullscreen.is_none() && self.settings.show_playlist
+    }
+
+    /// Maximizes the window for the playlist (showing it, and giving it the keyboard), or
+    /// restores the previous frame and layout.
+    fn set_maximized(&mut self, ctx: &egui::Context, on: bool) {
+        self.settings.playlist_maximized = on;
+        if on {
+            self.settings.show_playlist = true;
+            self.focus = Focus::Playlist;
+        }
+        self.max_seen = false;
+        self.last_size = None;
+        ctx.send_viewport_cmd(ViewportCommand::Maximized(on));
+        self.mark_settings();
     }
 
     /// Scrolls the playlist by the least amount that shows entry `index`.
@@ -1247,7 +1272,10 @@ impl WinampApp {
             Some(fs) => {
                 ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
                 ctx.send_viewport_cmd(ViewportCommand::CursorVisible(true));
-                if let Some(r) = fs.restore {
+                if self.settings.playlist_maximized {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+                    self.max_seen = false;
+                } else if let Some(r) = fs.restore {
                     ctx.send_viewport_cmd(ViewportCommand::InnerSize(Self::window_size(
                         &self.settings,
                         &self.skin,
@@ -1728,14 +1756,33 @@ impl WinampApp {
         }
     }
 
-    /// Rows the playlist shows now (see [`crate::layout::playlist_rows`]).
+    /// The playlist's width and rows now: the chosen ones, or, while maximized, what the
+    /// window leaves beside the strip (the chosen ones are kept for restoring).
+    fn pl_geometry(&self) -> (u16, usize) {
+        if self.settings.playlist_maximized {
+            let (w, rows) = crate::layout::maximized(
+                &self.settings,
+                &self.skin.def,
+                self.win_px.x,
+                self.win_px.y,
+            );
+            (w, rows as usize)
+        } else {
+            (
+                self.settings.playlist_width,
+                crate::layout::playlist_rows(&self.settings, &self.skin.def) as usize,
+            )
+        }
+    }
+
+    /// Rows the playlist shows now.
     fn pl_rows(&self) -> usize {
-        crate::layout::playlist_rows(&self.settings, &self.skin.def) as usize
+        self.pl_geometry().1
     }
 
     /// The playlist is wide enough for columns (under a header row).
     fn pl_columns(&self) -> bool {
-        self.settings.playlist_width >= crate::columns::COLUMNS_FROM_WIDTH
+        self.pl_geometry().0 >= crate::columns::COLUMNS_FROM_WIDTH
     }
 
     /// Rows of entries on screen: the playlist's rows, less the column header.
@@ -1876,7 +1923,7 @@ impl WinampApp {
     fn playlist_section(&mut self, ui: &mut Ui, origin: Pos2) {
         self.follow_playing_entry();
         let rows = self.pl_rows();
-        let d = crate::layout::playlist_def(&self.def, self.settings.playlist_width);
+        let d = crate::layout::playlist_def(&self.def, self.pl_geometry().0);
         let width = d.pl_width as f32;
         let list_h = (rows * d.pl_row_h as usize) as f32;
         let mut actions = Vec::new();
@@ -1908,6 +1955,9 @@ impl WinampApp {
             if widgets::button(ui, &sk, "pl_close", "pl_close", "btn_close").clicked() {
                 actions.push(Action::TogglePlaylist);
             }
+            if widgets::button(ui, &sk, "pl_max", "pl_max", "btn_max").clicked() {
+                actions.push(Action::ToggleMaximized);
+            }
             let top = d.pl_top_h as f32;
             sk.sprite_in("pl_left", sk.rect(0.0, top, 12.0, list_h));
             sk.sprite_in(
@@ -1922,7 +1972,6 @@ impl WinampApp {
             let font = egui::FontId::proportional(9.5 * scale);
             let clip = sk.painter.with_clip_rect(list);
             let row_h = d.pl_row_h as f32;
-            let list_resp = ui.interact(list, Id::new("pl_list"), Sense::hover());
             let mods = ui.input(|i| ClickMods {
                 shift: i.modifiers.shift,
                 command: i.modifiers.command,
@@ -2123,14 +2172,21 @@ impl WinampApp {
                 }
                 self.pl_drag_from = None;
             }
-            if list_resp.hovered() {
+            // Scrolling adds up, so a trackpad's small steps move the list too. The rows sit
+            // on top of the list, so "over the list" is where the pointer is, not what egui
+            // reports as hovered.
+            if ui.rect_contains_pointer(list) {
                 let dy = ui.input(|i| i.smooth_scroll_delta.y);
-                if dy != 0.0 {
-                    let step = (dy / (row_h * scale)).round() as isize;
-                    let s = (self.pl_scroll as isize - step)
-                        .clamp(0, len.saturating_sub(rows) as isize);
-                    self.pl_scroll = s as usize;
-                }
+                let max = len.saturating_sub(visible);
+                self.pl_scroll = scroll_rows(
+                    &mut self.pl_scroll_acc,
+                    self.pl_scroll,
+                    max,
+                    dy,
+                    row_h * scale,
+                );
+            } else {
+                self.pl_scroll_acc = 0.0;
             }
 
             // Scrollbar.
@@ -2257,7 +2313,9 @@ impl WinampApp {
             self.pl_resize_acc += delta;
             let rows = (self.pl_resize_acc.y / row_h).trunc();
             let width = self.pl_resize_acc.x.trunc();
-            if rows != 0.0 || width != 0.0 {
+            if self.settings.playlist_maximized {
+                self.pl_resize_acc = egui::Vec2::ZERO;
+            } else if rows != 0.0 || width != 0.0 {
                 self.pl_resize_acc -= vec2(width, rows * row_h);
                 actions.push(Action::ResizePlaylist {
                     rows: rows as i32,
@@ -2495,8 +2553,15 @@ impl WinampApp {
                 self.mark_settings();
             }
             Action::TogglePlaylist => {
+                if self.settings.playlist_maximized {
+                    // Hiding the playlist leaves nothing to maximize.
+                    self.set_maximized(ctx, false);
+                }
                 self.settings.show_playlist = !self.settings.show_playlist;
                 self.mark_settings();
+            }
+            Action::ToggleMaximized => {
+                self.set_maximized(ctx, !self.settings.playlist_maximized);
             }
             Action::ToggleRemaining => {
                 self.settings.time_remaining = !self.settings.time_remaining;
@@ -2640,6 +2705,8 @@ enum Action {
     Seek(f64),
     Volume(f32),
     ToggleWaveform,
+    /// Maximize the playlist beside a thin player strip, or restore the normal layout.
+    ToggleMaximized,
     /// Sort the shown crate by a column (again: the other way).
     Sort(Field),
     ToggleColumn(Field),
@@ -2757,6 +2824,20 @@ fn crate_menu_label(name: &str, shown: bool, playing: bool, unreadable: bool) ->
 
 /// Colour and right-hand text of a playlist row: the duration, or a waiting or unavailable
 /// entry's note, dimmed. Only files that couldn't be opened are drawn in the error colour.
+/// The first visible row after scrolling by `dy` points (positive: towards the top), with rows
+/// `row` points high. Partial rows add up in `acc`; they are dropped at either end of the list.
+fn scroll_rows(acc: &mut f32, first: usize, max: usize, dy: f32, row: f32) -> usize {
+    *acc += dy;
+    let steps = (*acc / row).trunc();
+    *acc -= steps * row;
+    let to = first as isize - steps as isize;
+    // Pushing past an end leaves nothing to carry over.
+    if (to <= 0 && *acc > 0.0) || (to >= max as isize && *acc < 0.0) {
+        *acc = 0.0;
+    }
+    to.clamp(0, max as isize) as usize
+}
+
 /// Seconds since the Unix epoch.
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -2896,6 +2977,18 @@ pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String
 
 /// Draws the shown crate's name centred on the playlist title bar, over a plain strip that
 /// hides the bar's decorative lines behind it.
+/// A momentary skin button at any rectangle (the strip's buttons have no layout entry).
+fn strip_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) -> egui::Response {
+    let resp = ui.interact(rect, Id::new(id), Sense::click());
+    let name = if resp.is_pointer_button_down_on() {
+        format!("{sprite}_p")
+    } else {
+        sprite.to_owned()
+    };
+    sk.sprite_in(&name, rect);
+    resp
+}
+
 /// The side that has the keyboard: the player (main, waveform, EQ) or the playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -3119,8 +3212,22 @@ impl WinampApp {
                 self.mark_settings();
             }
         }
-        // Keep the window sized to the visible sections (not in fullscreen).
-        if self.fullscreen.is_none() {
+        // While the playlist is maximized the OS sizes the window and the layout follows it.
+        // Restored from outside (a window manager): back to the normal layout.
+        if self.settings.playlist_maximized && self.fullscreen.is_none() {
+            match ctx.input(|i| i.viewport().maximized) {
+                Some(true) => self.max_seen = true,
+                Some(false) if self.max_seen => {
+                    self.settings.playlist_maximized = false;
+                    self.max_seen = false;
+                    self.last_size = None;
+                    self.mark_settings();
+                }
+                _ => {}
+            }
+        }
+        // Keep the window sized to the visible sections (not in fullscreen or maximized).
+        if self.fullscreen.is_none() && !self.settings.playlist_maximized {
             let size = Self::window_size(&self.settings, &self.skin);
             if self.last_size != Some(size) {
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
@@ -3170,6 +3277,13 @@ impl WinampApp {
             let origin = ui.max_rect().min;
             let scale = self.settings.scale as f32;
             let d = self.skin.def.clone();
+            self.win_px = ui.max_rect().size() / scale;
+            let maximized = self.settings.playlist_maximized;
+            let player_w = if maximized {
+                crate::layout::STRIP_W as f32
+            } else {
+                d.main_size.0 as f32
+            };
             // A click gives its side the keyboard (lit in this same frame).
             if let Some(p) = ctx.input(|i| {
                 i.pointer
@@ -3177,7 +3291,7 @@ impl WinampApp {
                     .then(|| i.pointer.interact_pos())
                     .flatten()
             }) {
-                let playlist_x = origin.x + d.main_size.0 as f32 * scale;
+                let playlist_x = origin.x + player_w * scale;
                 self.focus = if self.settings.show_playlist && p.x >= playlist_x {
                     Focus::Playlist
                 } else {
@@ -3187,33 +3301,10 @@ impl WinampApp {
             if !self.settings.show_playlist {
                 self.focus = Focus::Player;
             }
-            self.main_section(ui, origin);
-            let mut y = d.main_size.1 as f32;
-            if self.settings.show_waveform {
-                let rect = Rect::from_min_size(
-                    origin + vec2(0.0, y * scale),
-                    vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
-                );
-                self.waveform_section(ui, rect);
-                y += crate::waveform::HEIGHT as f32;
-            }
-            if self.settings.show_eq {
-                self.eq_section(ui, origin + vec2(0.0, y * scale));
-                y += d.eq_size.1 as f32;
-            }
-            if self.settings.show_playlist {
-                // The playlist sits right of the player column; below a shorter player column,
-                // plain panel.
-                let (_, h) = crate::layout::window_size(&self.settings, &d);
-                if (h as f32) > y {
-                    let def = self.def.clone();
-                    let sk = self.skinned(&def, ui, origin);
-                    sk.sprite_in(
-                        "pl_bottom_fill",
-                        sk.rect(0.0, y, d.main_size.0 as f32, h as f32 - y),
-                    );
-                }
-                self.playlist_section(ui, origin + vec2(d.main_size.0 as f32 * scale, 0.0));
+            if maximized {
+                self.maximized_layout(ui, origin);
+            } else {
+                self.normal_layout(ui, origin);
             }
             if self
                 .message
@@ -3257,6 +3348,119 @@ impl WinampApp {
             if self.startup.exit_after_first_frame {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
+        }
+    }
+
+    /// The player column (main, waveform, EQ) with the playlist to its right.
+    fn normal_layout(&mut self, ui: &mut Ui, origin: Pos2) {
+        let scale = self.settings.scale as f32;
+        let d = self.skin.def.clone();
+        self.main_section(ui, origin);
+        let mut y = d.main_size.1 as f32;
+        if self.settings.show_waveform {
+            let rect = Rect::from_min_size(
+                origin + vec2(0.0, y * scale),
+                vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
+            );
+            self.waveform_section(ui, rect);
+            y += crate::waveform::HEIGHT as f32;
+        }
+        if self.settings.show_eq {
+            self.eq_section(ui, origin + vec2(0.0, y * scale));
+            y += d.eq_size.1 as f32;
+        }
+        if self.settings.show_playlist {
+            // The playlist sits right of the player column; below a shorter player column,
+            // plain panel.
+            let (_, h) = crate::layout::window_size(&self.settings, &d);
+            if (h as f32) > y {
+                let def = self.def.clone();
+                let sk = self.skinned(&def, ui, origin);
+                sk.sprite_in(
+                    "pl_bottom_fill",
+                    sk.rect(0.0, y, d.main_size.0 as f32, h as f32 - y),
+                );
+            }
+            self.playlist_section(ui, origin + vec2(d.main_size.0 as f32 * scale, 0.0));
+        }
+    }
+
+    /// The maximized playlist: the player as a thin strip on the left, the waveform (when on)
+    /// as a band across the rest, and the playlist under it, filling the window.
+    fn maximized_layout(&mut self, ui: &mut Ui, origin: Pos2) {
+        let scale = self.settings.scale as f32;
+        let strip = crate::layout::STRIP_W as f32;
+        self.player_strip(ui, origin);
+        let mut y = 0.0;
+        if self.settings.show_waveform {
+            let rect = Rect::from_min_size(
+                origin + vec2(strip * scale, 0.0),
+                vec2(self.win_px.x - strip, crate::waveform::HEIGHT as f32) * scale,
+            );
+            self.waveform_section(ui, rect);
+            y = crate::waveform::HEIGHT as f32;
+        }
+        self.playlist_section(ui, origin + vec2(strip * scale, y * scale));
+    }
+
+    /// The player folded to a strip: play state, elapsed mm over ss, previous, play or pause,
+    /// next, and ⇔ to restore. A click on it gives the player the keyboard.
+    fn player_strip(&mut self, ui: &mut Ui, origin: Pos2) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        let w = crate::layout::STRIP_W as f32;
+        let h = self.win_px.y;
+        sk.sprite_in("pl_bottom_fill", sk.rect(0.0, 0.0, w, h));
+        let state = self.position.state;
+        sk.sprite(
+            match state {
+                PlayState::Playing => "status_play",
+                PlayState::Paused => "status_pause",
+                PlayState::Stopped => "status_stop",
+            },
+            9.0,
+            5.0,
+        );
+        let (mm, ss) = format::lcd(self.position.seconds());
+        let digits = |text: &str, y: f32| {
+            let chars: Vec<char> = text.chars().collect();
+            let two = &chars[chars.len().saturating_sub(2)..];
+            for (i, c) in two.iter().enumerate() {
+                let name = if state == PlayState::Stopped {
+                    "digit_blank".to_owned()
+                } else {
+                    format!("digit_{c}")
+                };
+                sk.sprite(&name, 4.0 + 10.0 * i as f32, y);
+            }
+        };
+        digits(&mm, 18.0);
+        digits(&ss, 33.0);
+        let mut actions = Vec::new();
+        let (play_sprite, play_action) = if state == PlayState::Playing {
+            ("pause", Action::Pause)
+        } else {
+            ("play", Action::Play)
+        };
+        for (i, (id, sprite, action)) in [
+            ("strip_prev", "prev", Action::Prev),
+            ("strip_play", play_sprite, play_action),
+            ("strip_next", "next", Action::Next),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let r = sk.rect(2.0, 52.0 + 20.0 * i as f32, 23.0, 18.0);
+            if strip_button(ui, &sk, id, r, sprite).clicked() {
+                actions.push(action);
+            }
+        }
+        let r = sk.rect(9.0, h - 14.0, 9.0, 9.0);
+        if strip_button(ui, &sk, "strip_max", r, "btn_max").clicked() {
+            actions.push(Action::ToggleMaximized);
+        }
+        for a in actions {
+            self.apply(a, ui.ctx());
         }
     }
 
@@ -3551,6 +3755,30 @@ mod tests {
             repaint_after(minimized),
             None,
             "no repaints while minimized/occluded"
+        );
+    }
+
+    #[test]
+    fn slow_scrolling_adds_up_to_whole_rows() {
+        let mut acc = 0.0;
+        let mut first = 10;
+        // 3 points a frame for 10 frames, downwards, with 13-point rows: 2 rows.
+        for _ in 0..10 {
+            first = scroll_rows(&mut acc, first, 100, -3.0, 13.0);
+        }
+        assert_eq!(first, 12);
+        // Leftovers pushing past an end are dropped; scrolling away from it keeps them.
+        let mut acc = 12.0;
+        assert_eq!(scroll_rows(&mut acc, 0, 100, 0.5, 13.0), 0);
+        assert_eq!(acc, 0.0);
+        let mut acc = 0.0;
+        assert_eq!(scroll_rows(&mut acc, 0, 100, -5.0, 13.0), 0);
+        assert_eq!(acc, -5.0);
+        let mut acc = 0.0;
+        assert_eq!(
+            scroll_rows(&mut acc, 5, 100, 40.0, 13.0),
+            2,
+            "a wheel step moves at once"
         );
     }
 
@@ -4533,6 +4761,132 @@ mod headless_tests {
             shows(&out, "1. (LT-012) Nightcraft: Glasshouse (124 BPM)"),
             "{:?}",
             text_list(&out)
+        );
+    }
+
+    #[test]
+    fn trackpad_scrolling_moves_the_list_and_forgets_leftovers_off_it() {
+        let mut rig = Rig::new("scroll", Vec::new(), |_| {});
+        rig.fill_playlist(40);
+        let over = rig.row(3);
+        // Slow two-finger scrolling: many small steps, each far less than a row.
+        for _ in 0..30 {
+            rig.frame(vec![
+                Event::PointerMoved(over),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -2.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                },
+            ]);
+        }
+        for _ in 0..30 {
+            rig.frame(vec![Event::PointerMoved(over)]);
+        }
+        assert!(rig.app.pl_scroll >= 3, "moved {} rows", rig.app.pl_scroll);
+        rig.app.pl_scroll_acc = 10.0;
+        rig.frame(vec![Event::PointerMoved(pos2(150.0, 45.0))]);
+        assert_eq!(rig.app.pl_scroll_acc, 0.0, "dropped off the list");
+    }
+
+    fn maximize_commands(out: &egui::FullOutput) -> Vec<bool> {
+        out.viewport_output
+            .values()
+            .flat_map(|v| v.commands.iter())
+            .filter_map(|c| match c {
+                ViewportCommand::Maximized(on) => Some(*on),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shift_p_maximizes_the_playlist_and_restores_it() {
+        let mut rig = Rig::new("maximize", Vec::new(), |_| {});
+        rig.fill_playlist(5);
+        rig.app.settings.show_playlist = false;
+        let out = rig.key(Key::P, Modifiers::SHIFT);
+        assert!(rig.app.settings.playlist_maximized);
+        assert!(rig.app.settings.show_playlist, "shown first");
+        assert_eq!(rig.app.focus, Focus::Playlist, "with the keyboard");
+        assert_eq!(maximize_commands(&out), [true]);
+        let saved = (
+            rig.app.settings.playlist_width,
+            rig.app.settings.playlist_rows,
+        );
+        // The rig's window is 1100 × 400: the playlist takes it beside the strip, in columns.
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Cat#"), "{:?}", text_list(&out));
+        assert_eq!(rig.app.pl_geometry().0, 1100 - crate::layout::STRIP_W);
+        let out = rig.key(Key::P, Modifiers::SHIFT);
+        assert!(!rig.app.settings.playlist_maximized);
+        assert_eq!(maximize_commands(&out), [false]);
+        assert_eq!(
+            (
+                rig.app.settings.playlist_width,
+                rig.app.settings.playlist_rows
+            ),
+            saved,
+            "the normal size is untouched"
+        );
+        assert!(!shows(&rig.frame(Vec::new()), "Cat#"));
+    }
+
+    #[test]
+    fn the_strip_steers_playback_and_restores_the_layout() {
+        let mut rig = Rig::new(
+            "strip",
+            vec![fixture("tone.flac"), fixture("tone.wav")],
+            |_| {},
+        );
+        rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+        let ids = rig.ids(PLAYLIST);
+        rig.key(Key::P, Modifiers::SHIFT);
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "WINAMP EQUALIZER"));
+        // Next is the third button, 52 + 2 × 20 skin pixels down the strip.
+        rig.click(pos2(13.0, 92.0 + 9.0));
+        rig.until(
+            |r| r.app.crates.playing().current() == Some(ids[1]),
+            "the strip's next starts the next track",
+        );
+        // ⇔ at the strip's foot restores.
+        rig.click(pos2(13.0, 400.0 - 14.0 + 4.0));
+        assert!(!rig.app.settings.playlist_maximized);
+    }
+
+    #[test]
+    fn leaving_fullscreen_visuals_maximizes_the_playlist_again() {
+        let mut rig = Rig::new("max-fullscreen", Vec::new(), |_| {});
+        rig.key(Key::P, Modifiers::SHIFT);
+        rig.key(Key::F, Modifiers::NONE);
+        assert!(rig.app.fullscreen.is_some());
+        let out = rig.key(Key::F, Modifiers::NONE);
+        assert!(rig.app.fullscreen.is_none());
+        assert_eq!(maximize_commands(&out), [true]);
+        let sized = out.viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, ViewportCommand::InnerSize(_)))
+        });
+        assert!(!sized, "the OS sizes a maximized window");
+    }
+
+    #[test]
+    fn the_waveform_band_spans_the_maximized_window_and_seeks() {
+        let mut rig = Rig::new("band", vec![fixture("tone.flac")], |_| {});
+        rig.app.settings.show_waveform = true;
+        rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+        rig.key(Key::P, Modifiers::SHIFT);
+        rig.frame(Vec::new());
+        // Three quarters across the band's overview row: 1.5 s of the 2 s tone.
+        let strip = crate::layout::STRIP_W as f32;
+        let x = strip + (1100.0 - strip) * 0.75;
+        rig.click(pos2(x, 6.0));
+        rig.until(
+            |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
+            "seeked to 1.5 s",
         );
     }
 
