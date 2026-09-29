@@ -21,11 +21,13 @@
 
 **1. Status kinds.**
 ```
-Waiting(WaitKind):  Listed | Queued | Downloading(u8 %) | Preparing | NeedsYtDlp | Other(String)
+Waiting(WaitKind):  Listed | Queued | Downloading(u8 %) | NeedsYtDlp | Other(String)
 Unavailable(UnavailableKind): NoClip | ClipFailed | Other(String)
 ```
-- `note()` stays: it renders the kind back to the same text, now used by the tooltip and by tests.
-- Saved crates are written with the kind. On load, the known old strings ("listed", "downloading N%", "needs yt-dlp", "no clip", "clip failed") map to their kind, and anything else becomes `Other`, shown with a generic icon.
+- There is no "preparing" kind: a downloaded preview is already playable while it is prepared.
+- `note()` stays: it renders the kind back to the same wording, now used by the tooltip and by tests.
+- Each kind's `Display` wording converts back with `From<&str>` ("listed", "downloading N%", "needs yt-dlp", "no clip", "clip failed"); anything else becomes `Other`, shown with a generic icon. Saved crates keep storing the wording, so old and new crate files are the same format.
+- The UI code sets kinds directly. The `dig` crate keeps reporting its reasons as text ("no clip", "not found", "clip failed"), and they are converted where they enter the UI.
 
 Alternative: keep strings and pick icons by matching the text. Rejected, because it is brittle and the text would drift from the icons.
 
