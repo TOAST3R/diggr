@@ -359,6 +359,49 @@ fn the_entry_menu_keeps_passes_and_opens_the_for_sale_page() {
     rig.click_with(row, PointerButton::Secondary);
     rig.click_text("Open for-sale page (I)");
     assert_eq!(*fakes.browser.opened.lock().unwrap(), [sell_url(1001)]);
+    rig.click_with(row, PointerButton::Secondary);
+    rig.click_text("Open release on Discogs");
+    let release = "https://www.discogs.com/release/1001";
+    assert_eq!(
+        fakes.browser.opened.lock().unwrap().last().unwrap(),
+        release
+    );
+    rig.click_with(row, PointerButton::Secondary);
+    // The copy goes out in the frame of the click's release.
+    let menu = rig.frame(Vec::new());
+    let at = texts(&menu)
+        .into_iter()
+        .find(|t| t.text == "Copy Discogs link")
+        .expect("in the menu")
+        .rect
+        .center();
+    rig.frame(vec![Event::PointerMoved(at)]);
+    rig.press(at, PointerButton::Primary, true);
+    let out = rig.press(at, PointerButton::Primary, false);
+    assert!(
+        out.platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText(release.into())),
+        "{:?}",
+        out.platform_output.commands
+    );
+}
+
+#[test]
+fn the_entry_menu_has_no_discogs_links_for_a_local_file() {
+    let fakes = Fakes::new();
+    let f = fakes.clone();
+    let mut rig = Rig::with_dig(
+        "dig-menu-local",
+        vec![fixture("tone.wav")],
+        |_| {},
+        move |dir| Some(f.setup(dir)),
+    );
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Remove"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Open release on Discogs"));
+    assert!(!shows(&out, "Copy Discogs link"));
 }
 
 #[test]

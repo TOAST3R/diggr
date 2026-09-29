@@ -441,6 +441,36 @@
             w: 47,
             h: 15,
         ),
+        "st_listed": (
+            x: 262,
+            y: 322,
+            w: 9,
+            h: 9,
+        ),
+        "st_needs_tool": (
+            x: 282,
+            y: 322,
+            w: 9,
+            h: 9,
+        ),
+        "st_other": (
+            x: 302,
+            y: 322,
+            w: 9,
+            h: 9,
+        ),
+        "st_queued": (
+            x: 272,
+            y: 322,
+            w: 9,
+            h: 9,
+        ),
+        "st_unavailable": (
+            x: 292,
+            y: 322,
+            w: 9,
+            h: 9,
+        ),
         "status_pause": (
             x: 64,
             y: 308,
@@ -853,7 +883,7 @@
         ),
     },
     font: (
-        x: 262,
+        x: 312,
         y: 322,
         glyph_w: 5,
         glyph_h: 7,

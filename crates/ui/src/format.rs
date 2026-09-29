@@ -99,6 +99,78 @@ pub fn origin_details(o: &crate::playlist::Origin) -> String {
     parts.iter().map(|p| format!(" · {p}")).collect()
 }
 
+/// How long ago, roughly: "just now", "12 min ago", "3 h ago", "2 d ago".
+pub fn ago(secs: u64) -> String {
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", secs / 60),
+        3600..86_400 => format!("{} h ago", secs / 3600),
+        _ => format!("{} d ago", secs / 86_400),
+    }
+}
+
+/// What the dig side knows about an entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DigMarks {
+    pub kept: bool,
+    pub passed: bool,
+    pub wantlist_pending: bool,
+}
+
+/// Everything known about an entry, for its tooltip, as (label, value) lines. Nothing unknown
+/// is listed. `now` is seconds since the Unix epoch (for the for-sale snapshot's age).
+pub fn entry_details(
+    e: &crate::playlist::Entry,
+    marks: DigMarks,
+    now: u64,
+) -> Vec<(&'static str, String)> {
+    let mut out = vec![("", e.display_name())];
+    let mut add = |label: &'static str, value: &str| {
+        if !value.trim().is_empty() {
+            out.push((label, value.trim().to_owned()));
+        }
+    };
+    if let Some(o) = &e.origin {
+        add("Label", &o.label);
+        add("Cat#", &o.catno);
+        add("Side", &o.position);
+        add("Year", &o.year.map(|y| y.to_string()).unwrap_or_default());
+    }
+    add(
+        "Tempo",
+        &e.bpm.map(|b| format!("{b} BPM")).unwrap_or_default(),
+    );
+    add("Time", &e.duration.map(clock).unwrap_or_default());
+    add("Status", &e.status.note().unwrap_or_default());
+    if marks.kept {
+        add("Kept", "yes");
+    }
+    if marks.passed {
+        add("Passed", "yes");
+    }
+    if marks.wantlist_pending {
+        add("Wantlist", "change pending");
+    }
+    if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
+        let what = match (fs.count, fs.lowest_cents) {
+            (0, _) => "none".to_owned(),
+            (n, Some(c)) => format!("{n} from {}", price(c, &fs.currency)),
+            (n, None) => n.to_string(),
+        };
+        add(
+            "For sale",
+            &format!(
+                "{what} (fetched {})",
+                ago(now.saturating_sub(fs.fetched_at))
+            ),
+        );
+    }
+    if e.origin.is_none() && e.source.is_none() {
+        add("File", &e.track.0);
+    }
+    out
+}
+
 /// `€9.00`, `£12.50`, `$7.00`, `¥1500`; other currencies by their ISO code (`CHF 12.00`).
 pub fn price(cents: u64, currency: &str) -> String {
     let units = format!("{}.{:02}", cents / 100, cents % 100);
@@ -220,6 +292,75 @@ mod tests {
         o.position.clear();
         assert_eq!(origin_details(&o), "", "the catalog number isn't repeated");
         assert_eq!(origin_details(&Origin::default()), "");
+    }
+
+    #[test]
+    fn ages_read_roughly() {
+        assert_eq!(ago(5), "just now");
+        assert_eq!(ago(720), "12 min ago");
+        assert_eq!(ago(3 * 3600 + 100), "3 h ago");
+        assert_eq!(ago(2 * 86_400), "2 d ago");
+    }
+
+    #[test]
+    fn details_list_what_is_known_about_an_entry() {
+        use crate::playlist::{ForSale, Origin, Playlist};
+        use platform::TrackRef;
+        let now = 1_800_000_000;
+        let mut p = Playlist::default();
+        let dig = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(Origin {
+                label: "Lowtide Tapes".into(),
+                catno: "LT-012".into(),
+                position: "A1".into(),
+                year: Some(1994),
+                for_sale: Some(ForSale {
+                    count: 6,
+                    lowest_cents: Some(900),
+                    currency: "EUR".into(),
+                    fetched_at: now - 3 * 3600,
+                }),
+                ..Default::default()
+            }),
+            "downloading 40%",
+        );
+        let local = p.add([TrackRef::new("/music/Mira Sol - Coastline.flac")])[0].0;
+        let e = p.get(dig).unwrap().clone();
+        let marks = DigMarks {
+            kept: true,
+            wantlist_pending: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            entry_details(&e, marks, now),
+            [
+                ("", "(LT-012) Nightcraft: Glasshouse".to_owned()),
+                ("Label", "Lowtide Tapes".into()),
+                ("Cat#", "LT-012".into()),
+                ("Side", "A1".into()),
+                ("Year", "1994".into()),
+                ("Status", "downloading 40%".into()),
+                ("Kept", "yes".into()),
+                ("Wantlist", "change pending".into()),
+                ("For sale", "6 from €9.00 (fetched 3 h ago)".into()),
+            ]
+        );
+        let mut l = p.get(local).unwrap().clone();
+        l.bpm = Some(128);
+        l.duration = Some(372.0);
+        assert_eq!(
+            entry_details(&l, DigMarks::default(), now),
+            [
+                ("", "Mira Sol - Coastline (128 BPM)".to_owned()),
+                ("Tempo", "128 BPM".into()),
+                ("Time", "6:12".into()),
+                ("File", "/music/Mira Sol - Coastline.flac".into()),
+            ],
+            "a local file: its path, and no Discogs fields"
+        );
     }
 
     #[test]

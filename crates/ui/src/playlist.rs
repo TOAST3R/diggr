@@ -19,10 +19,95 @@ pub enum EntryStatus {
     Ready,
     /// Could not be opened or decoded.
     Failed,
-    /// The audio isn't local yet; the text says why ("listed", "downloading 40%").
-    Waiting(String),
-    /// Will never play ("no clip"); kept for the record.
-    Unavailable(String),
+    /// The audio isn't local yet, and why.
+    Waiting(WaitKind),
+    /// Will never play; kept for the record.
+    Unavailable(UnavailableKind),
+}
+
+/// Why an entry is waiting for its audio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitKind {
+    /// Its record is listed; its details haven't arrived yet.
+    Listed,
+    /// Its preview will download when it nears the playhead.
+    Queued,
+    /// Its preview is downloading (percent).
+    Downloading(u8),
+    /// Previews can't download until yt-dlp is found.
+    NeedsYtDlp,
+    Other(String),
+}
+
+/// Why an entry will never play.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnavailableKind {
+    /// Its record has no usable clip.
+    NoClip,
+    /// Its clip failed to download twice.
+    ClipFailed,
+    Other(String),
+}
+
+impl std::fmt::Display for WaitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WaitKind::Listed => f.write_str("listed"),
+            WaitKind::Queued => f.write_str("queued"),
+            WaitKind::Downloading(p) => write!(f, "downloading {p}%"),
+            WaitKind::NeedsYtDlp => f.write_str("needs yt-dlp"),
+            WaitKind::Other(t) => f.write_str(t),
+        }
+    }
+}
+
+impl std::fmt::Display for UnavailableKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnavailableKind::NoClip => f.write_str("no clip"),
+            UnavailableKind::ClipFailed => f.write_str("clip failed"),
+            UnavailableKind::Other(t) => f.write_str(t),
+        }
+    }
+}
+
+/// The wording back to its kind: saved crates store the wording, and the dig crate reports
+/// reasons as text. Anything unknown is kept as `Other`.
+impl From<&str> for WaitKind {
+    fn from(t: &str) -> Self {
+        match t {
+            "listed" => WaitKind::Listed,
+            "queued" => WaitKind::Queued,
+            "needs yt-dlp" => WaitKind::NeedsYtDlp,
+            _ => t
+                .strip_prefix("downloading ")
+                .and_then(|p| p.strip_suffix('%'))
+                .and_then(|p| p.parse().ok())
+                .map_or_else(|| WaitKind::Other(t.to_owned()), WaitKind::Downloading),
+        }
+    }
+}
+
+impl From<String> for WaitKind {
+    fn from(t: String) -> Self {
+        t.as_str().into()
+    }
+}
+
+impl From<&str> for UnavailableKind {
+    fn from(t: &str) -> Self {
+        match t {
+            "no clip" => UnavailableKind::NoClip,
+            "clip failed" => UnavailableKind::ClipFailed,
+            _ => UnavailableKind::Other(t.to_owned()),
+        }
+    }
+}
+
+impl From<String> for UnavailableKind {
+    fn from(t: String) -> Self {
+        t.as_str().into()
+    }
 }
 
 impl EntryStatus {
@@ -36,10 +121,12 @@ impl EntryStatus {
         self.is_playable() || matches!(self, EntryStatus::Waiting(_))
     }
 
-    /// The short text shown where a waiting or unavailable entry's duration would be.
-    pub fn note(&self) -> Option<&str> {
+    /// What a waiting or unavailable entry is waiting for, or why it won't play, in words
+    /// ("downloading 40%", "no clip").
+    pub fn note(&self) -> Option<String> {
         match self {
-            EntryStatus::Waiting(t) | EntryStatus::Unavailable(t) => Some(t),
+            EntryStatus::Waiting(w) => Some(w.to_string()),
+            EntryStatus::Unavailable(u) => Some(u.to_string()),
             _ => None,
         }
     }
@@ -87,8 +174,8 @@ pub struct NewEntry {
     pub origin: Option<Origin>,
     /// A duration known before the file is read.
     pub duration: Option<f64>,
-    /// The waiting note ("queued").
-    pub status: String,
+    /// Why it waits (usually queued).
+    pub status: WaitKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,8 +228,8 @@ impl Entry {
             source: self.source.clone(),
             origin: self.origin.clone(),
             status: match &self.status {
-                EntryStatus::Waiting(t) => SavedStatus::Waiting(t.clone()),
-                EntryStatus::Unavailable(t) => SavedStatus::Unavailable(t.clone()),
+                EntryStatus::Waiting(w) => SavedStatus::Waiting(w.to_string()),
+                EntryStatus::Unavailable(u) => SavedStatus::Unavailable(u.to_string()),
                 _ => SavedStatus::Local,
             },
         }
@@ -341,7 +428,7 @@ impl Playlist {
         title: impl Into<String>,
         source: Option<String>,
         origin: Option<Origin>,
-        status: impl Into<String>,
+        status: impl Into<WaitKind>,
     ) -> EntryId {
         let id = self.alloc_id();
         self.entries.push(Entry {
@@ -358,12 +445,12 @@ impl Playlist {
         id
     }
 
-    /// Updates a waiting entry's note ("downloading 40%").
-    pub fn set_status(&mut self, id: EntryId, text: impl Into<String>) {
+    /// Updates why a waiting entry waits (downloading 40%).
+    pub fn set_status(&mut self, id: EntryId, kind: impl Into<WaitKind>) {
         if let Some(e) = self.entry_mut(id)
-            && let EntryStatus::Waiting(t) = &mut e.status
+            && let EntryStatus::Waiting(w) = &mut e.status
         {
-            *t = text.into();
+            *w = kind.into();
         }
     }
 
@@ -425,10 +512,10 @@ impl Playlist {
     }
 
     /// An entry whose audio went away (its preview was deleted from the cache) waits again.
-    pub fn set_waiting(&mut self, id: EntryId, text: impl Into<String>) {
+    pub fn set_waiting(&mut self, id: EntryId, kind: impl Into<WaitKind>) {
         if let Some(e) = self.entry_mut(id) {
             e.track = TrackRef::new("");
-            e.status = EntryStatus::Waiting(text.into());
+            e.status = EntryStatus::Waiting(kind.into());
         }
     }
 
@@ -438,7 +525,7 @@ impl Playlist {
     }
 
     /// The entry will never have audio; it stays listed, dimmed, with `reason`.
-    pub fn set_unavailable(&mut self, id: EntryId, reason: impl Into<String>) {
+    pub fn set_unavailable(&mut self, id: EntryId, reason: impl Into<UnavailableKind>) {
         if let Some(e) = self.entry_mut(id) {
             e.status = EntryStatus::Unavailable(reason.into());
         }
@@ -712,8 +799,8 @@ impl Entry {
         let track = TrackRef::new(s.path);
         let known = !s.title.is_empty();
         let status = match s.status {
-            SavedStatus::Waiting(t) => EntryStatus::Waiting(t),
-            SavedStatus::Unavailable(t) => EntryStatus::Unavailable(t),
+            SavedStatus::Waiting(t) => EntryStatus::Waiting(t.into()),
+            SavedStatus::Unavailable(t) => EntryStatus::Unavailable(t.into()),
             SavedStatus::Local if known => EntryStatus::Ready,
             SavedStatus::Local => EntryStatus::Pending,
         };
@@ -1030,6 +1117,64 @@ mod tests {
         assert_eq!(p.cursor(), Some(next));
         p.clear();
         assert_eq!(p.cursor(), None);
+    }
+
+    #[test]
+    fn statuses_read_back_from_their_wording() {
+        for w in [
+            WaitKind::Listed,
+            WaitKind::Queued,
+            WaitKind::Downloading(40),
+            WaitKind::NeedsYtDlp,
+            WaitKind::Other("paused by Discogs".into()),
+        ] {
+            assert_eq!(WaitKind::from(w.to_string()), w);
+        }
+        for u in [
+            UnavailableKind::NoClip,
+            UnavailableKind::ClipFailed,
+            UnavailableKind::Other("not found".into()),
+        ] {
+            assert_eq!(UnavailableKind::from(u.to_string()), u);
+        }
+        assert_eq!(
+            WaitKind::from("downloading lots%"),
+            WaitKind::Other("downloading lots%".into())
+        );
+        assert_eq!(
+            EntryStatus::Waiting(WaitKind::Downloading(7))
+                .note()
+                .as_deref(),
+            Some("downloading 7%")
+        );
+    }
+
+    #[test]
+    fn a_crate_saved_with_status_words_loads_their_kinds() {
+        let text = r#"(entries: [
+            (path: "", title: "A", status: Waiting("listed")),
+            (path: "", title: "B", status: Waiting("downloading 40%")),
+            (path: "", title: "C", status: Waiting("needs yt-dlp")),
+            (path: "", title: "D", status: Unavailable("no clip")),
+            (path: "", title: "E", status: Unavailable("failed: 502")),
+        ], current: None)"#;
+        let (p, _) = Playlist::from_saved(ron::from_str(text).unwrap());
+        let got: Vec<_> = p.entries().iter().map(|e| e.status.clone()).collect();
+        assert_eq!(
+            got,
+            [
+                EntryStatus::Waiting(WaitKind::Listed),
+                EntryStatus::Waiting(WaitKind::Downloading(40)),
+                EntryStatus::Waiting(WaitKind::NeedsYtDlp),
+                EntryStatus::Unavailable(UnavailableKind::NoClip),
+                EntryStatus::Unavailable(UnavailableKind::Other("failed: 502".into())),
+            ]
+        );
+        // And they are written back in the same words.
+        assert_eq!(
+            ron::to_string(&p.to_saved()).unwrap(),
+            ron::to_string(&ron::from_str::<SavedPlaylist>(text).unwrap()).unwrap()
+        );
     }
 
     #[test]

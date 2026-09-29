@@ -19,7 +19,7 @@ use audio::PlayState;
 use dig::bridge::{
     self, BridgeCommand, BridgeHandle, CrateState, Mode, Pairing, SendState, Shared, Snapshot,
 };
-use dig::browser::{Browser, SystemBrowser, sell_url};
+use dig::browser::{Browser, SystemBrowser, record_url, sell_url};
 use dig::clock::{Clock, RealClock};
 use dig::config::{self as digconf, DigSettings};
 use dig::discogs::cache::DiskCache;
@@ -40,7 +40,7 @@ use platform::{FileSource, Spawner, TrackRef};
 
 use super::{Action, WinampApp};
 use crate::crates::{CrateId, MAX_NAME};
-use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin};
+use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, WaitKind};
 
 /// Pending wantlist changes are sent again this often.
 const WANTLIST_RETRY: Duration = Duration::from_secs(60);
@@ -102,6 +102,8 @@ pub enum DigAction {
     Pass(EntryId),
     UndoPass(EntryId),
     OpenForSale(EntryId),
+    /// The entry's release (or master) page on Discogs.
+    OpenRecord(EntryId),
     OpenDialog,
     OpenBrowserDialog,
 }
@@ -389,9 +391,15 @@ fn clip_of(e: &Entry) -> Option<&str> {
     e.origin.as_ref()?.clip.as_deref()
 }
 
+/// The Discogs page of the record an entry comes from, if it comes from one.
+fn entry_record_url(e: &Entry) -> Option<String> {
+    let o = e.origin.as_ref()?;
+    record_url(o.release, o.master)
+}
+
 /// The record a "listed" placeholder stands for.
 fn listed_key(e: &Entry) -> Option<RecordKey> {
-    if e.status != EntryStatus::Waiting("listed".into()) {
+    if e.status != EntryStatus::Waiting(WaitKind::Listed) {
         return None;
     }
     let o = e.origin.as_ref().filter(|o| o.clip.is_none())?;
@@ -710,7 +718,7 @@ impl WinampApp {
                         title,
                         None,
                         Some(origin(&j.page, &info)),
-                        "listed",
+                        WaitKind::Listed,
                     );
                 }
                 self.mark_crate(j.target);
@@ -806,7 +814,8 @@ impl WinampApp {
                         e.title = info.title.clone();
                     }
                 }
-                p.set_unavailable(placeholder, reason);
+                // The dig crate reports reasons in words ("no clip", "not found").
+                p.set_unavailable(placeholder, reason.as_str());
                 self.mark_crate(j.target);
                 return;
             }
@@ -830,7 +839,7 @@ impl WinampApp {
                         artist: c.artist,
                         title: c.title,
                         duration: c.duration,
-                        status: "queued".into(),
+                        status: WaitKind::Queued,
                     })
                     .collect()
             }
@@ -860,7 +869,7 @@ impl WinampApp {
         match e {
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {
-                    p.set_status(id, format!("downloading {pct}%"));
+                    p.set_status(id, WaitKind::Downloading(pct));
                 });
             }
             PreviewEvent::Done(clip, path) => {
@@ -899,7 +908,7 @@ impl WinampApp {
                 let playing = self.crates.playing().current();
                 self.dig_each_clip(&clip, |p, id| {
                     if Some(id) != playing && p.get(id).is_some_and(|e| e.status.is_playable()) {
-                        p.set_waiting(id, "queued");
+                        p.set_waiting(id, WaitKind::Queued);
                     }
                 });
             }
@@ -908,7 +917,7 @@ impl WinampApp {
                 d.ytdlp = YtDlpState::Missing;
                 let first = !d.hint_shown;
                 d.hint_shown = true;
-                self.dig_mark_waiting("queued", "needs yt-dlp");
+                self.dig_mark_waiting(WaitKind::Queued, WaitKind::NeedsYtDlp);
                 if first {
                     self.notify(INSTALL_HINT);
                 }
@@ -917,7 +926,7 @@ impl WinampApp {
                 if let Some(d) = &mut self.dig {
                     d.ytdlp = YtDlpState::Found(version);
                 }
-                self.dig_mark_waiting("needs yt-dlp", "queued");
+                self.dig_mark_waiting(WaitKind::NeedsYtDlp, WaitKind::Queued);
             }
         }
     }
@@ -948,14 +957,14 @@ impl WinampApp {
         }
     }
 
-    /// Horizon entries waiting with note `from` get note `to` ("queued" ↔ "needs yt-dlp").
-    fn dig_mark_waiting(&mut self, from: &str, to: &str) {
+    /// Horizon entries waiting for `from` wait for `to` instead (queued ↔ needs yt-dlp).
+    fn dig_mark_waiting(&mut self, from: WaitKind, to: WaitKind) {
         let Some(d) = &self.dig else { return };
         let clips = d.horizon.clone();
         for clip in clips {
             self.dig_each_clip(&clip, |p, id| {
-                if p.get(id).map(|e| &e.status) == Some(&EntryStatus::Waiting(from.into())) {
-                    p.set_status(id, to);
+                if p.get(id).map(|e| &e.status) == Some(&EntryStatus::Waiting(from.clone())) {
+                    p.set_status(id, to.clone());
                 }
             });
         }
@@ -1044,7 +1053,7 @@ impl WinampApp {
             });
             d.horizon = wanted;
             if d.ytdlp == YtDlpState::Missing {
-                self.dig_mark_waiting("queued", "needs yt-dlp");
+                self.dig_mark_waiting(WaitKind::Queued, WaitKind::NeedsYtDlp);
             }
         }
     }
@@ -1187,6 +1196,19 @@ impl WinampApp {
                         }
                     }
                     None => self.notify(format!("{name} isn't from Discogs")),
+                }
+            }
+            DigAction::OpenRecord(id) => {
+                let url = self
+                    .crates
+                    .get(c)
+                    .and_then(|p| p.get(id))
+                    .and_then(entry_record_url);
+                let Some(d) = &self.dig else { return };
+                if let Some(url) = url
+                    && let Err(err) = d.setup.browser.open(&url)
+                {
+                    self.notify(format!("Could not open the browser: {err}"));
                 }
             }
             DigAction::OpenDialog => self.dig_open_dialog(),
@@ -1376,6 +1398,16 @@ impl WinampApp {
         for (label, a) in items {
             if ui.button(label).clicked() {
                 actions.push(Action::Dig(a));
+                ui.close();
+            }
+        }
+        if let Some(url) = entry_record_url(e) {
+            if ui.button("Open release on Discogs").clicked() {
+                actions.push(Action::Dig(DigAction::OpenRecord(e.id)));
+                ui.close();
+            }
+            if ui.button("Copy Discogs link").clicked() {
+                ui.ctx().copy_text(url);
                 ui.close();
             }
         }

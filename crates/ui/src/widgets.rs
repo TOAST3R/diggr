@@ -57,6 +57,14 @@ impl<'a> Skinned<'a> {
         }
     }
 
+    /// Draws a sprite stretched into `dest`, tinted (white sprites take the tint's colour).
+    pub fn sprite_tinted(&self, name: &str, dest: Rect, tint: Color32) {
+        let s = self.def.sprite(name);
+        if s.w > 0 {
+            self.painter.image(self.tex, dest, self.uv(s), tint);
+        }
+    }
+
     /// Draws the left `w` skin pixels of a sprite (e.g. a partially filled bar).
     pub fn sprite_left(&self, name: &str, x: f32, y: f32, w: f32) {
         let s = self.def.sprite(name);
