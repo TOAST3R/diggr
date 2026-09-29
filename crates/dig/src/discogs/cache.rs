@@ -20,6 +20,8 @@ pub enum Kind {
     Artist,
     Label,
     Listing,
+    /// Marketplace items (kept for the release they sell).
+    ShopItem,
 }
 
 impl Kind {
@@ -30,6 +32,7 @@ impl Kind {
             Kind::Artist => "artist",
             Kind::Label => "label",
             Kind::Listing => "listing",
+            Kind::ShopItem => "shop_item",
         }
     }
 }

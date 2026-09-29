@@ -347,7 +347,10 @@ impl Intake {
 
     fn name_job(&mut self, i: usize, now: u64) -> Result<(), ApiError> {
         let page = self.jobs.jobs[i].page.clone();
-        if matches!(page.kind, PageKind::Release(_) | PageKind::Master(_)) {
+        if matches!(
+            page.kind,
+            PageKind::Release(_) | PageKind::Master(_) | PageKind::ShopItem(_)
+        ) {
             self.ensure_identity();
         }
         let name = expand::page_name(&mut self.client, &page, now)?;

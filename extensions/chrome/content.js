@@ -1,7 +1,7 @@
 // On discogs.com: a button next to the page's title (floating in a corner when there is none)
-// with Play in ‹App›, Enqueue in ‹App›, Send to crate and the two switches. Only the address
-// and the title's position are read from the page; everything goes to the player through the
-// service worker.
+// with Play in ‹App›, Enqueue in ‹App›, Send to crate and the two switches. Only the address,
+// the title's position and the document title (for New crate…'s suggested name) are read from
+// the page; everything goes to the player through the service worker.
 
 (() => {
   const STYLE = `
@@ -178,9 +178,13 @@
       item(
         "New crate…",
         () => {
-          const name = (prompt(`New crate in ${appName}:`) || "").trim();
+          const kind = WR.pageKind(location.href);
+          const suggested = WR.suggestName(document.title, kind, location.href);
+          const name = (prompt(`New crate in ${appName}:`, suggested) || "").trim();
           if (!name) return;
-          if ([...name].length > 40) return toast("A crate name needs 1 to 40 characters", false);
+          if ([...name].length > WR.MAX_NAME) {
+            return toast(`A crate name needs 1 to ${WR.MAX_NAME} characters`, false);
+          }
           sendPage("crate", name);
         },
         "item sub",

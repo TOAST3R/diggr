@@ -24,6 +24,10 @@ pub struct ListingPage {
 
 /// The page's name, as messages and Play crate names use it: "Label: Lowtide Tapes".
 pub fn page_name(client: &mut Client, page: &Page, now: u64) -> Result<String, ApiError> {
+    if let PageKind::ShopItem(id) = page.kind {
+        let release = Page::new(PageKind::Release(shop_item_release(client, id, now)?));
+        return page_name(client, &release, now);
+    }
     let name = match &page.kind {
         PageKind::Label(id) => {
             cached_json(client, Kind::Label, &format!("/labels/{id}"), *id, now)?["name"]
@@ -48,6 +52,7 @@ pub fn page_name(client: &mut Client, page: &Page, now: u64) -> Result<String, A
             .as_str()
             .unwrap_or("")
             .to_owned(),
+        PageKind::ShopItem(_) => unreachable!("resolved above"),
     };
     let name = name.trim();
     Ok(if name.is_empty() {
@@ -72,6 +77,9 @@ pub fn listing(
     match &page.kind {
         PageKind::Release(id) => Ok(one(RecordKey::Release(*id))),
         PageKind::Master(id) => Ok(one(RecordKey::Master(*id))),
+        PageKind::ShopItem(id) => Ok(one(RecordKey::Release(shop_item_release(
+            client, *id, now,
+        )?))),
         PageKind::Label(id) => {
             let path = format!("/labels/{id}/releases?page={n}&per_page={PER_PAGE}");
             let v = listing_json(client, &path, now)?;
@@ -173,6 +181,19 @@ pub fn record(
                 .ok_or_else(|| ApiError::Other(format!("master {id}: unexpected answer")))
         }
     }
+}
+
+/// The release a marketplace item sells: one request, then from the cache for good (an item
+/// never changes release). An item Discogs doesn't know (or no longer lists) is not found.
+pub fn shop_item_release(client: &mut Client, id: u64, now: u64) -> Result<u64, ApiError> {
+    let v = cached_json(
+        client,
+        Kind::ShopItem,
+        &format!("/marketplace/listings/{id}"),
+        id,
+        now,
+    )?;
+    v["release"]["id"].as_u64().ok_or(ApiError::NotFound)
 }
 
 /// Record data (labels, artists, masters): from the cache whenever it's there.

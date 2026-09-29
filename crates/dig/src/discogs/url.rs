@@ -3,8 +3,9 @@
 //! Accepted: a release, master, artist, label, wantlist or list, on `discogs.com` with or
 //! without `www.`, over http or https (or no scheme), with an optional two-letter language
 //! segment (`/de/`), with or without the name part after the id, and with the legacy
-//! slug-first form of releases and masters. The query (except the wantlist's `user`) and the
-//! fragment are ignored.
+//! slug-first form of releases and masters. A marketplace item (`/shop/item/…`, or the older
+//! `/sell/item/…`) is accepted too, and dug as the release it sells. The query (except the
+//! wantlist's `user`) and the fragment are ignored.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,8 @@ pub enum PageKind {
     Label(u64),
     Wantlist(String),
     List(u64),
+    /// A record for sale in the marketplace: dug as its release.
+    ShopItem(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,8 +36,8 @@ pub enum Refused {
     Unsupported,
 }
 
-pub const SUPPORTED: &str =
-    "Supported Discogs pages: a release, master release, artist, label, wantlist or list";
+pub const SUPPORTED: &str = "Supported Discogs pages: a release, master release, artist, \
+     label, wantlist, list or marketplace item";
 
 impl Page {
     pub fn new(kind: PageKind) -> Self {
@@ -51,6 +54,7 @@ impl Page {
             PageKind::Label(id) => format!("{base}/label/{id}"),
             PageKind::Wantlist(user) => format!("{base}/wantlist?user={user}"),
             PageKind::List(id) => format!("{base}/lists/{id}"),
+            PageKind::ShopItem(id) => format!("{base}/shop/item/{id}"),
         }
     }
 
@@ -63,6 +67,7 @@ impl Page {
             PageKind::Label(_) => "Label",
             PageKind::Wantlist(_) => "Wantlist",
             PageKind::List(_) => "List",
+            PageKind::ShopItem(_) => "Shop item",
         }
     }
 
@@ -76,7 +81,8 @@ impl Page {
                 | PageKind::Master(id)
                 | PageKind::Artist(id)
                 | PageKind::Label(id)
-                | PageKind::List(id),
+                | PageKind::List(id)
+                | PageKind::ShopItem(id),
                 None,
             ) => id.to_string(),
         };
@@ -145,6 +151,7 @@ fn page(segs: &[&str], query: &str) -> Option<Page> {
             valid_user(&user).then(|| Page::new(PageKind::Wantlist(user)))
         }
         ["lists", s] => with_slug(PageKind::List, s),
+        ["shop" | "sell", "item", s] => with_slug(PageKind::ShopItem, s),
         ["lists", slug, id] => Some(Page {
             kind: PageKind::List(number(id)?),
             slug: Some((*slug).to_owned()),
@@ -208,6 +215,16 @@ mod tests {
                 Some("Lowtide-Tapes"),
             ),
             ("https://discogs.com/release/123456", Release(123456), None),
+            (
+                "https://www.discogs.com/shop/item/3923678974",
+                ShopItem(3923678974),
+                None,
+            ),
+            (
+                "https://discogs.com/de/sell/item/3923678974?ev=bp_det#x",
+                ShopItem(3923678974),
+                None,
+            ),
             (
                 "http://www.discogs.com/release/123456-Nightcraft-Glasshouse",
                 Release(123456),
@@ -312,5 +329,7 @@ mod tests {
         assert_eq!(p.provisional_name(), "Release: 123456");
         let p = parse("https://www.discogs.com/user/digger/wantlist").unwrap();
         assert_eq!(p.provisional_name(), "Wantlist: digger");
+        let p = parse("https://www.discogs.com/sell/item/3923678974").unwrap();
+        assert_eq!(p.url(), "https://www.discogs.com/shop/item/3923678974");
     }
 }
