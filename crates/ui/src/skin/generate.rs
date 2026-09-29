@@ -1017,6 +1017,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             vis_scope: [0, 230, 0],
             eq_curve: [0, 230, 0],
             pl_title: [GOLD[0], GOLD[1], GOLD[2]],
+            pl_owned: [255, 176, 32],
         },
     };
     (img, def)

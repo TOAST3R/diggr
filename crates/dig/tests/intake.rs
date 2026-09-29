@@ -176,6 +176,61 @@ fn a_shop_item_expands_exactly_like_its_release() {
 }
 
 #[test]
+fn the_collection_sync_waits_for_the_digs_to_finish() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        "/users/digger/collection/folders/0/releases?sort=added&sort_order=desc&page=1&per_page=100",
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1003, "instance_id": 7,
+                          "basic_information": {"id": 1003, "master_id": 0, "year": 2016,
+                                                "labels": [{"catno": "LT-003"}]}}]}"#,
+    );
+    let mut i = intake(&t, true, None);
+    send(&mut i, "https://www.discogs.com/label/12345");
+    i.handle(Command::SyncCollection(None));
+    i.handle(Command::ResolveShopItem(3923678974));
+    let ev = run(&mut i, 200);
+    let paths = t.paths();
+    let last_dig = paths
+        .iter()
+        .rposition(|p| p.starts_with("/labels/") || p.starts_with("/releases/"))
+        .unwrap();
+    let item = paths
+        .iter()
+        .position(|p| p.starts_with("/marketplace/"))
+        .unwrap();
+    let sync = paths
+        .iter()
+        .position(|p| p.contains("/collection/"))
+        .unwrap();
+    assert!(
+        last_dig < item && item < sync,
+        "digs, then the item, then the collection: {paths:?}"
+    );
+    assert!(ev.contains(&Event::ShopItem(3923678974, Some(1001))));
+    let c = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::Collection(Ok(c)) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("synced");
+    assert_eq!(c.len(), 1);
+    assert_eq!(c.username, "digger");
+}
+
+#[test]
+fn without_a_token_the_collection_is_never_asked_for() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let mut i = intake(&t, false, None);
+    i.handle(Command::SyncCollection(None));
+    let ev = run(&mut i, 10);
+    assert!(ev.contains(&Event::Collection(Err(ApiError::TokenNeeded))));
+    assert!(!t.paths().iter().any(|p| p.contains("/collection/")));
+}
+
+#[test]
 fn details_follow_the_focus() {
     let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
     let mut i = intake(&t, true, None);

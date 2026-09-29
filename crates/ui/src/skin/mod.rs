@@ -54,6 +54,13 @@ pub struct Colors {
     /// The crate name on the playlist title bar.
     #[serde(default = "title_gold")]
     pub pl_title: [u8; 3],
+    /// The OWNED badge on records already in the user's collection.
+    #[serde(default = "owned_amber")]
+    pub pl_owned: [u8; 3],
+}
+
+fn owned_amber() -> [u8; 3] {
+    [255, 176, 32]
 }
 
 fn title_gold() -> [u8; 3] {

@@ -110,11 +110,13 @@ pub fn ago(secs: u64) -> String {
 }
 
 /// What the dig side knows about an entry.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DigMarks {
     pub kept: bool,
     pub passed: bool,
     pub wantlist_pending: bool,
+    /// In the user's collection: "this pressing", or "another pressing (AF014, 2018)".
+    pub owned: Option<String>,
 }
 
 /// Everything known about an entry, for its tooltip, as (label, value) lines. Nothing unknown
@@ -150,6 +152,9 @@ pub fn entry_details(
     }
     if marks.wantlist_pending {
         add("Wantlist", "change pending");
+    }
+    if let Some(o) = &marks.owned {
+        add("Owned", o);
     }
     if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
         let what = match (fs.count, fs.lowest_cents) {
@@ -332,6 +337,7 @@ mod tests {
         let marks = DigMarks {
             kept: true,
             wantlist_pending: true,
+            owned: Some("another pressing (AF014, 2018)".into()),
             ..Default::default()
         };
         assert_eq!(
@@ -345,6 +351,7 @@ mod tests {
                 ("Status", "downloading 40%".into()),
                 ("Kept", "yes".into()),
                 ("Wantlist", "change pending".into()),
+                ("Owned", "another pressing (AF014, 2018)".into()),
                 ("For sale", "6 from €9.00 (fetched 3 h ago)".into()),
             ]
         );

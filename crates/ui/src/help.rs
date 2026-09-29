@@ -84,7 +84,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Cmd+V",
                 "paste a Discogs page: its tracks' previews go into the shown crate",
             ),
-            ("Y", "keep the playing track (again: undo)"),
+            (
+                "Y",
+                "keep the playing track (again: undo); asks first when you own the record",
+            ),
             ("N", "pass: dimmed, skipped, left out of later sends"),
             ("I", "open the release's for-sale page"),
         ],

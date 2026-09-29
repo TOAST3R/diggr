@@ -47,7 +47,7 @@ pub fn page_name(client: &mut Client, page: &Page, now: u64) -> Result<String, A
             let r = record(client, RecordKey::Master(*id), false, now)?;
             format!("{} – {}", r.artist, r.title)
         }
-        PageKind::Wantlist(user) => user.clone(),
+        PageKind::Wantlist(user) | PageKind::Collection(user) => user.clone(),
         PageKind::List(id) => list_json(client, *id, now)?["name"]
             .as_str()
             .unwrap_or("")
@@ -105,6 +105,15 @@ pub fn listing(
             );
             let v = client.get_json(&path)?;
             Ok(paged(&v, "wants", listed_from_want))
+        }
+        PageKind::Collection(user) => {
+            // Never cached: it changes with every purchase. The items look like wants.
+            let path = format!(
+                "/users/{}/collection/folders/0/releases?sort=added&sort_order=desc&page={n}&per_page={PER_PAGE}",
+                path_segment(user)
+            );
+            let v = client.get_json(&path)?;
+            Ok(paged(&v, "releases", listed_from_want))
         }
         PageKind::List(id) => {
             let v = list_json(client, *id, now)?;

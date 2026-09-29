@@ -21,6 +21,7 @@ use dig::bridge::{
 };
 use dig::browser::{Browser, SystemBrowser, record_url, sell_url};
 use dig::clock::{Clock, RealClock};
+use dig::collection::{Collection, Owned};
 use dig::config::{self as digconf, DigSettings};
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client, Identity};
@@ -183,7 +184,25 @@ pub(super) struct Dig {
     snapshot: Snapshot,
     pub(super) bridge_dialog: Option<BridgeDialog>,
     wake: egui::Context,
+    /// The user's collection (loaded from the cache when digging starts; kept up to date by
+    /// a sync on the intake worker).
+    pub(super) collection: Option<Arc<Collection>>,
+    collection_syncing: bool,
+    /// Why the last sync failed, for OPT ▸ Discogs….
+    collection_error: Option<String>,
+    /// When a sync was last asked for without being needed again (retries wait an hour).
+    collection_tried: Option<Instant>,
+    /// Keeping an owned record waits for this answer: (crate, entry, what is owned).
+    pub(super) confirm_keep: Option<(CrateId, EntryId, String)>,
+    /// "Add a Discogs token…" was said this session.
+    token_hint_shown: bool,
 }
+
+/// Where a Discogs personal access token is generated ("Generate new token").
+pub const TOKEN_PAGE: &str = "https://www.discogs.com/settings/developers";
+
+/// A failed collection sync is tried again after this long (when still needed).
+const COLLECTION_RETRY: Duration = Duration::from_secs(3600);
 
 /// OPT ▸ Browser…
 pub(super) struct BridgeDialog {
@@ -238,6 +257,12 @@ impl Dig {
             bridge: None,
             bridge_error: None,
             snapshot: Snapshot::default(),
+            collection: None,
+            collection_syncing: false,
+            collection_error: None,
+            collection_tried: None,
+            confirm_keep: None,
+            token_hint_shown: false,
             bridge_dialog: None,
             wake,
         }
@@ -256,6 +281,12 @@ impl Dig {
 
     /// Starts the workers (once the window is interactive).
     fn start(&mut self) {
+        self.collection = self
+            .setup
+            .cache_root
+            .as_deref()
+            .and_then(Collection::load)
+            .map(Arc::new);
         let client = Client::new(
             self.setup.transport.clone(),
             self.setup.clock.clone(),
@@ -293,7 +324,11 @@ impl Dig {
         }
         if self.setup.bridge != BridgeSetup::Off {
             let pairing = Pairing::load(self.config.clone(), self.setup.clock.clone());
-            self.bridge_shared = Some(Shared::new(pairing));
+            self.bridge_shared = Some(Shared::with_cache(
+                pairing,
+                self.setup.cache_root.as_deref(),
+            ));
+            self.share_collection();
             self.start_bridge();
         }
     }
@@ -367,6 +402,124 @@ impl Dig {
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
 
+    /// Whether the entry's record is in the user's collection (only with a token).
+    pub(super) fn owned(&self, e: &Entry) -> Option<Owned> {
+        self.token.as_ref()?;
+        let o = e.origin.as_ref()?;
+        // In a crate made from a collection every record is owned: no badge there.
+        if url::parse(&o.page).is_ok_and(|p| matches!(p.kind, url::PageKind::Collection(_))) {
+            return None;
+        }
+        self.collection.as_ref()?.owned(o.release, o.master)
+    }
+
+    /// Asks for a collection sync when there is something to mark (`wanted`), a token, and
+    /// the cached collection is missing, someone else's or a week old. A failure waits an
+    /// hour before the next try.
+    /// Returns a hint to show once per session when there is something to mark but no
+    /// token to know the collection with.
+    fn maybe_sync_collection(&mut self, wanted: bool) -> Option<String> {
+        if wanted && self.token.is_none() && !self.token_hint_shown {
+            self.token_hint_shown = true;
+            return Some(
+                "Add a Discogs token (OPT ▸ Discogs…) to mark the records you already own".into(),
+            );
+        }
+        if !wanted || self.token.is_none() || self.collection_syncing {
+            return None;
+        }
+        if self
+            .collection_tried
+            .is_some_and(|t| t.elapsed() < COLLECTION_RETRY)
+        {
+            return None;
+        }
+        let now = now_secs();
+        let stale = match (&self.collection, &self.identity) {
+            (None, _) => true,
+            (Some(c), Some(id)) => c.is_stale(&id.username, now),
+            (Some(c), None) => c.is_stale(&c.username, now),
+        };
+        if stale {
+            self.sync_collection();
+        }
+        None
+    }
+
+    /// Syncs now (OPT ▸ Discogs… ▸ Refresh collection): only what changed since the cache.
+    pub(super) fn sync_collection(&mut self) {
+        if self.token.is_none() || self.collection_syncing {
+            return;
+        }
+        self.collection_syncing = true;
+        self.collection_tried = Some(Instant::now());
+        let cached = self.collection.as_deref().cloned().map(Box::new);
+        self.send(Command::SyncCollection(cached));
+    }
+
+    /// A sync finished: the new collection is saved and shared (with the bridge too).
+    fn collection_synced(&mut self, result: Result<Box<Collection>, ApiError>) -> Option<String> {
+        self.collection_syncing = false;
+        match result {
+            Ok(c) => {
+                self.collection_error = None;
+                self.collection_tried = None;
+                let saved = self
+                    .setup
+                    .cache_root
+                    .as_deref()
+                    .and_then(|root| c.save(root).err())
+                    .map(|e| format!("Could not save the collection: {e}"));
+                self.collection = Some(Arc::new(*c));
+                self.share_collection();
+                saved
+            }
+            Err(e) => {
+                self.collection_error = Some(match e {
+                    ApiError::TokenNeeded | ApiError::TokenRejected => {
+                        "needs a valid token".to_owned()
+                    }
+                    ApiError::Private => "private".to_owned(),
+                    ApiError::Offline => "Discogs offline".to_owned(),
+                    other => other.message(),
+                });
+                None
+            }
+        }
+    }
+
+    /// Hands the bridge the current collection, for the browser's owned check.
+    fn share_collection(&self) {
+        if let Some(s) = &self.bridge_shared {
+            let c = self.token.as_ref().and(self.collection.clone());
+            s.collection.store(Arc::new(c));
+            s.has_token
+                .store(self.token.is_some(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// OPT ▸ Discogs…: "1,234 records, updated 2 h ago", or why there is none.
+    fn collection_line(&self) -> String {
+        if self.token.is_none() {
+            return "Needs a token".into();
+        }
+        let mut line = match &self.collection {
+            Some(c) => format!(
+                "{} record{}, updated {}",
+                c.len(),
+                if c.len() == 1 { "" } else { "s" },
+                crate::format::ago(now_secs().saturating_sub(c.fetched_at))
+            ),
+            None => "Not fetched yet (it is, once a crate from Discogs is shown)".into(),
+        };
+        if self.collection_syncing {
+            line += " · syncing…";
+        } else if let Some(e) = &self.collection_error {
+            line += &format!(" · last sync failed: {e}");
+        }
+        line
+    }
+
     /// Kept, passed, and a wantlist change still to be sent, for an entry's row.
     pub(super) fn marks(&self, e: &Entry) -> (bool, bool, bool) {
         let key = key_of(e);
@@ -379,7 +532,7 @@ impl Dig {
 }
 
 /// Keep and pass work on any entry: a clip by its id, a local file by its path.
-fn key_of(e: &Entry) -> String {
+pub(super) fn key_of(e: &Entry) -> String {
     e.origin
         .as_ref()
         .and_then(|o| o.clip.clone())
@@ -485,8 +638,14 @@ impl WinampApp {
                     return self.notify(format!("Crate \"{name}\" can't be read"));
                 }
                 let play = mode == SendMode::Play;
-                if play {
+                // A crate the send just made (or plays) comes on screen, with the playlist
+                // opened if it was hidden; sending to an existing crate leaves the view alone.
+                if play || created {
                     self.show_crate(id);
+                    if !self.settings.show_playlist {
+                        self.settings.show_playlist = true;
+                        self.mark_settings();
+                    }
                 }
                 (id, created, play)
             }
@@ -522,6 +681,16 @@ impl WinampApp {
                 d.send(Command::CrateActive(id));
             }
         }
+        // The collection is only worth syncing when a crate from Discogs is on screen.
+        let from_discogs = self
+            .crates
+            .shown()
+            .entries()
+            .iter()
+            .any(|e| e.origin.is_some());
+        let hint = d.maybe_sync_collection(from_discogs);
+        self.dig_notify(hint);
+        let Some(d) = &mut self.dig else { return };
         let events = d
             .intake
             .as_ref()
@@ -582,6 +751,11 @@ impl WinampApp {
                     Mode::Crate(name) => SendMode::Crate(name),
                 };
                 self.dig_send(page, mode, Some(filters));
+            }
+            BridgeCommand::ResolveShopItem(id) => {
+                if let Some(d) = &self.dig {
+                    d.send(Command::ResolveShopItem(id));
+                }
             }
             BridgeCommand::Paired => {
                 if let Some(dialog) = self.dig.as_mut().and_then(|d| d.bridge_dialog.as_mut()) {
@@ -778,6 +952,12 @@ impl WinampApp {
                 Err(e) => self.notify(e.message()),
             },
             Event::TokenChecked(token, result) => self.dig_token_checked(token, result),
+            Event::Collection(result) => {
+                let err = self.dig.as_mut().and_then(|d| d.collection_synced(result));
+                self.dig_notify(err);
+            }
+            // The bridge reads the item's release from the disk cache the lookup filled.
+            Event::ShopItem(..) => {}
             Event::Wantlist {
                 release,
                 add,
@@ -1251,6 +1431,26 @@ impl WinampApp {
         if self.dig.as_ref().is_some_and(|d| d.memory.is_kept(&key)) {
             return self.dig_unkeep(&key, &e);
         }
+        // Keeping puts it on the wantlist: ask first when the record is already owned.
+        if let Some(what) = self.dig_owned(&e)
+            && let Some(d) = &mut self.dig
+        {
+            d.confirm_keep = Some((
+                c,
+                id,
+                format!("{}: you already own {what}.", e.display_name()),
+            ));
+            return;
+        }
+        self.dig_keep_now(c, id);
+    }
+
+    /// Keeps an entry (the Keepers crate, the ✓, the wantlist), without asking.
+    fn dig_keep_now(&mut self, c: CrateId, id: EntryId) {
+        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
+            return;
+        };
+        let key = key_of(&e);
         let keepers = match self.keepers() {
             Ok(k) => k,
             Err(err) => return self.notify(err),
@@ -1424,7 +1624,7 @@ impl WinampApp {
         d.preview(PreviewCommand::CheckProgram);
     }
 
-    fn dig_token_checked(&mut self, token: String, result: Result<Identity, ApiError>) {
+    pub(super) fn dig_token_checked(&mut self, token: String, result: Result<Identity, ApiError>) {
         let Some(d) = &mut self.dig else { return };
         let outcome = match result {
             Ok(id) => {
@@ -1439,6 +1639,7 @@ impl WinampApp {
                     let name = id.username.clone();
                     d.identity = Some(id);
                     d.last_retry = None;
+                    d.share_collection();
                     Ok(name)
                 }
             }
@@ -1447,6 +1648,7 @@ impl WinampApp {
             }
             Err(e) => Err(e.message()),
         };
+        let user = outcome.as_ref().ok().cloned();
         if let Some(dialog) = &mut d.dialog {
             dialog.checking = false;
             if outcome.is_ok() {
@@ -1454,16 +1656,70 @@ impl WinampApp {
             }
             dialog.check = Some(outcome);
         }
+        // A new account: its whole collection becomes a crate, on screen (once; an existing
+        // "Collection: …" crate is left as it is).
+        if let Some(user) = user {
+            let page = Page::new(dig::discogs::url::PageKind::Collection(user));
+            let name = page.provisional_name();
+            if self.crates.find(&name).is_none() {
+                self.dig_send(page, SendMode::Crate(name), None);
+            }
+        }
+    }
+
+    /// "You already own this record": Keep anyway (Enter) or Cancel (Esc).
+    fn dig_confirm_keep_ui(&mut self, ctx: &egui::Context) {
+        let Some((c, id, text)) = self.dig.as_ref().and_then(|d| d.confirm_keep.clone()) else {
+            return;
+        };
+        let mut choice = None;
+        egui::Modal::new(egui::Id::new("confirm-keep")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.strong("Already in your collection");
+            ui.label(&text);
+            ui.label("Keep it anyway? It will be added to your Discogs wantlist.");
+            ui.horizontal(|ui| {
+                if ui.button("Keep anyway").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            choice = Some(true);
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            choice = Some(false);
+        }
+        if let Some(keep) = choice {
+            if let Some(d) = &mut self.dig {
+                d.confirm_keep = None;
+            }
+            if keep {
+                self.dig_keep_now(c, id);
+            }
+        }
+    }
+
+    /// A question is open (the keep confirmation): shortcuts wait.
+    pub(super) fn dig_asking(&self) -> bool {
+        self.dig.as_ref().is_some_and(|d| d.confirm_keep.is_some())
     }
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
+        self.dig_confirm_keep_ui(ctx);
         let Some(d) = &mut self.dig else { return };
+        let collection_line = d.collection_line();
+        let collection_syncing = d.collection_syncing;
         let Some(dialog) = &mut d.dialog else { return };
         let mut open = true;
         let mut commands: Vec<Command> = Vec::new();
         let mut preview_cmds: Vec<PreviewCommand> = Vec::new();
         let mut remove_token = false;
         let mut settings_changed = false;
+        let mut refresh_collection = false;
+        let mut open_token_page = false;
         egui::Window::new("Discogs")
             .id(egui::Id::new("dig-dialog"))
             .collapsible(false)
@@ -1519,7 +1775,25 @@ impl WinampApp {
                     }
                     None => {}
                 }
-                ui.label("Create one at discogs.com ▸ Settings ▸ Developers.");
+                ui.horizontal(|ui| {
+                    ui.label("Get one at discogs.com ▸ Settings ▸ Developers:");
+                    if ui.button("Open that page").clicked() {
+                        open_token_page = true;
+                    }
+                });
+
+                ui.separator();
+                ui.strong("Collection");
+                ui.label(&collection_line);
+                if d.token.is_some()
+                    && ui
+                        .add_enabled(!collection_syncing, egui::Button::new("Refresh collection"))
+                        .on_hover_text("Fetches only what changed since the last sync")
+                        .clicked()
+                {
+                    refresh_collection = true;
+                }
+                ui.label("Records you own are marked OWNED in the playlist.");
 
                 ui.separator();
                 ui.strong("Previews");
@@ -1578,6 +1852,10 @@ impl WinampApp {
             d.token = None;
             d.identity = None;
             commands.push(Command::SetToken(None));
+            d.share_collection();
+        }
+        if refresh_collection {
+            d.sync_collection();
         }
         for c in commands {
             d.send(c);
@@ -1588,6 +1866,13 @@ impl WinampApp {
         if settings_changed {
             let e = d.save_settings();
             self.dig_notify(e);
+        }
+        if open_token_page {
+            let err = self
+                .dig
+                .as_ref()
+                .and_then(|d| d.setup.browser.open(TOKEN_PAGE).err());
+            self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
         }
     }
 

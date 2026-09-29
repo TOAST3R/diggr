@@ -838,6 +838,31 @@ impl WinampApp {
     }
 
     /// Kept, passed and wantlist-pending marks for a playlist row.
+    /// "this pressing", or "another pressing (AF014, 2018)", when the entry's record is in
+    /// the user's collection.
+    fn dig_owned(&self, e: &crate::playlist::Entry) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.dig.as_ref()?.owned(e).map(|o| match o {
+            ::dig::collection::Owned::ThisPressing => "this pressing".to_owned(),
+            ::dig::collection::Owned::Another { catno, year } => {
+                let parts: Vec<String> = [catno, year.map(|y| y.to_string()).unwrap_or_default()]
+                    .into_iter()
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                if parts.is_empty() {
+                    "another pressing".to_owned()
+                } else {
+                    format!("another pressing ({})", parts.join(", "))
+                }
+            }
+        });
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = e;
+            None
+        }
+    }
+
     fn dig_marks(&self, e: &crate::playlist::Entry) -> (bool, bool, bool) {
         #[cfg(not(target_arch = "wasm32"))]
         return self
@@ -1018,6 +1043,11 @@ impl WinampApp {
             }
         }
         if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // A question is open (keeping a record already owned): its own keys only.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.dig_asking() {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -2012,6 +2042,7 @@ impl WinampApp {
                 let current = shown.current() == Some(e.id);
                 let (mut col, dur) = row_look(e, current, &d.colors);
                 let (kept, passed, pending) = self.dig_marks(e);
+                let owned = self.dig_owned(e);
                 if passed {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
@@ -2036,6 +2067,18 @@ impl WinampApp {
                                 draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
                                 continue;
                             }
+                            Col::Field(Field::Title) if owned.is_some() => {
+                                let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
+                                let w = owned_badge(&cell_clip, at, &font, &d.colors, scale);
+                                cell_clip.text(
+                                    at + vec2(w + 3.0 * scale, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    marked(e.title.clone()),
+                                    font.clone(),
+                                    col,
+                                );
+                                continue;
+                            }
                             Col::Field(Field::Title) => marked(e.title.clone()),
                             Col::Field(f) => crate::columns::cell_text(e, f),
                         };
@@ -2053,13 +2096,36 @@ impl WinampApp {
                         rr.min,
                         pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
                     ));
-                    name_clip.text(
-                        pos2(rr.left() + 3.0 * scale, rr.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        format!("{}. {}", idx + 1, marked(e.display_name())),
-                        font.clone(),
-                        col,
-                    );
+                    let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
+                    if owned.is_some() {
+                        // The number, the badge, then the name.
+                        let num = name_clip
+                            .text(
+                                at,
+                                egui::Align2::LEFT_CENTER,
+                                format!("{}. ", idx + 1),
+                                font.clone(),
+                                col,
+                            )
+                            .width();
+                        let at = at + vec2(num, 0.0);
+                        let w = owned_badge(&name_clip, at, &font, &d.colors, scale);
+                        name_clip.text(
+                            at + vec2(w + 3.0 * scale, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            marked(e.display_name()),
+                            font.clone(),
+                            col,
+                        );
+                    } else {
+                        name_clip.text(
+                            at,
+                            egui::Align2::LEFT_CENTER,
+                            format!("{}. {}", idx + 1, marked(e.display_name())),
+                            font.clone(),
+                            col,
+                        );
+                    }
                 }
                 let mut resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
@@ -2068,6 +2134,7 @@ impl WinampApp {
                         kept,
                         passed,
                         wantlist_pending: pending,
+                        owned: owned.clone(),
                     };
                     let details = format::entry_details(e, marks, unix_now());
                     resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details));
@@ -2977,6 +3044,27 @@ pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String
 
 /// Draws the shown crate's name centred on the playlist title bar, over a plain strip that
 /// hides the bar's decorative lines behind it.
+/// The OWNED badge: dark letters on the skin's amber, its left edge centred on `at`. Returns
+/// its width.
+fn owned_badge(
+    painter: &egui::Painter,
+    at: Pos2,
+    font: &egui::FontId,
+    colors: &crate::skin::Colors,
+    scale: f32,
+) -> f32 {
+    let small = egui::FontId::proportional(font.size * 0.78);
+    let galley = painter.layout_no_wrap("OWNED".into(), small, color(colors.pl_bg));
+    let pad = vec2(2.5 * scale, 0.5 * scale);
+    let rect = Rect::from_min_size(
+        pos2(at.x, at.y - galley.size().y / 2.0 - pad.y),
+        galley.size() + pad * 2.0,
+    );
+    painter.rect_filled(rect, 2.0 * scale, color(colors.pl_owned));
+    painter.galley(rect.min + pad, galley, color(colors.pl_bg));
+    rect.width()
+}
+
 /// A momentary skin button at any rectangle (the strip's buttons have no layout entry).
 fn strip_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) -> egui::Response {
     let resp = ui.interact(rect, Id::new(id), Sense::click());

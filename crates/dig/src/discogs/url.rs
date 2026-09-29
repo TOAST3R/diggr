@@ -19,6 +19,8 @@ pub enum PageKind {
     List(u64),
     /// A record for sale in the marketplace: dug as its release.
     ShopItem(u64),
+    /// A user's collection (their own, or a public one).
+    Collection(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +39,7 @@ pub enum Refused {
 }
 
 pub const SUPPORTED: &str = "Supported Discogs pages: a release, master release, artist, \
-     label, wantlist, list or marketplace item";
+     label, wantlist, collection, list or marketplace item";
 
 impl Page {
     pub fn new(kind: PageKind) -> Self {
@@ -55,6 +57,7 @@ impl Page {
             PageKind::Wantlist(user) => format!("{base}/wantlist?user={user}"),
             PageKind::List(id) => format!("{base}/lists/{id}"),
             PageKind::ShopItem(id) => format!("{base}/shop/item/{id}"),
+            PageKind::Collection(user) => format!("{base}/user/{user}/collection"),
         }
     }
 
@@ -68,13 +71,14 @@ impl Page {
             PageKind::Wantlist(_) => "Wantlist",
             PageKind::List(_) => "List",
             PageKind::ShopItem(_) => "Shop item",
+            PageKind::Collection(_) => "Collection",
         }
     }
 
     /// A name until the API gives the real one: from the slug, else the id.
     pub fn provisional_name(&self) -> String {
         let what = match (&self.kind, &self.slug) {
-            (PageKind::Wantlist(user), _) => user.clone(),
+            (PageKind::Wantlist(user) | PageKind::Collection(user), _) => user.clone(),
             (_, Some(slug)) => slug.replace('-', " "),
             (
                 PageKind::Release(id)
@@ -149,6 +153,10 @@ fn page(segs: &[&str], query: &str) -> Option<Page> {
         ["user", user, "wantlist"] => {
             let user = percent_decode(user);
             valid_user(&user).then(|| Page::new(PageKind::Wantlist(user)))
+        }
+        ["user", user, "collection"] => {
+            let user = percent_decode(user);
+            valid_user(&user).then(|| Page::new(PageKind::Collection(user)))
         }
         ["lists", s] => with_slug(PageKind::List, s),
         ["shop" | "sell", "item", s] => with_slug(PageKind::ShopItem, s),
@@ -329,6 +337,10 @@ mod tests {
         assert_eq!(p.provisional_name(), "Release: 123456");
         let p = parse("https://www.discogs.com/user/digger/wantlist").unwrap();
         assert_eq!(p.provisional_name(), "Wantlist: digger");
+        let p = parse("https://www.discogs.com/user/digger/collection?header=1").unwrap();
+        assert_eq!(p.kind, PageKind::Collection("digger".into()));
+        assert_eq!(p.provisional_name(), "Collection: digger");
+        assert_eq!(p.url(), "https://www.discogs.com/user/digger/collection");
         let p = parse("https://www.discogs.com/sell/item/3923678974").unwrap();
         assert_eq!(p.url(), "https://www.discogs.com/shop/item/3923678974");
     }
