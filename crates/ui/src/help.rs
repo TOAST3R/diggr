@@ -116,6 +116,19 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "crate menu (switch, new, rename, delete) / move the window",
             ),
             (
+                "Sidebar button in the playlist title (wide playlist)",
+                "crate sidebar: click a crate to show it, right-click to rename or delete, \
+                 drop entries on it to send them",
+            ),
+            (
+                "BPM bar: drag a handle / ALL",
+                "show and play only the tracks in that tempo range / show everything",
+            ),
+            (
+                "EQ's LP knob: drag down / double-click",
+                "sweep the low-pass filter / turn it off",
+            ),
+            (
                 "Entry: double-click",
                 "play (a waiting entry plays as soon as its audio arrives)",
             ),

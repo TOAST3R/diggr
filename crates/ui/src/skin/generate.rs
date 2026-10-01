@@ -552,6 +552,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny(x + 74 - tiny_w(label), y + ty, label, LABEL);
         }
         c.tiny_centered(x + 28, y + 105, "PREAMP", LABEL);
+        c.text(x + 63, y + 21, "LP", LABEL);
         for (i, l) in [
             "60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K",
         ]
@@ -634,7 +635,12 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- title bar buttons ----------------------------------------------------------------
-    for (name, icon) in [("btn_min", 0), ("btn_close", 1), ("btn_max", 2)] {
+    for (name, icon) in [
+        ("btn_min", 0),
+        ("btn_close", 1),
+        ("btn_max", 2),
+        ("btn_side", 3),
+    ] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -646,6 +652,11 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
+                } else if icon == 3 {
+                    // ☰: the crate sidebar.
+                    for ly in [2, 4, 6] {
+                        c.fill(x + 2 + o, y + ly + o, 5, 1, ICON);
+                    }
                 } else if icon == 2 {
                     // ⇔: a bar with a head at each end.
                     c.fill(x + 2 + o, y + 4 + o, 5, 1, ICON);
@@ -878,6 +889,32 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         c.inset(x + 3, y, 8, 63, GROOVE);
         c.grad_v(x + 5, y + 1, 4, 61, rgb(255, 236, 120), GOLD_DIM);
     });
+    // A handle of the playlist's BPM range slider.
+    b.sprite("bpm_handle", 5, 9, |c, x, y| {
+        c.fill(x, y, 5, 9, GOLD_DIM);
+        c.fill(x + 1, y + 1, 3, 7, GOLD);
+        c.fill(x + 2, y + 2, 1, 5, GOLD_DIM);
+    });
+    // The LP knob's face; the app draws its pointer at the knob's angle.
+    b.sprite("eq_lp_knob", 14, 14, |c, x, y| {
+        for py in 0..14 {
+            for px in 0..14 {
+                let (dx, dy) = (px as f32 - 6.5, py as f32 - 6.5);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d <= 6.6 {
+                    let rim = d > 5.4;
+                    let lit = dx + dy < 0.0;
+                    let col = match (rim, lit) {
+                        (true, true) => BTN_HI,
+                        (true, false) => BTN_LO,
+                        (false, _) if dy < 0.0 => BTN_TOP,
+                        (false, _) => BTN_BOT,
+                    };
+                    c.px(x + px, y + py, col);
+                }
+            }
+        }
+    });
     for (name, pressed) in [("eq_thumb", false), ("eq_thumb_p", true)] {
         b.sprite(name, 11, 11, |c, x, y| {
             button_face(c, x, y, 11, 11, pressed);
@@ -1055,6 +1092,7 @@ fn layout() -> BTreeMap<String, R> {
         ("eq_close", R::new(262, 3, 9, 9)),
         ("eq_on", R::new(14, 18, 26, 12)),
         ("eq_presets", R::new(217, 18, 44, 12)),
+        ("eq_lp", R::new(46, 17, 14, 14)),
         ("eq_graph", R::new(86, 17, 113, 19)),
         ("eq_preamp", R::new(21, 38, 14, 63)),
         // playlist: titlebar/list/scroll relative to the playlist top; buttons, info and
@@ -1062,6 +1100,7 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_titlebar", R::new(0, 0, 275, 20)),
         ("pl_close", R::new(262, 6, 9, 9)),
         ("pl_max", R::new(250, 6, 9, 9)),
+        ("pl_side", R::new(238, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_add", R::new(11, 12, 25, 18)),

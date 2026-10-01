@@ -125,7 +125,21 @@ and Home/End jump), and Enter plays the entry under it.
     from earlier versions becomes this crate on the first launch.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
     another crate or a new one, skipping entries that crate already holds.
+  - **Crate sidebar:** once the playlist is at least 600 pixels wide (or maximized), every crate
+    is listed on its left with its number of entries and the same • and ⏵ marks. Click one to
+    show it, right-click it to rename or delete it, or click **+ New crate**. Drag entries onto
+    a crate to send them there, exactly as Send to crate does. **☰** in the playlist's title bar
+    hides or shows it (remembered as `crate_sidebar` in `settings.ron`).
 - **Playlist window:**
+  - **BPM filter:** once the crate on screen has two different known tempos, a bar above the
+    list shows **ALL** and a range slider spanning them. Drag a handle to keep only the tracks in
+    that range: they're the only ones shown and the only ones played (next, previous, shuffle,
+    and the previews downloaded ahead), while the playing track finishes even if it's hidden.
+    Tracks without a known BPM are hidden while a range is set; the slider's tooltip (and the
+    bar, when there's room) says how many. Entries keep their crate numbers, the title bar
+    reads `NAME · 42/301`, and **ALL** shows everything again. The range is remembered per
+    crate. `P` on a hidden playing track turns the filter off. Sorting and M3U export always
+    take the whole crate;
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -187,6 +201,10 @@ and Home/End jump), and Enter plays the entry under it.
 - **Equalizer:**
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
+  - **LP** is a DJ filter: drag the knob down to sweep a resonant low-pass over everything
+    that plays (and over the visuals), from 20 kHz down to 60 Hz, smoothly and without clicks.
+    Fully up is off (the audio passes untouched); double-click turns it off. It always starts
+    off;
   - **PRESETS** loads the built-in presets, and can save or delete your own.
 - **Move the window** by dragging any title bar. Your crates, settings and presets are saved
   in the config folder (see [Where files are kept](#where-files-are-kept)). Set
@@ -685,7 +703,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 525 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 546 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -705,7 +723,8 @@ What's covered:
 
 - **Unit tests** per module: lock-free ring, seqlock clock (interpolation, latency, gapless
   boundary, monotonicity, concurrency), EQ (±0.5 dB at band centers, bit-identical when off, no
-  clicks when sweeping, Nyquist bypass), tap, renderer, resampler.
+  clicks when sweeping, Nyquist bypass), the LP filter (bit-identical when off, highs gone within
+  20 ms, no jumps when sweeping or switching), tap, renderer, resampler.
 - **`crates/audio/tests/decode_formats.rs`**: every format at 44.1 and 48 kHz (pitch, length,
   tags), accurate seeking, corrupt and garbage files. Fixtures are in
   `crates/audio/tests/fixtures/`.

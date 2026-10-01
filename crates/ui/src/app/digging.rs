@@ -280,6 +280,12 @@ impl Dig {
         self.intake.is_some()
     }
 
+    /// The clips asked for ahead of the playhead.
+    #[cfg(test)]
+    pub(super) fn horizon(&self) -> &[String] {
+        &self.horizon
+    }
+
     fn previews_dir(&self) -> PathBuf {
         match &self.setup.cache_root {
             Some(root) => store::dir(root),

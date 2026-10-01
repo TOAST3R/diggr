@@ -104,12 +104,16 @@ pub struct WinampApp {
     now_playing: Option<TrackInfo>,
     position: Position,
     seek_drag: Option<f32>,
+    /// The LP knob, 0..=1 (1 is off); not remembered, so every launch starts with it off.
+    lp_knob: f32,
     title_offset: usize,
     title_tick: f64,
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
     /// The rest of the album of the entry whose menu is open (tinted; the selection stays).
     pl_tint: Vec<EntryId>,
+    /// The BPM range handle being dragged: 0 the low one, 1 the high one.
+    bpm_drag: Option<u8>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -277,11 +281,13 @@ impl WinampApp {
                 discontinuity: false,
             },
             seek_drag: None,
+            lp_knob: audio::filter::OFF,
             title_offset: 0,
             title_tick: 0.0,
             pl_scroll: 0,
             pl_drag_from: None,
             pl_tint: Vec::new(),
+            bpm_drag: None,
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -373,9 +379,14 @@ impl WinampApp {
                 .crates
                 .get_mut(c)
                 .is_some_and(|p| keys.iter().fold(false, |ch, k| p.set_bpm(k, bpm) | ch));
-            // Saved soon; the play order doesn't change, so the engine queue stays.
+            // Saved soon. The play order changes only when a BPM filter decides what plays.
             if changed {
-                self.crates.touch(c);
+                let filtered = self.crates.get(c).is_some_and(|p| p.bpm_filter().is_some());
+                if filtered {
+                    self.mark_crate(c);
+                } else {
+                    self.crates.touch(c);
+                }
             }
         }
     }
@@ -669,7 +680,12 @@ impl WinampApp {
                         }
                     }
                 }
-                self.crates.touch(c);
+                // A tempo may decide what plays under a BPM filter.
+                if self.crates.get(c).is_some_and(|p| p.bpm_filter().is_some()) {
+                    self.mark_crate(c);
+                } else {
+                    self.crates.touch(c);
+                }
             }
         }
         let messages = self.crates.take_messages();
@@ -1254,14 +1270,26 @@ impl WinampApp {
         self.mark_settings();
     }
 
-    /// Scrolls the playlist by the least amount that shows entry `index`.
+    /// Scrolls the playlist by the least amount that shows entry `index` (a crate index; under
+    /// a BPM filter, its row, or where it would be).
     fn scroll_into_view(&mut self, index: usize) {
+        let index = self.pl_row_of(index);
         let rows = self.pl_visible_rows();
         if index < self.pl_scroll {
             self.pl_scroll = index;
         } else if index >= self.pl_scroll + rows {
             self.pl_scroll = index + 1 - rows;
         }
+    }
+
+    /// The list row of crate index `index` (under a BPM filter, the first row after it when
+    /// it's hidden).
+    fn pl_row_of(&self, index: usize) -> usize {
+        let shown = self.crates.shown();
+        if shown.bpm_filter().is_none() {
+            return index;
+        }
+        shown.shown_rows().partition_point(|&r| r < index)
     }
 
     /// `P`: the playing crate, scrolled to its playing entry, with the cursor on it.
@@ -1272,6 +1300,12 @@ impl WinampApp {
         };
         if self.crates.shown_id() != playing {
             self.show_crate(playing);
+        }
+        // A BPM filter that hides it is turned off.
+        let p = self.crates.shown_mut();
+        if p.get(id).is_some_and(|e| !p.shows(e)) {
+            p.set_bpm_filter(None);
+            self.mark_shown();
         }
         let p = self.crates.shown_mut();
         p.set_cursor(Some(id));
@@ -1697,6 +1731,7 @@ impl WinampApp {
 
     fn eq_section(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut eq = self.settings.eq;
+        let mut lp = self.lp_knob;
         let mut changed = false;
         let mut actions = Vec::new();
         {
@@ -1712,6 +1747,32 @@ impl WinampApp {
                 eq.enabled = !eq.enabled;
                 changed = true;
             }
+            // The LP knob: drag up or down (100 skin pixels for the whole turn), double-click
+            // to turn it off.
+            let kr = sk.at("eq_lp");
+            let (resp, delta) = widgets::drag_area(ui, &sk, "eq_lp", kr);
+            if resp.double_clicked() {
+                lp = audio::filter::OFF;
+            } else if delta.y != 0.0 {
+                lp = (lp - delta.y / 100.0).clamp(0.0, audio::filter::OFF);
+            }
+            sk.sprite_in("eq_lp_knob", kr);
+            let angle = (-135.0 + 270.0 * lp).to_radians();
+            let c = kr.center();
+            let tip = c + vec2(angle.sin(), -angle.cos()) * 4.5 * sk.scale;
+            let on = lp < audio::filter::OFF;
+            sk.painter.line_segment(
+                [c + (tip - c) * 0.2, tip],
+                egui::Stroke::new(
+                    1.5 * sk.scale,
+                    if on {
+                        Color32::from_rgb(0, 236, 0)
+                    } else {
+                        Color32::from_rgb(26, 26, 38)
+                    },
+                ),
+            );
+            resp.on_hover_text(format::lp_label(lp));
             let presets_resp = widgets::button(ui, &sk, "eq_presets", "eq_presets", "eq_presets");
             egui::Popup::menu(&presets_resp).show(|ui| {
                 ui.label("Load");
@@ -1774,6 +1835,10 @@ impl WinampApp {
                 );
             }
         }
+        if lp != self.lp_knob {
+            self.lp_knob = lp;
+            self.with_engine(|e| e.set_filter(lp));
+        }
         if changed && eq != self.settings.eq {
             self.settings.eq = eq;
             self.with_engine(|e| e.set_eq(eq));
@@ -1815,7 +1880,249 @@ impl WinampApp {
 
     /// Rows of entries on screen: the playlist's rows, less the column header.
     fn pl_visible_rows(&self) -> usize {
-        (self.pl_rows() - self.pl_columns() as usize).max(1)
+        (self.pl_rows() - self.pl_columns() as usize - self.pl_bar() as usize).max(1)
+    }
+
+    /// The playlist is wide enough for the crate sidebar (whether or not it is on).
+    fn pl_sidebar_fits(&self) -> bool {
+        self.settings.playlist_maximized || self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
+    }
+
+    fn pl_sidebar(&self) -> bool {
+        self.settings.crate_sidebar && self.pl_sidebar_fits()
+    }
+
+    /// The crate sidebar in `area` (skin pixels: x, y, w, h): every crate with its count and
+    /// marks, then "+ New crate". Returns the crate under the pointer while entries are
+    /// dragged (not the shown one), which is highlighted.
+    fn crate_sidebar(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        area: (f32, f32, f32, f32),
+        row_h: f32,
+        font: &egui::FontId,
+        actions: &mut Vec<Action>,
+    ) -> Option<CrateId> {
+        let (x, y, w, h) = area;
+        let colors = &sk.def.colors;
+        let scale = sk.scale;
+        sk.fill(
+            sk.rect(x, y, w, h),
+            lerp_color(colors.pl_bg, colors.pl_text, 0.06),
+        );
+        sk.fill(
+            sk.rect(x + w - 1.0, y, 1.0, h),
+            lerp_color(colors.pl_bg, colors.pl_text, 0.3),
+        );
+        let painter = sk.painter.with_clip_rect(sk.rect(x, y, w - 1.0, h));
+        let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
+        let dragging = self.pl_drag_from.is_some();
+        let fit = ((h / row_h).floor() as usize).max(1);
+        let crates: Vec<_> = self.crates.list().iter().take(fit - 1).cloned().collect();
+        let mut target = None;
+        for (i, c) in crates.iter().enumerate() {
+            let rr = sk.rect(x, y + i as f32 * row_h, w - 1.0, row_h);
+            let readable = !self.crates.is_unreadable(c.id);
+            let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
+            if over {
+                target = Some(c.id);
+                painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
+            } else if c.id == shown {
+                painter.rect_filled(
+                    rr,
+                    0.0,
+                    lerp_color(colors.pl_selected_bg, colors.pl_bg, 0.5),
+                );
+            }
+            let base = if c.id == shown {
+                colors.pl_current
+            } else {
+                colors.pl_text
+            };
+            let col = if readable {
+                color(base)
+            } else {
+                lerp_color(base, colors.pl_bg, 0.55)
+            };
+            let mark = match (c.id == playing, c.id == shown) {
+                (true, _) => "⏵ ",
+                (false, true) => "• ",
+                _ => "  ",
+            };
+            let count = painter
+                .text(
+                    pos2(rr.right() - 3.0 * scale, rr.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    self.crates.entry_count(c.id).to_string(),
+                    font.clone(),
+                    col,
+                )
+                .width();
+            painter
+                .with_clip_rect(Rect::from_min_max(
+                    rr.min,
+                    pos2(rr.right() - count - 6.0 * scale, rr.max.y),
+                ))
+                .text(
+                    pos2(rr.left() + 3.0 * scale, rr.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{mark}{}", c.name),
+                    font.clone(),
+                    col,
+                );
+            let resp = ui.interact(rr, Id::new(("pl_side", c.id)), Sense::click());
+            if resp.clicked() && readable {
+                actions.push(Action::ShowCrate(c.id));
+            }
+            egui::Popup::context_menu(&resp).show(|ui| {
+                let editable = c.id != PLAYLIST && readable;
+                if ui
+                    .add_enabled(editable, egui::Button::new("Rename…"))
+                    .clicked()
+                {
+                    actions.push(Action::RenameCrate(c.id));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(c.id != PLAYLIST, egui::Button::new("Delete…"))
+                    .clicked()
+                {
+                    actions.push(Action::DeleteCrate(c.id));
+                    ui.close();
+                }
+            });
+        }
+        let nr = sk.rect(x, y + crates.len() as f32 * row_h, w - 1.0, row_h);
+        painter.text(
+            pos2(nr.left() + 3.0 * scale, nr.center().y),
+            egui::Align2::LEFT_CENTER,
+            "+ New crate",
+            font.clone(),
+            lerp_color(colors.pl_text, colors.pl_bg, 0.3),
+        );
+        if ui
+            .interact(nr, Id::new("pl_side_new"), Sense::click())
+            .clicked()
+        {
+            actions.push(Action::NewCrate);
+        }
+        target
+    }
+
+    /// The BPM filter bar shows when the shown crate has two different known tempos.
+    fn pl_bar(&self) -> bool {
+        self.crates.shown().tempo_span().is_some()
+    }
+
+    /// The BPM filter bar in `area` (skin pixels: x, y, w, h): ALL, a two-handle range over
+    /// the crate's tempos, and the range as text.
+    fn bpm_bar(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        area: (f32, f32, f32, f32),
+        actions: &mut Vec<Action>,
+    ) {
+        let (x, y, w, h) = area;
+        let shown = self.crates.shown();
+        let Some((lo, hi)) = shown.tempo_span() else {
+            return;
+        };
+        let filter = shown.bpm_filter();
+        let (a, b) = filter.unwrap_or((lo, hi));
+        let colors = &sk.def.colors;
+        let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
+
+        // ALL.
+        let all_w = sk.text_width("ALL") + 6.0;
+        let all = ui.interact(sk.rect(x, y, all_w, h), Id::new("bpm_all"), Sense::click());
+        let lit = if filter.is_some() {
+            color(colors.pl_current)
+        } else {
+            lerp_color(colors.pl_text, colors.pl_bg, 0.5)
+        };
+        sk.text(x + 3.0, ty, "ALL", lit);
+        if all.clicked() {
+            actions.push(Action::SetBpmFilter(None));
+        }
+        all.on_hover_text("Show every track");
+
+        // The range as text, right-aligned, and "+n without BPM" when it fits. The text's room
+        // doesn't change with the range, so the track stays put under a dragged handle.
+        let missing = shown.without_bpm();
+        let note = format!(" +{missing} WITHOUT BPM");
+        let reserve = |extra: &str| sk.text_width(&format!("000-000 BPM{extra}"));
+        let note = if missing > 0 && w - all_w - reserve(&note) - 17.0 >= 80.0 {
+            note
+        } else {
+            String::new()
+        };
+        let text = format!("{a}-{b} BPM{note}");
+        let text_x = x + w - sk.text_width(&text) - 3.0;
+        sk.text(text_x, ty, &text, color([0, 236, 0]));
+
+        // The track, its selected part, and the two handles.
+        let (x0, x1) = (x + all_w + 6.0, x + w - reserve(&note) - 11.0);
+        if x1 - x0 < 10.0 {
+            return;
+        }
+        let span = (hi - lo) as f32;
+        let at = |v: u16| x0 + (v - lo) as f32 / span * (x1 - x0);
+        let mid = y + (h / 2.0).floor();
+        sk.fill(
+            sk.rect(x0, mid, x1 - x0, 1.0),
+            lerp_color(colors.pl_text, colors.pl_bg, 0.7),
+        );
+        sk.fill(
+            sk.rect(at(a), mid - 1.0, at(b) - at(a), 3.0),
+            color(colors.pl_text),
+        );
+        let handle = sk.def.sprite("bpm_handle");
+        let (hw, hh) = (handle.w as f32, handle.h as f32);
+        for v in [a, b] {
+            sk.sprite(
+                "bpm_handle",
+                (at(v) - hw / 2.0).round(),
+                y + ((h - hh) / 2.0).round(),
+            );
+        }
+        let resp = ui.interact(
+            sk.rect(x0 - hw, y, x1 - x0 + 2.0 * hw, h),
+            Id::new("bpm_range"),
+            Sense::click_and_drag(),
+        );
+        if let Some(p) = resp.interact_pointer_pos() {
+            let px = (p.x - sk.origin.x) / sk.scale;
+            let v = lo + ((px - x0) / (x1 - x0) * span).round().clamp(0.0, span) as u16;
+            // The handle nearest the pointer when the drag starts is the one that moves.
+            let which = *self
+                .bpm_drag
+                .get_or_insert(if (px - at(a)).abs() <= (px - at(b)).abs() {
+                    0
+                } else {
+                    1
+                });
+            let (na, nb) = if which == 0 {
+                (v.min(b), b)
+            } else {
+                (a, v.max(a))
+            };
+            if (na, nb) != (a, b) {
+                actions.push(Action::SetBpmFilter(Some((na, nb))));
+            }
+        } else {
+            self.bpm_drag = None;
+        }
+        let mut tip = "Drag a handle to keep only these tempos".to_owned();
+        if missing > 0 {
+            tip += &format!(
+                " ({} without a BPM {} hidden while a range is set)",
+                entries_label(missing),
+                if missing == 1 { "is" } else { "are" }
+            );
+        }
+        resp.on_hover_text(tip);
     }
 
     /// The column header: names (with the sort arrow), a click sorts, dragging a divider
@@ -1938,6 +2245,7 @@ impl WinampApp {
         let target = match (self.pl_follow, now) {
             (Some((c0, prev)), Some((c1, new))) if c0 == c1 => shown
                 .index_of(prev)
+                .map(|i| self.pl_row_of(i))
                 .filter(|&i| i >= self.pl_scroll && i < self.pl_scroll + rows)
                 .and_then(|_| shown.index_of(new)),
             _ => None,
@@ -1955,7 +2263,9 @@ impl WinampApp {
         let width = d.pl_width as f32;
         let list_h = (rows * d.pl_row_h as usize) as f32;
         let mut actions = Vec::new();
-        let len = self.crates.shown().len();
+        // The rows the BPM filter shows: row r is crate entry `row_map[r]`.
+        let row_map = self.crates.shown().shown_rows();
+        let len = row_map.len();
         // Wide enough: columns under a header row, which takes the first row.
         let columns = self.pl_columns();
         let visible = self.pl_visible_rows();
@@ -1975,7 +2285,9 @@ impl WinampApp {
             if title.drag_started() {
                 ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
             }
-            draw_crate_name(&sk, self.crates.name(self.crates.shown_id()));
+            let shown = self.crates.shown();
+            let count = shown.bpm_filter().map(|_| (row_map.len(), shown.len()));
+            draw_crate_name(&sk, self.crates.name(self.crates.shown_id()), count);
             dim_title(&sk, "pl_titlebar", self.focus == Focus::Playlist);
             egui::Popup::menu(&title)
                 .id(Id::new("crate_menu"))
@@ -1986,13 +2298,34 @@ impl WinampApp {
             if widgets::button(ui, &sk, "pl_max", "pl_max", "btn_max").clicked() {
                 actions.push(Action::ToggleMaximized);
             }
+            // ☰ shows or hides the crate sidebar; dimmed while the playlist is too narrow.
+            let fits = self.pl_sidebar_fits();
+            let side_btn = widgets::button(ui, &sk, "pl_side", "pl_side", "btn_side");
+            if !fits {
+                sk.fill(sk.at("pl_side"), Color32::from_black_alpha(150));
+            }
+            if side_btn.clicked() && fits {
+                actions.push(Action::ToggleSidebar);
+            }
+            side_btn.on_hover_text(if fits {
+                "Crates"
+            } else {
+                "Crates (when the playlist is at least 600 pixels wide, or maximized)"
+            });
             let top = d.pl_top_h as f32;
             sk.sprite_in("pl_left", sk.rect(0.0, top, 12.0, list_h));
             sk.sprite_in(
                 "pl_right",
                 sk.rect(d.pl_width as f32 - 20.0, top, 20.0, list_h),
             );
-            let l = d.at("pl_list");
+            // The crate sidebar takes the left of the list area.
+            let mut l = d.at("pl_list");
+            let side = self.pl_sidebar().then(|| {
+                let area = (l.x as f32, top, SIDEBAR_W as f32, list_h);
+                l.x += SIDEBAR_W;
+                l.w -= SIDEBAR_W;
+                area
+            });
             let list = sk.rect(l.x as f32, l.y as f32, l.w as f32, list_h);
             sk.fill(list, color(d.colors.pl_bg));
 
@@ -2005,23 +2338,46 @@ impl WinampApp {
                 command: i.modifiers.command,
             });
             let mut drop_target = None;
-            let rows_top = top + columns as usize as f32 * row_h;
+            let side_drop = side.and_then(|area| {
+                self.crate_sidebar(ui, &sk, area, d.pl_row_h as f32, &font, &mut actions)
+            });
+            // The BPM filter bar, then the column header, then the rows.
+            let bar = self.pl_bar();
+            if bar {
+                self.bpm_bar(ui, &sk, (l.x as f32, top, l.w as f32, row_h), &mut actions);
+            }
+            let head_top = top + bar as usize as f32 * row_h;
+            let rows_top = head_top + columns as usize as f32 * row_h;
             let cols = if columns {
-                // The number column fits the biggest number.
-                let digits = len.max(1).to_string().len() as f32;
+                // The number column fits the biggest number (entries keep their crate numbers).
+                let digits = self.crates.shown().len().max(1).to_string().len() as f32;
                 let cols = self
                     .settings
                     .columns
                     .layout(l.w as f32, digits * 6.0 + 10.0);
-                let head = sk.rect(l.x as f32, top, l.w as f32, row_h);
+                let head = sk.rect(l.x as f32, head_top, l.w as f32, row_h);
                 self.column_header(ui, &sk, head, &cols, &font, &mut actions);
                 cols
             } else {
                 Vec::new()
             };
             let shown = self.crates.shown();
+            if row_map.is_empty() && shown.bpm_filter().is_some() {
+                // ALL, in the bar above, brings them back.
+                let y = rows_top + ((row_h - sk.def.font.glyph_h as f32) / 2.0).round();
+                sk.text(
+                    l.x as f32 + 3.0,
+                    y,
+                    "NO TRACKS MATCH",
+                    color(d.colors.pl_text),
+                );
+            }
             // While an entry's menu is open, the rest of its album is tinted.
-            self.pl_tint = (self.pl_scroll..(self.pl_scroll + visible).min(shown.len()))
+            self.pl_tint = row_map
+                .iter()
+                .skip(self.pl_scroll)
+                .take(visible)
+                .copied()
                 .find(|&idx| egui::Popup::is_id_open(ui.ctx(), row_menu_id(idx)))
                 .map(|idx| {
                     let id = shown.entries()[idx].id;
@@ -2032,7 +2388,9 @@ impl WinampApp {
                 .unwrap_or_default();
             let tint = lerp_color(d.colors.pl_selected_bg, d.colors.pl_bg, 0.65);
             for r in 0..visible {
-                let idx = self.pl_scroll + r;
+                let Some(&idx) = row_map.get(self.pl_scroll + r) else {
+                    break;
+                };
                 let Some(e) = shown.entries().get(idx) else {
                     break;
                 };
@@ -2278,6 +2636,10 @@ impl WinampApp {
             {
                 if let Some(to) = drop_target {
                     actions.push(Action::Move(from, to));
+                } else if let Some(c) = side_drop
+                    && let Some(e) = self.crates.shown().entries().get(from)
+                {
+                    actions.push(Action::DropOnCrate(e.id, c));
                 }
                 self.pl_drag_from = None;
             }
@@ -2562,13 +2924,13 @@ impl WinampApp {
             .add_enabled(editable, egui::Button::new("Rename crate…"))
             .clicked()
         {
-            actions.push(Action::RenameCrate);
+            actions.push(Action::RenameCrate(shown));
         }
         if ui
             .add_enabled(editable, egui::Button::new("Delete crate…"))
             .clicked()
         {
-            actions.push(Action::DeleteCrate);
+            actions.push(Action::DeleteCrate(shown));
         }
     }
 
@@ -2721,6 +3083,13 @@ impl WinampApp {
                 self.settings.columns.resize(f, share);
                 self.mark_settings();
             }
+            Action::SetBpmFilter(range) => {
+                if self.crates.shown_mut().set_bpm_filter(range) {
+                    self.mark_shown();
+                    let rows = self.crates.shown().shown_rows().len();
+                    self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
+                }
+            }
             Action::Sort(field) => {
                 // The same field again sorts the other way.
                 let p = self.crates.shown_mut();
@@ -2750,13 +3119,11 @@ impl WinampApp {
             Action::ExportM3u => self.export_m3u(),
             Action::ShowCrate(id) => self.show_crate(id),
             Action::NewCrate => self.name_dialog = Some(NameDialog::new(NameFor::NewCrate, "")),
-            Action::RenameCrate => {
-                let id = self.crates.shown_id();
+            Action::RenameCrate(id) => {
                 let name = self.crates.name(id).to_owned();
                 self.name_dialog = Some(NameDialog::new(NameFor::RenameCrate(id), name));
             }
-            Action::DeleteCrate => {
-                let id = self.crates.shown_id();
+            Action::DeleteCrate(id) => {
                 if self.crates.entry_count(id) > 0 {
                     self.confirm_delete = Some(id);
                 } else {
@@ -2784,6 +3151,21 @@ impl WinampApp {
                 if !album.is_empty() {
                     p.select_only(&album, entry);
                 }
+            }
+            Action::DropOnCrate(entry, to) => {
+                if to != self.crates.shown_id() {
+                    let shown = self.crates.shown();
+                    let ids = if shown.is_selected(entry) {
+                        shown.selected_ids()
+                    } else {
+                        vec![entry]
+                    };
+                    self.send_to(&ids, to);
+                }
+            }
+            Action::ToggleSidebar => {
+                self.settings.crate_sidebar = !self.settings.crate_sidebar;
+                self.mark_settings();
             }
             Action::SendTo(entry, to) => {
                 let shown = self.crates.shown();
@@ -2832,6 +3214,8 @@ enum Action {
     ToggleMaximized,
     /// Sort the shown crate by a column (again: the other way).
     Sort(Field),
+    /// Show (and play) only the shown crate's entries in this BPM range; `None` shows all.
+    SetBpmFilter(Option<(u16, u16)>),
     ToggleColumn(Field),
     /// Widen a column by a share of the list's width.
     ResizeColumn(Field, f32),
@@ -2872,9 +3256,13 @@ enum Action {
     ExportM3u,
     ShowCrate(CrateId),
     NewCrate,
-    /// Rename or delete the shown crate.
-    RenameCrate,
-    DeleteCrate,
+    /// Rename or delete a crate (from the crate menu or the sidebar).
+    RenameCrate(CrateId),
+    DeleteCrate(CrateId),
+    /// Send the dragged entries (the selection when the dragged one is in it) to a crate.
+    DropOnCrate(EntryId, CrateId),
+    /// Show or hide the crate sidebar.
+    ToggleSidebar,
     /// Send an entry (with the rest of the selection, when it is selected) to a crate, or to
     /// a new one.
     SendTo(EntryId, Option<CrateId>),
@@ -3130,6 +3518,23 @@ fn duration_text(e: &crate::playlist::Entry) -> String {
 
 /// The playlist title bar's text: the crate name folded to the skin font's upper case, without
 /// characters the font lacks, cut to `max_w` skin pixels.
+/// The crate's title with, while a BPM filter is on, how many entries show of how many
+/// ("LOWTIDE TAPES · 42/301"). The name is shortened first; the count always shows.
+pub fn crate_title_with_count(
+    def: &crate::skin::SkinDef,
+    name: &str,
+    count: Option<(usize, usize)>,
+    max_w: f32,
+) -> String {
+    let Some((shown, all)) = count else {
+        return crate_title(def, name, max_w);
+    };
+    let suffix = format!(" · {shown}/{all}");
+    let suffix_w = suffix.chars().count() as f32 * def.font.advance as f32;
+    let name = crate_title(def, name, max_w - suffix_w);
+    format!("{name}{suffix}").trim().to_owned()
+}
+
 pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String {
     let advance = def.font.advance as f32;
     let fit = ((max_w + 1.0) / advance).floor().max(0.0) as usize;
@@ -3217,11 +3622,11 @@ fn draw_stretched_bar(sk: &Skinned, base: &str, y: f32, width: f32, h: f32) {
     sk.sprite(&format!("{base}_r"), width - r, y);
 }
 
-fn draw_crate_name(sk: &Skinned, name: &str) {
+fn draw_crate_name(sk: &Skinned, name: &str, count: Option<(usize, usize)>) {
     const PAD: f32 = 5.0; // plain title bar either side of the name
     const SIDE: f32 = 40.0; // decoration left visible at each end (the close button's side)
     let bar = sk.def.at("pl_titlebar");
-    let text = crate_title(sk.def, name, bar.w as f32 - 2.0 * (SIDE + PAD));
+    let text = crate_title_with_count(sk.def, name, count, bar.w as f32 - 2.0 * (SIDE + PAD));
     if text.is_empty() {
         return;
     }
@@ -3304,6 +3709,11 @@ fn engine_status(slot: &EngineSlot) -> String {
         EngineSlot::Failed(e) => format!("AUDIO ERROR: {e}"),
     }
 }
+
+/// The crate sidebar's width, in skin pixels.
+const SIDEBAR_W: u16 = 110;
+/// The playlist width (skin pixels) from which the crate sidebar fits, unless maximized.
+const SIDEBAR_FROM_WIDTH: u16 = 600;
 
 /// A playlist row's widget id, by its index in the crate.
 fn row_id(idx: usize) -> Id {
@@ -5314,6 +5724,304 @@ mod headless_tests {
         rig.click(rig.title_bar());
         rig.click_text("Delete crate…");
         assert_eq!(rig.app.crates.list().len(), 1);
+    }
+
+    #[test]
+    fn the_lp_knob_sweeps_the_filter_and_double_click_turns_it_off() {
+        let with_eq = |store: &Store| {
+            store
+                .save(
+                    SETTINGS_FILE,
+                    &Settings {
+                        scale: 1,
+                        show_eq: true,
+                        show_waveform: false,
+                        repeat: Repeat::One,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        };
+        let mut rig = Rig::new("lp-knob", Vec::new(), with_eq);
+        // The EQ sits under the main section (116 px); the knob at (46, 17) in it.
+        let knob = pos2(46.0 + 7.0, 116.0 + 17.0 + 7.0);
+        assert_eq!(rig.engine().filter(), audio::filter::OFF, "off at launch");
+        rig.frame(vec![Event::PointerMoved(knob)]);
+        rig.press(knob, PointerButton::Primary, true);
+        for dy in [10.0, 30.0, 50.0] {
+            rig.frame(vec![Event::PointerMoved(knob + vec2(0.0, dy))]);
+        }
+        rig.press(knob + vec2(0.0, 50.0), PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        let lp = rig.app.lp_knob;
+        assert!((lp - 0.5).abs() < 0.11, "dragged down by half a turn: {lp}");
+        assert_eq!(rig.engine().filter(), lp, "the engine follows");
+
+        rig.double_click(knob);
+        assert_eq!(rig.app.lp_knob, audio::filter::OFF);
+        assert_eq!(rig.engine().filter(), audio::filter::OFF);
+    }
+
+    /// Sets the tempo of the shown crate's entries, in order.
+    fn set_tempos(rig: &mut Rig, bpms: &[u16]) {
+        let p = rig.app.crates.shown_mut();
+        for (e, &b) in p.entries_mut().zip(bpms) {
+            e.bpm = Some(b);
+        }
+    }
+
+    #[test]
+    fn under_a_bpm_filter_rows_selection_and_the_cursor_skip_hidden_entries() {
+        let mut rig = Rig::new("bpm-rows", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(6);
+        set_tempos(&mut rig, &[124, 134, 124, 138, 124, 136]);
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
+        let out = rig.frame(Vec::new());
+        let drawn: Vec<String> = texts(&out).into_iter().map(|t| t.text).collect();
+        let numbered = |n: usize| drawn.iter().any(|t| t.starts_with(&format!("{n}. ")));
+        assert!(
+            numbered(2) && numbered(4) && numbered(6),
+            "crate numbers kept: {drawn:?}"
+        );
+        assert!(
+            !numbered(1) && !numbered(3) && !numbered(5),
+            "hidden entries aren't drawn"
+        );
+
+        // Under the filter bar, row 1 is entry 2; Shift-click on row 3 (entry 6) selects only
+        // shown entries.
+        rig.click(rig.row(1));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(rig.row(3));
+        rig.mods = Modifiers::NONE;
+        assert_eq!(
+            rig.app.crates.shown().selected_ids(),
+            [ids[1], ids[3], ids[5]]
+        );
+
+        // ↓ from entry 2 goes to entry 4.
+        rig.click(rig.row(1));
+        rig.key(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[3]));
+        rig.app.apply(Action::SelectAll, &ctx);
+        assert_eq!(
+            rig.app.crates.shown().selected_ids(),
+            [ids[1], ids[3], ids[5]]
+        );
+
+        // Export takes the whole crate.
+        assert_eq!(files::m3u_entries(rig.app.crates.shown()).len(), 6);
+
+        // P on an entry the filter hides turns the filter off.
+        rig.app.crates.shown_mut().set_current(Some(ids[2]));
+        rig.frame(Vec::new());
+        rig.key(Key::P, Modifiers::NONE);
+        assert_eq!(rig.app.crates.shown().bpm_filter(), None);
+        assert_eq!(rig.app.crates.shown().cursor(), Some(ids[2]));
+    }
+
+    /// Row `i` of the crate sidebar (a playlist at least 600 pixels wide).
+    fn side_row(i: usize) -> Pos2 {
+        pos2(PL_LEFT + 12.0 + 40.0, PL_TOP + 20.0 + i as f32 * 13.0 + 6.5)
+    }
+
+    /// Row `i` of the list beside the sidebar, under the column header.
+    fn side_list_row(i: usize) -> Pos2 {
+        pos2(
+            PL_LEFT + 12.0 + 110.0 + 100.0,
+            PL_TOP + 20.0 + (i + 1) as f32 * 13.0 + 6.5,
+        )
+    }
+
+    /// A wide playlist of three files and two more crates, Keepers and Friday.
+    fn sidebar_rig(name: &str) -> (Rig, Vec<EntryId>, CrateId, CrateId) {
+        let mut rig = Rig::new(name, Vec::new(), |_| {});
+        let tracks = ["tone.flac", "tone.wav", "tone.ogg"]
+            .map(|f| TrackRef::new(fixture(f).to_string_lossy()));
+        rig.app.crates.shown_mut().add(tracks);
+        let ids = rig.ids(PLAYLIST);
+        let keepers = rig.app.crates.create("Keepers").unwrap();
+        let friday = rig.app.crates.create("Friday").unwrap();
+        rig.app.settings.playlist_width = 700;
+        rig.frame(Vec::new());
+        (rig, ids, keepers, friday)
+    }
+
+    #[test]
+    fn the_crate_sidebar_shows_crates_and_hides_on_request() {
+        let (mut rig, _, keepers, _) = sidebar_rig("sidebar");
+        assert!(rig.app.pl_sidebar(), "on by default at 700 pixels");
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "⏵ Playlist"), "{:?}", text_list(&out));
+        assert!(shows(&out, "  Keepers") && shows(&out, "+ New crate"));
+
+        // A click shows the crate.
+        rig.click(side_row(1));
+        assert_eq!(rig.app.crates.shown_id(), keepers);
+        assert!(shows(&rig.frame(Vec::new()), "• Keepers"));
+
+        // Right-click: Rename… opens the name dialog for that crate.
+        rig.click_with(side_row(2), PointerButton::Secondary);
+        rig.click_text("Rename…");
+        assert!(rig.app.name_dialog.is_some());
+        rig.app.name_dialog = None;
+        rig.click(side_row(3));
+        assert!(rig.app.name_dialog.is_some(), "+ New crate asks for a name");
+        rig.app.name_dialog = None;
+
+        // ☰ hides it, and the choice is a setting (saved with the others).
+        let side_btn = pos2(PL_LEFT + 238.0 + 4.5, PL_TOP + 6.0 + 4.5);
+        rig.click(side_btn);
+        assert!(!rig.app.settings.crate_sidebar && !rig.app.pl_sidebar());
+        rig.click(side_btn);
+        assert!(rig.app.pl_sidebar());
+
+        // Too narrow: no sidebar, and ☰ does nothing.
+        rig.app.settings.playlist_width = 400;
+        rig.frame(Vec::new());
+        assert!(!rig.app.pl_sidebar());
+        rig.click(side_btn);
+        assert!(rig.app.settings.crate_sidebar, "unchanged");
+    }
+
+    #[test]
+    fn dragging_entries_onto_a_sidebar_crate_sends_them() {
+        let (mut rig, ids, _, friday) = sidebar_rig("sidebar-drop");
+        rig.app.send_to(&[ids[1]], friday);
+        // Entries 1 to 3 selected; drag entry 1 onto Friday, which holds entry 2 already.
+        rig.click(side_list_row(0));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(side_list_row(2));
+        rig.mods = Modifiers::NONE;
+        let from = side_list_row(0);
+        rig.frame(vec![Event::PointerMoved(from)]);
+        rig.press(from, PointerButton::Primary, true);
+        for t in [0.3, 0.6, 1.0] {
+            let p = from + (side_row(2) - from) * t;
+            rig.frame(vec![Event::PointerMoved(p)]);
+        }
+        rig.press(side_row(2), PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        assert_eq!(rig.ids(friday).len(), 3, "two added, one already there");
+        let msg = rig
+            .app
+            .message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default();
+        assert_eq!(msg, "Sent 2 entries to Friday (1 already there)");
+        assert_eq!(rig.ids(PLAYLIST), ids, "the list wasn't reordered");
+
+        // Dropped inside the list, an entry is reordered and no crate receives it.
+        let from = side_list_row(0);
+        rig.frame(vec![Event::PointerMoved(from)]);
+        rig.press(from, PointerButton::Primary, true);
+        for t in [0.3, 0.6, 1.0] {
+            let p = from + (side_list_row(2) - from) * t;
+            rig.frame(vec![Event::PointerMoved(p)]);
+        }
+        rig.press(side_list_row(2), PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[2], ids[0]]);
+        assert_eq!(rig.ids(friday).len(), 3);
+    }
+
+    #[test]
+    fn the_title_bar_counts_what_a_bpm_filter_shows() {
+        let def = LoadedSkin::default_skin().def;
+        assert_eq!(
+            crate_title_with_count(&def, "Lowtide Tapes", Some((2, 4)), 200.0),
+            "LOWTIDE TAPES · 2/4"
+        );
+        assert_eq!(
+            crate_title_with_count(&def, "Lowtide Tapes", None, 200.0),
+            "LOWTIDE TAPES"
+        );
+        // Short of room, the name gives way and the count stays.
+        let t = crate_title_with_count(&def, "Lowtide Tapes", Some((42, 301)), 100.0);
+        assert!(t.ends_with(" · 42/301") && t.starts_with("LOW"), "{t}");
+    }
+
+    #[test]
+    fn the_bpm_bar_shows_with_two_tempos_and_its_handles_set_the_range() {
+        let mut rig = Rig::new("bpm-bar", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(7);
+        rig.frame(Vec::new());
+        assert!(!rig.app.pl_bar(), "no tempo: no bar");
+        set_tempos(&mut rig, &[124, 128, 137, 139]);
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_bar());
+
+        // The bar is the first row; its track runs from after ALL to before the range text.
+        let y = rig.row(0).y;
+        let right_handle = pos2(PL_LEFT + 179.0, y);
+        rig.frame(vec![Event::PointerMoved(right_handle)]);
+        rig.press(right_handle, PointerButton::Primary, true);
+        for x in [170.0, 140.0, 105.0] {
+            rig.frame(vec![Event::PointerMoved(pos2(PL_LEFT + x, y))]);
+        }
+        rig.press(pos2(PL_LEFT + 105.0, y), PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        let shown = rig.app.crates.shown();
+        let (lo, hi) = shown.bpm_filter().expect("a range");
+        assert_eq!(lo, 124, "the low handle stays");
+        assert!((129..=133).contains(&hi), "the high handle moved to {hi}");
+        assert_eq!(shown.shown_rows(), [0, 1]);
+        assert_eq!(shown.without_bpm(), 3);
+
+        // A range no track is in: nothing shows, and ALL brings everything back.
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((130, 135))), &ctx);
+        rig.frame(Vec::new());
+        assert!(rig.app.crates.shown().shown_rows().is_empty());
+        rig.click(pos2(PL_LEFT + 12.0 + 8.0, y));
+        assert_eq!(rig.app.crates.shown().bpm_filter(), None);
+        assert_eq!(rig.ids(PLAYLIST), ids);
+        assert_eq!(rig.app.crates.shown().shown_rows().len(), 7);
+    }
+
+    #[test]
+    fn next_and_a_hidden_playing_track_follow_the_bpm_filter() {
+        let mut rig = Rig::new(
+            "bpm-next",
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        set_tempos(&mut rig, &[134, 124, 138]);
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.queue, [ids[0], ids[2]], "124 BPM is left out");
+        rig.app.apply(Action::Next, &ctx);
+        rig.until(
+            |r| r.app.crates.playing().current() == Some(ids[2]),
+            "next skips the hidden entry",
+        );
+
+        // A range that hides the playing entry: it plays on, and nothing else is left.
+        rig.app.apply(Action::SetBpmFilter(Some((130, 135))), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.position.state, PlayState::Playing);
+        assert_eq!(rig.app.crates.playing().current(), Some(ids[2]));
+        assert_eq!(
+            rig.app.queue,
+            [ids[0], ids[2]],
+            "the playing entry stays queued"
+        );
+        // ALL: everything plays again.
+        rig.app.apply(Action::SetBpmFilter(None), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.queue, ids);
     }
 
     /// Entries 1 to 6 from releases 1, 1, 2, 1, (none) and 3; returns their ids.

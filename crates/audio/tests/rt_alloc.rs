@@ -88,7 +88,9 @@ fn renderer_never_allocates() {
         }
         tx.push(g, 2, 0, &chunk); // gapless boundary
         eq_tx.push(eq_on).unwrap(); // EQ switch + ramp
+        control.set_filter(0.4); // the low-pass comes on and sweeps
         call(&mut r, &mut out);
+        control.set_filter(1.0); // and fades out again
         control.set_volume(0.3);
         control.set_balance(-0.5);
         call(&mut r, &mut out); // underrun

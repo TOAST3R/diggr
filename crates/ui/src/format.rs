@@ -75,6 +75,15 @@ pub fn entry_name(catno: &str, artist: &str, title: &str, album: &str, bpm: Opti
     name
 }
 
+/// The LP knob's tooltip: "LP 2.4 kHz", "LP 340 Hz", or "LP off".
+pub fn lp_label(knob: f32) -> String {
+    match audio::filter::cutoff_hz(knob) {
+        None => "LP off".into(),
+        Some(hz) if hz >= 1000.0 => format!("LP {:.1} kHz", hz / 1000.0),
+        Some(hz) => format!("LP {} Hz", hz.round() as u32),
+    }
+}
+
 /// Winamp's title line: `N. name (m:ss)`, with the name from [`entry_name`].
 pub fn title_line(number: usize, name: &str, duration: Option<f64>) -> String {
     match duration {
@@ -285,6 +294,13 @@ mod tests {
         // Cut on the right, the album goes before any of the title.
         let name = entry_name("", "A", "Title", "Album", None);
         assert!(name.find("Album").unwrap() > name.find("Title").unwrap());
+    }
+
+    #[test]
+    fn lp_labels() {
+        assert_eq!(lp_label(1.0), "LP off");
+        assert_eq!(lp_label(0.0), "LP 60 Hz");
+        assert_eq!(lp_label(0.5), "LP 1.1 kHz");
     }
 
     #[test]
