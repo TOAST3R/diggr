@@ -122,11 +122,13 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Entry: right-click",
                 "play or arm, remove, Send to crate (the selection, when the entry is in it); \
-                 keep, pass, for-sale page, open or copy its Discogs link",
+                 remove or select its whole album (tinted while the menu is open); keep, pass, \
+                 for-sale page, open or copy its Discogs link",
             ),
             (
                 "Entry: hover",
-                "everything known about it: label, cat#, side, year, BPM, status, for sale",
+                "everything known about it: its record's cover, album, label, cat#, side, \
+                 year, BPM, status, for sale",
             ),
             (
                 "Entry status icons",

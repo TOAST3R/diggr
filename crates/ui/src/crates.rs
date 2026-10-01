@@ -848,9 +848,7 @@ mod tests {
         for (i, id) in ids.iter().enumerate() {
             p.set_info(
                 *id,
-                format!("Track {i}"),
-                "Artist".into(),
-                Some(i as f64 + 60.0),
+                crate::playlist::tags(format!("Track {i}"), "Artist".into(), Some(i as f64 + 60.0)),
             );
         }
         p.set_current(Some(ids[n * 41 / 100])); // entry 123 of 300
@@ -964,6 +962,8 @@ mod tests {
                 release: Some(123456),
                 catno: "LT-012".into(),
                 position: "A1".into(),
+                album: "Glasshouse EP".into(),
+                cover: "https://i.discogs.com/x.jpeg".into(),
                 ..Default::default()
             };
             let id =
@@ -980,6 +980,10 @@ mod tests {
         assert_eq!(
             (o.release, o.catno.as_str(), o.position.as_str()),
             (Some(123456), "LT-012", "A1")
+        );
+        assert_eq!(
+            (o.album.as_str(), o.cover.as_str()),
+            ("Glasshouse EP", "https://i.discogs.com/x.jpeg")
         );
     }
 }

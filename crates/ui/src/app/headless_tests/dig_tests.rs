@@ -5,6 +5,8 @@ use super::digging::BridgeAction;
 use super::*;
 use ::dig::browser::{FakeBrowser, sell_url};
 use ::dig::clock::RealClock;
+use ::dig::cover::{FakeImages, test_jpeg};
+use ::dig::discogs::model::RecordKey;
 use ::dig::discogs::transport::{FakeTransport, Method};
 use ::dig::discogs::url;
 use ::dig::jobs::{Filters, Job, Jobs};
@@ -18,6 +20,7 @@ const CLIPS: [&str; 3] = ["GLASShouse1", "LUMENremix1", "LASTlight01"];
 #[derive(Clone)]
 struct Fakes {
     transport: Arc<FakeTransport>,
+    images: Arc<FakeImages>,
     fetcher: Arc<FakeFetcher>,
     browser: Arc<FakeBrowser>,
 }
@@ -29,6 +32,7 @@ impl Fakes {
                 "{}/../dig/tests/fixtures/discogs",
                 env!("CARGO_MANIFEST_DIR")
             ))),
+            images: FakeImages::new(Ok(test_jpeg(300, 300))),
             fetcher: Arc::new(FakeFetcher::new(fixture("tone.m4a"))),
             browser: Arc::new(FakeBrowser::default()),
         }
@@ -42,6 +46,7 @@ impl Fakes {
         });
         DigSetup {
             transport: self.transport.clone(),
+            images: self.images.clone(),
             clock: Arc::new(RealClock::default()),
             finder,
             browser: self.browser.clone(),
@@ -972,4 +977,164 @@ fn no_collection_is_asked_for_without_a_token_or_a_crate_from_discogs() {
         rig.pump();
     }
     assert_eq!(collection_requests(&fakes), 0);
+}
+
+#[test]
+fn entries_saved_without_an_album_get_it_from_the_cache_without_a_request() {
+    let fakes = Fakes::new();
+    // A crate saved before entries carried albums, and release 1001 in the disk cache.
+    let prepare = |store: &Store| {
+        let root = store.dir().parent().unwrap().join("cache");
+        let body = std::fs::read_to_string(format!(
+            "{}/../dig/tests/fixtures/discogs/releases_1001_curr_abbr_EUR.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        ::dig::discogs::cache::DiskCache::new(Some(&root)).put_priced(
+            ::dig::discogs::cache::Kind::Release,
+            "1001",
+            &body,
+            1,
+            Some("EUR"),
+        );
+        let mut c = Crates::open(store);
+        for (release, clip) in [(1001, CLIPS[0]), (1001, CLIPS[1]), (4040, "UNCACHED001")] {
+            let origin = Origin {
+                release: Some(release),
+                clip: Some(clip.into()),
+                ..Default::default()
+            };
+            c.shown_mut()
+                .add_waiting("Nightcraft", clip, None, Some(origin), "queued");
+        }
+        c.touch(PLAYLIST);
+        c.save_due(true, Duration::ZERO);
+    };
+    let mut rig = rig("dig-backfill", &fakes, prepare);
+    rig.until(
+        |r| r.app.crates.get(PLAYLIST).unwrap().entries()[0].album() == "Glasshouse EP",
+        "the album is filled from the cache",
+    );
+    let p = rig.app.crates.get(PLAYLIST).unwrap();
+    let o = p.entries()[1].origin.clone().unwrap();
+    assert_eq!(
+        (o.album.as_str(), o.cover.as_str()),
+        (
+            "Glasshouse EP",
+            "https://i.discogs.com/fake/R-1001-front-150.jpeg"
+        )
+    );
+    assert_eq!(p.entries()[2].album(), "", "not cached: left as it is");
+    assert_eq!(fakes.transport.count(), 0, "no request to Discogs");
+}
+
+/// Six Discogs entries, each from its own release (100 to 105) with a cover address.
+fn cover_crate(rig: &mut Rig) -> Vec<String> {
+    let p = rig.app.crates.shown_mut();
+    let mut urls = Vec::new();
+    for i in 0..6u64 {
+        let url = format!("https://i.discogs.com/cover-{i}.jpeg");
+        let origin = Origin {
+            release: Some(100 + i),
+            album: format!("Album {i}"),
+            cover: url.clone(),
+            clip: Some(format!("COVERclip{i:02}")),
+            ..Default::default()
+        };
+        p.add_waiting(
+            "Nightcraft",
+            format!("Track {i}"),
+            None,
+            Some(origin),
+            "queued",
+        );
+        urls.push(url);
+    }
+    rig.frame(Vec::new());
+    urls
+}
+
+fn has_cover(rig: &Rig, release: u64) -> bool {
+    rig.app
+        .dig
+        .as_ref()
+        .unwrap()
+        .covers
+        .has_texture(RecordKey::Release(release))
+}
+
+#[test]
+fn resting_on_an_entry_shows_its_cover_fetched_once() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-cover", &fakes, |_| {});
+    let urls = cover_crate(&mut rig);
+    rig.frame(vec![Event::PointerMoved(rig.row(2))]);
+    rig.frame(Vec::new());
+    assert_eq!(fakes.images.count(), 0, "nothing before the pointer rests");
+    rig.until(|r| has_cover(r, 102), "the cover arrives");
+    assert_eq!(fakes.images.log(), [urls[2].clone()]);
+    assert!(
+        rig.dir.join("cache/covers/release-102.png").exists(),
+        "kept on disk"
+    );
+    // Away and back: drawn from memory, no second fetch.
+    rig.frame(vec![Event::PointerMoved(rig.row(4))]);
+    rig.frame(vec![Event::PointerMoved(rig.row(2))]);
+    std::thread::sleep(super::super::covers::REST);
+    rig.frame(Vec::new());
+    assert!(has_cover(&rig, 102));
+    assert!(
+        fakes.images.log().iter().all(|u| *u != urls[4]),
+        "row 5 wasn't rested on"
+    );
+    assert_eq!(fakes.images.count(), 1);
+}
+
+#[test]
+fn sweeping_down_the_list_fetches_only_where_the_pointer_stops() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-cover-sweep", &fakes, |_| {});
+    let urls = cover_crate(&mut rig);
+    for row in 0..5 {
+        rig.frame(vec![Event::PointerMoved(rig.row(row))]);
+    }
+    rig.until(|r| has_cover(r, 104), "the last row's cover arrives");
+    assert_eq!(fakes.images.log(), [urls[4].clone()]);
+}
+
+#[test]
+fn a_cover_whose_address_is_gone_is_looked_up_once_more() {
+    let fakes = Fakes::new();
+    fakes.images.route(
+        "https://i.discogs.com/expired.jpeg",
+        Err(::dig::cover::ImageError::Status(404)),
+    );
+    let mut rig = rig("dig-cover-stale", &fakes, |_| {});
+    // Release 1001's data (in the fixtures) has a different, working address.
+    let p = rig.app.crates.shown_mut();
+    let origin = Origin {
+        release: Some(1001),
+        cover: "https://i.discogs.com/expired.jpeg".into(),
+        clip: Some(CLIPS[0].into()),
+        ..Default::default()
+    };
+    p.add_waiting("Nightcraft", "Glasshouse", None, Some(origin), "queued");
+    rig.frame(vec![Event::PointerMoved(rig.row(0))]);
+    let fresh = "https://i.discogs.com/fake/R-1001-front-150.jpeg";
+    rig.until(
+        |r| {
+            r.app.crates.shown().entries()[0]
+                .origin
+                .as_ref()
+                .unwrap()
+                .cover
+                == fresh
+        },
+        "the release's data is looked up again",
+    );
+    rig.until(|r| has_cover(r, 1001), "the new address works");
+    assert_eq!(
+        fakes.images.log(),
+        ["https://i.discogs.com/expired.jpeg", fresh]
+    );
 }

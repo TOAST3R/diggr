@@ -75,5 +75,21 @@
   }
  ],
  "num_for_sale": 6,
- "lowest_price": 9.0
+ "lowest_price": 9.0,
+ "images": [
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/fake/R-1001-back.jpeg",
+   "uri150": "https://i.discogs.com/fake/R-1001-back-150.jpeg",
+   "width": 600,
+   "height": 600
+  },
+  {
+   "type": "primary",
+   "uri": "https://i.discogs.com/fake/R-1001-front.jpeg",
+   "uri150": "https://i.discogs.com/fake/R-1001-front-150.jpeg",
+   "width": 600,
+   "height": 600
+  }
+ ]
 }

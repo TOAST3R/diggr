@@ -26,6 +26,8 @@ use crate::spectrum::{Analyzer, BARS};
 use crate::widgets::{self, Skinned, SliderSprites, color};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod covers;
+#[cfg(not(target_arch = "wasm32"))]
 mod digging;
 #[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
@@ -106,6 +108,8 @@ pub struct WinampApp {
     title_tick: f64,
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
+    /// The rest of the album of the entry whose menu is open (tinted; the selection stays).
+    pl_tint: Vec<EntryId>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -277,6 +281,7 @@ impl WinampApp {
             title_tick: 0.0,
             pl_scroll: 0,
             pl_drag_from: None,
+            pl_tint: Vec::new(),
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -654,9 +659,7 @@ impl WinampApp {
                     continue; // deleted meanwhile
                 };
                 match r {
-                    MetaResult::Info(_, i) => {
-                        playlist.set_info(id, i.title, i.artist, i.duration_secs)
-                    }
+                    MetaResult::Info(_, i) => playlist.set_info(id, i),
                     MetaResult::Failed(_) => playlist.set_failed(id),
                     MetaResult::Bpm(_, bpm) => {
                         if let Some(key) = playlist.get(id).map(|e| e.duplicate_key())
@@ -685,12 +688,7 @@ impl WinampApp {
                     if let (Some(&id), Some(p)) =
                         (queue.get(index), self.crates.get_mut(queue_crate))
                     {
-                        p.set_info(
-                            id,
-                            info.title.clone(),
-                            info.artist.clone(),
-                            info.duration_secs,
-                        );
+                        p.set_info(id, info.clone());
                     }
                 }
                 EngineEvent::TrackFailed { index, .. } => {
@@ -1652,7 +1650,7 @@ impl WinampApp {
         let entry = playing.current().and_then(|id| playing.get(id));
         let origin = entry.and_then(|e| e.origin.as_ref());
         let catno = origin.map_or("", |o| o.catno.as_str());
-        let name = format::entry_name(catno, &artist, &title, entry.and_then(|e| e.bpm));
+        let name = format::entry_name(catno, &artist, &title, "", entry.and_then(|e| e.bpm));
         let mut line = format::title_line(number, &name, duration);
         if let Some(o) = origin {
             line += &format::origin_details(o);
@@ -2022,6 +2020,17 @@ impl WinampApp {
                 Vec::new()
             };
             let shown = self.crates.shown();
+            // While an entry's menu is open, the rest of its album is tinted.
+            self.pl_tint = (self.pl_scroll..(self.pl_scroll + visible).min(shown.len()))
+                .find(|&idx| egui::Popup::is_id_open(ui.ctx(), row_menu_id(idx)))
+                .map(|idx| {
+                    let id = shown.entries()[idx].id;
+                    let mut album = shown.album_of(id);
+                    album.retain(|&a| a != id);
+                    album
+                })
+                .unwrap_or_default();
+            let tint = lerp_color(d.colors.pl_selected_bg, d.colors.pl_bg, 0.65);
             for r in 0..visible {
                 let idx = self.pl_scroll + r;
                 let Some(e) = shown.entries().get(idx) else {
@@ -2030,6 +2039,8 @@ impl WinampApp {
                 let rr = sk.rect(l.x as f32, rows_top + r as f32 * row_h, l.w as f32, row_h);
                 if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
+                } else if self.pl_tint.contains(&e.id) {
+                    clip.rect_filled(rr, 0.0, tint);
                 }
                 if self.focus == Focus::Playlist && shown.cursor() == Some(e.id) {
                     clip.rect_stroke(
@@ -2113,7 +2124,7 @@ impl WinampApp {
                         name_clip.text(
                             at + vec2(w + 3.0 * scale, 0.0),
                             egui::Align2::LEFT_CENTER,
-                            marked(e.display_name()),
+                            marked(e.row_name()),
                             font.clone(),
                             col,
                         );
@@ -2121,13 +2132,13 @@ impl WinampApp {
                         name_clip.text(
                             at,
                             egui::Align2::LEFT_CENTER,
-                            format!("{}. {}", idx + 1, marked(e.display_name())),
+                            format!("{}. {}", idx + 1, marked(e.row_name())),
                             font.clone(),
                             col,
                         );
                     }
                 }
-                let mut resp = ui.interact(rr, Id::new(("pl_row", idx)), Sense::click_and_drag());
+                let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
                     let marks = format::DigMarks {
@@ -2137,13 +2148,22 @@ impl WinampApp {
                         owned: owned.clone(),
                     };
                     let details = format::entry_details(e, marks, unix_now());
-                    resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details));
+                    // Only what's in memory: the cover worker reads files and fetches.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let cover = self.dig.as_mut().and_then(|d| d.covers.slot(ui.ctx(), e));
+                    #[cfg(target_arch = "wasm32")]
+                    let cover = None;
+                    resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details, cover));
                 }
                 let menu_click = opens_context_menu(
                     resp.secondary_clicked(),
                     resp.clicked(),
                     ui.input(|i| i.modifiers),
                 );
+                if menu_click {
+                    // The album's tint shows from the next frame on.
+                    ui.ctx().request_repaint();
+                }
                 if resp.double_clicked() {
                     actions.push(Action::PlayEntry(e.id));
                 } else if resp.clicked() && !menu_click {
@@ -2183,6 +2203,28 @@ impl WinampApp {
                         if ui.button("Remove").clicked() {
                             actions.push(Action::RemoveEntry(e.id));
                             ui.close();
+                        }
+                        let album = shown.album_of(e.id).len();
+                        if album > 0 {
+                            let more = album > 1;
+                            let tracks = if album == 1 { "track" } else { "tracks" };
+                            if ui
+                                .add_enabled(
+                                    more,
+                                    egui::Button::new(format!("Remove album ({album} {tracks})")),
+                                )
+                                .clicked()
+                            {
+                                actions.push(Action::RemoveAlbum(e.id));
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(more, egui::Button::new("Select album"))
+                                .clicked()
+                            {
+                                actions.push(Action::SelectAlbum(e.id));
+                                ui.close();
+                            }
                         }
                         ui.separator();
                         ui.menu_button("Send to crate", |ui| {
@@ -2729,6 +2771,20 @@ impl WinampApp {
                     self.mark_shown();
                 }
             }
+            Action::RemoveAlbum(entry) => {
+                let p = self.crates.shown_mut();
+                let album = p.album_of(entry);
+                if p.remove_ids(&album) > 0 {
+                    self.mark_shown();
+                }
+            }
+            Action::SelectAlbum(entry) => {
+                let p = self.crates.shown_mut();
+                let album = p.album_of(entry);
+                if !album.is_empty() {
+                    p.select_only(&album, entry);
+                }
+            }
             Action::SendTo(entry, to) => {
                 let shown = self.crates.shown();
                 let ids = if shown.is_selected(entry) {
@@ -2781,6 +2837,10 @@ enum Action {
     ResizeColumn(Field, f32),
     /// Remove an entry, or the whole selection when it is part of it (the entry menu).
     RemoveEntry(EntryId),
+    /// Remove every entry of this entry's album (the entry menu).
+    RemoveAlbum(EntryId),
+    /// Select exactly this entry's album, with the cursor on it (the entry menu).
+    SelectAlbum(EntryId),
     Shuffle,
     Repeat,
     ToggleEq,
@@ -2912,22 +2972,62 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// An entry's tooltip: its full name, then one labelled line per known detail.
-fn entry_tooltip(ui: &mut Ui, details: &[(&str, String)]) {
+/// What an entry's tooltip shows where its record's cover goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CoverSlot {
+    /// The cover, at its own size.
+    Loaded(egui::TextureId, egui::Vec2),
+    /// The cover's space, empty until it arrives.
+    Waiting,
+}
+
+/// The cover's side in an entry tooltip, in points.
+const TOOLTIP_COVER: f32 = 96.0;
+
+/// An entry's tooltip: its full name, then its cover (when it has one) beside one labelled
+/// line per known detail.
+fn entry_tooltip(ui: &mut Ui, details: &[(&str, String)], cover: Option<CoverSlot>) {
     let mut lines = details.iter();
     if let Some((_, name)) = lines.next() {
         ui.label(egui::RichText::new(name).strong());
     }
-    egui::Grid::new("entry_details")
-        .num_columns(2)
-        .spacing(vec2(10.0, 2.0))
-        .show(ui, |ui| {
-            for (label, value) in lines {
-                ui.label(egui::RichText::new(*label).weak());
-                ui.label(value);
-                ui.end_row();
+    let grid = |ui: &mut Ui| {
+        egui::Grid::new("entry_details")
+            .num_columns(2)
+            .spacing(vec2(10.0, 2.0))
+            .show(ui, |ui| {
+                for (label, value) in lines {
+                    ui.label(egui::RichText::new(*label).weak());
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
+    };
+    let Some(cover) = cover else {
+        return grid(ui);
+    };
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(TOOLTIP_COVER), Sense::hover());
+        match cover {
+            CoverSlot::Loaded(tex, size) => {
+                // Fitted into the square, centred, its shape kept.
+                let fit = size * (TOOLTIP_COVER / size.x.max(size.y).max(1.0));
+                let at = Rect::from_center_size(rect.center(), fit);
+                ui.painter().image(
+                    tex,
+                    at,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
             }
-        });
+            CoverSlot::Waiting => {
+                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                ui.painter()
+                    .rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
+        ui.vertical(grid);
+    });
 }
 
 /// What a playlist row shows where its duration goes.
@@ -3203,6 +3303,16 @@ fn engine_status(slot: &EngineSlot) -> String {
         EngineSlot::Ready(_) => "WINAMP RUST - DROP FILES HERE".into(),
         EngineSlot::Failed(e) => format!("AUDIO ERROR: {e}"),
     }
+}
+
+/// A playlist row's widget id, by its index in the crate.
+fn row_id(idx: usize) -> Id {
+    Id::new(("pl_row", idx))
+}
+
+/// The id of a playlist row's context menu (egui's default for a response's popup).
+fn row_menu_id(idx: usize) -> Id {
+    row_id(idx).with("popup")
 }
 
 fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
@@ -4535,7 +4645,7 @@ mod headless_tests {
         assert_eq!(filled.len(), 1, "{filled:?}");
         assert!((filled[0].width() - 12.0).abs() < 0.01, "{filled:?}");
         assert_eq!(color_of("2. garbage"), Some(Color32::from_rgb(170, 60, 60)));
-        let normal = color_of("1. M83: Midnight_City");
+        let normal = color_of("1. M83: Midnight_City · Hurry_Up");
         assert!(normal == Some(color(colors.pl_text)) || normal == Some(color(colors.pl_current)));
     }
 
@@ -5204,6 +5314,152 @@ mod headless_tests {
         rig.click(rig.title_bar());
         rig.click_text("Delete crate…");
         assert_eq!(rig.app.crates.list().len(), 1);
+    }
+
+    /// Entries 1 to 6 from releases 1, 1, 2, 1, (none) and 3; returns their ids.
+    fn album_crate(rig: &mut Rig) -> Vec<EntryId> {
+        let p = rig.app.crates.shown_mut();
+        for (i, release) in [Some(1), Some(1), Some(2), Some(1), None, Some(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let origin = Origin {
+                release,
+                album: release.map(|r| format!("Album {r}")).unwrap_or_default(),
+                clip: Some(format!("clip{i:07}")),
+                ..Default::default()
+            };
+            p.add_waiting(
+                "Nightcraft",
+                format!("Track {i}"),
+                None,
+                Some(origin),
+                "queued",
+            );
+        }
+        let ids = p.entries().iter().map(|e| e.id).collect();
+        rig.frame(Vec::new());
+        ids
+    }
+
+    #[test]
+    fn right_clicking_an_entry_tints_the_rest_of_its_album() {
+        let mut rig = Rig::new("menu-album-tint", Vec::new(), |_| {});
+        let ids = album_crate(&mut rig);
+        // Entries 3 to 5 selected; right-click entry 2 (outside the selection).
+        rig.click(rig.row(2));
+        rig.mods = Modifiers::SHIFT;
+        rig.click(rig.row(4));
+        rig.mods = Modifiers::NONE;
+        rig.click_with(rig.row(1), PointerButton::Secondary);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.pl_tint, [ids[0], ids[3]]);
+        assert_eq!(
+            rig.app.crates.shown().selected_ids(),
+            [ids[1]],
+            "the selection is the clicked entry, as without albums"
+        );
+        // Closing the menu clears the tint.
+        rig.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_tint.is_empty());
+        // An entry without an album tints nothing.
+        rig.click_with(rig.row(4), PointerButton::Secondary);
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_tint.is_empty());
+    }
+
+    #[test]
+    fn the_entry_menu_removes_or_selects_a_whole_album() {
+        let mut rig = Rig::new("menu-album", Vec::new(), |_| {});
+        let ids = album_crate(&mut rig);
+        // Select album: exactly the album, the cursor on the clicked entry.
+        rig.click_with(rig.row(3), PointerButton::Secondary);
+        rig.click_text("Select album");
+        let shown = rig.app.crates.shown();
+        assert_eq!(shown.selected_ids(), [ids[0], ids[1], ids[3]]);
+        assert_eq!(shown.cursor(), Some(ids[3]));
+
+        // A single's items are there but disabled; an entry without an album has none.
+        rig.click_with(rig.row(2), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        let on_screen: Vec<String> = texts(&out).into_iter().map(|t| t.text).collect();
+        assert!(on_screen.iter().any(|t| t == "Remove album (1 track)"));
+        rig.click_text("Remove album (1 track)");
+        assert_eq!(rig.ids(PLAYLIST).len(), 6, "disabled: nothing removed");
+        rig.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        rig.click_with(rig.row(4), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(
+            !texts(&out).iter().any(|t| t.text == "Select album"),
+            "no album, no album items"
+        );
+        rig.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+
+        // Remove album: all of it, wherever it is; the rest keep their order.
+        rig.click_with(rig.row(1), PointerButton::Secondary);
+        rig.click_text("Remove album (3 tracks)");
+        assert_eq!(rig.ids(PLAYLIST), [ids[2], ids[4], ids[5]]);
+    }
+
+    #[test]
+    fn removing_the_playing_album_lets_its_track_finish() {
+        let mut rig = Rig::new(
+            "album-playing",
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        for &id in &ids[..2] {
+            let e = rig
+                .app
+                .crates
+                .shown_mut()
+                .entries_mut()
+                .find(|e| e.id == id)
+                .unwrap();
+            (e.artist, e.album) = ("Tone".into(), "Tests".into());
+        }
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::RemoveAlbum(ids[1]), &ctx);
+        assert_eq!(rig.ids(PLAYLIST), [ids[2]]);
+        rig.frame(Vec::new());
+        assert_eq!(
+            rig.app.position.state,
+            PlayState::Playing,
+            "the removed track plays on"
+        );
+        rig.app.apply(Action::Next, &ctx);
+        rig.until(
+            |r| r.app.crates.playing().current() == Some(ids[2]),
+            "next is the next remaining entry",
+        );
     }
 
     #[test]

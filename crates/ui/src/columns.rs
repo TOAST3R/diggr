@@ -21,6 +21,7 @@ pub enum Field {
     CatNo,
     Artist,
     Title,
+    Album,
     Bpm,
     Side,
     Year,
@@ -29,10 +30,11 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Field; 8] = [
+    pub const ALL: [Field; 9] = [
         Field::CatNo,
         Field::Artist,
         Field::Title,
+        Field::Album,
         Field::Bpm,
         Field::Side,
         Field::Year,
@@ -45,6 +47,7 @@ impl Field {
             Field::CatNo => "Cat#",
             Field::Artist => "Artist",
             Field::Title => "Title",
+            Field::Album => "Album",
             Field::Bpm => "BPM",
             Field::Side => "Side",
             Field::Year => "Year",
@@ -73,6 +76,7 @@ impl Field {
             Field::CatNo => 0.12,
             Field::Artist => 0.20,
             Field::Title => 0.0,
+            Field::Album => 0.16,
             Field::Bpm => 0.07,
             Field::Side => 0.05,
             Field::Year => 0.06,
@@ -136,17 +140,7 @@ impl ColumnSettings {
     /// left to right. The number column is `number_w` wide; the title gets what's left (at
     /// least [`MIN_COLUMN_W`]), the others their share.
     pub fn layout(&self, list_w: f32, number_w: f32) -> Vec<(Col, f32, f32)> {
-        let order = [
-            Field::CatNo,
-            Field::Artist,
-            Field::Title,
-            Field::Bpm,
-            Field::Side,
-            Field::Year,
-            Field::ForSale,
-            Field::Time,
-        ];
-        let shown: Vec<Field> = order.into_iter().filter(|f| self.shows(*f)).collect();
+        let shown: Vec<Field> = Field::ALL.into_iter().filter(|f| self.shows(*f)).collect();
         let widths: Vec<f32> = shown
             .iter()
             .map(|f| (self.width(*f) * list_w).max(MIN_COLUMN_W))
@@ -177,6 +171,7 @@ pub fn cell_text(e: &Entry, f: Field) -> String {
         Field::CatNo => o.map(|o| o.catno.clone()).unwrap_or_default(),
         Field::Artist => e.artist.clone(),
         Field::Title => e.title.clone(),
+        Field::Album => e.album().to_owned(),
         Field::Bpm => e.bpm.map(|b| b.to_string()).unwrap_or_default(),
         Field::Side => o.map(|o| o.position.clone()).unwrap_or_default(),
         Field::Year => o
@@ -272,6 +267,7 @@ fn key(e: &Entry, field: Field) -> Key {
         Field::CatNo => text(o.map_or("", |o| o.catno.as_str())),
         Field::Artist => text(&e.artist),
         Field::Title => text(&e.title),
+        Field::Album => text(e.album()),
         Field::Side => text(o.map_or("", |o| o.position.as_str())),
         Field::Bpm => e.bpm.map_or(UNKNOWN, |b| Key::Num(b as f64)),
         Field::Year => o
@@ -318,7 +314,7 @@ mod tests {
         let cols = c.layout(600.0, 24.0);
         let names: Vec<Col> = cols.iter().map(|c| c.0).collect();
         assert_eq!(names[0], Col::Number);
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         let (_, x, w) = cols.last().copied().unwrap();
         assert!((x + w - 600.0).abs() < 0.01, "they fill the list exactly");
         let title_w = |c: &ColumnSettings| {
@@ -332,7 +328,7 @@ mod tests {
         c.toggle(Field::Year);
         assert_eq!(
             c.layout(600.0, 24.0).len(),
-            8,
+            9,
             "a hidden column is left out"
         );
         assert!(
@@ -378,5 +374,38 @@ mod tests {
         assert_eq!(v, ["A2", "A10", "B1", "LT-1", "lt-2", "LT-02", "LT-10"]);
         assert_eq!(natural_cmp("abc", "ABC"), Ordering::Equal);
         assert_eq!(natural_cmp("a", "a1"), Ordering::Less);
+    }
+
+    #[test]
+    fn album_sorts_without_regard_to_case_and_empties_go_last() {
+        use crate::playlist::{Origin, Playlist};
+        let mut p = Playlist::default();
+        for album in ["b", "", "A"] {
+            let origin = Origin {
+                album: album.into(),
+                ..Default::default()
+            };
+            p.add_waiting("x", "t", None, Some(origin), "listed");
+        }
+        let mut v: Vec<&Entry> = p.entries().iter().collect();
+        for dir in [Dir::Asc, Dir::Desc] {
+            v.sort_by(|a, b| compare(a, b, Field::Album, dir));
+            let albums: Vec<String> = v.iter().map(|e| cell_text(e, Field::Album)).collect();
+            let want = if dir == Dir::Asc {
+                ["A", "b", ""]
+            } else {
+                ["b", "A", ""]
+            };
+            assert_eq!(albums, want, "{dir:?}");
+        }
+        assert!(Field::Album.hideable());
+        let order: Vec<Col> = ColumnSettings::default()
+            .layout(700.0, 24.0)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        let at = |f| order.iter().position(|c| *c == Col::Field(f)).unwrap();
+        assert_eq!(at(Field::Album), at(Field::Title) + 1, "after the title");
+        assert_eq!(at(Field::Bpm), at(Field::Album) + 1, "before the BPM");
     }
 }

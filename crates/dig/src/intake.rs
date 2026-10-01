@@ -60,6 +60,11 @@ pub enum Command {
     /// Learn which release a marketplace item sells (for the browser's owned check). Runs
     /// only when no send is waiting; cached for good.
     ResolveShopItem(u64),
+    /// Details of crate `target`'s records saved before entries carried them (the album and
+    /// cover), from the disk cache only: never a request.
+    Backfill { target: u64, keys: Vec<RecordKey> },
+    /// A record's cover address stopped working: fetch its data again for a newer one.
+    RefreshCover(RecordKey),
 }
 
 /// What became of a listed record.
@@ -85,6 +90,8 @@ pub struct RecordInfo {
     pub catno: String,
     pub year: Option<u16>,
     pub for_sale: Option<ForSale>,
+    /// The record's thumbnail address (empty when unknown).
+    pub cover: String,
 }
 
 impl RecordInfo {
@@ -99,10 +106,11 @@ impl RecordInfo {
             catno: r.catno.clone(),
             year: r.year,
             for_sale: r.for_sale.clone(),
+            cover: r.cover.clone(),
         }
     }
 
-    fn from_listed(l: &Listed) -> Self {
+    pub fn from_listed(l: &Listed) -> Self {
         let (release, master) = match l.key {
             RecordKey::Release(id) => (Some(id), None),
             RecordKey::Master(id) => (None, Some(id)),
@@ -117,6 +125,7 @@ impl RecordInfo {
             catno: l.catno.clone(),
             year: l.year,
             for_sale: None,
+            cover: l.cover.clone(),
         }
     }
 }
@@ -160,6 +169,12 @@ pub enum Event {
     Collection(Result<Box<Collection>, ApiError>),
     /// A marketplace item's release (`None`: Discogs doesn't know the item).
     ShopItem(u64, Option<u64>),
+    /// Cached details for a crate's records (see [`Command::Backfill`]); uncached ones are
+    /// left out.
+    Backfill(u64, Vec<RecordInfo>),
+    /// A record's cover address from fresh data (empty when it has no image any more, or the
+    /// data couldn't be fetched).
+    Cover(RecordKey, String),
     /// A wantlist change: `Ok(true)` if the app changed the wantlist, `Ok(false)` if the
     /// release was already there.
     Wantlist {
@@ -308,6 +323,35 @@ impl Intake {
             Command::ResolveShopItem(id) => {
                 if !self.shop_items.contains(&id) {
                     self.shop_items.push(id);
+                }
+            }
+            Command::RefreshCover(key) => {
+                let now = (self.now)();
+                self.ensure_identity();
+                let cover = match expand::fresh_cover(&mut self.client, key, now) {
+                    Ok(r) => {
+                        self.online();
+                        if let (Some(release), Some(fs)) = (r.release, r.for_sale.clone()) {
+                            self.events.push(Event::ForSale(release, fs));
+                        }
+                        r.cover
+                    }
+                    Err(ApiError::Offline) => {
+                        self.went_offline();
+                        String::new()
+                    }
+                    Err(_) => String::new(),
+                };
+                self.events.push(Event::Cover(key, cover));
+            }
+            Command::Backfill { target, keys } => {
+                let infos: Vec<RecordInfo> = keys
+                    .into_iter()
+                    .filter_map(|k| expand::cached_record(&self.client.cache, k))
+                    .map(|r| RecordInfo::from_record(&r))
+                    .collect();
+                if !infos.is_empty() {
+                    self.events.push(Event::Backfill(target, infos));
                 }
             }
         }

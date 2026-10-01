@@ -23,6 +23,7 @@ use dig::browser::{Browser, SystemBrowser, record_url, sell_url};
 use dig::clock::{Clock, RealClock};
 use dig::collection::{Collection, Owned};
 use dig::config::{self as digconf, DigSettings};
+use dig::cover::{CoverHandle, Covers, ImageSource, UreqImages};
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client, Identity};
 use dig::discogs::model::RecordKey;
@@ -39,9 +40,10 @@ use dig::preview::scheduler::{
 use dig::preview::store;
 use platform::{FileSource, Spawner, TrackRef};
 
+use super::covers::CoverCache;
 use super::{Action, WinampApp};
 use crate::crates::{CrateId, MAX_NAME};
-use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, WaitKind};
+use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, WaitKind};
 
 /// Pending wantlist changes are sent again this often.
 const WANTLIST_RETRY: Duration = Duration::from_secs(60);
@@ -54,6 +56,8 @@ const INSTALL_HINT: &str =
 /// What the host provides for digging (fakes in tests).
 pub struct DigSetup {
     pub transport: Arc<dyn Transport>,
+    /// Where record covers come from (Discogs' image host).
+    pub images: Arc<dyn ImageSource>,
     pub clock: Arc<dyn Clock>,
     pub finder: Finder,
     pub browser: Arc<dyn Browser>,
@@ -77,6 +81,7 @@ impl DigSetup {
     pub fn system(cache_root: Option<PathBuf>) -> Self {
         Self {
             transport: Arc::new(UreqTransport::default()),
+            images: Arc::new(UreqImages::default()),
             clock: Arc::new(RealClock::default()),
             finder: system_finder(),
             browser: Arc::new(SystemBrowser),
@@ -196,6 +201,8 @@ pub(super) struct Dig {
     pub(super) confirm_keep: Option<(CrateId, EntryId, String)>,
     /// "Add a Discogs token…" was said this session.
     token_hint_shown: bool,
+    /// Record covers for entry tooltips.
+    pub(super) covers: CoverCache,
 }
 
 /// Where a Discogs personal access token is generated ("Generate new token").
@@ -263,6 +270,7 @@ impl Dig {
             collection_tried: None,
             confirm_keep: None,
             token_hint_shown: false,
+            covers: CoverCache::default(),
             bridge_dialog: None,
             wake,
         }
@@ -309,6 +317,17 @@ impl Dig {
                 self.settings.ytdlp_path.clone(),
             ),
             self.setup.finder.clone(),
+            move || wake.request_repaint(),
+        )
+        .ok();
+        let wake = self.wake.clone();
+        self.covers.handle = CoverHandle::start(
+            &*self.spawner,
+            Covers::new(
+                self.setup.cache_root.as_deref(),
+                self.setup.images.clone(),
+                self.setup.clock.clone(),
+            ),
             move || wake.request_repaint(),
         )
         .ok();
@@ -555,12 +574,47 @@ fn listed_key(e: &Entry) -> Option<RecordKey> {
     if e.status != EntryStatus::Waiting(WaitKind::Listed) {
         return None;
     }
-    let o = e.origin.as_ref().filter(|o| o.clip.is_none())?;
+    record_key(e.origin.as_ref().filter(|o| o.clip.is_none())?)
+}
+
+/// The record an origin names: its release, else its master release.
+fn record_key(o: &Origin) -> Option<RecordKey> {
     match (o.release, o.master) {
         (Some(r), _) => Some(RecordKey::Release(r)),
         (None, Some(m)) => Some(RecordKey::Master(m)),
         _ => None,
     }
+}
+
+/// The records of a crate's Discogs entries saved without an album, once each.
+fn records_to_backfill(p: &Playlist) -> Vec<RecordKey> {
+    let mut seen = HashSet::new();
+    p.entries()
+        .iter()
+        .filter_map(|e| e.origin.as_ref())
+        .filter(|o| o.album.is_empty())
+        .filter_map(record_key)
+        .filter(|k| seen.insert(*k))
+        .collect()
+}
+
+/// Fills the album and cover of entries saved without them; true if any changed.
+fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
+    let by_key: HashMap<RecordKey, &RecordInfo> = infos.iter().map(|i| (i.key, i)).collect();
+    let mut changed = false;
+    for e in p.entries_mut() {
+        let Some(o) = e.origin.as_mut().filter(|o| o.album.is_empty()) else {
+            continue;
+        };
+        if let Some(info) = record_key(o).and_then(|k| by_key.get(&k)) {
+            o.album = info.title.clone();
+            if o.cover.is_empty() {
+                o.cover = info.cover.clone();
+            }
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn for_sale(fs: &Option<dig::discogs::model::ForSale>) -> Option<ForSale> {
@@ -583,6 +637,8 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         position: String::new(),
         clip: None,
         for_sale: for_sale(&info.for_sale),
+        album: info.title.clone(),
+        cover: info.cover.clone(),
     }
 }
 
@@ -679,6 +735,14 @@ impl WinampApp {
         for id in [self.crates.shown_id(), self.crates.playing_id()] {
             if d.active.insert(id) {
                 d.send(Command::CrateActive(id));
+                let keys = self
+                    .crates
+                    .get(id)
+                    .map(records_to_backfill)
+                    .unwrap_or_default();
+                if !keys.is_empty() {
+                    d.send(Command::Backfill { target: id, keys });
+                }
             }
         }
         // The collection is only worth syncing when a crate from Discogs is on screen.
@@ -698,6 +762,11 @@ impl WinampApp {
             .unwrap_or_default();
         for e in events {
             self.dig_intake_event(e);
+        }
+        let Some(d) = &mut self.dig else { return };
+        let ctx = d.wake.clone();
+        for key in d.covers.poll(&ctx) {
+            d.send(Command::RefreshCover(key));
         }
         let Some(d) = &self.dig else { return };
         let events = d
@@ -862,23 +931,7 @@ impl WinampApp {
                     return;
                 };
                 for l in items {
-                    let info = RecordInfo {
-                        key: l.key,
-                        release: match l.key {
-                            RecordKey::Release(r) => Some(r),
-                            RecordKey::Master(_) => None,
-                        },
-                        master: match l.key {
-                            RecordKey::Master(m) => Some(m),
-                            RecordKey::Release(_) => None,
-                        },
-                        artist: l.artist.clone(),
-                        title: l.title.clone(),
-                        label: l.label.clone(),
-                        catno: l.catno.clone(),
-                        year: l.year,
-                        for_sale: None,
-                    };
+                    let info = RecordInfo::from_listed(&l);
                     let title = if l.title.is_empty() {
                         match l.key {
                             RecordKey::Release(r) => format!("Release {r}"),
@@ -958,6 +1011,39 @@ impl WinampApp {
             }
             // The bridge reads the item's release from the disk cache the lookup filled.
             Event::ShopItem(..) => {}
+            Event::Cover(key, url) => {
+                let mut changed = false;
+                for c in self.crates.loaded_ids() {
+                    let Some(p) = self.crates.get_mut(c) else {
+                        continue;
+                    };
+                    let mut touched = false;
+                    for e in p.entries_mut() {
+                        if let Some(o) = e.origin.as_mut()
+                            && record_key(o) == Some(key)
+                            && !url.is_empty()
+                            && o.cover != url
+                        {
+                            o.cover = url.clone();
+                            touched = true;
+                        }
+                    }
+                    if touched {
+                        changed = true;
+                        self.crates.touch(c);
+                    }
+                }
+                if let Some(d) = &mut self.dig {
+                    d.covers.refreshed(key, changed);
+                }
+            }
+            Event::Backfill(target, infos) => {
+                if let Some(p) = self.crates.get_mut(target)
+                    && backfill(p, &infos)
+                {
+                    self.crates.touch(target);
+                }
+            }
             Event::Wantlist {
                 release,
                 add,

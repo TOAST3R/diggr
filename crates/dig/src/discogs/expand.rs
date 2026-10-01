@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use super::cache::Kind;
+use super::cache::{DiskCache, Kind};
 use super::client::{ApiError, Client, path_segment};
 use super::model::{
     Listed, Record, RecordKey, listed_from_list_item, listed_from_listing, listed_from_want,
@@ -184,6 +184,50 @@ pub fn record(
             let v = cached_json(client, Kind::Master, &format!("/masters/{id}"), id, now)?;
             let main = match v["main_release"].as_u64() {
                 Some(m) => Some(record(client, RecordKey::Release(m), fresh, now)?),
+                None => None,
+            };
+            Record::from_master(&v, main.as_ref())
+                .ok_or_else(|| ApiError::Other(format!("master {id}: unexpected answer")))
+        }
+    }
+}
+
+/// A record's details from the disk cache only, never asking Discogs: `None` when it isn't
+/// cached. Prices are in whatever currency they were cached in, and a master whose main
+/// release isn't cached lacks that release's label and numbers.
+pub fn cached_record(cache: &DiskCache, key: RecordKey) -> Option<Record> {
+    match key {
+        RecordKey::Release(id) => {
+            let c = cache.get(Kind::Release, &id.to_string())?;
+            let v: Value = serde_json::from_str(&c.body).ok()?;
+            Record::from_release(&v, c.currency.as_deref().unwrap_or(""), c.fetched_at)
+        }
+        RecordKey::Master(id) => {
+            let c = cache.get(Kind::Master, &id.to_string())?;
+            let v: Value = serde_json::from_str(&c.body).ok()?;
+            let main = v["main_release"]
+                .as_u64()
+                .and_then(|m| cached_record(cache, RecordKey::Release(m)));
+            Record::from_master(&v, main.as_ref())
+        }
+    }
+}
+
+/// A record's cover address from freshly fetched data (one request, two for a master whose
+/// own data has no image), for when the cached address no longer works.
+pub fn fresh_cover(client: &mut Client, key: RecordKey, now: u64) -> Result<Record, ApiError> {
+    match key {
+        RecordKey::Release(_) => record(client, key, true, now),
+        RecordKey::Master(id) => {
+            let path = format!("/masters/{id}");
+            let r = client.call(super::transport::Method::Get, &path)?;
+            let v: Value = serde_json::from_str(&r.body)
+                .map_err(|e| ApiError::Other(format!("{path}: {e}")))?;
+            client
+                .cache
+                .put(Kind::Master, &id.to_string(), &r.body, now);
+            let main = match v["main_release"].as_u64() {
+                Some(m) => Some(record(client, RecordKey::Release(m), true, now)?),
                 None => None,
             };
             Record::from_master(&v, main.as_ref())

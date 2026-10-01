@@ -14,7 +14,8 @@
    "artist": "Nightcraft",
    "title": "Glasshouse EP",
    "year": 1994,
-   "resource_url": "https://api.discogs.com/releases/1001"
+   "resource_url": "https://api.discogs.com/releases/1001",
+   "thumb": "https://i.discogs.com/fake/R-1001-thumb.jpeg"
   },
   {
    "id": 1002,

@@ -146,10 +146,26 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         Event::Record(_, info, _) if info.key == Release(1001) => Some(info.clone()),
         _ => None,
     });
-    let fs = info.unwrap().for_sale.unwrap();
+    let info = info.unwrap();
+    let fs = info.for_sale.unwrap();
     assert_eq!(
         (fs.count, fs.lowest, fs.currency.as_str()),
         (6, Some(9.0), "EUR")
+    );
+    // The album's name and its primary image's thumbnail, from the release; the listing's
+    // own thumbnail comes earlier, with the listed record.
+    assert_eq!(info.title, "Glasshouse EP");
+    assert_eq!(
+        info.cover,
+        "https://i.discogs.com/fake/R-1001-front-150.jpeg"
+    );
+    let listed_cover = ev.iter().find_map(|e| match e {
+        Event::Listed(_, items) => items.iter().find(|l| l.key == Release(1001)).cloned(),
+        _ => None,
+    });
+    assert_eq!(
+        listed_cover.unwrap().cover,
+        "https://i.discogs.com/fake/R-1001-thumb.jpeg"
     );
 }
 
@@ -495,4 +511,36 @@ fn a_real_release_expands() {
     let r = records(&ev);
     assert_eq!(r.len(), 1, "{ev:?}");
     assert_eq!(r[0].0, Release(1));
+}
+
+#[test]
+fn a_stale_cover_is_looked_up_again_once() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let mut i = intake(&t, true, None);
+    i.handle(Command::RefreshCover(Release(1001)));
+    let ev = i.take_events();
+    let cover = ev.iter().find_map(|e| match e {
+        Event::Cover(k, url) => Some((*k, url.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        cover,
+        Some((
+            Release(1001),
+            "https://i.discogs.com/fake/R-1001-front-150.jpeg".to_owned()
+        ))
+    );
+    let releases = t
+        .paths()
+        .iter()
+        .filter(|p| p.starts_with("/releases/1001"))
+        .count();
+    assert_eq!(releases, 1, "one request for the release's data");
+    // A record Discogs doesn't know: no address.
+    i.handle(Command::RefreshCover(Release(424242)));
+    assert!(
+        i.take_events()
+            .iter()
+            .any(|e| matches!(e, Event::Cover(Release(424242), url) if url.is_empty()))
+    );
 }
