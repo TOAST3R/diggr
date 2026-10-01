@@ -25,7 +25,7 @@ Not in this change: Windows and Linux packages, auto-updating the app itself (us
 
 - **`packaging/macos/Info.plist.in`:** the bundle's `Info.plist` template (name, identifier, version from `apps/native/Cargo.toml`, minimum macOS).
 - **`scripts/`:** `make-dmg.sh` and `release.sh` (new). Tools: `rustup` targets `aarch64-apple-darwin` and `x86_64-apple-darwin`, plus what macOS already has (`lipo`, `hdiutil`, `sips`, `iconutil`, `codesign`, `xcrun notarytool` and `stapler`), and `gh`.
-- **`assets/icon/`:** the original app icon, a 1024 px PNG drawn by a small generator (`icon-gen`); the `.icns` is made at build time.
+- **`assets/icon/`:** the app's logo (a crate of records), as a cleaned-up `logo.png` and a 1024 px `icon-1024.png`; the `.icns` is made at build time. The same logo becomes the window icon and the Chrome extension's icons.
 - **`crates/dig`:** a yt-dlp installer module (latest release lookup, download, SHA-256 check, atomic install, daily update check). The finder looks at the managed copy after the user's own.
 - **`crates/ui`:** the "Previews need yt-dlp: download it?" prompt, and OPT ▸ Discogs… showing whether yt-dlp is the user's or the app's, with a download button.
 - **Repository:** `.gitignore` gains `dist/`. README: download link, "Build a release" section, the managed yt-dlp location, updated test count.
