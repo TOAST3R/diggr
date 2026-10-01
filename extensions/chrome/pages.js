@@ -122,15 +122,15 @@ var WR = (() => {
       case "not-running":
         return `${app} isn't running. Start it, then try again.`;
       case "not-paired":
-        return `Not paired with ${app}: enter the code from OPT ▸ Browser… in the options.`;
+        return `Not paired with ${app}: enter the code from Options ▸ Browser… in the options.`;
       case "unsupported":
         return `${app} can't dig this page. Supported: ${SUPPORTED}.`;
       case "locked":
         return "Too many wrong codes: wait a minute.";
       case "wrong-code":
-        return "Wrong code: check OPT ▸ Browser… in the player.";
+        return "Wrong code: check Options ▸ Browser… in the player.";
       case "no-code":
-        return "No code is shown: open OPT ▸ Browser… in the player.";
+        return "No code is shown: open Options ▸ Browser… in the player.";
       default:
         return `${app} refused the request (${error}).`;
     }

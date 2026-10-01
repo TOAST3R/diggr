@@ -40,7 +40,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "switch the keyboard between the player and the playlist",
             ),
             ("W", "show / hide the waveform (also the WAVE button)"),
-            ("S", "spectrogram window (also in the playlist's OPT menu)"),
+            (
+                "S",
+                "spectrogram window (also in Options: right-click the main window)",
+            ),
             ("F", "fullscreen visuals"),
             ("H or F1", "this help"),
             (
@@ -105,7 +108,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Column header (wide playlist): click",
-                "sort the crate by that column (again: the other way; also OPT ▸ Sort)",
+                "sort the crate by that column (again: the other way; also Options ▸ Sort)",
             ),
             (
                 "Column header: drag a divider / right-click",
@@ -113,16 +116,25 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Playlist title: click / drag",
-                "crate menu (switch, new, rename, delete) / move the window",
+                "crate menu when no sidebar shows (switch, new, rename, delete) / move the window",
             ),
             (
-                "Sidebar button in the playlist title (wide playlist)",
-                "crate sidebar: click a crate to show it, right-click to rename or delete, \
-                 drop entries on it to send them",
+                "Crate sidebar (playlist 600 px wide or maximized)",
+                "click a crate to show it (then Delete deletes it), right-click or Control-click \
+                 to rename or delete (Playlist: clear), drop entries on it to send them; your \
+                 Discogs collection is pinned at the bottom",
             ),
             (
-                "BPM bar: drag a handle / ALL",
+                "Footer: + / ≡",
+                "add files, a folder or an M3U / select, remove, clear, sort, export",
+            ),
+            (
+                "Footer BPM: drag a handle / × or double-click",
                 "show and play only the tracks in that tempo range / show everything",
+            ),
+            (
+                "Main window: right-click",
+                "Options: size, spectrogram, Discogs…, Browser…",
             ),
             (
                 "EQ's LP knob: drag down / double-click",

@@ -34,10 +34,12 @@ impl ApiError {
     pub fn message(&self) -> String {
         match self {
             ApiError::Offline => "Discogs offline".into(),
-            ApiError::TokenRejected => "Discogs rejected the token (OPT ▸ Discogs…)".into(),
+            ApiError::TokenRejected => "Discogs rejected the token (Options ▸ Discogs…)".into(),
             ApiError::Private => "That Discogs page is private".into(),
             ApiError::NotFound => "That Discogs page wasn't found".into(),
-            ApiError::TokenNeeded => "A Discogs token is needed for that (OPT ▸ Discogs…)".into(),
+            ApiError::TokenNeeded => {
+                "A Discogs token is needed for that (Options ▸ Discogs…)".into()
+            }
             ApiError::Other(e) => format!("Discogs error: {e}"),
         }
     }

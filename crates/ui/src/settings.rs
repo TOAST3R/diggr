@@ -73,8 +73,6 @@ pub struct Settings {
     pub columns: crate::columns::ColumnSettings,
     /// The playlist fills the maximized window, beside a thin strip of the player.
     pub playlist_maximized: bool,
-    /// The crate sidebar, when the playlist is wide enough for it (☰).
-    pub crate_sidebar: bool,
     pub volume: f32,
     pub eq: EqSettings,
     pub shuffle: bool,
@@ -102,7 +100,6 @@ impl Default for Settings {
             playlist_width: MIN_PLAYLIST_WIDTH,
             columns: Default::default(),
             playlist_maximized: false,
-            crate_sidebar: true,
             volume: 0.8,
             eq: EqSettings::default(),
             shuffle: false,
