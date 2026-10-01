@@ -5,6 +5,7 @@ pub mod clock;
 pub mod decode;
 pub mod engine;
 pub mod eq;
+pub mod filter;
 pub mod renderer;
 pub mod ring;
 pub mod rt_guard;

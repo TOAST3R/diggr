@@ -1,4 +1,5 @@
-//! The audio callback: ring → EQ → tap → volume/balance → device channels, plus clock updates.
+//! The audio callback: ring → EQ → low-pass filter → tap → volume/balance → device channels,
+//! plus clock updates.
 //!
 //! Everything here is real-time safe: no allocation, no locks, no waiting.
 
@@ -10,6 +11,7 @@ use rtrb::Consumer;
 
 use crate::clock::{ClockSnapshot, ClockWriter};
 use crate::eq::{EqCoefs, Equalizer};
+use crate::filter::{self, LowPass};
 use crate::ring::{CHANNELS, PcmConsumer, ReadResult};
 use crate::tap::TapWriter;
 use crate::{PlayState, TrackId, rt_guard};
@@ -25,6 +27,8 @@ pub struct Control {
     state: AtomicU8,
     volume_bits: AtomicU32,
     balance_bits: AtomicU32,
+    /// The low-pass knob, 0..=1 ([`filter::OFF`] is off).
+    filter_bits: AtomicU32,
     underruns: AtomicU64,
     /// Latency measurement: when the last play/seek was requested and for which generation.
     start_request_ns: AtomicU64,
@@ -40,6 +44,7 @@ impl Default for Control {
             state: AtomicU8::new(PlayState::Stopped as u8),
             volume_bits: AtomicU32::new(1f32.to_bits()),
             balance_bits: AtomicU32::new(0f32.to_bits()),
+            filter_bits: AtomicU32::new(filter::OFF.to_bits()),
             underruns: AtomicU64::new(0),
             start_request_ns: AtomicU64::new(0),
             start_generation: AtomicU32::new(0),
@@ -85,6 +90,20 @@ impl Control {
 
     pub fn balance(&self) -> f32 {
         f32::from_bits(self.balance_bits.load(Ordering::Relaxed))
+    }
+
+    /// The low-pass knob: 0.0 (60 Hz) ..= 1.0 (off).
+    pub fn set_filter(&self, knob: f32) {
+        let k = if knob.is_finite() {
+            knob.clamp(0.0, filter::OFF)
+        } else {
+            filter::OFF
+        };
+        self.filter_bits.store(k.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn filter(&self) -> f32 {
+        f32::from_bits(self.filter_bits.load(Ordering::Relaxed))
     }
 
     pub fn underruns(&self) -> u64 {
@@ -140,6 +159,7 @@ pub struct Renderer {
     pcm: PcmConsumer,
     eq: Equalizer,
     eq_rx: Consumer<EqCoefs>,
+    lowpass: LowPass,
     tap: TapWriter,
     clock: ClockWriter,
     sample_rate: u32,
@@ -161,6 +181,7 @@ impl Renderer {
         let (l, r) = balance_gains(p.control.balance());
         Self {
             eq: Equalizer::new(p.eq, p.format.sample_rate),
+            lowpass: LowPass::new(p.format.sample_rate),
             control: p.control,
             pcm: p.pcm,
             eq_rx: p.eq_rx,
@@ -183,6 +204,7 @@ impl Renderer {
         self.sample_rate = format.sample_rate;
         self.device_channels = format.channels.max(1) as usize;
         self.eq.reconfigure(eq, format.sample_rate);
+        self.lowpass.set_sample_rate(format.sample_rate);
         self.device_epoch = self.device_epoch.wrapping_add(1);
         self.started = false;
     }
@@ -206,6 +228,7 @@ impl Renderer {
         let ch = self.device_channels;
         let total = out.len() / ch;
         let target = self.control.generation();
+        let knob = self.control.filter();
         let state = self.control.state();
 
         let mut snap = ClockSnapshot {
@@ -305,6 +328,8 @@ impl Renderer {
             }
             self.scratch[filled * CHANNELS..n * CHANNELS].fill(0.0);
             self.eq.process(&mut self.scratch[..n * CHANNELS]);
+            self.lowpass
+                .process(&mut self.scratch[..n * CHANNELS], knob);
             for r in &runs[..run_count] {
                 let data = &self.scratch[r.offset * CHANNELS..(r.offset + r.frames) * CHANNELS];
                 self.tap.write(r.track, r.start_frame, data);
@@ -624,6 +649,39 @@ mod tests {
         }
         let last = last.unwrap();
         assert!((last.data()[last.data().len() - 1] - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_low_pass_filters_the_output_and_the_tap() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        // A tone at half the sample rate: all highs.
+        let highs: Vec<f32> = (0..4096)
+            .flat_map(|i| {
+                let s = if i % 2 == 0 { 0.5 } else { -0.5 };
+                [s, s]
+            })
+            .collect();
+        g.tx.push(gen_, 1, 0, &highs);
+        g.control.set_state(PlayState::Playing);
+        g.control.set_filter(0.2);
+        let mut out = vec![0.0; 4096 * 2];
+        g.r.render(&mut out, info(0));
+        let tail = &out[out.len() - 512..];
+        assert!(
+            tail.iter().all(|s| s.abs() < 0.01),
+            "the output is filtered"
+        );
+        let mut last = None;
+        while let Some(c) = g.tap.pop() {
+            last = Some(c);
+        }
+        let data = last.unwrap();
+        let data = data.data();
+        assert!(
+            data[data.len() - 64..].iter().all(|s| s.abs() < 0.01),
+            "and so is the tap"
+        );
     }
 
     #[test]

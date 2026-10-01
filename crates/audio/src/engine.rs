@@ -329,6 +329,16 @@ impl Engine {
         self.control.volume()
     }
 
+    /// The DJ low-pass filter's knob: 0.0 (60 Hz) ..= 1.0 (off, the audio untouched). Moves are
+    /// smoothed in the callback, so they never click.
+    pub fn set_filter(&self, knob: f32) {
+        self.control.set_filter(knob);
+    }
+
+    pub fn filter(&self) -> f32 {
+        self.control.filter()
+    }
+
     /// -1.0 (left) ..= 1.0 (right)
     pub fn set_balance(&self, balance: f32) {
         self.control.set_balance(balance);

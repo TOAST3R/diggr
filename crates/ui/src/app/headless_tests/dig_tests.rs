@@ -1138,3 +1138,40 @@ fn a_cover_whose_address_is_gone_is_looked_up_once_more() {
         ["https://i.discogs.com/expired.jpeg", fresh]
     );
 }
+
+#[test]
+fn previews_ahead_follow_the_bpm_filter() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-bpm-horizon", &fakes, |_| {});
+    let p = rig.app.crates.shown_mut();
+    for i in 0..8u64 {
+        let origin = Origin {
+            release: Some(500 + i),
+            clip: Some(format!("BPMclip{i:04}")),
+            ..Default::default()
+        };
+        let source = Some(::dig::preview::fetcher::clip_url(&format!("BPMclip{i:04}")));
+        let id = p.add_waiting(
+            "Nightcraft",
+            format!("Track {i}"),
+            source,
+            Some(origin),
+            "queued",
+        );
+        let bpm = if i % 2 == 0 { 134 } else { 124 };
+        if let Some(e) = p.entries_mut().find(|e| e.id == id) {
+            e.bpm = Some(bpm);
+        }
+    }
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
+    rig.until(
+        |r| !r.app.dig.as_ref().unwrap().horizon().is_empty(),
+        "previews are asked for",
+    );
+    let horizon = rig.app.dig.as_ref().unwrap().horizon().to_vec();
+    for clip in &horizon {
+        let i: u64 = clip.trim_start_matches("BPMclip").parse().unwrap();
+        assert_eq!(i % 2, 0, "{clip} is hidden by the filter");
+    }
+}

@@ -300,6 +300,9 @@ pub enum DuplicateKey {
 pub struct SavedPlaylist {
     pub entries: Vec<SavedEntry>,
     pub current: Option<usize>,
+    /// The BPM filter's range, when narrower than the crate's tempos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpm_range: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -355,6 +358,8 @@ pub struct Playlist {
     cursor: Option<EntryId>,
     /// The field the entries were last sorted by, until they are reordered otherwise.
     sorted: Option<(Field, Dir)>,
+    /// The BPM filter, as set (see [`Playlist::bpm_filter`] for what applies).
+    bpm_range: Option<(u16, u16)>,
     next_id: EntryId,
 }
 
@@ -651,8 +656,8 @@ impl Playlist {
             if !mods.command {
                 self.selected.clear();
             }
-            self.selected
-                .extend(self.entries[a..=b].iter().map(|e| e.id));
+            let ids = self.shown_ids_between(a, b);
+            self.selected.extend(ids);
             return;
         }
         if mods.command {
@@ -666,8 +671,20 @@ impl Playlist {
         self.anchor = Some(id);
     }
 
+    /// Selects every entry the BPM filter shows.
     pub fn select_all(&mut self) {
-        self.selected = self.entries.iter().map(|e| e.id).collect();
+        self.selected = self.shown_ids_between(0, self.entries.len().saturating_sub(1));
+    }
+
+    /// The shown entries from index `a` to `b` (inclusive).
+    fn shown_ids_between(&self, a: usize, b: usize) -> BTreeSet<EntryId> {
+        self.entries
+            .get(a..=b.min(self.entries.len().saturating_sub(1)))
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| self.shows(e))
+            .map(|e| e.id)
+            .collect()
     }
 
     pub fn select_none(&mut self) {
@@ -681,12 +698,13 @@ impl Playlist {
         self.anchor = self.cursor;
     }
 
+    /// Inverts the selection among the shown entries (hidden ones end up unselected).
     pub fn invert_selection(&mut self) {
         self.selected = self
             .entries
             .iter()
+            .filter(|e| self.shows(e) && !self.selected.contains(&e.id))
             .map(|e| e.id)
-            .filter(|id| !self.selected.contains(id))
             .collect();
     }
 
@@ -715,19 +733,22 @@ impl Playlist {
         page: usize,
         start: Option<EntryId>,
     ) {
-        if self.entries.is_empty() {
+        // The cursor moves over the rows the BPM filter shows.
+        let rows = self.shown_rows();
+        if rows.is_empty() {
             return;
         }
-        let last = self.entries.len() - 1;
+        let last = rows.len() - 1;
         let page = page.max(1);
-        let to = match (self.cursor_index(), mv) {
-            (None, CursorMove::Up | CursorMove::Down) => {
-                start.and_then(|s| self.index_of(s)).unwrap_or(0)
-            }
+        // A row: the entry's own, or the nearest shown one after it (it may be hidden).
+        let row_of = |id: EntryId| {
+            self.index_of(id)
+                .map(|i| rows.partition_point(|&r| r < i).min(last))
+        };
+        let to = match (self.cursor.and_then(row_of), mv) {
+            (None, CursorMove::Up | CursorMove::Down) => start.and_then(row_of).unwrap_or(0),
             (i, _) => {
-                let i = i
-                    .or_else(|| start.and_then(|s| self.index_of(s)))
-                    .unwrap_or(0);
+                let i = i.or_else(|| start.and_then(row_of)).unwrap_or(0);
                 match mv {
                     CursorMove::Up => i.saturating_sub(1),
                     CursorMove::Down => (i + 1).min(last),
@@ -738,13 +759,14 @@ impl Playlist {
                 }
             }
         };
+        let to = rows[to];
         let id = self.entries[to].id;
         if extend {
             let from = self.anchor.or(self.cursor).unwrap_or(id);
             self.anchor = Some(from);
             let a = self.index_of(from).unwrap_or(to);
             let (a, b) = (a.min(to), a.max(to));
-            self.selected = self.entries[a..=b].iter().map(|e| e.id).collect();
+            self.selected = self.shown_ids_between(a, b);
         } else {
             self.selected = [id].into();
             self.anchor = Some(id);
@@ -866,6 +888,7 @@ impl Playlist {
         SavedPlaylist {
             entries: self.entries.iter().map(Entry::to_saved).collect(),
             current: self.current_index(),
+            bpm_range: self.bpm_filter(),
         }
     }
 
@@ -883,20 +906,84 @@ impl Playlist {
         let mut pl = Playlist::default();
         let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
+        pl.bpm_range = saved.bpm_range;
         (pl, pending)
+    }
+
+    // ---- BPM filter ----------------------------------------------------------------------
+
+    /// The lowest and highest known tempo, when there are at least two different ones (a
+    /// range means nothing otherwise).
+    pub fn tempo_span(&self) -> Option<(u16, u16)> {
+        let mut known = self.entries.iter().filter_map(|e| e.bpm);
+        let first = known.next()?;
+        let (lo, hi) = known.fold((first, first), |(lo, hi), b| (lo.min(b), hi.max(b)));
+        (lo < hi).then_some((lo, hi))
+    }
+
+    /// The range that applies now: the one set, within the crate's tempos; `None` (no
+    /// filter) when it covers them all, or misses them all (the tempos moved away).
+    pub fn bpm_filter(&self) -> Option<(u16, u16)> {
+        let (lo, hi) = self.bpm_range?;
+        let (span_lo, span_hi) = self.tempo_span()?;
+        let (lo, hi) = (lo.max(span_lo), hi.min(span_hi));
+        (lo <= hi && (lo, hi) != (span_lo, span_hi)).then_some((lo, hi))
+    }
+
+    /// Sets the range (`None`, or the whole span, turns the filter off). Returns whether what
+    /// applies changed.
+    pub fn set_bpm_filter(&mut self, range: Option<(u16, u16)>) -> bool {
+        let before = self.bpm_filter();
+        self.bpm_range = range.map(|(a, b)| (a.min(b), a.max(b)));
+        self.bpm_range = self.bpm_filter();
+        before != self.bpm_range
+    }
+
+    /// Whether the filter shows `e`. Without a filter, everything shows; with one, an entry
+    /// shows when its tempo is in the range (one without a tempo doesn't).
+    pub fn shows(&self, e: &Entry) -> bool {
+        match self.bpm_filter() {
+            None => true,
+            Some((lo, hi)) => e.bpm.is_some_and(|b| (lo..=hi).contains(&b)),
+        }
+    }
+
+    /// The crate indices of the entries the filter shows, in order: row `r` of the list is
+    /// entry `shown_rows()[r]`, still numbered by its crate position.
+    pub fn shown_rows(&self) -> Vec<usize> {
+        let Some((lo, hi)) = self.bpm_filter() else {
+            return (0..self.entries.len()).collect();
+        };
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Entries without a known tempo (hidden while a range is set).
+    pub fn without_bpm(&self) -> usize {
+        self.entries.iter().filter(|e| e.bpm.is_none()).count()
     }
 
     // ---- play order ----------------------------------------------------------------------
 
-    /// Every entry that can eventually play (playable or waiting), in playlist order or
-    /// shuffled starting with `first`. A waiting entry keeps its place when its audio arrives,
-    /// because the set of entries shuffled doesn't change. Audio producers read what comes
-    /// next from this order.
+    /// Every entry that can eventually play (playable or waiting) and that the BPM filter
+    /// shows, in playlist order or shuffled starting with `first`. The current entry stays in
+    /// it even when the filter hides it, so it plays on and the next shown entry follows it.
+    /// A waiting entry keeps its place when its audio arrives, because the set of entries
+    /// shuffled doesn't change. Audio producers read what comes next from this order.
     pub fn play_order(&self, shuffle: bool, first: Option<EntryId>, seed: u64) -> Vec<EntryId> {
+        let filter = self.bpm_filter();
         let ids: Vec<EntryId> = self
             .entries
             .iter()
             .filter(|e| e.status.in_play_order())
+            .filter(|e| {
+                Some(e.id) == self.current
+                    || filter.is_none_or(|(lo, hi)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
+            })
             .map(|e| e.id)
             .collect();
         let first = first.and_then(|f| ids.iter().position(|&id| id == f));
@@ -1819,5 +1906,109 @@ mod tests {
         );
         assert_eq!(p.album_of(local[1]), [local[1]], "same name, other artist");
         assert!(p.album_of(local[3]).is_empty(), "no album tag");
+    }
+
+    /// Entries at these tempos (`None`: unknown), from /m/0.mp3 on.
+    fn tempos(bpms: &[Option<u16>]) -> Playlist {
+        let mut p = pl(bpms.len());
+        for (e, b) in p.entries.iter_mut().zip(bpms) {
+            e.bpm = *b;
+        }
+        p
+    }
+
+    #[test]
+    fn a_bpm_range_shows_the_entries_inside_it() {
+        let mut p = tempos(&[Some(124), Some(128), Some(137), Some(139)]);
+        assert_eq!(p.tempo_span(), Some((124, 139)));
+        assert_eq!(p.shown_rows(), [0, 1, 2, 3], "no filter: everything");
+        assert!(p.set_bpm_filter(Some((140, 130))), "either order");
+        assert_eq!(
+            p.bpm_filter(),
+            Some((130, 139)),
+            "within the crate's tempos"
+        );
+        assert_eq!(p.shown_rows(), [2, 3]);
+        assert!(p.set_bpm_filter(Some((100, 200))), "the whole span: off");
+        assert_eq!(p.bpm_filter(), None);
+        assert!(!p.set_bpm_filter(None), "already off");
+    }
+
+    #[test]
+    fn entries_without_a_tempo_show_only_without_a_filter() {
+        let mut p = tempos(&[Some(124), None, Some(139), None, None]);
+        assert_eq!(p.without_bpm(), 3);
+        assert_eq!(p.shown_rows().len(), 5);
+        p.set_bpm_filter(Some((130, 140)));
+        assert_eq!(p.shown_rows(), [2]);
+        assert!(!p.shows(&p.entries[1].clone()));
+    }
+
+    #[test]
+    fn a_range_needs_two_tempos_and_follows_them() {
+        let mut p = tempos(&[Some(128), None]);
+        assert_eq!(p.tempo_span(), None, "one tempo: no range");
+        p.set_bpm_filter(Some((120, 125)));
+        assert_eq!(p.bpm_filter(), None);
+        let mut p = tempos(&[Some(124), Some(128), Some(137), Some(139)]);
+        p.set_bpm_filter(Some((130, 139)));
+        // The fast tracks go: the range no longer reaches any tempo, so it is off again.
+        p.remove_ids(&[p.entries[2].id, p.entries[3].id]);
+        assert_eq!(p.bpm_filter(), None);
+        assert_eq!(p.shown_rows(), [0, 1]);
+    }
+
+    #[test]
+    fn the_range_is_saved_with_the_crate() {
+        let mut p = tempos(&[Some(124), Some(128), Some(137), Some(139)]);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        assert!(
+            !text.contains("bpm_range"),
+            "nothing saved without a filter"
+        );
+        p.set_bpm_filter(Some((130, 140)));
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(restored.bpm_filter(), Some((130, 139)));
+        // A hand-edited, upside-down or far-off range applies as nothing.
+        let mut saved = p.to_saved();
+        saved.bpm_range = Some((300, 400));
+        assert_eq!(Playlist::from_saved(saved).0.bpm_filter(), None);
+    }
+
+    #[test]
+    fn filtering_a_big_crate_is_quick() {
+        let bpms: Vec<Option<u16>> = (0..1000)
+            .map(|i| (i % 7 != 0).then_some(90 + (i % 80) as u16))
+            .collect();
+        let mut p = tempos(&bpms);
+        let t = std::time::Instant::now();
+        p.set_bpm_filter(Some((120, 140)));
+        let rows = p.shown_rows();
+        assert!(!rows.is_empty());
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(16),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_play_order_keeps_to_the_filter_and_the_current_entry() {
+        let mut p = tempos(&[Some(124), Some(134), Some(124), Some(124), Some(138)]);
+        let ids: Vec<EntryId> = p.entries.iter().map(|e| e.id).collect();
+        p.set_current(Some(ids[1]));
+        p.set_bpm_filter(Some((130, 140)));
+        assert_eq!(
+            p.play_order(false, None, 0),
+            [ids[1], ids[4]],
+            "next after 2 is 5"
+        );
+        // The playing entry hidden by a new range plays on, and the next shown one follows.
+        p.set_bpm_filter(Some((136, 140)));
+        assert_eq!(p.play_order(false, None, 0), [ids[1], ids[4]]);
+        let shuffled = p.play_order(true, Some(ids[1]), 7);
+        assert_eq!(shuffled.len(), 2);
+        assert_eq!(shuffled[0], ids[1]);
     }
 }
