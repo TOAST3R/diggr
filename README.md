@@ -103,7 +103,9 @@ No music handy? The repo includes short test tones:
 The window has the classic Winamp parts, side by side: the player column on the left (main
 player, then the waveform and the equalizer when they show) and the playlist on its right, at
 least as tall as the player column. It's drawn from an original pixel-art skin, at double size
-by default (switch with **OPT** in the playlist).
+by default (switch in **Options**: right-click the main window anywhere that isn't a control,
+or the player strip while the playlist is maximized; Options also has the spectrogram,
+Discogs… and Browser…).
 
 Click in the player or in the playlist (or press `Tab`) to give it the keyboard: its title bar
 lights up and the other side's dims. With the player focused, `↑` / `↓` set the volume. With the
@@ -111,13 +113,14 @@ playlist focused, they move a cursor through the list (Shift extends the selecti
 and Home/End jump), and Enter plays the entry under it.
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
-  playlists are expanded), use **ADD**, or press Cmd+O. These add to the crate on screen.
+  playlists are expanded), use **+** in the playlist's footer, or press Cmd+O. These add to the crate on screen.
   **Eject** (and files given on the command line) replace the Playlist crate and play it.
 - **Crates:** the playlist window shows one of several named playlists, and its title bar shows
   that crate's name.
-  - Click the title bar for the crate menu: switch crate (• marks the one shown, ⏵ the one
-    playing), **New crate…**, **Rename crate…** and **Delete crate…** (which asks first when
-    the crate has entries). Dragging the title bar still moves the window.
+  - Below 600 pixels wide, click the title bar for the crate menu: switch crate (• marks the
+    one shown, ⏵ the one playing), **New crate…**, **Rename crate…** and **Delete crate…**
+    (which asks first when the crate has entries). Wider, the crate sidebar does this instead
+    and the title bar opens no menu. Dragging the title bar still moves the window.
   - Switching crates never interrupts playback: next, previous, shuffle and repeat follow the
     crate the playing track came from, until you start a track in another crate.
   - **Playlist** is the scratch crate. It always exists, can be cleared but not renamed or
@@ -126,20 +129,29 @@ and Home/End jump), and Enter plays the entry under it.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
     another crate or a new one, skipping entries that crate already holds.
   - **Crate sidebar:** once the playlist is at least 600 pixels wide (or maximized), every crate
-    is listed on its left with its number of entries and the same • and ⏵ marks. Click one to
-    show it, right-click it to rename or delete it, or click **+ New crate**. Drag entries onto
-    a crate to send them there, exactly as Send to crate does. **☰** in the playlist's title bar
-    hides or shows it (remembered as `crate_sidebar` in `settings.ron`).
+    is listed on its left with its number of entries: • marks the one shown, and the player's
+    play (or pause) sign marks the one your track comes from while it plays (or is paused).
+    Your Discogs collection crate is pinned at the bottom under **DISCOGS**, in amber with a
+    record icon, even if you rename it. **Playlist**'s menu offers Clear crate (it can't be
+    renamed or deleted: Eject and opened files use it). Click one to
+    show it, right-click it (Control-click on a Mac) for **Rename crate…** and **Delete crate…**, or
+    click a crate and press Delete, or click **+ New crate**. Drag entries onto
+    a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
+    and the title bar's crate menu does the same job.
 - **Playlist window:**
-  - **BPM filter:** once the crate on screen has two different known tempos, a bar above the
-    list shows **ALL** and a range slider spanning them. Drag a handle to keep only the tracks in
-    that range: they're the only ones shown and the only ones played (next, previous, shuffle,
-    and the previews downloaded ahead), while the playing track finishes even if it's hidden.
-    Tracks without a known BPM are hidden while a range is set; the slider's tooltip (and the
-    bar, when there's room) says how many. Entries keep their crate numbers, the title bar
-    reads `NAME · 42/301`, and **ALL** shows everything again. The range is remembered per
-    crate. `P` on a hidden playing track turns the filter off. Sorting and M3U export always
-    take the whole crate;
+  - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
+    menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Show all
+    tempos and Export M3U…. The "selected/total" time sits on the right, beside the grip;
+  - **BPM filter:** once the crate on screen has two different known tempos, the footer shows
+    `BPM ◂━●━━●━▸ 124-139` between ≡ and the time. Drag a handle to keep only the tracks in that
+    range: they're the only ones shown and the only ones played (next, previous, shuffle, and
+    the previews downloaded ahead), while the playing track finishes even if it's hidden.
+    Tracks without a known BPM are hidden while a range is set; the slider's tooltip says how
+    many (and shows the range when the footer is too tight for its text). Entries keep their
+    crate numbers and the title bar reads `NAME · 42/301`. **×** after the range, a
+    double-click on the slider, or ≡ ▸ Show all tempos shows everything again. The range is
+    remembered per crate. `P` on a hidden playing track turns the filter off. Sorting and M3U
+    export always take the whole crate;
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -156,7 +168,7 @@ and Home/End jump), and Enter plays the entry under it.
     Cat#, Artist, Title, Album, BPM, Side, Year, For sale and Time. Drag a divider in the header to
     resize a column, and right-click the header to show or hide columns (#, Title and Time
     always show); both are remembered. Click a column's name to **sort** the crate by it, and
-    click again for the other way (**OPT ▸ Sort** does the same at any width). A sort reorders
+    click again for the other way (**≡ ▸ Sort** in the footer does the same at any width). A sort reorders
     the crate itself, as in Winamp: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
@@ -170,7 +182,8 @@ and Home/End jump), and Enter plays the entry under it.
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
-  - **MISC** imports and exports M3U/M3U8 (of the crate on screen).
+  - **+ ▸ Import M3U…** and **≡ ▸ Export M3U…** read and write M3U/M3U8 (of the crate on
+    screen).
   - Entries can wait for their audio or be unavailable. Both are dimmed, with an icon where the
     duration goes: a hollow dot (listed), a clock (queued), a bar that fills as it downloads, a
     warning sign (needs yt-dlp), or a barred circle (no clip, or the clip failed). Both are
@@ -269,13 +282,13 @@ ahead of what plays. Other pasted text is ignored.
     It can be sent again from your collection page with the browser extension. It's a
     normal dig: one request per 100 records, then one per record, nearest the playhead first.
   - The collection is synced only when a crate from Discogs is on screen and the cached copy
-    is missing or a week old, or from **Refresh collection** in OPT ▸ Discogs…, which also
+    is missing or a week old, or from **Refresh collection** in Options ▸ Discogs…, which also
     shows how many records it holds and how old it is.
   - The first sync reads 100 records a request. After that only what was added since is
     read, newest first, which is usually one request; everything is read again only when
     records were removed. Other pressings are never looked up, and without a token nothing
     is fetched or marked (the main window says once that a token would do it).
-- **Setup (OPT ▸ Discogs…):**
+- **Setup (Options ▸ Discogs…):**
   - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
     instead of 60).
   - For the wantlist and the full rate, paste a personal access token (discogs.com ▸
@@ -298,9 +311,9 @@ that the player starts once its window is up.
 
 - **Local only:** the bridge listens on `127.0.0.1`, port 47800 by default. Other computers
   can't reach it. If the port is taken, the player works without the bridge and
-  OPT ▸ Browser… says so; you can pick another port there (the extension's options need the
+  Options ▸ Browser… says so; you can pick another port there (the extension's options need the
   same one).
-- **Pairing (OPT ▸ Browser…):** the dialog shows a 6-digit code, valid for 2 minutes and only
+- **Pairing (Options ▸ Browser…):** the dialog shows a 6-digit code, valid for 2 minutes and only
   while the dialog is open. Enter it in the extension's options. The extension receives a long
   random key and sends it with every request; the player keeps only its hash, in
   `dig/bridge.ron`. After 5 wrong codes, pairing is locked for a minute. **Forget browsers**
@@ -318,7 +331,7 @@ that the player starts once its window is up.
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
    the `extensions/chrome/` folder. It asks for site access to discogs.com and 127.0.0.1 only.
-2. Start the player and open OPT ▸ Browser…. The extension's options page opens on install (or
+2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
 3. On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
    button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
@@ -348,7 +361,7 @@ player, with the key), `content.js` (the button), `pages.js` (which pages are su
 
 - [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com and
       127.0.0.1 only.
-- [ ] Pair with the code from OPT ▸ Browser…; the dialog says a browser was paired, and the same
+- [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
 - [ ] Release, master, artist, label, wantlist, list and marketplace item pages each show the
       button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
@@ -408,7 +421,7 @@ ends them.
 
 ### Spectrogram
 
-`S` (or **Spectrogram (S)** in the playlist's **OPT** menu) opens a separate, resizable window
+`S` (or **Spectrogram (S)** in **Options**, a right-click on the main window) opens a separate, resizable window
 with the current track's spectrogram: time runs left to right, frequency goes up on a log scale
 from 20 Hz to the file's Nyquist frequency, and brighter means louder.
 
@@ -703,7 +716,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 546 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 554 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -783,11 +796,11 @@ What's covered:
   - a missing page taking its crate away again;
   - `Y`, `N` and `I` with and without a token;
   - the entry menu;
-  - OPT ▸ Discogs… checking a token;
+  - Options ▸ Discogs… checking a token;
   - "needs yt-dlp";
   - no request to Discogs before the window is interactive;
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
-    while Discogs is slow and then filling the crate, OPT ▸ Browser… pairing once and Forget
+    while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget
     browsers, and a taken port that leaves the player working.
 - **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
   downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared

@@ -15,11 +15,15 @@ The player SHALL keep any number of named crates, each an ordered list of entrie
 - **THEN** the name is refused with a message and no crate is created
 
 ### Requirement: Crate menu
-Clicking the playlist title bar without dragging SHALL open a menu listing every crate by name, marking the shown crate and the playing crate, followed by New crate…, Rename crate… and Delete crate…. Choosing a crate SHALL show it. Dragging the title bar SHALL still move the window and SHALL NOT open the menu. Deleting a crate that has entries SHALL ask for confirmation first.
+While the crate sidebar isn't shown (the playlist narrower than 600 skin pixels and not maximized), clicking the playlist title bar without dragging SHALL open a menu listing every crate by name, marking the shown crate and the playing crate, followed by New crate…, Rename crate… and Delete crate…. It SHALL mark the crate the current track comes from with ⏵ only while that track plays or is paused, and list the user's Discogs collection crate last, under a Discogs heading. While the sidebar is shown, clicking the title bar SHALL NOT open a menu: the sidebar lists, creates, renames and deletes crates. Choosing a crate SHALL show it. Dragging the title bar SHALL still move the window and SHALL NOT open the menu. Deleting a crate that has entries SHALL ask for confirmation first.
 
 #### Scenario: Switch crate
-- **WHEN** the user clicks the title bar and chooses "Keepers"
+- **WHEN** the playlist is 400 px wide and the user clicks the title bar and chooses "Keepers"
 - **THEN** the playlist window shows the Keepers crate and the title bar reads KEEPERS
+
+#### Scenario: No menu beside the sidebar
+- **WHEN** the playlist is 700 px wide and the user clicks the title bar
+- **THEN** no menu opens
 
 #### Scenario: Drag still moves the window
 - **WHEN** the user drags the playlist title bar
@@ -88,7 +92,7 @@ Only the list of crates and the shown crate SHALL be loaded at launch. Other cra
 - **THEN** the window is interactive within 300 ms
 
 ### Requirement: Crate sidebar
-When the playlist is at least 600 skin pixels wide, or maximized, and the sidebar is on, a list of every crate SHALL be shown on the left of the playlist, with each crate's number of entries, and the crate menu's marks for the playing crate (⏵) and the shown crate (•). Clicking a crate SHALL show it. Right-clicking SHALL offer Rename… and Delete…, with the same rules as the crate menu. "+ New crate" SHALL create and show a new crate, after asking its name as the crate menu does. A crate that can't be read SHALL be dimmed and can't be chosen. A ☰ button in the playlist title bar SHALL show or hide the sidebar, and the choice SHALL be remembered across restarts. The crate menu on the title bar SHALL keep working. Showing a crate from the sidebar SHALL NOT interrupt playback.
+When the playlist is at least 600 skin pixels wide, or maximized, a list of every crate SHALL be shown on the left of the playlist, with each crate's number of entries and a tooltip naming it. The shown crate SHALL be marked •. The crate the current track comes from SHALL be marked with the player's play sign while it plays and its pause sign while paused, and not marked when playback is stopped; its tooltip SHALL say so. The user's own Discogs collection crate (the one the app makes from their collection, still recognised after a rename) SHALL be pinned at the bottom of the sidebar under a DISCOGS heading, drawn in the OWNED badge's amber with a record icon; the other crates are listed from the top in creation order, followed by "+ New crate". Narrower, it SHALL be hidden. There SHALL be no button or setting to hide it. Clicking a crate SHALL show it. Right-clicking a crate (or Control-clicking it on macOS, which SHALL NOT show it) SHALL offer Rename crate… and Delete crate… for that crate, with the same rules as the crate menu (deleting a crate with entries asks first). For the Playlist crate, which can't be renamed or deleted, the menu SHALL offer Clear crate instead and say why. "+ New crate" SHALL create and show a new crate, after asking its name as the crate menu does. A crate that can't be read SHALL be dimmed and can't be chosen. After a crate is clicked in the sidebar, the Delete key (or Backspace) SHALL delete that crate, with the same rules as Delete crate…, until the list is clicked or its cursor moves. The crate menu on the title bar SHALL keep working. Showing a crate from the sidebar SHALL NOT interrupt playback.
 
 #### Scenario: Switch from the sidebar
 - **WHEN** the playlist is maximized and the user clicks "Keepers" in the sidebar
@@ -98,9 +102,37 @@ When the playlist is at least 600 skin pixels wide, or maximized, and the sideba
 - **WHEN** the playlist is 400 px wide and not maximized
 - **THEN** no sidebar is shown, and the crate menu still works
 
-#### Scenario: Hidden and remembered
-- **WHEN** the user clicks ☰ to hide the sidebar and restarts the app with the playlist maximized
-- **THEN** no sidebar is shown until ☰ is clicked again
+#### Scenario: Delete from the sidebar
+- **WHEN** the user right-clicks "Friday" in the sidebar and chooses Delete crate…
+- **THEN** Friday is deleted (after confirming, when it has entries), whichever crate is shown
+
+#### Scenario: Control-click on a Mac
+- **WHEN** the user Control-clicks "Friday" in the sidebar on macOS
+- **THEN** Friday's menu opens with Rename crate… and Delete crate…, and the shown crate doesn't change
+
+#### Scenario: The collection stands apart
+- **WHEN** the crates are Playlist, Keepers and "Collection: digger" (the user's collection)
+- **THEN** the sidebar lists Playlist, Keepers and + New crate from the top, and "Collection: digger" in amber with a record icon on its bottom row, under DISCOGS
+
+#### Scenario: Playing mark follows playback
+- **WHEN** a track from Keepers plays, is paused, and is stopped
+- **THEN** Keepers shows the play sign, then the pause sign, then no mark
+
+#### Scenario: Playlist clears
+- **WHEN** the user right-clicks Playlist in the sidebar
+- **THEN** the menu offers Clear crate and says Playlist can't be renamed or deleted; Clear crate empties it
+
+#### Scenario: Delete key
+- **WHEN** the user clicks "Friday" in the sidebar and presses Delete (or Backspace)
+- **THEN** Friday is deleted, after confirming when it has entries; after a click or a cursor move in the list, Delete removes the selected entries instead, and the Playlist crate is never deleted this way
+
+#### Scenario: Always there when it fits
+- **WHEN** the playlist is widened from 400 to 700 px
+- **THEN** the sidebar appears, with no button to hide it
+
+#### Scenario: An old setting
+- **WHEN** the app starts with a `settings.ron` that has `crate_sidebar: false` and the playlist maximized
+- **THEN** the settings load, and the sidebar is shown
 
 ### Requirement: Drop entries on a crate
 Dragging entries onto a crate in the sidebar SHALL send them to that crate exactly as Send to crate does: the whole selection when the dragged entry is part of it, skipping entries the crate already holds, with the same message. The crate under the pointer SHALL be highlighted while dragging. Dropping on the shown crate SHALL do nothing. Dropping inside the list SHALL still reorder.

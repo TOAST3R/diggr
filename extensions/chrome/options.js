@@ -14,7 +14,7 @@ async function refresh() {
   const app = (await chrome.storage.local.get({ appName: WR.PLACEHOLDER })).appName;
   document.title = `Pair with ${app}`;
   $("title").textContent = `Pair with ${app}`;
-  $("how").textContent = `In ${app}, open OPT ▸ Browser… and enter the 6-digit code it shows.`;
+  $("how").textContent = `In ${app}, open Options ▸ Browser… and enter the 6-digit code it shows.`;
   const state = $("state");
   state.classList.toggle("bad", !r.ok);
   state.textContent = r.ok ? `Paired with ${app} on port ${s.port}.` : WR.problem(r.error, app);

@@ -157,7 +157,7 @@
     let text = null;
     let dim = false;
     if (owned === "no-token") {
-      text = `Add a Discogs token in ${appName} (OPT ▸ Discogs…) to see records you own`;
+      text = `Add a Discogs token in ${appName} (Options ▸ Discogs…) to see records you own`;
       dim = true;
     }
     if (owned === "this") text = "✓ In your collection";

@@ -114,7 +114,7 @@ pub enum DigAction {
     OpenBrowserDialog,
 }
 
-/// What OPT ▸ Browser… asks for.
+/// What Options ▸ Browser… asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BridgeAction {
     ForgetBrowsers,
@@ -136,7 +136,7 @@ struct JobView {
     total: usize,
 }
 
-/// OPT ▸ Discogs…
+/// Options ▸ Discogs…
 #[derive(Default)]
 pub(super) struct DigDialog {
     token: String,
@@ -193,7 +193,7 @@ pub(super) struct Dig {
     /// a sync on the intake worker).
     pub(super) collection: Option<Arc<Collection>>,
     collection_syncing: bool,
-    /// Why the last sync failed, for OPT ▸ Discogs….
+    /// Why the last sync failed, for Options ▸ Discogs….
     collection_error: Option<String>,
     /// When a sync was last asked for without being needed again (retries wait an hour).
     collection_tried: Option<Instant>,
@@ -211,7 +211,7 @@ pub const TOKEN_PAGE: &str = "https://www.discogs.com/settings/developers";
 /// A failed collection sync is tried again after this long (when still needed).
 const COLLECTION_RETRY: Duration = Duration::from_secs(3600);
 
-/// OPT ▸ Browser…
+/// Options ▸ Browser…
 pub(super) struct BridgeDialog {
     port: u16,
     /// A browser was paired while the dialog was open.
@@ -358,7 +358,7 @@ impl Dig {
         }
     }
 
-    /// (Re)starts the bridge on its port; a failure is kept for OPT ▸ Browser….
+    /// (Re)starts the bridge on its port; a failure is kept for Options ▸ Browser….
     fn start_bridge(&mut self) {
         let Some(shared) = self.bridge_shared.clone() else {
             return;
@@ -447,7 +447,8 @@ impl Dig {
         if wanted && self.token.is_none() && !self.token_hint_shown {
             self.token_hint_shown = true;
             return Some(
-                "Add a Discogs token (OPT ▸ Discogs…) to mark the records you already own".into(),
+                "Add a Discogs token (Options ▸ Discogs…) to mark the records you already own"
+                    .into(),
             );
         }
         if !wanted || self.token.is_none() || self.collection_syncing {
@@ -471,7 +472,7 @@ impl Dig {
         None
     }
 
-    /// Syncs now (OPT ▸ Discogs… ▸ Refresh collection): only what changed since the cache.
+    /// Syncs now (Options ▸ Discogs… ▸ Refresh collection): only what changed since the cache.
     pub(super) fn sync_collection(&mut self) {
         if self.token.is_none() || self.collection_syncing {
             return;
@@ -523,7 +524,7 @@ impl Dig {
         }
     }
 
-    /// OPT ▸ Discogs…: "1,234 records, updated 2 h ago", or why there is none.
+    /// Options ▸ Discogs…: "1,234 records, updated 2 h ago", or why there is none.
     fn collection_line(&self) -> String {
         if self.token.is_none() {
             return "Needs a token".into();
@@ -932,6 +933,15 @@ impl WinampApp {
             Event::Listed(j, items) => {
                 if !self.crates.load(j.target) {
                     return;
+                }
+                // The user's own collection gets its place in the sidebar.
+                let own = self.dig.as_ref().and_then(|d| d.identity.as_ref()).is_some_and(|id| {
+                    url::parse(&j.page).is_ok_and(|p| {
+                        matches!(&p.kind, url::PageKind::Collection(u) if u.eq_ignore_ascii_case(&id.username))
+                    })
+                });
+                if own {
+                    self.crates.set_collection(j.target);
                 }
                 let Some(p) = self.crates.get_mut(j.target) else {
                     return;
@@ -1572,7 +1582,7 @@ impl WinampApp {
                     d.send(Command::Keep(r));
                 }
             } else {
-                text += " (a Discogs token is needed for the wantlist: OPT ▸ Discogs…)";
+                text += " (a Discogs token is needed for the wantlist: Options ▸ Discogs…)";
             }
         }
         let err = d.save_memory();
@@ -1705,7 +1715,7 @@ impl WinampApp {
         }
     }
 
-    // ---- OPT ▸ Discogs… ------------------------------------------------------------------
+    // ---- Options ▸ Discogs… ------------------------------------------------------------------
 
     fn dig_open_dialog(&mut self) {
         let Some(d) = &mut self.dig else { return };
@@ -1754,7 +1764,10 @@ impl WinampApp {
             let page = Page::new(dig::discogs::url::PageKind::Collection(user));
             let name = page.provisional_name();
             if self.crates.find(&name).is_none() {
-                self.dig_send(page, SendMode::Crate(name), None);
+                self.dig_send(page, SendMode::Crate(name.clone()), None);
+            }
+            if let Some(c) = self.crates.find(&name) {
+                self.crates.set_collection(c);
             }
         }
     }
@@ -1968,7 +1981,7 @@ impl WinampApp {
         }
     }
 
-    // ---- OPT ▸ Browser… ------------------------------------------------------------------
+    // ---- Options ▸ Browser… ------------------------------------------------------------------
 
     fn dig_open_bridge_dialog(&mut self) {
         let Some(d) = &mut self.dig else { return };

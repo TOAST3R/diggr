@@ -78,14 +78,7 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
             r.w += extra;
         }
     }
-    for name in [
-        "pl_close",
-        "pl_max",
-        "pl_scroll",
-        "pl_info",
-        "pl_opts",
-        "pl_resize",
-    ] {
+    for name in ["pl_close", "pl_max", "pl_scroll", "pl_info", "pl_resize"] {
         if let Some(r) = out.layout.get_mut(name) {
             r.x += extra;
         }
@@ -141,10 +134,12 @@ mod tests {
         assert_eq!(w.pl_width, 400);
         assert_eq!(w.at("pl_list").w, d.at("pl_list").w + 125);
         assert_eq!(w.at("pl_titlebar").w, 400);
-        for name in ["pl_close", "pl_scroll", "pl_info", "pl_opts", "pl_resize"] {
+        for name in ["pl_close", "pl_scroll", "pl_info", "pl_resize"] {
             assert_eq!(w.at(name).x, d.at(name).x + 125, "{name}");
         }
-        assert_eq!(w.at("pl_add"), d.at("pl_add"), "left buttons stay");
+        for name in ["pl_plus", "pl_menu", "pl_bpm"] {
+            assert_eq!(w.at(name), d.at(name), "{name} stays on the left");
+        }
         assert_eq!(
             playlist_def(&d, 100).pl_width,
             275,

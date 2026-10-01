@@ -1,4 +1,4 @@
-//! Pairing a browser: a short-lived 6-digit code shown in OPT ▸ Browser… buys a long random key.
+//! Pairing a browser: a short-lived 6-digit code shown in Options ▸ Browser… buys a long random key.
 //!
 //! The code is single use, lasts 2 minutes, and 5 wrong guesses lock pairing for a minute, so
 //! guessing it takes far longer than it lives. Keys are 256 random bits; only their SHA-256 is

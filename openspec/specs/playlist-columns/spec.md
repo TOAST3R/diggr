@@ -35,7 +35,7 @@ Dragging a header divider SHALL resize the column to its left. Right-clicking th
 - **THEN** the Artist column is 40 points wider and the title narrower
 
 ### Requirement: Sort the crate by a column
-Clicking a column header (other than the number column), or choosing that field in OPT ▸ Sort, SHALL reorder the shown crate by that field, ascending, and a second click SHALL reorder it descending. The rules:
+Clicking a column header (other than the number column), or choosing that field in the playlist's ≡ ▸ Sort, SHALL reorder the shown crate by that field, ascending, and a second click SHALL reorder it descending. The rules:
 - The sort SHALL be stable.
 - Entries without a value SHALL go last in both directions.
 - Catalog numbers and sides SHALL sort in natural order (LT-2 before LT-10, A2 before A10).

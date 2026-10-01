@@ -64,7 +64,7 @@ After a send from a Discogs page, the page SHALL show, for 3 s, a confirmation n
 
 #### Scenario: Not paired
 - **WHEN** the user chooses an action before the extension is paired
-- **THEN** the pairing screen opens and asks for the code shown in OPT ▸ Browser…
+- **THEN** the pairing screen opens and asks for the code shown in Options ▸ Browser…
 
 ### Requirement: Minimal access
 The extension SHALL ask for access only to discogs.com and 127.0.0.1, and for its own storage, context menu and toolbar button. It SHALL send the app only the page's address, the chosen mode, the crate and the switches. It SHALL contact no other server, SHALL read nothing from pages beyond their address and title, and SHALL contain no remote code.
@@ -81,7 +81,7 @@ Every label that names the player (for example "Play in ‹App›") SHALL use th
 - **THEN** the menus read "Play in My Player" and "Enqueue in My Player"
 
 ### Requirement: Owned note
-On release, master release and marketplace item pages, when the app says the page's record is owned, the extension SHALL show under its button "✓ In your collection", or "✓ Another pressing in your collection (‹catalog number›, ‹year›)". When the answer is "checking", it SHALL ask once more after 3 s. When the app has no Discogs token, it SHALL show, dimmed, that a token in the app (OPT ▸ Discogs…) is needed to see owned records. When the record isn't owned, or the answer is unknown, it SHALL show nothing. It SHALL send the app only the page's address for this.
+On release, master release and marketplace item pages, when the app says the page's record is owned, the extension SHALL show under its button "✓ In your collection", or "✓ Another pressing in your collection (‹catalog number›, ‹year›)". When the answer is "checking", it SHALL ask once more after 3 s. When the app has no Discogs token, it SHALL show, dimmed, that a token in the app (Options ▸ Discogs…) is needed to see owned records. When the record isn't owned, or the answer is unknown, it SHALL show nothing. It SHALL send the app only the page's address for this.
 
 #### Scenario: Owned on a shop page
 - **WHEN** the user opens a marketplace item of a record they own

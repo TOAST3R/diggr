@@ -4,7 +4,7 @@
 Lets a browser extension send Discogs pages to the running player safely: only from this computer, only from paired browsers, and only Discogs addresses.
 ## Requirements
 ### Requirement: Local only
-The bridge SHALL listen only on the loopback address (127.0.0.1), on port 47800 by default, which can be changed in OPT ▸ Browser…. It SHALL start only after the window is interactive, so launch stays within 300 ms. If the port is taken, the app SHALL start normally without the bridge and say so in OPT ▸ Browser….
+The bridge SHALL listen only on the loopback address (127.0.0.1), on port 47800 by default, which can be changed in Options ▸ Browser…. It SHALL start only after the window is interactive, so launch stays within 300 ms. If the port is taken, the app SHALL start normally without the bridge and say so in Options ▸ Browser….
 
 #### Scenario: Not reachable from the network
 - **WHEN** another computer on the same network connects to the player's computer on the bridge port
@@ -12,13 +12,13 @@ The bridge SHALL listen only on the loopback address (127.0.0.1), on port 47800 
 
 #### Scenario: Port taken
 - **WHEN** another program already uses port 47800
-- **THEN** the app starts normally, and OPT ▸ Browser… says the port is taken
+- **THEN** the app starts normally, and Options ▸ Browser… says the port is taken
 
 ### Requirement: Pairing
-OPT ▸ Browser… SHALL show a 6-digit pairing code that is valid for 2 minutes. A request presenting that code SHALL receive a new random key of at least 128 bits, and the code SHALL then stop working. After 5 wrong codes, every pairing attempt SHALL be refused for 1 minute. The app SHALL store only a hash of each key. Forget browsers SHALL revoke every key.
+Options ▸ Browser… SHALL show a 6-digit pairing code that is valid for 2 minutes. A request presenting that code SHALL receive a new random key of at least 128 bits, and the code SHALL then stop working. After 5 wrong codes, every pairing attempt SHALL be refused for 1 minute. The app SHALL store only a hash of each key. Forget browsers SHALL revoke every key.
 
 #### Scenario: Pair once
-- **WHEN** the extension sends the code shown in OPT ▸ Browser… within 2 minutes
+- **WHEN** the extension sends the code shown in Options ▸ Browser… within 2 minutes
 - **THEN** it receives a key, the dialog says a browser was paired, and the same code no longer works
 
 #### Scenario: Guessing is stopped

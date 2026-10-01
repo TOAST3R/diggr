@@ -1,5 +1,5 @@
 //! Digging in the player, headless: pasted pages become crates of previews, Y / N / I decide,
-//! OPT ▸ Discogs… checks a token, and nothing reaches Discogs before the window is up.
+//! Options ▸ Discogs… checks a token, and nothing reaches Discogs before the window is up.
 
 use super::digging::BridgeAction;
 use super::*;
@@ -643,7 +643,7 @@ fn open_browser_dialog(rig: &mut Rig) {
                 "Enter this code in the extension's options.",
             )
         },
-        "OPT ▸ Browser… shows",
+        "Options ▸ Browser… shows",
     );
 }
 
@@ -845,7 +845,7 @@ fn owned_records_are_marked_and_keeping_one_asks_first() {
             let out = r.frame(Vec::new());
             shows(&out, "1 record, updated just now") && shows(&out, "Refresh collection")
         },
-        "OPT ▸ Discogs… shows the collection",
+        "Options ▸ Discogs… shows the collection",
     );
     rig.click_text("Open that page");
     assert!(
@@ -918,6 +918,8 @@ fn saving_a_token_makes_the_collection_a_crate_on_screen_once() {
     );
     // No OWNED badge inside it, though every record is owned.
     let cache = rig.dir.join("cache");
+    // The folder may not exist yet: nothing has had to write to the cache so far.
+    std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(
         cache.join(::dig::collection::FILE),
         r#"(username: "digger", fetched_at: 0, count: 1, instances: [11],
@@ -1174,4 +1176,15 @@ fn previews_ahead_follow_the_bpm_filter() {
         let i: u64 = clip.trim_start_matches("BPMclip").parse().unwrap();
         assert_eq!(i % 2, 0, "{clip} is hidden by the filter");
     }
+}
+
+#[test]
+fn options_on_the_main_window_open_the_discogs_dialog() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-options", &fakes, |_| {});
+    rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Browser…"), "{:?}", text_list(&out));
+    rig.click_text("Discogs…");
+    assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
 }

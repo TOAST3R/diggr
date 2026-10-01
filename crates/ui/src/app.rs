@@ -114,6 +114,12 @@ pub struct WinampApp {
     pl_tint: Vec<EntryId>,
     /// The BPM range handle being dragged: 0 the low one, 1 the high one.
     bpm_drag: Option<u8>,
+    /// The crate last clicked in the sidebar, until the list is clicked: Delete deletes it.
+    side_crate: Option<CrateId>,
+    /// Where the footer's BPM slider was last drawn: its track's ends and whether the range
+    /// text fit (skin pixels, footer coordinates), for tests.
+    #[cfg(test)]
+    bpm_slider: Option<(f32, f32, bool)>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -288,6 +294,9 @@ impl WinampApp {
             pl_drag_from: None,
             pl_tint: Vec::new(),
             bpm_drag: None,
+            side_crate: None,
+            #[cfg(test)]
+            bpm_slider: None,
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -1212,7 +1221,13 @@ impl WinampApp {
         match key {
             Key::W if !mods.command => self.apply(Action::ToggleWaveform, ctx),
             Key::S if !mods.command => self.spectro_open = !self.spectro_open,
-            Key::Delete | Key::Backspace => self.remove_selected(),
+            // After a click on a crate in the sidebar, Delete deletes that crate (asking first
+            // when it has entries); otherwise it removes the selected entries.
+            Key::Delete | Key::Backspace => match self.side_crate.take() {
+                Some(PLAYLIST) => self.notify("The Playlist crate can't be deleted"),
+                Some(c) if self.pl_sidebar() => self.apply(Action::DeleteCrate(c), ctx),
+                _ => self.remove_selected(),
+            },
             Key::O if mods.command => self.open_files_dialog(Open::Add),
             Key::A if mods.command => self.crates.shown_mut().select_all(),
             Key::Enter => {
@@ -1241,6 +1256,7 @@ impl WinampApp {
                     && self.position.state != PlayState::Stopped)
                     .then(|| self.crates.shown().current())
                     .flatten();
+                self.side_crate = None;
                 let p = self.crates.shown_mut();
                 p.move_cursor(mv, mods.shift, page, start);
                 if let Some(i) = p.cursor_index() {
@@ -1440,6 +1456,14 @@ impl WinampApp {
             let def = self.def.clone();
             let sk = self.skinned(&def, ui, origin);
             sk.sprite("main_bg", 0.0, 0.0);
+            // Under every control: a right-click anywhere else opens Options.
+            let (mw, mh) = def.main_size;
+            self.options_menu(
+                ui,
+                sk.rect(0.0, 0.0, mw as f32, mh as f32),
+                "main_options",
+                &mut actions,
+            );
             dim_title(&sk, "titlebar", self.focus == Focus::Player);
             Self::titlebar_drag(ui, &sk, "main_title", "titlebar");
             if widgets::button(ui, &sk, "min", "btn_min", "btn_min").clicked() {
@@ -1849,6 +1873,55 @@ impl WinampApp {
         }
     }
 
+    /// The Options menu on a right-click (or Control-click on a Mac) in `rect`, which sits
+    /// under the section's controls so they keep their own clicks.
+    fn options_menu(&self, ui: &mut Ui, rect: Rect, id: &str, actions: &mut Vec<Action>) {
+        let resp = ui
+            .interact(rect, Id::new(id), Sense::click())
+            .on_hover_text("Right-click for options");
+        let open = opens_context_menu(
+            resp.secondary_clicked(),
+            resp.clicked(),
+            ui.input(|i| i.modifiers),
+        );
+        let command = if open {
+            Some(egui::SetOpenCommand::Bool(true))
+        } else if resp.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        egui::Popup::context_menu(&resp)
+            .open_memory(command)
+            .show(|ui| {
+                let label = if self.settings.scale >= 2 {
+                    "Classic size (1×)"
+                } else {
+                    "Double size (2×)"
+                };
+                if ui.button(label).clicked() {
+                    actions.push(Action::ToggleScale);
+                    ui.close();
+                }
+                if ui.button("Spectrogram (S)").clicked() {
+                    actions.push(Action::ToggleSpectrogram);
+                    ui.close();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.dig.is_some() {
+                    ui.separator();
+                    if ui.button("Discogs…").clicked() {
+                        actions.push(Action::Dig(DigAction::OpenDialog));
+                        ui.close();
+                    }
+                    if ui.button("Browser…").clicked() {
+                        actions.push(Action::Dig(DigAction::OpenBrowserDialog));
+                        ui.close();
+                    }
+                }
+            });
+    }
+
     /// The playlist's width and rows now: the chosen ones, or, while maximized, what the
     /// window leaves beside the strip (the chosen ones are kept for restoring).
     fn pl_geometry(&self) -> (u16, usize) {
@@ -1880,7 +1953,7 @@ impl WinampApp {
 
     /// Rows of entries on screen: the playlist's rows, less the column header.
     fn pl_visible_rows(&self) -> usize {
-        (self.pl_rows() - self.pl_columns() as usize - self.pl_bar() as usize).max(1)
+        (self.pl_rows() - self.pl_columns() as usize).max(1)
     }
 
     /// The playlist is wide enough for the crate sidebar (whether or not it is on).
@@ -1888,13 +1961,15 @@ impl WinampApp {
         self.settings.playlist_maximized || self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
     }
 
+    /// The crate sidebar shows exactly when it fits.
     fn pl_sidebar(&self) -> bool {
-        self.settings.crate_sidebar && self.pl_sidebar_fits()
+        self.pl_sidebar_fits()
     }
 
-    /// The crate sidebar in `area` (skin pixels: x, y, w, h): every crate with its count and
-    /// marks, then "+ New crate". Returns the crate under the pointer while entries are
-    /// dragged (not the shown one), which is highlighted.
+    /// The crate sidebar in `area` (skin pixels: x, y, w, h): the crates with their counts,
+    /// then "+ New crate", and the user's Discogs collection pinned at the bottom under
+    /// DISCOGS. Returns the crate under the pointer while entries are dragged (not the shown
+    /// one), which is highlighted.
     fn crate_sidebar(
         &mut self,
         ui: &mut Ui,
@@ -1905,7 +1980,7 @@ impl WinampApp {
         actions: &mut Vec<Action>,
     ) -> Option<CrateId> {
         let (x, y, w, h) = area;
-        let colors = &sk.def.colors;
+        let colors = sk.def.colors.clone();
         let scale = sk.scale;
         sk.fill(
             sk.rect(x, y, w, h),
@@ -1916,13 +1991,56 @@ impl WinampApp {
             lerp_color(colors.pl_bg, colors.pl_text, 0.3),
         );
         let painter = sk.painter.with_clip_rect(sk.rect(x, y, w - 1.0, h));
+        let rows = ((h / row_h).floor() as usize).max(1);
+        let (mine, collection): (Vec<_>, Vec<_>) = self
+            .crates
+            .list()
+            .iter()
+            .cloned()
+            .partition(|c| !c.collection);
+        // The collection group (DISCOGS and its crates) is anchored to the bottom.
+        let group = if collection.is_empty() {
+            0
+        } else {
+            (collection.len() + 1).min(rows.saturating_sub(1))
+        };
+        let top_rows = rows - group;
+        let mut placed: Vec<(crate::crates::CrateInfo, usize)> = mine
+            .into_iter()
+            .take(top_rows.saturating_sub(1))
+            .enumerate()
+            .map(|(i, c)| (c, i))
+            .collect();
+        let new_row = placed.len();
+        if group > 0 {
+            let divider = rows - group;
+            let dr = sk.rect(x, y + divider as f32 * row_h, w - 1.0, row_h);
+            painter.text(
+                pos2(dr.left() + 3.0 * scale, dr.center().y),
+                egui::Align2::LEFT_CENTER,
+                "DISCOGS",
+                egui::FontId::proportional(font.size * 0.75),
+                color(colors.pl_owned),
+            );
+            painter.hline(
+                dr.left() + 46.0 * scale..=dr.right() - 3.0 * scale,
+                dr.center().y,
+                egui::Stroke::new(1.0, lerp_color(colors.pl_owned, colors.pl_bg, 0.5)),
+            );
+            placed.extend(
+                collection
+                    .into_iter()
+                    .take(group - 1)
+                    .enumerate()
+                    .map(|(i, c)| (c, divider + 1 + i)),
+            );
+        }
         let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
+        let state = self.position.state;
         let dragging = self.pl_drag_from.is_some();
-        let fit = ((h / row_h).floor() as usize).max(1);
-        let crates: Vec<_> = self.crates.list().iter().take(fit - 1).cloned().collect();
         let mut target = None;
-        for (i, c) in crates.iter().enumerate() {
-            let rr = sk.rect(x, y + i as f32 * row_h, w - 1.0, row_h);
+        for (c, row) in &placed {
+            let rr = sk.rect(x, y + *row as f32 * row_h, w - 1.0, row_h);
             let readable = !self.crates.is_unreadable(c.id);
             let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
             if over {
@@ -1935,7 +2053,9 @@ impl WinampApp {
                     lerp_color(colors.pl_selected_bg, colors.pl_bg, 0.5),
                 );
             }
-            let base = if c.id == shown {
+            let base = if c.collection {
+                colors.pl_owned
+            } else if c.id == shown {
                 colors.pl_current
             } else {
                 colors.pl_text
@@ -1945,11 +2065,38 @@ impl WinampApp {
             } else {
                 lerp_color(base, colors.pl_bg, 0.55)
             };
-            let mark = match (c.id == playing, c.id == shown) {
-                (true, _) => "⏵ ",
-                (false, true) => "• ",
-                _ => "  ",
-            };
+            // The left slot: ▶ / ‖ while this crate plays or is paused, a record for the
+            // collection, a dot for the shown crate.
+            let live = (c.id == playing)
+                .then_some(state)
+                .filter(|s| *s != PlayState::Stopped);
+            let slot = pos2(rr.left() + 2.0 * scale, rr.center().y);
+            match live {
+                Some(s) => {
+                    let name = if s == PlayState::Playing {
+                        "status_play"
+                    } else {
+                        "status_pause"
+                    };
+                    let r = sk.def.sprite(name);
+                    sk.sprite_in(
+                        name,
+                        Rect::from_min_size(
+                            slot - vec2(0.0, r.h as f32 * scale / 2.0),
+                            vec2(r.w as f32, r.h as f32) * scale,
+                        ),
+                    );
+                }
+                None if c.collection => {
+                    let centre = slot + vec2(4.0 * scale, 0.0);
+                    painter.circle_stroke(centre, 3.5 * scale, egui::Stroke::new(scale, col));
+                    painter.circle_filled(centre, scale, col);
+                }
+                None if c.id == shown => {
+                    painter.text(slot, egui::Align2::LEFT_CENTER, "•", font.clone(), col);
+                }
+                None => {}
+            }
             let count = painter
                 .text(
                     pos2(rr.right() - 3.0 * scale, rr.center().y),
@@ -1965,35 +2112,84 @@ impl WinampApp {
                     pos2(rr.right() - count - 6.0 * scale, rr.max.y),
                 ))
                 .text(
-                    pos2(rr.left() + 3.0 * scale, rr.center().y),
+                    pos2(rr.left() + 13.0 * scale, rr.center().y),
                     egui::Align2::LEFT_CENTER,
-                    format!("{mark}{}", c.name),
+                    &c.name,
                     font.clone(),
                     col,
                 );
-            let resp = ui.interact(rr, Id::new(("pl_side", c.id)), Sense::click());
-            if resp.clicked() && readable {
+            let mut resp = ui.interact(rr, Id::new(("pl_side", c.id)), Sense::click());
+            if resp.hovered() && !dragging {
+                let mut tip = format!(
+                    "{} ({})",
+                    c.name,
+                    entries_label(self.crates.entry_count(c.id))
+                );
+                if c.collection {
+                    tip += "\nYour Discogs collection";
+                }
+                match live {
+                    Some(PlayState::Playing) => tip += "\nPlaying from this crate",
+                    Some(_) => tip += "\nPaused in this crate",
+                    None => {}
+                }
+                resp = resp.on_hover_text(tip);
+            }
+            // A right-click, or a Control-click on a Mac, opens the crate's menu.
+            let menu_click = opens_context_menu(
+                resp.secondary_clicked(),
+                resp.clicked(),
+                ui.input(|i| i.modifiers),
+            );
+            if resp.clicked() && !menu_click && readable {
                 actions.push(Action::ShowCrate(c.id));
             }
-            egui::Popup::context_menu(&resp).show(|ui| {
-                let editable = c.id != PLAYLIST && readable;
-                if ui
-                    .add_enabled(editable, egui::Button::new("Rename…"))
-                    .clicked()
-                {
-                    actions.push(Action::RenameCrate(c.id));
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(c.id != PLAYLIST, egui::Button::new("Delete…"))
-                    .clicked()
-                {
-                    actions.push(Action::DeleteCrate(c.id));
-                    ui.close();
-                }
-            });
+            if resp.clicked() || menu_click {
+                self.side_crate = Some(c.id);
+            }
+            let open = if menu_click {
+                Some(egui::SetOpenCommand::Bool(true))
+            } else if resp.clicked() {
+                Some(egui::SetOpenCommand::Bool(false))
+            } else {
+                None
+            };
+            let entries = self.crates.entry_count(c.id);
+            egui::Popup::context_menu(&resp)
+                .open_memory(open)
+                .show(|ui| {
+                    if c.id == PLAYLIST {
+                        // The scratch crate stays (Eject and opened files fill it): it clears.
+                        if ui
+                            .add_enabled(entries > 0, egui::Button::new("Clear crate"))
+                            .clicked()
+                        {
+                            actions.push(Action::ClearCrate(c.id));
+                            ui.close();
+                        }
+                        ui.label(
+                            egui::RichText::new(
+                                "Playlist can't be renamed or deleted:\nEject and opened files use it",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                        return;
+                    }
+                    if ui
+                        .add_enabled(readable, egui::Button::new("Rename crate…"))
+                        .clicked()
+                    {
+                        actions.push(Action::RenameCrate(c.id));
+                        ui.close();
+                    }
+                    if ui.button("Delete crate…").clicked() {
+                        actions.push(Action::DeleteCrate(c.id));
+                        ui.close();
+                    }
+                });
         }
-        let nr = sk.rect(x, y + crates.len() as f32 * row_h, w - 1.0, row_h);
+        let nr = sk.rect(x, y + new_row as f32 * row_h, w - 1.0, row_h);
         painter.text(
             pos2(nr.left() + 3.0 * scale, nr.center().y),
             egui::Align2::LEFT_CENTER,
@@ -2010,21 +2206,16 @@ impl WinampApp {
         target
     }
 
-    /// The BPM filter bar shows when the shown crate has two different known tempos.
-    fn pl_bar(&self) -> bool {
-        self.crates.shown().tempo_span().is_some()
-    }
-
-    /// The BPM filter bar in `area` (skin pixels: x, y, w, h): ALL, a two-handle range over
-    /// the crate's tempos, and the range as text.
-    fn bpm_bar(
+    /// The footer's BPM filter control, from `x` to `x_end` (skin pixels, in the footer at
+    /// `y`, `h` tall): "BPM", a two-handle range over the crate's tempos, the range as text and
+    /// × while a range is set. Nothing when the crate has fewer than two different tempos.
+    fn bpm_control(
         &mut self,
         ui: &mut Ui,
         sk: &Skinned,
-        area: (f32, f32, f32, f32),
+        (x, y, x_end, h): (f32, f32, f32, f32),
         actions: &mut Vec<Action>,
     ) {
-        let (x, y, w, h) = area;
         let shown = self.crates.shown();
         let Some((lo, hi)) = shown.tempo_span() else {
             return;
@@ -2032,41 +2223,50 @@ impl WinampApp {
         let filter = shown.bpm_filter();
         let (a, b) = filter.unwrap_or((lo, hi));
         let colors = &sk.def.colors;
+        let lcd = color([0, 236, 0]);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
 
-        // ALL.
-        let all_w = sk.text_width("ALL") + 6.0;
-        let all = ui.interact(sk.rect(x, y, all_w, h), Id::new("bpm_all"), Sense::click());
-        let lit = if filter.is_some() {
-            color(colors.pl_current)
-        } else {
-            lerp_color(colors.pl_text, colors.pl_bg, 0.5)
-        };
-        sk.text(x + 3.0, ty, "ALL", lit);
-        if all.clicked() {
-            actions.push(Action::SetBpmFilter(None));
+        // A short slider of a fixed width, then the range and ×: "BPM" goes in front when
+        // there's room for it too. The slider starts at a fixed place, so it never moves under
+        // a dragged handle.
+        let clear_w = sk.def.sprite("bpm_clear").w as f32;
+        let core = BPM_SLIDER_W + 3.0 + sk.text_width("000-000") + 3.0 + clear_w;
+        let label = sk.text_width("BPM") + 4.0;
+        let with_label = x_end - x >= label + core;
+        if with_label {
+            sk.text(x, ty, "BPM", lcd);
         }
-        all.on_hover_text("Show every track");
-
-        // The range as text, right-aligned, and "+n without BPM" when it fits. The text's room
-        // doesn't change with the range, so the track stays put under a dragged handle.
-        let missing = shown.without_bpm();
-        let note = format!(" +{missing} WITHOUT BPM");
-        let reserve = |extra: &str| sk.text_width(&format!("000-000 BPM{extra}"));
-        let note = if missing > 0 && w - all_w - reserve(&note) - 17.0 >= 80.0 {
-            note
-        } else {
-            String::new()
-        };
-        let text = format!("{a}-{b} BPM{note}");
-        let text_x = x + w - sk.text_width(&text) - 3.0;
-        sk.text(text_x, ty, &text, color([0, 236, 0]));
-
-        // The track, its selected part, and the two handles.
-        let (x0, x1) = (x + all_w + 6.0, x + w - reserve(&note) - 11.0);
-        if x1 - x0 < 10.0 {
+        let x0 = if with_label { x + label } else { x };
+        let x1 = x0 + BPM_SLIDER_W;
+        let with_text = x_end - x >= core;
+        if x_end - x0 < BPM_SLIDER_W {
             return;
         }
+        #[cfg(test)]
+        {
+            self.bpm_slider = Some((x0, x1, with_text));
+        }
+        let range = format!("{a}-{b}");
+        let mut right = x1 + 3.0;
+        if with_text {
+            sk.text(right, ty, &range, lcd);
+            right += sk.text_width(&range) + 3.0;
+        }
+        if filter.is_some() {
+            let cy = y + ((h - clear_w) / 2.0).round();
+            sk.sprite("bpm_clear", right, cy);
+            let clear = ui.interact(
+                sk.rect(right - 2.0, y, clear_w + 4.0, h),
+                Id::new("bpm_clear"),
+                Sense::click(),
+            );
+            if clear.clicked() {
+                actions.push(Action::SetBpmFilter(None));
+            }
+            clear.on_hover_text("Show all tempos");
+        }
+
+        // The track, its selected part, and the two handles.
         let span = (hi - lo) as f32;
         let at = |v: u16| x0 + (v - lo) as f32 / span * (x1 - x0);
         let mid = y + (h / 2.0).floor();
@@ -2074,10 +2274,7 @@ impl WinampApp {
             sk.rect(x0, mid, x1 - x0, 1.0),
             lerp_color(colors.pl_text, colors.pl_bg, 0.7),
         );
-        sk.fill(
-            sk.rect(at(a), mid - 1.0, at(b) - at(a), 3.0),
-            color(colors.pl_text),
-        );
+        sk.fill(sk.rect(at(a), mid - 1.0, at(b) - at(a), 3.0), lcd);
         let handle = sk.def.sprite("bpm_handle");
         let (hw, hh) = (handle.w as f32, handle.h as f32);
         for v in [a, b] {
@@ -2088,11 +2285,13 @@ impl WinampApp {
             );
         }
         let resp = ui.interact(
-            sk.rect(x0 - hw, y, x1 - x0 + 2.0 * hw, h),
+            sk.rect(x0 - hw / 2.0, y, x1 - x0 + hw, h),
             Id::new("bpm_range"),
             Sense::click_and_drag(),
         );
-        if let Some(p) = resp.interact_pointer_pos() {
+        if resp.double_clicked() {
+            actions.push(Action::SetBpmFilter(None));
+        } else if let Some(p) = resp.interact_pointer_pos() {
             let px = (p.x - sk.origin.x) / sk.scale;
             let v = lo + ((px - x0) / (x1 - x0) * span).round().clamp(0.0, span) as u16;
             // The handle nearest the pointer when the drag starts is the one that moves.
@@ -2114,7 +2313,11 @@ impl WinampApp {
         } else {
             self.bpm_drag = None;
         }
-        let mut tip = "Drag a handle to keep only these tempos".to_owned();
+        let mut tip = format!("{range} BPM: drag a handle to keep only these tempos");
+        if filter.is_some() {
+            tip += "; double-click to show all";
+        }
+        let missing = shown.without_bpm();
         if missing > 0 {
             tip += &format!(
                 " ({} without a BPM {} hidden while a range is set)",
@@ -2289,29 +2492,19 @@ impl WinampApp {
             let count = shown.bpm_filter().map(|_| (row_map.len(), shown.len()));
             draw_crate_name(&sk, self.crates.name(self.crates.shown_id()), count);
             dim_title(&sk, "pl_titlebar", self.focus == Focus::Playlist);
-            egui::Popup::menu(&title)
-                .id(Id::new("crate_menu"))
-                .show(|ui| self.crate_menu(ui, &mut actions));
+            // The sidebar does the crate menu's job when it shows; narrower, the title bar opens
+            // the menu instead.
+            if !self.pl_sidebar() {
+                egui::Popup::menu(&title)
+                    .id(Id::new("crate_menu"))
+                    .show(|ui| self.crate_menu(ui, &mut actions));
+            }
             if widgets::button(ui, &sk, "pl_close", "pl_close", "btn_close").clicked() {
                 actions.push(Action::TogglePlaylist);
             }
             if widgets::button(ui, &sk, "pl_max", "pl_max", "btn_max").clicked() {
                 actions.push(Action::ToggleMaximized);
             }
-            // ☰ shows or hides the crate sidebar; dimmed while the playlist is too narrow.
-            let fits = self.pl_sidebar_fits();
-            let side_btn = widgets::button(ui, &sk, "pl_side", "pl_side", "btn_side");
-            if !fits {
-                sk.fill(sk.at("pl_side"), Color32::from_black_alpha(150));
-            }
-            if side_btn.clicked() && fits {
-                actions.push(Action::ToggleSidebar);
-            }
-            side_btn.on_hover_text(if fits {
-                "Crates"
-            } else {
-                "Crates (when the playlist is at least 600 pixels wide, or maximized)"
-            });
             let top = d.pl_top_h as f32;
             sk.sprite_in("pl_left", sk.rect(0.0, top, 12.0, list_h));
             sk.sprite_in(
@@ -2341,12 +2534,8 @@ impl WinampApp {
             let side_drop = side.and_then(|area| {
                 self.crate_sidebar(ui, &sk, area, d.pl_row_h as f32, &font, &mut actions)
             });
-            // The BPM filter bar, then the column header, then the rows.
-            let bar = self.pl_bar();
-            if bar {
-                self.bpm_bar(ui, &sk, (l.x as f32, top, l.w as f32, row_h), &mut actions);
-            }
-            let head_top = top + bar as usize as f32 * row_h;
+            // The column header, then the rows.
+            let head_top = top;
             let rows_top = head_top + columns as usize as f32 * row_h;
             let cols = if columns {
                 // The number column fits the biggest number (entries keep their crate numbers).
@@ -2363,7 +2552,6 @@ impl WinampApp {
             };
             let shown = self.crates.shown();
             if row_map.is_empty() && shown.bpm_filter().is_some() {
-                // ALL, in the bar above, brings them back.
                 let y = rows_top + ((row_h - sk.def.font.glyph_h as f32) / 2.0).round();
                 sk.text(
                     l.x as f32 + 3.0,
@@ -2371,6 +2559,12 @@ impl WinampApp {
                     "NO TRACKS MATCH",
                     color(d.colors.pl_text),
                 );
+                ui.interact(
+                    sk.rect(l.x as f32, rows_top, l.w as f32, row_h),
+                    Id::new("pl_no_match"),
+                    Sense::hover(),
+                )
+                .on_hover_text("× after the BPM range, or ≡ ▸ Show all tempos, shows every track");
             }
             // While an entry's menu is open, the rest of its album is tinted.
             self.pl_tint = row_map
@@ -2690,26 +2884,24 @@ impl WinampApp {
                 ..self.skinned(&def, ui, origin)
             };
             draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
-            let add = widgets::button(ui, &bsk, "pl_add", "pl_add", "pl_add");
-            egui::Popup::menu(&add).show(|ui| {
+            // + adds to the crate; ≡ is the crate's menu.
+            let plus = widgets::button(ui, &bsk, "pl_plus", "pl_plus", "pl_plus");
+            egui::Popup::menu(&plus).show(|ui| {
                 if ui.button("Add files…").clicked() {
                     actions.push(Action::AddFiles);
                 }
                 if ui.button("Add folder…").clicked() {
                     actions.push(Action::AddFolder);
                 }
-            });
-            let rem = widgets::button(ui, &bsk, "pl_rem", "pl_rem", "pl_rem");
-            egui::Popup::menu(&rem).show(|ui| {
-                if ui.button("Remove selected").clicked() {
-                    actions.push(Action::RemoveSelected);
-                }
-                if ui.button("Clear crate").clicked() {
-                    actions.push(Action::Clear);
+                ui.separator();
+                if ui.button("Import M3U…").clicked() {
+                    actions.push(Action::AddFiles);
                 }
             });
-            let sel = widgets::button(ui, &bsk, "pl_sel", "pl_sel", "pl_sel");
-            egui::Popup::menu(&sel).show(|ui| {
+            plus.on_hover_text("Add");
+            let filtered = self.crates.shown().bpm_filter().is_some();
+            let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
+            egui::Popup::menu(&menu).show(|ui| {
                 if ui.button("Select all").clicked() {
                     actions.push(Action::SelectAll);
                 }
@@ -2719,29 +2911,14 @@ impl WinampApp {
                 if ui.button("Invert selection").clicked() {
                     actions.push(Action::InvertSelection);
                 }
-            });
-            let misc = widgets::button(ui, &bsk, "pl_misc", "pl_misc", "pl_misc");
-            egui::Popup::menu(&misc).show(|ui| {
-                if ui.button("Import M3U…").clicked() {
-                    actions.push(Action::AddFiles);
+                ui.separator();
+                if ui.button("Remove selected").clicked() {
+                    actions.push(Action::RemoveSelected);
                 }
-                if ui.button("Export M3U…").clicked() {
-                    actions.push(Action::ExportM3u);
+                if ui.button("Clear crate").clicked() {
+                    actions.push(Action::Clear);
                 }
-            });
-            let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
-            egui::Popup::menu(&opts).show(|ui| {
-                let label = if self.settings.scale >= 2 {
-                    "Classic size (1×)"
-                } else {
-                    "Double size (2×)"
-                };
-                if ui.button(label).clicked() {
-                    actions.push(Action::ToggleScale);
-                }
-                if ui.button("Spectrogram (S)").clicked() {
-                    actions.push(Action::ToggleSpectrogram);
-                }
+                ui.separator();
                 ui.menu_button("Sort", |ui| {
                     for f in Field::ALL {
                         if ui.button(f.label()).clicked() {
@@ -2750,17 +2927,17 @@ impl WinampApp {
                         }
                     }
                 });
-                #[cfg(not(target_arch = "wasm32"))]
-                if self.dig.is_some() && ui.button("Discogs…").clicked() {
-                    actions.push(Action::Dig(DigAction::OpenDialog));
+                if filtered && ui.button("Show all tempos").clicked() {
+                    actions.push(Action::SetBpmFilter(None));
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                if self.dig.is_some() && ui.button("Browser…").clicked() {
-                    actions.push(Action::Dig(DigAction::OpenBrowserDialog));
+                ui.separator();
+                if ui.button("Export M3U…").clicked() {
+                    actions.push(Action::ExportM3u);
                 }
             });
+            menu.on_hover_text("Crate");
 
-            // "selected/total" time, Winamp style.
+            // "selected/total" time, Winamp style, right-aligned beside the grip.
             let (total, t_unknown) = self.crates.shown().total_duration();
             let (seltime, s_unknown) = self.crates.shown().selected_duration();
             let info = format!(
@@ -2770,8 +2947,29 @@ impl WinampApp {
                 format::clock(total),
                 if t_unknown { "+" } else { "" }
             );
+            // In the skin's LCD box, right-aligned; just the total when both don't fit.
             let pi = d.at("pl_info");
-            bsk.text(pi.x as f32, pi.y as f32, &info, color([0, 236, 0]));
+            let info = if bsk.text_width(&info) > pi.w as f32 {
+                format!(
+                    "{}{}",
+                    format::clock(total),
+                    if t_unknown { "+" } else { "" }
+                )
+            } else {
+                info
+            };
+            let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
+            bsk.text(info_x, pi.y as f32, &info, color([0, 236, 0]));
+
+            // The BPM filter, between the buttons and the time.
+            let pb = d.at("pl_bpm");
+            self.bpm_control(
+                ui,
+                &bsk,
+                // Up to the LCD box (which starts 2 pixels left of the readout's slot).
+                (pb.x as f32, pb.y as f32, pi.x as f32 - 6.0, pb.h as f32),
+                &mut actions,
+            );
 
             // The resize grip: whole rows down, any width sideways.
             let rz = bsk.at("pl_resize");
@@ -2905,14 +3103,26 @@ impl WinampApp {
     /// The crate menu under the playlist title bar.
     fn crate_menu(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
-        for c in self.crates.list() {
-            let unreadable = self.crates.is_unreadable(c.id);
-            let label = crate_menu_label(&c.name, c.id == shown, c.id == playing, unreadable);
-            if ui
-                .add_enabled(!unreadable, egui::Button::selectable(c.id == shown, label))
-                .clicked()
-            {
-                actions.push(Action::ShowCrate(c.id));
+        // ⏵ marks the crate only while its track plays or is paused.
+        let live = self.position.state != PlayState::Stopped;
+        // The user's crates, then their Discogs collection under its own heading.
+        let (mine, collection): (Vec<_>, Vec<_>) =
+            self.crates.list().iter().partition(|c| !c.collection);
+        for (i, group) in [mine, collection].into_iter().enumerate() {
+            if i == 1 && !group.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Discogs").weak().small());
+            }
+            for c in group {
+                let unreadable = self.crates.is_unreadable(c.id);
+                let label =
+                    crate_menu_label(&c.name, c.id == shown, live && c.id == playing, unreadable);
+                if ui
+                    .add_enabled(!unreadable, egui::Button::selectable(c.id == shown, label))
+                    .clicked()
+                {
+                    actions.push(Action::ShowCrate(c.id));
+                }
             }
         }
         ui.separator();
@@ -3070,7 +3280,10 @@ impl WinampApp {
                     job.cancel();
                 }
             }
-            Action::Select(i, m) => self.crates.shown_mut().click(i, m),
+            Action::Select(i, m) => {
+                self.side_crate = None;
+                self.crates.shown_mut().click(i, m);
+            }
             Action::Move(from, to) => {
                 self.crates.shown_mut().move_entry(from, to);
                 self.mark_shown();
@@ -3106,12 +3319,17 @@ impl WinampApp {
             Action::AddFiles => self.open_files_dialog(Open::Add),
             Action::AddFolder => self.open_folder_dialog(),
             Action::RemoveSelected => self.remove_selected(),
-            Action::Clear => {
-                self.crates.shown_mut().clear();
-                if self.crates.shown_id() == self.crates.playing_id() {
-                    self.with_engine(|e| e.stop());
+            Action::Clear => self.apply(Action::ClearCrate(self.crates.shown_id()), ctx),
+            Action::ClearCrate(id) => {
+                if self.crates.load(id)
+                    && let Some(p) = self.crates.get_mut(id)
+                {
+                    p.clear();
+                    if id == self.crates.playing_id() {
+                        self.with_engine(|e| e.stop());
+                    }
+                    self.mark_crate(id);
                 }
-                self.mark_shown();
             }
             Action::SelectAll => self.crates.shown_mut().select_all(),
             Action::SelectNone => self.crates.shown_mut().select_none(),
@@ -3162,10 +3380,6 @@ impl WinampApp {
                     };
                     self.send_to(&ids, to);
                 }
-            }
-            Action::ToggleSidebar => {
-                self.settings.crate_sidebar = !self.settings.crate_sidebar;
-                self.mark_settings();
             }
             Action::SendTo(entry, to) => {
                 let shown = self.crates.shown();
@@ -3261,8 +3475,8 @@ enum Action {
     DeleteCrate(CrateId),
     /// Send the dragged entries (the selection when the dragged one is in it) to a crate.
     DropOnCrate(EntryId, CrateId),
-    /// Show or hide the crate sidebar.
-    ToggleSidebar,
+    /// Empty a crate (Clear crate in ≡ acts on the shown one).
+    ClearCrate(CrateId),
     /// Send an entry (with the rest of the selection, when it is selected) to a crate, or to
     /// a new one.
     SendTo(EntryId, Option<CrateId>),
@@ -3710,6 +3924,9 @@ fn engine_status(slot: &EngineSlot) -> String {
     }
 }
 
+/// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
+const BPM_SLIDER_W: f32 = 40.0;
+
 /// The crate sidebar's width, in skin pixels.
 const SIDEBAR_W: u16 = 110;
 /// The playlist width (skin pixels) from which the crate sidebar fits, unless maximized.
@@ -4019,6 +4236,8 @@ impl WinampApp {
         let w = crate::layout::STRIP_W as f32;
         let h = self.win_px.y;
         sk.sprite_in("pl_bottom_fill", sk.rect(0.0, 0.0, w, h));
+        let mut actions = Vec::new();
+        self.options_menu(ui, sk.rect(0.0, 0.0, w, h), "strip_options", &mut actions);
         let state = self.position.state;
         sk.sprite(
             match state {
@@ -4044,7 +4263,6 @@ impl WinampApp {
         };
         digits(&mm, 18.0);
         digits(&ss, 33.0);
-        let mut actions = Vec::new();
         let (play_sprite, play_action) = if state == PlayState::Playing {
             ("pause", Action::Pause)
         } else {
@@ -5622,10 +5840,10 @@ mod headless_tests {
         for item in ["New crate…", "Rename crate…", "Delete crate…"] {
             assert!(shows(&out, item), "{item} in {:?}", text_list(&out));
         }
-        assert!(shows(
-            &out,
-            &crate_menu_label("Playlist", true, true, false)
-        ));
+        assert!(
+            shows(&out, &crate_menu_label("Playlist", true, false, false)),
+            "nothing plays: no ⏵"
+        );
         let font = egui::FontId::proportional(14.0);
         assert!(
             rig.ctx.fonts_mut(|f| f.has_glyphs(&font, "•⏵")),
@@ -5642,7 +5860,7 @@ mod headless_tests {
         assert_eq!(rig.app.crates.shown_id(), keepers);
         assert!(!rig.menu_open(), "choosing a crate closes the menu");
 
-        // Marks: ✔ on the shown crate, ▶ on the playing one.
+        // Marks: • on the shown crate; ⏵ on the playing one only while it plays.
         rig.click(rig.title_bar());
         let out = rig.frame(Vec::new());
         assert!(shows(
@@ -5651,7 +5869,7 @@ mod headless_tests {
         ));
         assert!(shows(
             &out,
-            &crate_menu_label("Playlist", false, true, false)
+            &crate_menu_label("Playlist", false, false, false)
         ));
 
         rig.click_text("New crate…");
@@ -5789,11 +6007,10 @@ mod headless_tests {
             "hidden entries aren't drawn"
         );
 
-        // Under the filter bar, row 1 is entry 2; Shift-click on row 3 (entry 6) selects only
-        // shown entries.
-        rig.click(rig.row(1));
+        // Row 1 is entry 2; Shift-click on row 3 (entry 6) selects only shown entries.
+        rig.click(rig.row(0));
         rig.mods = Modifiers::SHIFT;
-        rig.click(rig.row(3));
+        rig.click(rig.row(2));
         rig.mods = Modifiers::NONE;
         assert_eq!(
             rig.app.crates.shown().selected_ids(),
@@ -5801,7 +6018,7 @@ mod headless_tests {
         );
 
         // ↓ from entry 2 goes to entry 4.
-        rig.click(rig.row(1));
+        rig.click(rig.row(0));
         rig.key(Key::ArrowDown, Modifiers::NONE);
         assert_eq!(rig.app.crates.shown().cursor(), Some(ids[3]));
         rig.app.apply(Action::SelectAll, &ctx);
@@ -5849,40 +6066,147 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_crate_sidebar_shows_crates_and_hides_on_request() {
+    fn the_crate_sidebar_shows_crates_when_it_fits() {
         let (mut rig, _, keepers, _) = sidebar_rig("sidebar");
         assert!(rig.app.pl_sidebar(), "on by default at 700 pixels");
         let out = rig.frame(Vec::new());
-        assert!(shows(&out, "⏵ Playlist"), "{:?}", text_list(&out));
-        assert!(shows(&out, "  Keepers") && shows(&out, "+ New crate"));
+        assert!(shows(&out, "Playlist"), "{:?}", text_list(&out));
+        assert!(shows(&out, "Keepers") && shows(&out, "+ New crate"));
+        assert!(!shows(&out, "DISCOGS"), "no collection: no Discogs group");
 
         // A click shows the crate.
         rig.click(side_row(1));
         assert_eq!(rig.app.crates.shown_id(), keepers);
-        assert!(shows(&rig.frame(Vec::new()), "• Keepers"));
+        assert!(shows(&rig.frame(Vec::new()), "•"), "the shown crate's dot");
 
         // Right-click: Rename… opens the name dialog for that crate.
         rig.click_with(side_row(2), PointerButton::Secondary);
-        rig.click_text("Rename…");
+        rig.click_text("Rename crate…");
         assert!(rig.app.name_dialog.is_some());
         rig.app.name_dialog = None;
         rig.click(side_row(3));
         assert!(rig.app.name_dialog.is_some(), "+ New crate asks for a name");
         rig.app.name_dialog = None;
 
-        // ☰ hides it, and the choice is a setting (saved with the others).
-        let side_btn = pos2(PL_LEFT + 238.0 + 4.5, PL_TOP + 6.0 + 4.5);
-        rig.click(side_btn);
-        assert!(!rig.app.settings.crate_sidebar && !rig.app.pl_sidebar());
-        rig.click(side_btn);
-        assert!(rig.app.pl_sidebar());
+        // With the sidebar there, the title bar opens no crate menu; right-click deletes.
+        rig.click(rig.title_bar());
+        assert!(!rig.menu_open(), "the sidebar does the menu's job");
+        let before = rig.app.crates.list().len();
+        rig.click_with(side_row(1), PointerButton::Secondary);
+        rig.click_text("Delete crate…");
+        assert_eq!(
+            rig.app.crates.list().len(),
+            before - 1,
+            "the empty crate is deleted"
+        );
 
-        // Too narrow: no sidebar, and ☰ does nothing.
+        // Narrower than 600 px it hides, and the title bar opens the crate menu again; it
+        // comes back when widened: no switch.
         rig.app.settings.playlist_width = 400;
         rig.frame(Vec::new());
         assert!(!rig.app.pl_sidebar());
-        rig.click(side_btn);
-        assert!(rig.app.settings.crate_sidebar, "unchanged");
+        rig.click(rig.title_bar());
+        assert!(rig.menu_open(), "the menu is the way to crates when narrow");
+        rig.click(rig.title_bar());
+        rig.app.settings.playlist_width = 700;
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_sidebar());
+    }
+
+    #[test]
+    fn an_old_sidebar_setting_is_ignored() {
+        let old = |store: &Store| {
+            std::fs::write(
+                store.dir().join(SETTINGS_FILE),
+                "(scale: 1, show_eq: false, show_waveform: false, crate_sidebar: false, \
+                 playlist_maximized: true)",
+            )
+            .unwrap();
+        };
+        let rig = Rig::new("sidebar-old-setting", Vec::new(), old);
+        assert!(rig.app.settings.playlist_maximized, "the file loaded");
+        assert!(rig.app.pl_sidebar(), "shown when it fits");
+    }
+
+    #[test]
+    fn control_click_and_the_delete_key_delete_a_sidebar_crate() {
+        let (mut rig, ids, keepers, friday) = sidebar_rig("sidebar-delete");
+        rig.app.send_to(&ids[..2], friday);
+
+        // Control-click (a Mac's right-click) opens the crate's menu, without showing it.
+        rig.mods = Modifiers {
+            ctrl: true,
+            mac_cmd: false,
+            command: false,
+            ..Modifiers::NONE
+        };
+        let mac = cfg!(target_os = "macos");
+        rig.click(side_row(1));
+        rig.mods = Modifiers::NONE;
+        if mac {
+            let out = rig.frame(Vec::new());
+            assert!(shows(&out, "Delete crate…"), "{:?}", text_list(&out));
+            assert_eq!(rig.app.crates.shown_id(), PLAYLIST, "not shown");
+            rig.click_text("Delete crate…");
+            assert!(
+                rig.app.crates.find("Keepers").is_none(),
+                "an empty crate goes at once"
+            );
+        } else {
+            rig.app
+                .apply(Action::DeleteCrate(keepers), &rig.ctx.clone());
+        }
+
+        // A click on a crate, then Delete: it is deleted after confirming (it has entries).
+        rig.click(side_row(1));
+        assert_eq!(rig.app.crates.shown_id(), friday);
+        rig.key(Key::Delete, Modifiers::NONE);
+        assert_eq!(rig.app.confirm_delete, Some(friday), "asks first");
+        rig.click_text("Delete");
+        assert!(rig.app.crates.find("Friday").is_none());
+
+        // After a click in the list, Delete removes entries again.
+        rig.click(side_row(0));
+        rig.click(side_list_row(0));
+        rig.key(Key::Delete, Modifiers::NONE);
+        assert_eq!(rig.ids(PLAYLIST).len(), 2, "an entry removed, no crate");
+
+        // The Playlist crate is never deleted from the keyboard.
+        rig.click(side_row(0));
+        rig.key(Key::Delete, Modifiers::NONE);
+        assert!(rig.app.crates.find("Playlist").is_some());
+    }
+
+    #[test]
+    fn the_sidebar_pins_the_collection_and_the_playlist_crate_clears() {
+        let (mut rig, _, _, _) = sidebar_rig("sidebar-collection");
+        let coll = rig.app.crates.create("Collection: digger").unwrap();
+        rig.app.crates.set_collection(coll);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "DISCOGS"), "{:?}", text_list(&out));
+        // Pinned to the bottom row of the sidebar, under DISCOGS.
+        let last = rig.app.pl_rows() - 1;
+        let bottom = pos2(
+            PL_LEFT + 12.0 + 40.0,
+            PL_TOP + 20.0 + last as f32 * 13.0 + 6.5,
+        );
+        rig.click(bottom);
+        assert_eq!(rig.app.crates.shown_id(), coll);
+        // And still there after the others: + New crate follows the user's crates.
+        rig.click(side_row(3));
+        assert!(
+            rig.app.name_dialog.is_some(),
+            "+ New crate right after Friday"
+        );
+        rig.app.name_dialog = None;
+
+        // Playlist can't be renamed or deleted: its menu clears it instead.
+        rig.click_with(side_row(0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Delete crate…"));
+        rig.click_text("Clear crate");
+        assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
+        assert!(rig.app.crates.find("Playlist").is_some());
     }
 
     #[test]
@@ -5927,6 +6251,83 @@ mod headless_tests {
         assert_eq!(rig.ids(friday).len(), 3);
     }
 
+    /// The centre of footer button `name` (`pl_plus`, `pl_menu`).
+    fn footer_button(rig: &Rig, name: &str) -> Pos2 {
+        let r = rig.app.def.at(name);
+        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        pos2(
+            PL_LEFT + r.x as f32 + r.w as f32 / 2.0,
+            bottom + r.y as f32 + r.h as f32 / 2.0,
+        )
+    }
+
+    #[test]
+    fn the_footer_has_an_add_and_a_crate_menu() {
+        let mut rig = Rig::new("footer", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(3);
+        set_tempos(&mut rig, &[128, 122, 140]);
+        rig.frame(Vec::new());
+        assert!(
+            rig.app.def.sprite("pl_add").w == 0,
+            "no ADD/REM/SEL/MISC/OPT any more"
+        );
+
+        rig.click(footer_button(&rig, "pl_plus"));
+        let out = rig.frame(Vec::new());
+        for t in ["Add files…", "Add folder…", "Import M3U…"] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
+        assert!(!shows(&out, "Discogs…"), "no app setting in it");
+        rig.click(footer_button(&rig, "pl_plus"));
+
+        rig.click(footer_button(&rig, "pl_menu"));
+        let out = rig.frame(Vec::new());
+        for t in [
+            "Select all",
+            "Invert selection",
+            "Remove selected",
+            "Clear crate",
+            "Sort",
+            "Export M3U…",
+        ] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
+        assert!(!shows(&out, "Show all tempos"), "only while a range is set");
+        rig.click_text("Sort");
+        rig.click_text("BPM");
+        assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
+
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((125, 135))), &ctx);
+        rig.click(footer_button(&rig, "pl_menu"));
+        rig.click_text("Show all tempos");
+        assert_eq!(rig.app.crates.shown().bpm_filter(), None);
+    }
+
+    #[test]
+    fn a_right_click_on_the_main_window_opens_the_options() {
+        let mut rig = Rig::new("options", Vec::new(), |_| {});
+        // The track info area: no control there.
+        rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
+        rig.click_text("Spectrogram (S)");
+        assert!(rig.app.spectro_open, "Spectrogram works from Options");
+        rig.app.spectro_open = false;
+
+        // The volume slider keeps its own right-click.
+        rig.click_with(pos2(141.0, 63.0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
+
+        // While the playlist is maximized, the strip has it too.
+        rig.app.settings.playlist_maximized = true;
+        rig.frame(Vec::new());
+        rig.click_with(pos2(13.0, 150.0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Spectrogram (S)"), "{:?}", text_list(&out));
+    }
+
     #[test]
     fn the_title_bar_counts_what_a_bpm_filter_shows() {
         let def = LoadedSkin::default_skin().def;
@@ -5944,41 +6345,83 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_bpm_bar_shows_with_two_tempos_and_its_handles_set_the_range() {
-        let mut rig = Rig::new("bpm-bar", Vec::new(), |_| {});
+    fn the_footer_bpm_control_sets_and_clears_the_range_without_taking_a_row() {
+        let mut rig = Rig::new("bpm-footer", Vec::new(), |_| {});
         let ids = rig.fill_playlist(7);
         rig.frame(Vec::new());
-        assert!(!rig.app.pl_bar(), "no tempo: no bar");
+        assert_eq!(rig.app.bpm_slider, None, "no tempo: no control");
         set_tempos(&mut rig, &[124, 128, 137, 139]);
+        rig.app.bpm_slider = None;
         rig.frame(Vec::new());
-        assert!(rig.app.pl_bar());
+        let (x0, x1, text) = rig.app.bpm_slider.expect("the control is drawn");
+        assert!(x1 - x0 == BPM_SLIDER_W && text, "{x0}..{x1}");
+        assert_eq!(rig.app.pl_visible_rows(), rig.app.pl_rows(), "no row taken");
 
-        // The bar is the first row; its track runs from after ALL to before the range text.
-        let y = rig.row(0).y;
-        let right_handle = pos2(PL_LEFT + 179.0, y);
-        rig.frame(vec![Event::PointerMoved(right_handle)]);
-        rig.press(right_handle, PointerButton::Primary, true);
-        for x in [170.0, 140.0, 105.0] {
-            rig.frame(vec![Event::PointerMoved(pos2(PL_LEFT + x, y))]);
+        // Drag the right handle to the middle of the track.
+        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        let y = bottom + 12.0 + 9.0;
+        let at = |x: f32| pos2(PL_LEFT + x, y);
+        rig.frame(vec![Event::PointerMoved(at(x1))]);
+        rig.press(at(x1), PointerButton::Primary, true);
+        let mid = (x0 + x1) / 2.0;
+        for x in [x1 - 5.0, x1 - 15.0, mid] {
+            rig.frame(vec![Event::PointerMoved(at(x))]);
         }
-        rig.press(pos2(PL_LEFT + 105.0, y), PointerButton::Primary, false);
+        rig.press(at(mid), PointerButton::Primary, false);
         rig.frame(Vec::new());
         let shown = rig.app.crates.shown();
         let (lo, hi) = shown.bpm_filter().expect("a range");
         assert_eq!(lo, 124, "the low handle stays");
-        assert!((129..=133).contains(&hi), "the high handle moved to {hi}");
+        assert!((130..=133).contains(&hi), "the high handle moved to {hi}");
         assert_eq!(shown.shown_rows(), [0, 1]);
-        assert_eq!(shown.without_bpm(), 3);
+        assert_eq!(rig.app.crates.shown().cursor(), None);
 
-        // A range no track is in: nothing shows, and ALL brings everything back.
+        // × after the range clears it; a double-click on the slider does too.
+        // × sits after the 7-character range ("124-131") and a 3-pixel gap.
+        let clear = at(x1 + 3.0 + rig.app.def.font.advance as f32 * 7.0 + 2.0 + 3.0);
+        rig.click(clear);
+        assert_eq!(rig.app.crates.shown().bpm_filter(), None, "× clears");
         let ctx = rig.ctx.clone();
         rig.app.apply(Action::SetBpmFilter(Some((130, 135))), &ctx);
         rig.frame(Vec::new());
         assert!(rig.app.crates.shown().shown_rows().is_empty());
-        rig.click(pos2(PL_LEFT + 12.0 + 8.0, y));
-        assert_eq!(rig.app.crates.shown().bpm_filter(), None);
+        // Clicks count by time alone: let the × click above age out first.
+        for _ in 0..30 {
+            rig.frame(Vec::new());
+        }
+        rig.double_click(at(mid));
+        assert_eq!(
+            rig.app.crates.shown().bpm_filter(),
+            None,
+            "double-click clears"
+        );
         assert_eq!(rig.ids(PLAYLIST), ids);
-        assert_eq!(rig.app.crates.shown().shown_rows().len(), 7);
+    }
+
+    #[test]
+    fn the_bpm_slider_is_short_and_fixed_and_the_time_stays_in_its_box() {
+        let mut rig = Rig::new("bpm-footer-narrow", Vec::new(), |_| {});
+        rig.fill_playlist(3);
+        set_tempos(&mut rig, &[124, 128, 139]);
+        let p = rig.app.crates.shown_mut();
+        for e in p.entries_mut() {
+            e.duration = Some(23.0 * 3600.0 + 25.0 * 60.0); // 70 h in all: "0:00/70:15:00"
+        }
+        rig.frame(Vec::new());
+        let (x0, x1, text) = rig.app.bpm_slider.expect("the control is drawn");
+        assert_eq!(x1 - x0, BPM_SLIDER_W);
+        assert!(text, "the range text fits at the classic width");
+        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0;
+        assert!(
+            x1 + 3.0 + 41.0 + 3.0 + 7.0 <= box_left,
+            "clear of the time's box"
+        );
+
+        // Wider, the slider keeps its width.
+        rig.app.settings.playlist_width = 700;
+        rig.frame(Vec::new());
+        let (x0, x1, _) = rig.app.bpm_slider.unwrap();
+        assert_eq!(x1 - x0, BPM_SLIDER_W);
     }
 
     #[test]

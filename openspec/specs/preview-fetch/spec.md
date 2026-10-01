@@ -2,10 +2,9 @@
 
 ## Purpose
 Gets a playable preview of each clip just before it is needed, using a yt-dlp that the user installs, and prepares it (sections, drops, waveform) so every preview can be navigated from its first second.
-
 ## Requirements
 ### Requirement: yt-dlp
-The app SHALL use a yt-dlp program installed by the user, found on the PATH or at a path set in OPT ▸ Discogs…, and SHALL show its version there. The app SHALL NOT bundle, download or update yt-dlp itself. While yt-dlp can't be found, entries SHALL wait with the status "needs yt-dlp", and the main window SHALL say once how to install it. yt-dlp SHALL be looked for again at least every 30 s while entries are waiting for it, and whenever OPT ▸ Discogs… is opened.
+The app SHALL use a yt-dlp program installed by the user, found on the PATH or at a path set in Options ▸ Discogs…, and SHALL show its version there. The app SHALL NOT bundle, download or update yt-dlp itself. While yt-dlp can't be found, entries SHALL wait with the status "needs yt-dlp", and the main window SHALL say once how to install it. yt-dlp SHALL be looked for again at least every 30 s while entries are waiting for it, and whenever Options ▸ Discogs… is opened.
 
 #### Scenario: Missing yt-dlp
 - **WHEN** a label is sent and yt-dlp isn't installed
@@ -42,7 +41,7 @@ yt-dlp SHALL only be given a clip id made of exactly 11 letters, digits, `-` or 
 - **THEN** after one retry its entry becomes unavailable with "clip failed", and playback moves on to the next ready entry
 
 ### Requirement: Preview cache
-Previews SHALL be stored in `previews/` in the cache folder. They SHALL use at most the preview cache size, which is 2 GB by default and set in OPT ▸ Discogs…. When a new preview doesn't fit, the previews played least recently SHALL be deleted first. The previews of the playing entry, the armed entry and the next 3 entries SHALL never be deleted. A deleted preview SHALL be downloaded again when it is needed. When the downloaded file is identical, its cached analysis and waveform SHALL be reused.
+Previews SHALL be stored in `previews/` in the cache folder. They SHALL use at most the preview cache size, which is 2 GB by default and set in Options ▸ Discogs…. When a new preview doesn't fit, the previews played least recently SHALL be deleted first. The previews of the playing entry, the armed entry and the next 3 entries SHALL never be deleted. A deleted preview SHALL be downloaded again when it is needed. When the downloaded file is identical, its cached analysis and waveform SHALL be reused.
 
 #### Scenario: Over the limit
 - **WHEN** a new preview would take the cache over its limit
@@ -72,3 +71,4 @@ Previews SHALL only be played. The app SHALL NOT offer to save, export or copy p
 #### Scenario: Export a dig crate
 - **WHEN** a crate of downloaded previews is exported as M3U8
 - **THEN** it lists the clips' addresses and no file from the preview folder
+

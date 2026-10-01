@@ -621,7 +621,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             PANEL_BOT,
             (false, true),
         );
-        c.inset(x + 1, y + 12, 104, 11, LCD_BG);
+        // The time readout's LCD, just left of the resize grip.
+        c.inset(x + 30, y + 12, 104, 11, LCD_BG);
     });
     b.sprite("pl_left", 12, 1, |c, x, y| {
         c.grad_h(x, y, 12, 1, &[HI, PANEL_TOP, PANEL_BOT]);
@@ -635,12 +636,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- title bar buttons ----------------------------------------------------------------
-    for (name, icon) in [
-        ("btn_min", 0),
-        ("btn_close", 1),
-        ("btn_max", 2),
-        ("btn_side", 3),
-    ] {
+    for (name, icon) in [("btn_min", 0), ("btn_close", 1), ("btn_max", 2)] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -652,11 +648,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
-                } else if icon == 3 {
-                    // ☰: the crate sidebar.
-                    for ly in [2, 4, 6] {
-                        c.fill(x + 2 + o, y + ly + o, 5, 1, ICON);
-                    }
                 } else if icon == 2 {
                     // ⇔: a bar with a head at each end.
                     c.fill(x + 2 + o, y + 4 + o, 5, 1, ICON);
@@ -796,16 +787,35 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     text_button(&mut b, "eq_presets", 44, 12, "PRESETS", false, false);
     text_button(&mut b, "eq_presets_p", 44, 12, "PRESETS", false, true);
-    for (name, label) in [
-        ("pl_add", "ADD"),
-        ("pl_rem", "REM"),
-        ("pl_sel", "SEL"),
-        ("pl_misc", "MISC"),
-        ("pl_opts", "OPT"),
-    ] {
-        text_button(&mut b, name, 25, 18, label, false, false);
-        text_button(&mut b, &format!("{name}_p"), 25, 18, label, false, true);
+    // The playlist footer's two buttons: + (add) and ≡ (the crate's menu).
+    for (name, plus) in [("pl_plus", true), ("pl_menu", false)] {
+        for pressed in [false, true] {
+            let n = if pressed {
+                format!("{name}_p")
+            } else {
+                name.to_owned()
+            };
+            b.sprite(&n, 18, 18, |c, x, y| {
+                button_face(c, x, y, 18, 18, pressed);
+                let o = pressed as i32;
+                if plus {
+                    c.fill(x + 5 + o, y + 8 + o, 8, 2, ICON);
+                    c.fill(x + 8 + o, y + 5 + o, 2, 8, ICON);
+                } else {
+                    for ly in [5, 8, 11] {
+                        c.fill(x + 5 + o, y + ly + o, 8, 2, ICON);
+                    }
+                }
+            });
+        }
     }
+    // × after the BPM range: clears it.
+    b.sprite("bpm_clear", 7, 7, |c, x, y| {
+        for i in 0..7 {
+            c.px(x + i, y + i, LABEL);
+            c.px(x + 6 - i, y + i, LABEL);
+        }
+    });
 
     // ---- LCD ------------------------------------------------------------------------------
     for (i, mask) in DIGIT_MASKS.iter().enumerate() {
@@ -1100,15 +1110,14 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_titlebar", R::new(0, 0, 275, 20)),
         ("pl_close", R::new(262, 6, 9, 9)),
         ("pl_max", R::new(250, 6, 9, 9)),
-        ("pl_side", R::new(238, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
-        ("pl_add", R::new(11, 12, 25, 18)),
-        ("pl_rem", R::new(40, 12, 25, 18)),
-        ("pl_sel", R::new(69, 12, 25, 18)),
-        ("pl_misc", R::new(98, 12, 25, 18)),
-        ("pl_opts", R::new(236, 12, 25, 18)),
-        ("pl_info", R::new(128, 14, 100, 7)),
+        ("pl_plus", R::new(11, 12, 18, 18)),
+        ("pl_menu", R::new(32, 12, 18, 18)),
+        // The BPM control starts here and runs to the time readout (its width is worked out
+        // at runtime); the readout is right-aligned in `pl_info`.
+        ("pl_bpm", R::new(56, 12, 0, 18)),
+        ("pl_info", R::new(157, 14, 100, 7)),
         ("pl_resize", R::new(263, 26, 11, 11)),
     ];
     let bands: Vec<(String, R)> = (0..10)

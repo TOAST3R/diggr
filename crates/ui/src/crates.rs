@@ -24,6 +24,8 @@ pub const PLAYLIST_NAME: &str = "Playlist";
 pub const CRATES_DIR: &str = "crates";
 pub const INDEX_FILE: &str = "index.ron";
 pub const MAX_NAME: usize = 40;
+/// The name the app gives the crate it makes from the user's Discogs collection.
+pub const COLLECTION_PREFIX: &str = "Collection: ";
 
 /// Metadata lookups are keyed by crate as well as entry: entry ids are per crate.
 pub type MetaKey = (CrateId, EntryId);
@@ -36,6 +38,9 @@ pub struct CrateInfo {
     pub entries: usize,
     /// Seconds since the Unix epoch.
     pub created: u64,
+    /// Made from the user's Discogs collection (the sidebar pins it under DISCOGS).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collection: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +89,7 @@ impl Crates {
                     name: PLAYLIST_NAME.into(),
                     entries: 0,
                     created: now_secs(),
+                    collection: false,
                 }],
             },
             loaded: HashMap::new(),
@@ -172,6 +178,7 @@ impl Crates {
                 name,
                 entries: 0,
                 created: id,
+                collection: false,
             });
         }
         self.index.shown = PLAYLIST;
@@ -197,12 +204,20 @@ impl Crates {
                         name: PLAYLIST_NAME.into(),
                         entries: 0,
                         created: now_secs(),
+                        collection: false,
                     },
                 );
                 self.mark_index();
             }
         }
         self.index.crates[0].name = PLAYLIST_NAME.into();
+        // Collection crates made before the flag existed are known by their name.
+        for c in &mut self.index.crates {
+            if !c.collection && c.name.starts_with(COLLECTION_PREFIX) {
+                c.collection = true;
+                self.index_dirty.get_or_insert_with(Instant::now);
+            }
+        }
         let max = self
             .index
             .crates
@@ -407,6 +422,24 @@ impl Crates {
         Ok(name.to_owned())
     }
 
+    /// Whether the crate was made from the user's Discogs collection.
+    pub fn is_collection(&self, id: CrateId) -> bool {
+        self.info(id).is_some_and(|c| c.collection)
+    }
+
+    /// Marks a crate as made from the user's Discogs collection.
+    pub fn set_collection(&mut self, id: CrateId) {
+        if let Some(c) = self
+            .index
+            .crates
+            .iter_mut()
+            .find(|c| c.id == id && !c.collection)
+        {
+            c.collection = true;
+            self.mark_index();
+        }
+    }
+
     /// Creates an empty crate (at the end of the list); it isn't shown.
     pub fn create(&mut self, name: &str) -> Result<CrateId, String> {
         let name = self.validate_name(name, None)?;
@@ -417,6 +450,7 @@ impl Crates {
             name,
             entries: 0,
             created: now_secs(),
+            collection: false,
         });
         self.loaded.insert(id, Playlist::default());
         self.touch(id);
@@ -985,5 +1019,26 @@ mod tests {
             (o.album.as_str(), o.cover.as_str()),
             ("Glasshouse EP", "https://i.discogs.com/x.jpeg")
         );
+    }
+
+    #[test]
+    fn collection_crates_are_flagged_and_known_by_name_once() {
+        let cfg = config("collection-flag");
+        let (old, flagged) = {
+            let mut c = Crates::open(&cfg);
+            // Made before the flag existed: only its name says what it is.
+            let old = c.create("Collection: digger").unwrap();
+            assert!(!c.is_collection(old));
+            let flagged = c.create("Friday").unwrap();
+            c.set_collection(flagged);
+            c.save_due(true, Duration::ZERO);
+            (old, flagged)
+        };
+        let c = Crates::open(&cfg);
+        assert!(
+            c.is_collection(old),
+            "known by its name when the crates load"
+        );
+        assert!(c.is_collection(flagged), "the flag is saved");
     }
 }
