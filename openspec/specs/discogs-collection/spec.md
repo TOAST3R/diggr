@@ -6,13 +6,13 @@ Knows the user's Discogs collection (through their token), with as few requests 
 ### Requirement: Collection sync
 With a Discogs token set, the app SHALL keep the user's collection cached on disk: the owned releases, and for each master release its owned pressings. It SHALL sync it only:
 - when a crate holding Discogs entries is shown and the cache is missing or older than 7 days, and never before the window is interactive;
-- when the user asks from OPT ▸ Discogs…
+- when the user asks from Options ▸ Discogs…
 
-The first sync SHALL use at most one request per 100 records. Later syncs SHALL fetch only the records added since the last one, newest first, stopping at the first record already known, and SHALL fetch the whole collection again only when records were removed. No request SHALL be made to find a record's other pressings. Syncing SHALL wait behind any page expansion that is waiting. A sync that fails SHALL keep the previous cache. OPT ▸ Discogs… SHALL show how many records the collection holds and how old it is, or why it isn't available. Without a token, nothing SHALL be fetched and nothing marked.
+The first sync SHALL use at most one request per 100 records. Later syncs SHALL fetch only the records added since the last one, newest first, stopping at the first record already known, and SHALL fetch the whole collection again only when records were removed. No request SHALL be made to find a record's other pressings. Syncing SHALL wait behind any page expansion that is waiting. A sync that fails SHALL keep the previous cache. Options ▸ Discogs… SHALL show how many records the collection holds and how old it is, or why it isn't available. Without a token, nothing SHALL be fetched and nothing marked.
 
 #### Scenario: First sync
 - **WHEN** a token for a user with 1,234 records is set
-- **THEN** the collection is fetched with 13 requests, and OPT ▸ Discogs… shows "Collection: 1,234 records, updated just now"
+- **THEN** the collection is fetched with 13 requests, and Options ▸ Discogs… shows "Collection: 1,234 records, updated just now"
 
 #### Scenario: A week later
 - **WHEN** a crate of Discogs entries is shown with a cache 8 days old, and 3 records were added to the collection since
@@ -28,7 +28,7 @@ The first sync SHALL use at most one request per 100 records. Later syncs SHALL 
 
 #### Scenario: No token
 - **WHEN** no token is set and a crate from Discogs is shown
-- **THEN** no collection request is ever sent, no entry is marked owned, and the main window says once that a Discogs token (OPT ▸ Discogs…) would mark the records already owned
+- **THEN** no collection request is ever sent, no entry is marked owned, and the main window says once that a Discogs token (Options ▸ Discogs…) would mark the records already owned
 
 #### Scenario: Recent cache
 - **WHEN** the app is launched with a collection cache 2 days old

@@ -4,11 +4,11 @@
 Turns a Discogs page (a release, master release, artist, label, wantlist or list) into tracks in a crate. It respects Discogs' rate limit, caches what it learns, and never touches the playback path.
 ## Requirements
 ### Requirement: Discogs account
-The user SHALL be able to enter a Discogs personal access token in OPT ▸ Discogs…. The app SHALL check the token with Discogs and show the account's username, or say that the token was rejected. The token SHALL be stored only in the user's config folder, in a file only the user can read, and SHALL never be shown in full or written to a log. Without a token, pages SHALL still be expanded, at the unauthenticated rate limit, and actions that need an account (adding to the wantlist, reading a private wantlist) SHALL say that a token is needed.
+The user SHALL be able to enter a Discogs personal access token in Options ▸ Discogs…. The app SHALL check the token with Discogs and show the account's username, or say that the token was rejected. The token SHALL be stored only in the user's config folder, in a file only the user can read, and SHALL never be shown in full or written to a log. Without a token, pages SHALL still be expanded, at the unauthenticated rate limit, and actions that need an account (adding to the wantlist, reading a private wantlist) SHALL say that a token is needed.
 
 #### Scenario: Valid token
 - **WHEN** the user enters a valid token
-- **THEN** OPT ▸ Discogs… shows "Connected as ‹username›", and later requests use the authenticated rate limit
+- **THEN** Options ▸ Discogs… shows "Connected as ‹username›", and later requests use the authenticated rate limit
 
 #### Scenario: Rejected token
 - **WHEN** Discogs rejects the token
@@ -95,7 +95,7 @@ A clip that the target crate already holds SHALL NOT be added again. A record wi
 - **THEN** its clips appear only once
 
 ### Requirement: Filters
-Every send SHALL apply two filters, both on by default. Their defaults can be changed in OPT ▸ Discogs…, and each send can override them:
+Every send SHALL apply two filters, both on by default. Their defaults can be changed in Options ▸ Discogs…, and each send can override them:
 - vinyl only: records with no vinyl format are left out;
 - skip passed: clips the user has passed on are left out.
 
