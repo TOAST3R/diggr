@@ -52,9 +52,11 @@ pub fn dj_bpm(raw: f64) -> Option<u16> {
     Some(bpm.round() as u16)
 }
 
-/// An entry's name: `(catno) Artist: Title (N BPM)`. The catalog number, artist and tempo are
-/// left out when they aren't known, so a local file reads `Artist: Title`.
-pub fn entry_name(catno: &str, artist: &str, title: &str, bpm: Option<u16>) -> String {
+/// An entry's name: `(catno) Artist: Title · Album (N BPM)`. The catalog number, artist,
+/// album and tempo are left out when they aren't known, so a local file reads `Artist: Title`;
+/// so is an album named like the title (a single). The album follows the title, so a row cut
+/// short on the right loses it before any of the title.
+pub fn entry_name(catno: &str, artist: &str, title: &str, album: &str, bpm: Option<u16>) -> String {
     let mut name = String::new();
     if !catno.trim().is_empty() {
         name += &format!("({}) ", catno.trim());
@@ -63,6 +65,10 @@ pub fn entry_name(catno: &str, artist: &str, title: &str, bpm: Option<u16>) -> S
         name += &format!("{artist}: ");
     }
     name += title;
+    let album = album.trim();
+    if !album.is_empty() && !album.eq_ignore_ascii_case(title.trim()) {
+        name += &format!(" · {album}");
+    }
     if let Some(b) = bpm {
         name += &format!(" ({b} BPM)");
     }
@@ -126,12 +132,13 @@ pub fn entry_details(
     marks: DigMarks,
     now: u64,
 ) -> Vec<(&'static str, String)> {
-    let mut out = vec![("", e.display_name())];
+    let mut out = vec![("", e.row_name())];
     let mut add = |label: &'static str, value: &str| {
         if !value.trim().is_empty() {
             out.push((label, value.trim().to_owned()));
         }
     };
+    add("Album", e.album());
     if let Some(o) = &e.origin {
         add("Label", &o.label);
         add("Cat#", &o.catno);
@@ -244,23 +251,50 @@ mod tests {
     #[test]
     fn entry_names_leave_out_what_isnt_known() {
         assert_eq!(
-            entry_name("LT-012", "Nightcraft", "Glasshouse", Some(124)),
+            entry_name("LT-012", "Nightcraft", "Glasshouse", "", Some(124)),
             "(LT-012) Nightcraft: Glasshouse (124 BPM)"
         );
         assert_eq!(
-            entry_name("", "Mira Sol", "Coastline", None),
+            entry_name("", "Mira Sol", "Coastline", "", None),
             "Mira Sol: Coastline"
         );
         assert_eq!(
-            entry_name(" ", "", "untitled", Some(128)),
+            entry_name(" ", "", "untitled", "", Some(128)),
             "untitled (128 BPM)"
         );
     }
 
     #[test]
+    fn the_album_follows_the_title_unless_it_is_the_title() {
+        assert_eq!(
+            entry_name(
+                "LT-012",
+                "Nightcraft",
+                "Glasshouse",
+                "Glasshouse EP",
+                Some(124)
+            ),
+            "(LT-012) Nightcraft: Glasshouse · Glasshouse EP (124 BPM)"
+        );
+        assert_eq!(
+            entry_name("TRS-07", "Ohm Field", "Static", " static ", Some(130)),
+            "(TRS-07) Ohm Field: Static (130 BPM)",
+            "a single: the album is the title"
+        );
+        assert_eq!(entry_name("", "", "Fold", "  ", None), "Fold");
+        // Cut on the right, the album goes before any of the title.
+        let name = entry_name("", "A", "Title", "Album", None);
+        assert!(name.find("Album").unwrap() > name.find("Title").unwrap());
+    }
+
+    #[test]
     fn title_lines() {
         assert_eq!(
-            title_line(4, &entry_name("", "Crusher-P", "Echo", None), Some(230.0)),
+            title_line(
+                4,
+                &entry_name("", "Crusher-P", "Echo", "", None),
+                Some(230.0)
+            ),
             "4. Crusher-P: Echo (3:50)"
         );
         assert_eq!(title_line(1, "untitled", None), "1. untitled");
@@ -284,7 +318,7 @@ mod tests {
         assert_eq!(
             title_line(
                 3,
-                &entry_name(&o.catno, "Nightcraft", "Glasshouse", Some(124)),
+                &entry_name(&o.catno, "Nightcraft", "Glasshouse", "", Some(124)),
                 Some(372.0)
             ) + &origin_details(&o),
             "3. (LT-012) Nightcraft: Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00"
@@ -318,6 +352,7 @@ mod tests {
             "Glasshouse",
             None,
             Some(Origin {
+                album: "Glasshouse EP".into(),
                 label: "Lowtide Tapes".into(),
                 catno: "LT-012".into(),
                 position: "A1".into(),
@@ -343,7 +378,11 @@ mod tests {
         assert_eq!(
             entry_details(&e, marks, now),
             [
-                ("", "(LT-012) Nightcraft: Glasshouse".to_owned()),
+                (
+                    "",
+                    "(LT-012) Nightcraft: Glasshouse · Glasshouse EP".to_owned()
+                ),
+                ("Album", "Glasshouse EP".into()),
                 ("Label", "Lowtide Tapes".into()),
                 ("Cat#", "LT-012".into()),
                 ("Side", "A1".into()),
@@ -368,6 +407,9 @@ mod tests {
             ],
             "a local file: its path, and no Discogs fields"
         );
+        l.album = "Geogaddi".into();
+        let d = entry_details(&l, DigMarks::default(), now);
+        assert_eq!(d[1], ("Album", "Geogaddi".to_owned()), "and its album tag");
     }
 
     #[test]

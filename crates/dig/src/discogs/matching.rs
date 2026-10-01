@@ -278,6 +278,7 @@ mod tests {
             tracks,
             clips,
             for_sale: None,
+            cover: String::new(),
         }
     }
 

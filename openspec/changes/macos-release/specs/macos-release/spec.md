@@ -5,7 +5,7 @@ Lets anyone with a Mac install the player from one downloaded file, and open it 
 ## ADDED Requirements
 
 ### Requirement: A universal app
-The release SHALL be a macOS app bundle named after the app, with its original icon, that runs natively on both Apple Silicon and Intel Macs with macOS 11 or later. Its binary SHALL contain both architectures. Everything the player needs (skin, scenes, rules) SHALL be inside the bundle, and it SHALL NOT need Rust, Homebrew or any other developer tool. Opened from the Finder, it SHALL show its first frame within 300 ms on an M-series Mac once macOS has checked it the first time.
+The release SHALL be a macOS app bundle named after the app, with the app's logo as its icon, that runs natively on both Apple Silicon and Intel Macs with macOS 11 or later. Its binary SHALL contain both architectures. Everything the player needs (skin, scenes, rules) SHALL be inside the bundle, and it SHALL NOT need Rust, Homebrew or any other developer tool. Opened from the Finder, it SHALL show its first frame within 300 ms on an M-series Mac once macOS has checked it the first time.
 
 #### Scenario: Both kinds of Mac
 - **WHEN** the same app is opened on an Apple Silicon Mac and on an Intel Mac
@@ -18,6 +18,26 @@ The release SHALL be a macOS app bundle named after the app, with its original i
 #### Scenario: Launch time
 - **WHEN** the installed app is opened from the Finder for the second time
 - **THEN** its first frame shows within 300 ms
+
+### Requirement: The app's logo
+The app's logo SHALL be the record crate: white line art of a wooden crate holding records, on a near-black background (the source is `openspec/changes/macos-release/logo-source.jpeg`). It SHALL be kept in the repository as `assets/icon/logo.png` (square, the crate centred with even padding) and `assets/icon/icon-1024.png` (laid out for macOS: a rounded square with the standard margin), and nowhere else as a separate copy. The logo SHALL be shown:
+- as the app bundle's icon, in the Finder, the Dock and the disk image window;
+- as the window and Dock icon when the player is run from a development build;
+- as the Chrome extension's icons (16, 32, 48 and 128 px), where the 16 px version SHALL still read as a crate.
+
+Showing the logo SHALL NOT delay the first frame: launch SHALL stay within 300 ms.
+
+#### Scenario: Installed app
+- **WHEN** the app is installed from the disk image and opened
+- **THEN** the Finder, the Dock and the app switcher show the record-crate logo
+
+#### Scenario: Development build
+- **WHEN** the player is started with `cargo run -p winamp-native`
+- **THEN** its window and Dock icon show the record-crate logo, and the first frame still shows within 300 ms
+
+#### Scenario: Browser extension
+- **WHEN** the extension is loaded in Chrome
+- **THEN** its toolbar button and its card in `chrome://extensions` show the record-crate logo
 
 ### Requirement: Drag to install
 The app SHALL be delivered as one disk image named `‹App›-‹version›.dmg`, of at most 25 MB. Opening it SHALL show a window with the app and a shortcut to Applications, so installing is dragging one onto the other. The installed app SHALL work after the disk image is ejected and deleted.

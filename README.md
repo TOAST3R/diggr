@@ -126,8 +126,10 @@ and Home/End jump), and Enter plays the entry under it.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
     another crate or a new one, skipping entries that crate already holds.
 - **Playlist window:**
-  - entries read `(catno) Artist: Title (124 BPM)`. The catalog number appears for entries from
-    Discogs. The BPM appears once the track has been analysed (when a preview is prepared, when
+  - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
+    entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
+    it's left out when it's the same as the title (a single), and a row too narrow for
+    everything loses it before any of the title. The BPM appears once the track has been analysed (when a preview is prepared, when
     a track plays, or from the analysis cache), folded into 88–176 so half and double time read
     alike (87 shows as 174). Nothing is downloaded just to find a BPM;
   - double-click an entry to play it;
@@ -137,7 +139,7 @@ and Home/End jump), and Enter plays the entry under it.
   - drag the bottom-right grip to make the playlist wider (any width) or taller (whole rows);
     its size is remembered, and narrowed to fit a smaller screen;
   - once the playlist is at least 480 pixels wide (at 1×), entries are drawn as columns: #,
-    Cat#, Artist, Title, BPM, Side, Year, For sale and Time. Drag a divider in the header to
+    Cat#, Artist, Title, Album, BPM, Side, Year, For sale and Time. Drag a divider in the header to
     resize a column, and right-click the header to show or hide columns (#, Title and Time
     always show); both are remembered. Click a column's name to **sort** the crate by it, and
     click again for the other way (**OPT ▸ Sort** does the same at any width). A sort reorders
@@ -161,13 +163,20 @@ and Home/End jump), and Enter plays the entry under it.
     skipped by next, previous and shuffle. Double-clicking a waiting entry arms it: the current
     track plays on, the main window says it is waiting, and the entry starts as soon as its
     audio arrives. Only files that can't be opened are drawn in red.
-  - Hover an entry to see everything known about it: its full name, label, catalog number,
-    side, year, BPM, duration, status, kept or passed, and what's for sale (with how long ago
-    that was fetched). A local file shows its path.
-  - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Send to
-    crate**, and for a Discogs entry Keep, Pass, Open for-sale page, **Open release on Discogs**
-    and **Copy Discogs link**. Remove and Send to crate act on the whole selection when the
-    entry is part of it; otherwise the entry you clicked becomes the selection.
+  - Hover an entry to see everything known about it: its full name, album, label, catalog
+    number, side, year, BPM, duration, status, kept or passed, and what's for sale (with how
+    long ago that was fetched). A local file shows its path. A Discogs entry also shows its
+    record's cover once the pointer has rested on it for a moment. Covers come from Discogs'
+    image host (not the API, so they don't slow digging down), one at a time, and are kept in
+    the cache's `covers/`, so each is fetched once. Crates dug before albums were shown get
+    their albums and covers from the cache when they're shown, without asking Discogs.
+  - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Remove
+    album (N tracks)**, **Select album**, **Send to crate**, and for a Discogs entry Keep, Pass,
+    Open for-sale page, **Open release on Discogs** and **Copy Discogs link**. Remove and Send to
+    crate act on the whole selection when the entry is part of it; otherwise the entry you
+    clicked becomes the selection. While the menu is open, the rest of the entry's album is
+    tinted, wherever it is in the crate. An album is a Discogs release (another pressing is
+    another album), or local files with the same artist and album tags.
 - **Main window:**
   - click the time to switch between elapsed and remaining;
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
@@ -640,7 +649,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, your Discogs `collection.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -658,7 +667,8 @@ tracks, and wantlist changes still to be sent), `jobs.ron` (sends still in progr
 only by you). In the
 cache, `discogs/` keeps API responses: record details for good, listings for a day, and
 for-sale numbers refreshed once a day when their track plays. `previews/` holds the downloaded
-clips. `collection.ron` is your Discogs collection (release ids, and each owned pressing's
+clips, and `covers/` the record covers shown in tooltips (150 px PNGs, about 10 KB each; safe to
+delete). `collection.ron` is your Discogs collection (release ids, and each owned pressing's
 master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
 
 Other environment variables, mostly for unattended runs and measurements:
@@ -675,7 +685,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 507 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 525 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -735,7 +745,9 @@ What's covered:
   - focus-first expansion;
   - jobs resumed after a restart;
   - offline and back;
-  - token checks and wantlist changes.
+  - token checks and wantlist changes;
+  - albums and covers from the cache with no request, and covers: fetched once, shrunk,
+    paced to 4 a second, only from Discogs' image hosts, a stale address looked up again.
 
   The browser bridge (`crates/dig/tests/bridge.rs`) runs on an ephemeral loopback port:
   pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals

@@ -152,6 +152,12 @@ pub struct Origin {
     /// Copies for sale when the record was last looked up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub for_sale: Option<ForSale>,
+    /// The record's title: the album the entry belongs to.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub album: String,
+    /// The address of the record's cover thumbnail.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cover: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -190,6 +196,8 @@ pub struct Entry {
     pub origin: Option<Origin>,
     pub title: String,
     pub artist: String,
+    /// A local file's album tag (an entry with an origin uses its record's title instead).
+    pub album: String,
     pub duration: Option<f64>,
     /// Tempo from analysis, folded into the DJ range (see [`crate::format::dj_bpm`]).
     pub bpm: Option<u16>,
@@ -197,10 +205,25 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// "(catno) Artist: Title (N BPM)", leaving out what isn't known.
+    /// "(catno) Artist: Title (N BPM)", leaving out what isn't known (messages and the title
+    /// line use it; rows add the album, see [`Self::row_name`]).
     pub fn display_name(&self) -> String {
         let catno = self.origin.as_ref().map_or("", |o| o.catno.as_str());
-        crate::format::entry_name(catno, &self.artist, &self.title, self.bpm)
+        crate::format::entry_name(catno, &self.artist, &self.title, "", self.bpm)
+    }
+
+    /// The playlist row's name: [`Self::display_name`] with the album after the title.
+    pub fn row_name(&self) -> String {
+        let catno = self.origin.as_ref().map_or("", |o| o.catno.as_str());
+        crate::format::entry_name(catno, &self.artist, &self.title, self.album(), self.bpm)
+    }
+
+    /// The album it belongs to: its record's title, or a local file's album tag.
+    pub fn album(&self) -> &str {
+        match &self.origin {
+            Some(o) => &o.album,
+            None => &self.album,
+        }
     }
 
     /// "Artist - Title", or just the title: the plain name other players expect (M3U).
@@ -209,6 +232,22 @@ impl Entry {
             self.title.clone()
         } else {
             format!("{} - {}", self.artist, self.title)
+        }
+    }
+
+    /// The album it belongs to, if any (see [`AlbumKey`]).
+    pub fn album_key(&self) -> Option<AlbumKey> {
+        match &self.origin {
+            Some(o) => match (o.release, o.master) {
+                (Some(r), _) => Some(AlbumKey::Release(r)),
+                (None, Some(m)) => Some(AlbumKey::Master(m)),
+                _ => None,
+            },
+            None if self.album.trim().is_empty() => None,
+            None => Some(AlbumKey::Local(
+                self.artist.trim().to_lowercase(),
+                self.album.trim().to_lowercase(),
+            )),
         }
     }
 
@@ -225,6 +264,7 @@ impl Entry {
             path: self.track.0.clone(),
             title: self.title.clone(),
             artist: self.artist.clone(),
+            album: self.album.clone(),
             duration: self.duration,
             bpm: self.bpm,
             source: self.source.clone(),
@@ -236,6 +276,17 @@ impl Entry {
             },
         }
     }
+}
+
+/// Which album an entry belongs to: entries with equal keys form one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AlbumKey {
+    /// A Discogs release: another pressing of the same master is another album.
+    Release(u64),
+    /// A master release, for an entry that has no release.
+    Master(u64),
+    /// A local file's artist and album tags, lower-cased, so two "Greatest Hits" stay apart.
+    Local(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -258,6 +309,8 @@ pub struct SavedEntry {
     pub title: String,
     #[serde(default)]
     pub artist: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub album: String,
     #[serde(default)]
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -337,6 +390,19 @@ impl Playlist {
         self.entries.iter().find(|e| e.id == id)
     }
 
+    /// Every entry of `id`'s album, `id` included, in playlist order; empty when it belongs to
+    /// none.
+    pub fn album_of(&self, id: EntryId) -> Vec<EntryId> {
+        let Some(key) = self.get(id).and_then(Entry::album_key) else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter(|e| e.album_key().as_ref() == Some(&key))
+            .map(|e| e.id)
+            .collect()
+    }
+
     /// Appends tracks with file-name titles; returns the new entries for metadata lookup.
     pub fn add(&mut self, tracks: impl IntoIterator<Item = TrackRef>) -> Vec<(EntryId, TrackRef)> {
         let from = self.entries.len();
@@ -348,6 +414,7 @@ impl Playlist {
                 id,
                 title: track.stem().to_owned(),
                 artist: String::new(),
+                album: String::new(),
                 duration: None,
                 bpm: None,
                 status: EntryStatus::Pending,
@@ -391,17 +458,18 @@ impl Playlist {
         self.entries.iter_mut().find(|e| e.id == id)
     }
 
-    /// Metadata read from the file. An entry with an origin keeps its own artist and title
-    /// (the record is the truth, not the file's tags) and takes only the duration.
-    pub fn set_info(&mut self, id: EntryId, title: String, artist: String, duration: Option<f64>) {
+    /// Metadata read from the file. An entry with an origin keeps its own artist, title and
+    /// album (the record is the truth, not the file's tags) and takes only the duration.
+    pub fn set_info(&mut self, id: EntryId, info: audio::TrackInfo) {
         if let Some(e) = self.entry_mut(id)
             && e.status.note().is_none()
         {
             if e.origin.is_none() {
-                e.title = title;
-                e.artist = artist;
+                e.title = info.title;
+                e.artist = info.artist;
+                e.album = info.album;
             }
-            e.duration = duration;
+            e.duration = info.duration_secs;
             e.status = EntryStatus::Ready;
         }
     }
@@ -446,6 +514,7 @@ impl Playlist {
             origin,
             title: title.into(),
             artist: artist.into(),
+            album: String::new(),
             duration: None,
             bpm: None,
             status: EntryStatus::Waiting(status.into()),
@@ -489,6 +558,7 @@ impl Playlist {
             origin: n.origin,
             title: n.title,
             artist: n.artist,
+            album: String::new(),
             duration: n.duration,
             bpm: None,
             status: EntryStatus::Waiting(n.status),
@@ -604,6 +674,13 @@ impl Playlist {
         self.selected.clear();
     }
 
+    /// Selects exactly `ids` (an album), with the cursor and the anchor on `cursor`.
+    pub fn select_only(&mut self, ids: &[EntryId], cursor: EntryId) {
+        self.selected = ids.iter().copied().collect();
+        self.cursor = Some(cursor).filter(|&c| self.index_of(c).is_some());
+        self.anchor = self.cursor;
+    }
+
     pub fn invert_selection(&mut self) {
         self.selected = self
             .entries
@@ -687,8 +764,20 @@ impl Playlist {
 
     /// Removes the selected entries. The current track may be among them.
     pub fn remove_selected(&mut self) -> usize {
-        let before = self.entries.len();
         let sel = std::mem::take(&mut self.selected);
+        self.remove_set(&sel)
+    }
+
+    /// Removes these entries (an album); the rest of the selection stays. The current track
+    /// may be among them.
+    pub fn remove_ids(&mut self, ids: &[EntryId]) -> usize {
+        let set: BTreeSet<EntryId> = ids.iter().copied().collect();
+        self.selected.retain(|id| !set.contains(id));
+        self.remove_set(&set)
+    }
+
+    fn remove_set(&mut self, sel: &BTreeSet<EntryId>) -> usize {
+        let before = self.entries.len();
         if let Some(at) = self
             .cursor
             .filter(|c| sel.contains(c))
@@ -833,6 +922,17 @@ impl Playlist {
     }
 }
 
+/// File tags as the metadata worker reports them, for tests.
+#[cfg(test)]
+pub(crate) fn tags(title: String, artist: String, duration: Option<f64>) -> audio::TrackInfo {
+    audio::TrackInfo {
+        title,
+        artist,
+        duration_secs: duration,
+        ..Default::default()
+    }
+}
+
 impl Entry {
     fn from_saved(id: EntryId, s: SavedEntry) -> Self {
         let track = TrackRef::new(s.path);
@@ -851,6 +951,7 @@ impl Entry {
                 track.stem().to_owned()
             },
             artist: s.artist,
+            album: s.album,
             duration: s.duration,
             bpm: s.bpm,
             status,
@@ -918,9 +1019,7 @@ mod tests {
         assert_eq!(p.entries()[0].status, EntryStatus::Pending);
         p.set_info(
             added[0].0,
-            "Midnight City".into(),
-            "M83".into(),
-            Some(243.0),
+            tags("Midnight City".into(), "M83".into(), Some(243.0)),
         );
         assert_eq!(p.entries()[0].display_name(), "M83: Midnight City");
         assert_eq!(p.entries()[0].status, EntryStatus::Ready);
@@ -1002,10 +1101,10 @@ mod tests {
     fn durations_sum_known_and_flag_unknown() {
         let mut p = pl(3);
         let ids: Vec<_> = p.entries().iter().map(|e| e.id).collect();
-        p.set_info(ids[0], "a".into(), "".into(), Some(60.0));
-        p.set_info(ids[1], "b".into(), "".into(), Some(30.5));
+        p.set_info(ids[0], tags("a".into(), "".into(), Some(60.0)));
+        p.set_info(ids[1], tags("b".into(), "".into(), Some(30.5)));
         assert_eq!(p.total_duration(), (90.5, true));
-        p.set_info(ids[2], "c".into(), "".into(), Some(9.5));
+        p.set_info(ids[2], tags("c".into(), "".into(), Some(9.5)));
         assert_eq!(p.total_duration(), (100.0, false));
         p.click(1, ClickMods::default());
         assert_eq!(p.selected_duration(), (30.5, false));
@@ -1392,13 +1491,20 @@ mod tests {
     fn save_and_restore() {
         let mut p = pl(3);
         let id = p.entries()[0].id;
-        p.set_info(id, "Echo".into(), "Crusher-P".into(), Some(230.0));
+        let mut info = tags("Echo".into(), "Crusher-P".into(), Some(230.0));
+        info.album = "Vocaloid Hits".into();
+        p.set_info(id, info);
         p.set_current(Some(p.entries()[2].id));
         let saved = p.to_saved();
         let text = ron::to_string(&saved).unwrap();
+        assert_eq!(
+            text.matches("album").count(),
+            1,
+            "an empty album isn't written"
+        );
         let (restored, pending) = Playlist::from_saved(ron::from_str(&text).unwrap());
         assert_eq!(restored.len(), 3);
-        assert_eq!(restored.entries()[0].display_name(), "Crusher-P: Echo");
+        assert_eq!(restored.entries()[0].album(), "Vocaloid Hits");
         assert_eq!(restored.current_index(), Some(2));
         assert_eq!(
             pending.len(),
@@ -1576,26 +1682,31 @@ mod tests {
             "listed",
         );
         // Metadata for a waiting entry is ignored: it has no file yet.
-        p.set_info(id, "t".into(), "a".into(), Some(1.0));
+        p.set_info(id, tags("t".into(), "a".into(), Some(1.0)));
         assert_eq!(
             p.get(id).unwrap().status,
             EntryStatus::Waiting("listed".into())
         );
         assert!(p.set_audio(id, TrackRef::new("/cache/abcdefghijk.m4a")));
         assert_eq!(p.get(id).unwrap().status, EntryStatus::Pending);
-        p.set_info(
-            id,
+        let mut info = tags(
             "glasshouse (vinyl rip)".into(),
             "Unknown".into(),
             Some(301.0),
         );
+        info.album = "Rips".into();
+        p.set_info(id, info);
         let e = p.get(id).unwrap();
         assert_eq!(e.display_name(), "(LT-012) Nightcraft: Glasshouse");
+        assert_eq!(e.album(), "", "the record's (empty) album, not the tag's");
         assert_eq!((e.duration, &e.status), (Some(301.0), &EntryStatus::Ready));
         // Entries without an origin still take the tags.
         let plain = p.add([TrackRef::new("/m/x.mp3")])[0].0;
-        p.set_info(plain, "Title".into(), "Artist".into(), None);
-        assert_eq!(p.get(plain).unwrap().display_name(), "Artist: Title");
+        let mut info = tags("Title".into(), "Artist".into(), None);
+        info.album = "Album".into();
+        p.set_info(plain, info);
+        assert_eq!(p.get(plain).unwrap().plain_name(), "Artist - Title");
+        assert_eq!(p.get(plain).unwrap().album(), "Album");
     }
 
     /// Entries 0..6, with 3 waiting and 4 unavailable.
@@ -1658,5 +1769,55 @@ mod tests {
             .collect();
         let expected: Vec<EntryId> = order.iter().copied().filter(|&id| id != ids[4]).collect();
         assert_eq!(after, expected, "it is queued where the order puts it");
+    }
+
+    #[test]
+    fn albums_group_by_release_master_or_local_tags() {
+        let mut p = Playlist::default();
+        let rel = |r: Option<u64>, m: Option<u64>, clip: &str| Origin {
+            release: r,
+            master: m,
+            clip: Some(clip.into()),
+            ..Default::default()
+        };
+        let a1 = p.add_waiting("N", "a1", None, Some(rel(Some(1), Some(9), "a")), "queued");
+        let other = p.add_waiting("N", "x", None, Some(rel(Some(2), Some(9), "b")), "queued");
+        let a2 = p.add_waiting("N", "a2", None, Some(rel(Some(1), Some(9), "c")), "listed");
+        p.set_unavailable(a2, "no clip");
+        let m1 = p.add_waiting("N", "m1", None, Some(rel(None, Some(7), "d")), "queued");
+        let m2 = p.add_waiting("N", "m2", None, Some(rel(None, Some(7), "e")), "queued");
+        let none = p.add_waiting("N", "n", None, Some(rel(None, None, "f")), "queued");
+
+        assert_eq!(
+            p.album_of(a1),
+            [a1, a2],
+            "same release, unavailable included"
+        );
+        assert_eq!(p.album_of(other), [other], "another pressing of master 9");
+        assert_eq!(p.album_of(m2), [m1, m2], "same master, no release");
+        assert!(p.album_of(none).is_empty(), "no record: no album");
+
+        let local: Vec<EntryId> = p
+            .add((0..4).map(|i| TrackRef::new(format!("/m/{i}.mp3"))))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for (id, artist, album) in [
+            (local[0], "Artist A", "Greatest Hits"),
+            (local[1], "Artist B", "Greatest Hits"),
+            (local[2], "artist a ", "greatest hits"),
+            (local[3], "Artist A", ""),
+        ] {
+            let mut info = tags("t".into(), artist.into(), None);
+            info.album = album.into();
+            p.set_info(id, info);
+        }
+        assert_eq!(
+            p.album_of(local[0]),
+            [local[0], local[2]],
+            "case and spaces aside"
+        );
+        assert_eq!(p.album_of(local[1]), [local[1]], "same name, other artist");
+        assert!(p.album_of(local[3]).is_empty(), "no album tag");
     }
 }

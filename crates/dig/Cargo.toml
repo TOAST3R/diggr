@@ -9,6 +9,7 @@ license.workspace = true
 analysis = { version = "0.1.0", path = "../analysis" }
 arc-swap = "1.9.2"
 getrandom = "0.4.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 platform = { version = "0.1.0", path = "../platform" }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }

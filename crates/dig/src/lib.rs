@@ -5,7 +5,8 @@
 //! - [`intake`]: one worker makes every Discogs request in turn (so the rate limit is simple);
 //! - [`preview`]: fetches clips with the user's own yt-dlp, a few tracks ahead;
 //! - [`prepare`]: analyzes downloaded previews so they open with their waveform and sections;
-//! - [`bridge`]: a loopback server through which a paired browser extension sends pages.
+//! - [`bridge`]: a loopback server through which a paired browser extension sends pages;
+//! - [`cover`]: record covers for the entry tooltip, from Discogs' image host.
 //!
 //! Native only: the web build leaves this crate out.
 
@@ -14,6 +15,7 @@ pub mod browser;
 pub mod clock;
 pub mod collection;
 pub mod config;
+pub mod cover;
 pub mod discogs;
 pub mod intake;
 pub mod jobs;

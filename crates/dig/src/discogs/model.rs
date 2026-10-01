@@ -30,6 +30,9 @@ pub struct Listed {
     /// From the listing's formats, when it gives them.
     pub vinyl: Option<bool>,
     pub role: Role,
+    /// A small cover image's address, when the listing gives one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cover: String,
 }
 
 impl Listed {
@@ -43,6 +46,7 @@ impl Listed {
             year: None,
             vinyl: None,
             role: Role::Main,
+            cover: String::new(),
         }
     }
 }
@@ -93,6 +97,8 @@ pub struct Record {
     pub tracks: Vec<Track>,
     pub clips: Vec<Clip>,
     pub for_sale: Option<ForSale>,
+    /// The 150 px thumbnail's address (empty when the record has no image).
+    pub cover: String,
 }
 
 /// Formats that are records: the listing strings (`12", EP`) and format names.
@@ -263,6 +269,28 @@ fn first_label(labels: &Value) -> (String, String) {
     )
 }
 
+/// The primary image's 150 px thumbnail from an `images` array, else the first image's.
+pub fn cover(images: &Value) -> String {
+    let list = images.as_array().map(Vec::as_slice).unwrap_or_default();
+    list.iter()
+        .find(|i| i["type"].as_str() == Some("primary"))
+        .or_else(|| list.first())
+        .and_then(|i| i["uri150"].as_str())
+        .map(thumb)
+        .unwrap_or_default()
+}
+
+/// A thumbnail address, or nothing for an empty or non-https one (Discogs' "spacer" images
+/// for records without a picture are left out too).
+fn thumb(uri: &str) -> String {
+    let uri = uri.trim();
+    if uri.starts_with("https://") && !uri.contains("spacer.gif") {
+        uri.to_owned()
+    } else {
+        String::new()
+    }
+}
+
 fn year(v: &Value) -> Option<u16> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.get(..4)?.parse().ok()))
@@ -294,6 +322,7 @@ impl Record {
                 currency: currency.to_owned(),
                 fetched_at,
             }),
+            cover: cover(&v["images"]),
         })
     }
 
@@ -315,6 +344,10 @@ impl Record {
             tracks: tracks(&v["tracklist"]),
             clips: clips(&v["videos"]),
             for_sale: main.and_then(|m| m.for_sale.clone()),
+            cover: Some(cover(&v["images"]))
+                .filter(|c| !c.is_empty())
+                .or_else(|| main.map(|m| m.cover.clone()))
+                .unwrap_or_default(),
         })
     }
 }
@@ -338,6 +371,7 @@ pub fn listed_from_listing(item: &Value) -> Option<Listed> {
             Some("Remix") => Role::Remix,
             _ => Role::Main,
         },
+        cover: thumb(item["thumb"].as_str().unwrap_or("")),
     })
 }
 
@@ -355,6 +389,7 @@ pub fn listed_from_want(item: &Value) -> Option<Listed> {
         year: year(&b["year"]),
         vinyl: vinyl_from_formats(&b["formats"]),
         role: Role::Main,
+        cover: thumb(b["thumb"].as_str().unwrap_or("")),
     })
 }
 
@@ -375,6 +410,7 @@ pub fn listed_from_list_item(item: &Value) -> Option<Listed> {
         }
         None => l.title = display.trim().to_owned(),
     }
+    l.cover = thumb(item["image_url"].as_str().unwrap_or(""));
     Some(l)
 }
 
@@ -491,6 +527,54 @@ mod tests {
         assert_eq!(
             (fs.count, fs.lowest, fs.currency.as_str(), fs.fetched_at),
             (6, Some(9.0), "EUR", 42)
+        );
+    }
+
+    #[test]
+    fn covers_prefer_the_primary_image_and_fall_back() {
+        let images = json!([
+            {"type": "secondary", "uri150": "https://i.discogs.com/back.jpg"},
+            {"type": "primary", "uri150": "https://i.discogs.com/front.jpg"}
+        ]);
+        assert_eq!(cover(&images), "https://i.discogs.com/front.jpg");
+        let only_secondary =
+            json!([{"type": "secondary", "uri150": "https://i.discogs.com/b.jpg"}]);
+        assert_eq!(cover(&only_secondary), "https://i.discogs.com/b.jpg");
+        assert_eq!(cover(&Value::Null), "");
+        assert_eq!(cover(&json!([{"uri150": "http://insecure/x.jpg"}])), "");
+
+        // A master without images takes its main release's cover.
+        let release = json!({"id": 1, "title": "EP", "images": images});
+        let main = Record::from_release(&release, "EUR", 0).unwrap();
+        let bare = json!({"id": 9, "title": "EP"});
+        let m = Record::from_master(&bare, Some(&main)).unwrap();
+        assert_eq!(m.cover, "https://i.discogs.com/front.jpg");
+        let own =
+            json!({"id": 9, "title": "EP", "images": [{"uri150": "https://i.discogs.com/m.jpg"}]});
+        assert_eq!(
+            Record::from_master(&own, Some(&main)).unwrap().cover,
+            "https://i.discogs.com/m.jpg"
+        );
+    }
+
+    #[test]
+    fn listings_wants_and_lists_carry_thumbnails() {
+        let item = json!({"id": 5, "title": "T", "thumb": "https://i.discogs.com/t.jpg"});
+        assert_eq!(
+            listed_from_listing(&item).unwrap().cover,
+            "https://i.discogs.com/t.jpg"
+        );
+        let spacer = json!({"id": 5, "thumb": "https://st.discogs.com/images/spacer.gif"});
+        assert_eq!(listed_from_listing(&spacer).unwrap().cover, "");
+        let want = json!({"id": 6, "basic_information": {"title": "W", "thumb": "https://i.discogs.com/w.jpg"}});
+        assert_eq!(
+            listed_from_want(&want).unwrap().cover,
+            "https://i.discogs.com/w.jpg"
+        );
+        let list = json!({"id": 7, "type": "release", "display_title": "A - B", "image_url": "https://i.discogs.com/l.jpg"});
+        assert_eq!(
+            listed_from_list_item(&list).unwrap().cover,
+            "https://i.discogs.com/l.jpg"
         );
     }
 }

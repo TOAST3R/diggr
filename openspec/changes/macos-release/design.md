@@ -86,7 +86,8 @@ need previews ─▶ user's yt-dlp found? ── yes ─▶ use it (never update
   - Progress shows in the status line.
 
 ### D6. The icon
-- **Art:** original, made to match the player: a dark panel with a green LCD record. It's drawn by a small generator (`cargo run -p ui --bin icon-gen`, alongside `skin-gen`) into `assets/icon/icon-1024.png`, which is committed.
+- **Art:** the record-crate logo (white line art of a wooden crate holding records, on near-black), supplied as an image rather than generated (`openspec/changes/macos-release/logo-source.jpeg`). It's committed once, cleaned up, as `assets/icon/logo.png`, plus `assets/icon/icon-1024.png` laid out for macOS (rounded square, standard margin).
+- **Everywhere the app shows a logo:** the bundle's `.icns`, the window and Dock icon in development builds (`ViewportBuilder::with_icon`, decoded after the first frame), and the Chrome extension's four icon sizes.
 - **`.icns`:** the build script makes it from the PNG with `sips` and `iconutil` (both part of macOS), so only one image lives in git.
 - **Test:** checks that the committed PNG matches the generator, as for the skin.
 
