@@ -137,7 +137,7 @@ mod tests {
         for name in ["pl_close", "pl_scroll", "pl_info", "pl_resize"] {
             assert_eq!(w.at(name).x, d.at(name).x + 125, "{name}");
         }
-        for name in ["pl_plus", "pl_menu", "pl_bpm"] {
+        for name in ["pl_plus", "pl_menu", "pl_opts", "pl_bpm"] {
             assert_eq!(w.at(name), d.at(name), "{name} stays on the left");
         }
         assert_eq!(

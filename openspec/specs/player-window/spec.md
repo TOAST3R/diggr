@@ -123,7 +123,7 @@ The player side (main, waveform and EQ sections) and the playlist SHALL each tak
 - **THEN** the player has focus
 
 ### Requirement: Options menu
-Right-clicking (or Control-clicking on macOS) anywhere on the main window, or on the strip of a maximized playlist, that is not a control SHALL open the Options menu: Double size (or Classic size), Spectrogram, and, where digging is available, Discogs… and Browser…. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. Opening the menu SHALL NOT affect playback.
+Right-clicking (or Control-clicking on macOS) anywhere on the main window, or on the strip of a maximized playlist, that is not a control SHALL open the Options menu: Double size (or Classic size), Spectrogram, and, where digging is available, Discogs… and Browser…. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. The playlist footer's gear button SHALL open the same menu, so it can be found without knowing about the right-click. Opening the menu SHALL NOT affect playback.
 
 #### Scenario: Open the options
 - **WHEN** the user right-clicks the main window's track-info area

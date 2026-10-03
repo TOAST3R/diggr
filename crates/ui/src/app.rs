@@ -1893,33 +1893,36 @@ impl WinampApp {
         };
         egui::Popup::context_menu(&resp)
             .open_memory(command)
-            .show(|ui| {
-                let label = if self.settings.scale >= 2 {
-                    "Classic size (1×)"
-                } else {
-                    "Double size (2×)"
-                };
-                if ui.button(label).clicked() {
-                    actions.push(Action::ToggleScale);
-                    ui.close();
-                }
-                if ui.button("Spectrogram (S)").clicked() {
-                    actions.push(Action::ToggleSpectrogram);
-                    ui.close();
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if self.dig.is_some() {
-                    ui.separator();
-                    if ui.button("Discogs…").clicked() {
-                        actions.push(Action::Dig(DigAction::OpenDialog));
-                        ui.close();
-                    }
-                    if ui.button("Browser…").clicked() {
-                        actions.push(Action::Dig(DigAction::OpenBrowserDialog));
-                        ui.close();
-                    }
-                }
-            });
+            .show(|ui| self.options_items(ui, actions));
+    }
+
+    /// The Options menu's items, for the right-click and the footer's gear alike.
+    fn options_items(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let label = if self.settings.scale >= 2 {
+            "Classic size (1×)"
+        } else {
+            "Double size (2×)"
+        };
+        if ui.button(label).clicked() {
+            actions.push(Action::ToggleScale);
+            ui.close();
+        }
+        if ui.button("Spectrogram (S)").clicked() {
+            actions.push(Action::ToggleSpectrogram);
+            ui.close();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.dig.is_some() {
+            ui.separator();
+            if ui.button("Discogs…").clicked() {
+                actions.push(Action::Dig(DigAction::OpenDialog));
+                ui.close();
+            }
+            if ui.button("Browser…").clicked() {
+                actions.push(Action::Dig(DigAction::OpenBrowserDialog));
+                ui.close();
+            }
+        }
     }
 
     /// The playlist's width and rows now: the chosen ones, or, while maximized, what the
@@ -2936,6 +2939,10 @@ impl WinampApp {
                 }
             });
             menu.on_hover_text("Crate");
+            // The gear: the same Options as a right-click on the player.
+            let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
+            egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
+            opts.on_hover_text("Options");
 
             // "selected/total" time, Winamp style, right-aligned beside the grip.
             let (total, t_unknown) = self.crates.shown().total_duration();
@@ -6251,7 +6258,7 @@ mod headless_tests {
         assert_eq!(rig.ids(friday).len(), 3);
     }
 
-    /// The centre of footer button `name` (`pl_plus`, `pl_menu`).
+    /// The centre of footer button `name` (`pl_plus`, `pl_menu`, `pl_opts`).
     fn footer_button(rig: &Rig, name: &str) -> Pos2 {
         let r = rig.app.def.at(name);
         let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
@@ -6302,6 +6309,14 @@ mod headless_tests {
         rig.click(footer_button(&rig, "pl_menu"));
         rig.click_text("Show all tempos");
         assert_eq!(rig.app.crates.shown().bpm_filter(), None);
+
+        rig.click(footer_button(&rig, "pl_opts"));
+        let out = rig.frame(Vec::new());
+        for t in ["Double size (2×)", "Spectrogram (S)"] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
+        rig.click_text("Spectrogram (S)");
+        assert!(rig.app.spectro_open, "the gear's items act");
     }
 
     #[test]

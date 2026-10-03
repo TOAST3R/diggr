@@ -103,9 +103,9 @@ No music handy? The repo includes short test tones:
 The window has the classic Winamp parts, side by side: the player column on the left (main
 player, then the waveform and the equalizer when they show) and the playlist on its right, at
 least as tall as the player column. It's drawn from an original pixel-art skin, at double size
-by default (switch in **Options**: right-click the main window anywhere that isn't a control,
-or the player strip while the playlist is maximized; Options also has the spectrogram,
-Discogs… and Browser…).
+by default (switch in **Options**: the gear ⚙ in the playlist's footer, or right-click the main
+window anywhere that isn't a control, or the player strip while the playlist is maximized;
+Options also has the spectrogram, Discogs… and Browser…).
 
 Click in the player or in the playlist (or press `Tab`) to give it the keyboard: its title bar
 lights up and the other side's dims. With the player focused, `↑` / `↓` set the volume. With the
@@ -141,9 +141,10 @@ and Home/End jump), and Enter plays the entry under it.
 - **Playlist window:**
   - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
     menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Show all
-    tempos and Export M3U…. The "selected/total" time sits on the right, beside the grip;
+    tempos and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
+    Browser…). The "selected/total" time sits on the right, beside the grip;
   - **BPM filter:** once the crate on screen has two different known tempos, the footer shows
-    `BPM ◂━●━━●━▸ 124-139` between ≡ and the time. Drag a handle to keep only the tracks in that
+    `BPM ◂━●━━●━▸ 124-139` between the gear and the time. Drag a handle to keep only the tracks in that
     range: they're the only ones shown and the only ones played (next, previous, shuffle, and
     the previews downloaded ahead), while the playing track finishes even if it's hidden.
     Tracks without a known BPM are hidden while a range is set; the slider's tooltip says how
@@ -716,7 +717,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 554 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 555 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

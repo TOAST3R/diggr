@@ -1188,3 +1188,14 @@ fn options_on_the_main_window_open_the_discogs_dialog() {
     rig.click_text("Discogs…");
     assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
 }
+
+#[test]
+fn the_footer_gear_opens_the_discogs_dialog() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-gear", &fakes, |_| {});
+    rig.click(footer_button(&rig, "pl_opts"));
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Browser…"), "{:?}", text_list(&out));
+    rig.click_text("Discogs…");
+    assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
+}
