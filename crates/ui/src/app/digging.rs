@@ -21,7 +21,7 @@ use dig::bridge::{
 };
 use dig::browser::{Browser, SystemBrowser, record_url, sell_url};
 use dig::clock::{Clock, RealClock};
-use dig::collection::{Collection, Owned};
+use dig::collection::{Collection, Owned, Pressing};
 use dig::config::{self as digconf, DigSettings};
 use dig::cover::{CoverHandle, Covers, ImageSource, UreqImages};
 use dig::discogs::cache::DiskCache;
@@ -31,7 +31,7 @@ use dig::discogs::transport::{Transport, UreqTransport};
 use dig::discogs::url::{self, Page, Refused};
 use dig::intake::{Command, Event, Intake, IntakeHandle, JobRef, Outcome, RecordInfo};
 use dig::jobs::{Filters, JobId};
-use dig::memory::{DigMemory, Kept, WantOp};
+use dig::memory::{DigMemory, WantOp};
 use dig::prepare::PrepareHandle;
 use dig::preview::fetcher::{clip_url, preview_path};
 use dig::preview::scheduler::{
@@ -42,14 +42,18 @@ use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
 use super::{Action, WinampApp};
-use crate::crates::{CrateId, MAX_NAME};
+use crate::crates::{CrateId, MAX_NAME, PLAYLIST};
 use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, WaitKind};
 
-/// Pending wantlist changes are sent again this often.
-const WANTLIST_RETRY: Duration = Duration::from_secs(60);
 /// Failed clips in a row before suggesting that yt-dlp needs an update.
 const FAILS_BEFORE_UPDATE_HINT: u32 = 3;
-pub const KEEPERS: &str = "Keepers";
+/// The wantlist crate's name before an account is connected ("Wantlist: ‹user›" after).
+pub const WANTLIST: &str = "Wantlist";
+/// What the wantlist crate was called when wanting was keeping.
+const KEEPERS: &str = "Keepers";
+/// Up to this many records missing from the wantlist crate are fetched one by one; more,
+/// and the whole wantlist page is sent into it.
+const FILL_ONE_BY_ONE: usize = 20;
 const INSTALL_HINT: &str =
     "Previews need yt-dlp: install it (brew install yt-dlp); it is found within 30 s";
 
@@ -104,7 +108,20 @@ pub enum SendMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DigAction {
-    Keep(EntryId),
+    /// Add the records of these entries to the wantlist.
+    Want(Vec<EntryId>),
+    /// Take the records of these entries off the wantlist.
+    Unwant(Vec<EntryId>),
+    /// Add one copy of each record of these entries to the collection.
+    Collect(Vec<EntryId>),
+    /// Send a failed wantlist change again, from the start of its schedule.
+    RetryWant(EntryId),
+    /// Add again after a failure, asking Discogs first whether the add went through.
+    RetryCollect(EntryId),
+    /// Make the collection crate match the Discogs collection.
+    RefreshCollection,
+    /// Make the wantlist crate match the Discogs wantlist.
+    RefreshWantlist,
     Pass(EntryId),
     UndoPass(EntryId),
     OpenForSale(EntryId),
@@ -144,6 +161,42 @@ pub(super) struct DigDialog {
     check: Option<Result<String, String>>,
     checking: bool,
     ytdlp_path: String,
+    /// Put the keyboard in the token field (Connect… in the Connect to Discogs dialog): asked
+    /// for over this many more frames that it holds, as the closing dialog can take it back.
+    pub(super) focus_token: u8,
+}
+
+impl DigDialog {
+    /// The last token check succeeded.
+    #[cfg(test)]
+    pub(super) fn connected(&self) -> bool {
+        matches!(self.check, Some(Ok(_)))
+    }
+}
+
+/// The Connect to Discogs dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ConnectDialog {
+    /// Opened by Add to wantlist (which worked locally): it can be turned off.
+    pub(super) from_wantlist: bool,
+}
+
+/// Removing these entries of the wantlist crate takes `releases` off the Discogs wantlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UnwantConfirm {
+    crate_id: CrateId,
+    ids: Vec<EntryId>,
+    releases: HashSet<u64>,
+}
+
+/// What the dig side marks an entry with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Marks {
+    pub(super) wanted: bool,
+    pub(super) passed: bool,
+    pub(super) wantlist_pending: bool,
+    pub(super) wantlist_failed: Option<String>,
+    pub(super) collection_failed: Option<String>,
 }
 
 pub(super) struct Dig {
@@ -174,7 +227,21 @@ pub(super) struct Dig {
     /// again if the page turns out not to exist.
     created: HashSet<CrateId>,
     refreshed: HashSet<u64>,
-    last_retry: Option<Instant>,
+    /// Wantlist changes sent and not answered yet.
+    want_inflight: HashSet<(u64, WantOp)>,
+    /// Collection adds on their way: release → the crate they were asked from.
+    collecting: HashMap<u64, CrateId>,
+    /// Collection adds that failed this session: release → (its crate, why).
+    collect_failed: HashMap<u64, (CrateId, String)>,
+    /// The account the wantlist crate follows this session.
+    connected: Option<String>,
+    /// Whose token it is was asked for this session (when no dig asked first).
+    identify_asked: bool,
+    /// Refresh collection / Refresh wantlist asked: the crate follows when the answer comes.
+    refreshing_collection: bool,
+    refreshing_wantlist: bool,
+    /// Crates filled without announcing each send (the wantlist crate).
+    quiet: HashSet<CrateId>,
     fail_streak: u32,
     /// A Play send's crate: its first entry is armed as soon as it has one.
     play_when_ready: Option<CrateId>,
@@ -193,12 +260,16 @@ pub(super) struct Dig {
     /// a sync on the intake worker).
     pub(super) collection: Option<Arc<Collection>>,
     collection_syncing: bool,
+    /// Copies this app added since the running sync started (its result doesn't know them).
+    local_adds: Vec<(u64, u64, Pressing)>,
     /// Why the last sync failed, for Options ▸ Discogs….
     collection_error: Option<String>,
     /// When a sync was last asked for without being needed again (retries wait an hour).
     collection_tried: Option<Instant>,
-    /// Keeping an owned record waits for this answer: (crate, entry, what is owned).
-    pub(super) confirm_keep: Option<(CrateId, EntryId, String)>,
+    /// The Connect to Discogs dialog, while open.
+    pub(super) connect: Option<ConnectDialog>,
+    /// Removing whole records from the wantlist crate waits for this answer.
+    pub(super) confirm_unwant: Option<UnwantConfirm>,
     /// "Add a Discogs token…" was said this session.
     token_hint_shown: bool,
     /// Record covers for entry tooltips.
@@ -255,7 +326,14 @@ impl Dig {
             active: HashSet::new(),
             created: HashSet::new(),
             refreshed: HashSet::new(),
-            last_retry: None,
+            want_inflight: HashSet::new(),
+            collecting: HashMap::new(),
+            collect_failed: HashMap::new(),
+            connected: None,
+            identify_asked: false,
+            refreshing_collection: false,
+            refreshing_wantlist: false,
+            quiet: HashSet::new(),
             fail_streak: 0,
             play_when_ready: None,
             last_playing: None,
@@ -266,14 +344,20 @@ impl Dig {
             snapshot: Snapshot::default(),
             collection: None,
             collection_syncing: false,
+            local_adds: Vec::new(),
             collection_error: None,
             collection_tried: None,
-            confirm_keep: None,
+            connect: None,
+            confirm_unwant: None,
             token_hint_shown: false,
             covers: CoverCache::default(),
             bridge_dialog: None,
             wake,
         }
+    }
+
+    pub(super) fn has_token(&self) -> bool {
+        self.token.is_some()
     }
 
     fn started(&self) -> bool {
@@ -431,10 +515,6 @@ impl Dig {
     pub(super) fn owned(&self, e: &Entry) -> Option<Owned> {
         self.token.as_ref()?;
         let o = e.origin.as_ref()?;
-        // In a crate made from a collection every record is owned: no badge there.
-        if url::parse(&o.page).is_ok_and(|p| matches!(p.kind, url::PageKind::Collection(_))) {
-            return None;
-        }
         self.collection.as_ref()?.owned(o.release, o.master)
     }
 
@@ -486,8 +566,12 @@ impl Dig {
     /// A sync finished: the new collection is saved and shared (with the bridge too).
     fn collection_synced(&mut self, result: Result<Box<Collection>, ApiError>) -> Option<String> {
         self.collection_syncing = false;
+        let adds = std::mem::take(&mut self.local_adds);
         match result {
-            Ok(c) => {
+            Ok(mut c) => {
+                for (instance, release, pressing) in adds {
+                    c.insert(instance, release, pressing);
+                }
                 self.collection_error = None;
                 self.collection_tried = None;
                 let saved = self
@@ -546,14 +630,83 @@ impl Dig {
         line
     }
 
-    /// Kept, passed, and a wantlist change still to be sent, for an entry's row.
-    pub(super) fn marks(&self, e: &Entry) -> (bool, bool, bool) {
-        let key = key_of(e);
-        let kept = self.memory.kept.get(&key);
-        let pending = kept
-            .and_then(|k| k.release)
-            .is_some_and(|r| self.memory.is_want_pending(r));
-        (kept.is_some(), self.memory.is_passed(&key), pending)
+    /// Wanted, passed, and how its wantlist or collection change is going, for a row.
+    pub(super) fn marks(&self, e: &Entry) -> Marks {
+        let release = release_of(e);
+        Marks {
+            wanted: release.is_some_and(|r| self.memory.is_wanted(r)),
+            passed: self.memory.is_passed(&key_of(e)),
+            wantlist_pending: release.is_some_and(|r| self.memory.is_want_pending(r)),
+            wantlist_failed: release
+                .and_then(|r| self.memory.want_failure(r))
+                .map(str::to_owned),
+            collection_failed: release
+                .and_then(|r| self.collect_failed.get(&r))
+                .map(|(_, why)| why.clone()),
+        }
+    }
+}
+
+/// The release an entry's record is (a master's entries carry its main release).
+pub(super) fn release_of(e: &Entry) -> Option<u64> {
+    e.origin.as_ref()?.release
+}
+
+/// A record in messages: its album, else the entry's name.
+fn record_name(e: &Entry) -> String {
+    if e.album().is_empty() {
+        e.display_name()
+    } else {
+        e.album().to_owned()
+    }
+}
+
+/// "Collection: 3 new, 1 gone", "Wantlist up to date".
+fn changes_line(what: &str, new: usize, gone: usize) -> String {
+    match (new, gone) {
+        (0, 0) => format!("{what} up to date"),
+        (n, 0) => format!("{what}: {n} new"),
+        (0, g) => format!("{what}: {g} gone"),
+        (n, g) => format!("{what}: {n} new, {g} gone"),
+    }
+}
+
+/// "1 record", "3 records".
+fn records_label(n: usize) -> String {
+    if n == 1 {
+        "1 record".into()
+    } else {
+        format!("{n} records")
+    }
+}
+
+/// "this pressing", "another pressing (AF001R, 2019)".
+pub(super) fn owned_text(o: &Owned) -> String {
+    match o {
+        Owned::ThisPressing => "this pressing".to_owned(),
+        Owned::Another { .. } => {
+            let short = owned_short(&Some(o.clone()));
+            if short.is_empty() {
+                "another pressing".to_owned()
+            } else {
+                format!("another pressing ({short})")
+            }
+        }
+    }
+}
+
+/// The owned pressing's catalog number and year: "AF001R, 2019".
+fn owned_short(o: &Option<Owned>) -> String {
+    match o {
+        Some(Owned::Another { catno, year }) => [
+            catno.clone(),
+            year.map(|y| y.to_string()).unwrap_or_default(),
+        ]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(", "),
+        _ => String::new(),
     }
 }
 
@@ -739,6 +892,9 @@ impl WinampApp {
             }
             d.start();
         }
+        self.dig_migrate_keepers();
+        self.dig_connect_wantlist();
+        let Some(d) = &mut self.dig else { return };
         for id in [self.crates.shown_id(), self.crates.playing_id()] {
             if d.active.insert(id) {
                 d.send(Command::CrateActive(id));
@@ -899,7 +1055,7 @@ impl WinampApp {
         }
     }
 
-    fn dig_intake_event(&mut self, e: Event) {
+    pub(super) fn dig_intake_event(&mut self, e: Event) {
         match e {
             Event::Started(j) => {
                 let Some(d) = &mut self.dig else { return };
@@ -912,6 +1068,9 @@ impl WinampApp {
                         total: 0,
                     },
                 );
+                if d.quiet.contains(&j.target) {
+                    return;
+                }
                 let to = self.crates.name(j.target).to_owned();
                 self.notify(if to == j.name {
                     format!("Digging {to}")
@@ -1022,8 +1181,10 @@ impl WinampApp {
             },
             Event::TokenChecked(token, result) => self.dig_token_checked(token, result),
             Event::Collection(result) => {
+                let failed = result.as_ref().err().map(ApiError::message);
                 let err = self.dig.as_mut().and_then(|d| d.collection_synced(result));
                 self.dig_notify(err);
+                self.dig_collection_refreshed(failed);
             }
             // The bridge reads the item's release from the disk cache the lookup filled.
             Event::ShopItem(..) => {}
@@ -1065,6 +1226,9 @@ impl WinampApp {
                 add,
                 result,
             } => self.dig_wantlist_result(release, add, result),
+            Event::Collected { release, result } => self.dig_collected(release, result),
+            Event::Wants(result) => self.dig_wants(result),
+            Event::OwnedWants(releases) => self.dig_owned_wants(releases),
         }
     }
 
@@ -1410,20 +1574,19 @@ impl WinampApp {
         }
     }
 
+    /// Sends the wantlist changes that are due (each one once until its answer comes back).
     fn dig_retry_wantlist(&mut self) {
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none()
-            || d.memory.wantlist_pending.is_empty()
-            || d.last_retry.is_some_and(|t| t.elapsed() < WANTLIST_RETRY)
-        {
+        if d.token.is_none() || !d.started() || d.memory.wantlist_pending.is_empty() {
             return;
         }
-        d.last_retry = Some(Instant::now());
-        for (release, op) in d.memory.wantlist_pending.clone() {
-            d.send(match op {
-                WantOp::Add => Command::Keep(release),
-                WantOp::Remove => Command::Unkeep(release),
-            });
+        for (release, op) in d.memory.due(now_secs()) {
+            if d.want_inflight.insert((release, op)) {
+                d.send(match op {
+                    WantOp::Add => Command::Want(release),
+                    WantOp::Remove => Command::Unwant(release),
+                });
+            }
         }
     }
 
@@ -1431,28 +1594,58 @@ impl WinampApp {
 
     /// Y, N and I act on the playing or paused entry, and do nothing while stopped.
     pub(super) fn dig_key(&mut self, key: egui::Key) -> bool {
-        let action: fn(EntryId) -> DigAction = match key {
-            egui::Key::Y => DigAction::Keep,
-            egui::Key::N => DigAction::Pass,
-            egui::Key::I => DigAction::OpenForSale,
-            _ => return false,
-        };
-        if self.dig.is_none() {
+        if !matches!(key, egui::Key::Y | egui::Key::N | egui::Key::I) || self.dig.is_none() {
             return false;
         }
         if self.position.state == PlayState::Stopped {
             return true;
         }
         let c = self.crates.playing_id();
-        if let Some(id) = self.crates.playing().current() {
-            self.dig_act(c, action(id));
-        }
+        let Some(id) = self.crates.playing().current() else {
+            return true;
+        };
+        let action = match key {
+            egui::Key::Y => {
+                let wanted = self
+                    .crates
+                    .playing()
+                    .get(id)
+                    .and_then(release_of)
+                    .is_some_and(|r| self.dig.as_ref().is_some_and(|d| d.memory.is_wanted(r)));
+                if wanted {
+                    DigAction::Unwant(vec![id])
+                } else {
+                    DigAction::Want(vec![id])
+                }
+            }
+            egui::Key::N => DigAction::Pass(id),
+            _ => DigAction::OpenForSale(id),
+        };
+        self.dig_act(c, action);
         true
     }
 
     pub(super) fn dig_act(&mut self, c: CrateId, a: DigAction) {
         match a {
-            DigAction::Keep(id) => self.dig_keep(c, id),
+            DigAction::Want(ids) => self.dig_want(c, &ids),
+            DigAction::Unwant(ids) => self.dig_unwant(c, &ids),
+            DigAction::Collect(ids) => self.dig_collect(c, &ids, false),
+            DigAction::RetryCollect(id) => self.dig_collect(c, &[id], true),
+            DigAction::RetryWant(id) => {
+                let Some(r) = self
+                    .crates
+                    .get(c)
+                    .and_then(|p| p.get(id))
+                    .and_then(release_of)
+                else {
+                    return;
+                };
+                let Some(d) = &mut self.dig else { return };
+                d.memory.retry_want(r);
+                let e = d.save_memory();
+                self.dig_notify(e);
+                self.dig_retry_wantlist();
+            }
             DigAction::Pass(id) => self.dig_pass(c, id),
             DigAction::UndoPass(id) => {
                 let Some(key) = self.crates.get(c).and_then(|p| p.get(id)).map(key_of) else {
@@ -1493,161 +1686,394 @@ impl WinampApp {
                     self.notify(format!("Could not open the browser: {err}"));
                 }
             }
+            DigAction::RefreshCollection => {
+                let Some(d) = &mut self.dig else { return };
+                if d.token.is_none() || d.refreshing_collection {
+                    return;
+                }
+                d.refreshing_collection = true;
+                // A sync already on its way does: the crate follows its answer.
+                d.sync_collection();
+            }
+            DigAction::RefreshWantlist => {
+                let Some(d) = &mut self.dig else { return };
+                if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {
+                    return;
+                }
+                d.refreshing_wantlist = true;
+                d.send(Command::ReadWants { fresh: true });
+            }
             DigAction::OpenDialog => self.dig_open_dialog(),
             DigAction::OpenBrowserDialog => self.dig_open_bridge_dialog(),
         }
     }
 
-    /// The Keepers crate: the one in the settings, else one named "Keepers", else a new one.
-    fn keepers(&mut self) -> Result<CrateId, String> {
+    /// Refresh wantlist / Refresh collection for one of the user's Discogs crates, in a crate
+    /// menu (only with a token; disabled while it runs).
+    pub(super) fn dig_refresh_item(
+        &self,
+        ui: &mut egui::Ui,
+        c: &crate::crates::CrateInfo,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(d) = self.dig.as_ref().filter(|d| d.token.is_some()) else {
+            return;
+        };
+        let (label, running, action) = if c.wantlist {
+            (
+                "Refresh wantlist",
+                d.refreshing_wantlist,
+                DigAction::RefreshWantlist,
+            )
+        } else if c.collection {
+            (
+                "Refresh collection",
+                d.refreshing_collection,
+                DigAction::RefreshCollection,
+            )
+        } else {
+            return;
+        };
+        let label = if running { "Refreshing…" } else { label };
+        if ui
+            .add_enabled(!running, egui::Button::new(label))
+            .on_hover_text("Make this crate match Discogs")
+            .clicked()
+        {
+            actions.push(Action::Dig(action));
+            ui.close();
+        }
+    }
+
+    /// After Refresh collection's sync: the collection crate takes in the records it lacks and
+    /// lets go of those no longer in the collection; the main window says what changed.
+    fn dig_collection_refreshed(&mut self, failed: Option<String>) {
+        let Some(d) = &mut self.dig else { return };
+        if !std::mem::take(&mut d.refreshing_collection) {
+            return;
+        }
+        if let Some(why) = failed {
+            return self.notify(format!("Refresh failed: {why}"));
+        }
+        let owned: Option<HashSet<u64>> = d
+            .collection
+            .as_ref()
+            .map(|c| c.releases.keys().copied().collect());
+        let (Some(coll), Some(owned)) = (self.collection_crate(), owned) else {
+            return;
+        };
+        if !self.crates.load(coll) {
+            return;
+        }
+        let present: HashSet<u64> = self
+            .crates
+            .get(coll)
+            .map(|p| p.entries().iter().filter_map(release_of).collect())
+            .unwrap_or_default();
+        let gone: HashSet<u64> = present.difference(&owned).copied().collect();
+        let new: Vec<u64> = owned.difference(&present).copied().collect();
+        let ids = self.entries_of(coll, &gone);
+        if let Some(p) = self.crates.get_mut(coll)
+            && p.remove_ids(&ids) > 0
+        {
+            self.mark_crate(coll);
+        }
+        let user = self
+            .dig
+            .as_ref()
+            .and_then(|d| d.identity.as_ref())
+            .map(|i| i.username.clone());
+        match user {
+            Some(u) if new.len() > FILL_ONE_BY_ONE => {
+                self.dig_fill(Page::new(url::PageKind::Collection(u)), coll);
+            }
+            _ => {
+                for &r in &new {
+                    self.dig_fill(Page::new(url::PageKind::Release(r)), coll);
+                }
+            }
+        }
+        self.notify(changes_line("Collection", new.len(), gone.len()));
+    }
+
+    /// The records of entries `ids` of crate `c`: each release once, with its first entry,
+    /// in crate order; and how many entries have no release (local files).
+    fn dig_records(&self, c: CrateId, ids: &[EntryId]) -> (Vec<(u64, Entry)>, usize) {
+        let Some(p) = self.crates.get(c) else {
+            return (Vec::new(), 0);
+        };
+        let mut seen = HashSet::new();
+        let mut records = Vec::new();
+        let mut local = 0;
+        for e in p.entries().iter().filter(|e| ids.contains(&e.id)) {
+            match release_of(e) {
+                Some(r) => {
+                    if seen.insert(r) {
+                        records.push((r, e.clone()));
+                    }
+                }
+                None => local += 1,
+            }
+        }
+        (records, local)
+    }
+
+    /// The wantlist crate: the one in the settings, else one named "Wantlist" (or, connected,
+    /// "Wantlist: ‹user›"), else a new one.
+    fn wantlist_crate(&mut self) -> Result<CrateId, String> {
         let Some(d) = &self.dig else {
             return Err("Digging is off".into());
         };
         if let Some(id) = d
             .settings
-            .keepers
+            .wantlist
             .filter(|&id| self.crates.info(id).is_some())
         {
             return Ok(id);
         }
-        let id = match self.crates.find(KEEPERS) {
-            Some(id) => id,
-            None => self.crates.create(KEEPERS)?,
+        let user = d
+            .token
+            .as_ref()
+            .and(d.identity.as_ref())
+            .map(|i| i.username.clone());
+        let name = match &user {
+            Some(u) => format!("{WANTLIST}: {u}"),
+            None => WANTLIST.to_owned(),
         };
+        let id = match self.crates.find(&name) {
+            Some(id) => id,
+            None => self.crates.create(&name)?,
+        };
+        if user.is_some() {
+            self.crates.set_wantlist(id, true);
+        }
         if let Some(d) = &mut self.dig {
-            d.settings.keepers = Some(id);
+            d.settings.wantlist = Some(id);
             let e = d.save_settings();
             self.dig_notify(e);
         }
         Ok(id)
     }
 
-    fn dig_keep(&mut self, c: CrateId, id: EntryId) {
-        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
-            return;
-        };
-        let key = key_of(&e);
-        if key.is_empty() {
-            return;
-        }
-        if self.dig.as_ref().is_some_and(|d| d.memory.is_kept(&key)) {
-            return self.dig_unkeep(&key, &e);
-        }
-        // Keeping puts it on the wantlist: ask first when the record is already owned.
-        if let Some(what) = self.dig_owned(&e)
-            && let Some(d) = &mut self.dig
-        {
-            d.confirm_keep = Some((
-                c,
-                id,
-                format!("{}: you already own {what}.", e.display_name()),
-            ));
-            return;
-        }
-        self.dig_keep_now(c, id);
+    /// The crate made from the user's collection, if there is one.
+    fn collection_crate(&self) -> Option<CrateId> {
+        self.crates
+            .list()
+            .iter()
+            .find(|c| c.collection)
+            .map(|c| c.id)
     }
 
-    /// Keeps an entry (the Keepers crate, the ✓, the wantlist), without asking.
-    fn dig_keep_now(&mut self, c: CrateId, id: EntryId) {
-        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
+    /// The entries of `releases` in crate `c` (loaded first).
+    fn entries_of(&mut self, c: CrateId, releases: &HashSet<u64>) -> Vec<EntryId> {
+        if !self.crates.load(c) {
+            return Vec::new();
+        }
+        self.crates
+            .get(c)
+            .map(|p| {
+                p.entries()
+                    .iter()
+                    .filter(|e| release_of(e).is_some_and(|r| releases.contains(&r)))
+                    .map(|e| e.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Takes the entries of `releases` out of the wantlist crate.
+    fn leave_wantlist_crate(&mut self, releases: &HashSet<u64>) {
+        let Some(wl) = self.dig.as_ref().and_then(|d| d.settings.wantlist) else {
             return;
         };
-        let key = key_of(&e);
-        let keepers = match self.keepers() {
-            Ok(k) => k,
-            Err(err) => return self.notify(err),
-        };
-        if c != keepers {
-            if let Err(err) = self.crates.send(c, &[id], keepers) {
-                return self.notify(err);
-            }
-            self.mark_crate(keepers);
+        let ids = self.entries_of(wl, releases);
+        if let Some(p) = self.crates.get_mut(wl)
+            && p.remove_ids(&ids) > 0
+        {
+            self.mark_crate(wl);
         }
-        let release = e.origin.as_ref().and_then(|o| o.release);
+    }
+
+    /// Fetches a record's clips into a crate it may only partly be in (no request when the
+    /// release is cached), without announcing it.
+    fn dig_fill(&mut self, page: Page, target: CrateId) {
         let Some(d) = &mut self.dig else { return };
-        d.memory.kept.insert(
-            key,
-            Kept {
-                release,
-                added_to_wantlist: false,
-                at: now_secs(),
-            },
-        );
-        let mut text = format!("Kept {}", e.display_name());
-        if let Some(r) = release {
-            if d.token.is_some() {
-                if d.memory.is_want_pending(r) {
-                    d.memory.queue_want(r, WantOp::Add);
-                } else {
-                    d.send(Command::Keep(r));
-                }
+        if !d.started() {
+            return;
+        }
+        let filters = Filters {
+            vinyl_only: false,
+            skip_passed: d.settings.skip_passed,
+        };
+        d.quiet.insert(target);
+        d.active.insert(target);
+        d.send(Command::Send {
+            page,
+            target,
+            filters,
+        });
+    }
+
+    /// Add to wantlist: each record (not owned, not wanted yet) is wanted, goes to the
+    /// wantlist crate and, with a token, to the Discogs wantlist.
+    fn dig_want(&mut self, c: CrateId, ids: &[EntryId]) {
+        let (records, local) = self.dig_records(c, ids);
+        if records.is_empty() {
+            if local > 0 && ids.len() == 1 {
+                let name = self
+                    .crates
+                    .get(c)
+                    .and_then(|p| p.get(ids[0]))
+                    .map(Entry::display_name)
+                    .unwrap_or_default();
+                self.notify(format!("{name} isn't from Discogs"));
+            }
+            return;
+        }
+        let mut added = Vec::new();
+        let (mut owned, mut already) = (Vec::new(), 0);
+        for (r, e) in &records {
+            if let Some(o) = self.dig.as_ref().and_then(|d| d.owned(e)) {
+                let what = match owned_short(&Some(o.clone())) {
+                    short if !short.is_empty() => short,
+                    _ => owned_text(&o),
+                };
+                owned.push((record_name(e), what));
+            } else if self.dig.as_ref().is_some_and(|d| d.memory.is_wanted(*r)) {
+                already += 1;
             } else {
-                text += " (a Discogs token is needed for the wantlist: Options ▸ Discogs…)";
+                added.push((*r, e.clone()));
             }
         }
-        let err = d.save_memory();
-        self.notify(text);
-        self.dig_notify(err);
-    }
-
-    fn dig_unkeep(&mut self, key: &str, e: &Entry) {
-        let keepers = self.dig.as_ref().and_then(|d| d.settings.keepers);
-        if let Some(k) = keepers
-            && self.crates.load(k)
-            && let Some(p) = self.crates.get_mut(k)
-        {
-            let ids: Vec<EntryId> = p
-                .entries()
-                .iter()
-                .filter(|x| key_of(x) == key)
-                .map(|x| x.id)
-                .collect();
-            for id in ids {
-                p.remove(id);
+        if !added.is_empty() {
+            let wl = match self.wantlist_crate() {
+                Ok(k) => k,
+                Err(err) => return self.notify(err),
+            };
+            let set: HashSet<u64> = added.iter().map(|(r, _)| *r).collect();
+            if c != wl {
+                let copies = self.entries_of(c, &set);
+                if let Err(err) = self.crates.send(c, &copies, wl) {
+                    return self.notify(err);
+                }
+                self.mark_crate(wl);
             }
-            self.mark_crate(k);
+            for (r, _) in &added {
+                self.dig_fill(Page::new(url::PageKind::Release(*r)), wl);
+            }
+            let Some(d) = &mut self.dig else { return };
+            for (r, _) in &added {
+                d.memory.wanted.insert(*r);
+                if d.token.is_some() {
+                    d.memory.queue_want(*r, WantOp::Add);
+                }
+            }
+            let err = d.save_memory();
+            self.dig_notify(err);
+            self.dig_retry_wantlist();
         }
         let Some(d) = &mut self.dig else { return };
-        let Some(kept) = d.memory.kept.remove(key) else {
-            return;
+        let anon = d.token.is_none();
+        let text = if records.len() == 1 {
+            match (added.first(), owned.first()) {
+                (Some((_, e)), _) if anon && d.settings.connect_hint_dismissed => format!(
+                    "Added {} to your wantlist (a Discogs token would add it to your Discogs \
+                     wantlist too: Options ▸ Discogs…)",
+                    record_name(e)
+                ),
+                (Some((_, e)), _) => format!("Added {} to your wantlist", record_name(e)),
+                (None, Some((name, what))) => {
+                    format!("{name} is already in your collection ({what})")
+                }
+                (None, None) => format!("{} is on your wantlist", record_name(&records[0].1)),
+            }
+        } else {
+            let mut text = format!("Added {} to your wantlist", records_label(added.len()));
+            let mut skipped = Vec::new();
+            if !owned.is_empty() {
+                skipped.push(format!(
+                    "{} skipped (already in your collection)",
+                    owned.len()
+                ));
+            }
+            if already > 0 {
+                skipped.push(format!("{already} already on it"));
+            }
+            if local > 0 {
+                skipped.push(format!("{local} not from Discogs"));
+            }
+            if !skipped.is_empty() {
+                text += "; ";
+                text += &skipped.join(", ");
+            }
+            text
         };
-        if let Some(r) = kept.release
-            && !d.memory.release_kept_elsewhere(r, key)
-        {
-            if d.memory.wantlist_pending.contains(&(r, WantOp::Add)) {
-                d.memory.queue_want(r, WantOp::Remove); // cancels the add
-            } else if kept.added_to_wantlist {
-                d.send(Command::Unkeep(r));
+        if anon && !added.is_empty() && !d.settings.connect_hint_dismissed {
+            d.connect = Some(ConnectDialog {
+                from_wantlist: true,
+            });
+        }
+        self.notify(text);
+    }
+
+    /// Remove from wantlist: the records leave the wantlist crate and the Discogs wantlist,
+    /// whoever put them there.
+    fn dig_unwant(&mut self, c: CrateId, ids: &[EntryId]) {
+        let (records, _) = self.dig_records(c, ids);
+        let Some(d) = &self.dig else { return };
+        let gone: Vec<(u64, Entry)> = records
+            .into_iter()
+            .filter(|(r, _)| d.memory.is_wanted(*r))
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        let set: HashSet<u64> = gone.iter().map(|(r, _)| *r).collect();
+        self.leave_wantlist_crate(&set);
+        self.dig_forget_wanted(&set);
+        self.notify(match gone.as_slice() {
+            [(_, e)] => format!("Removed {} from your wantlist", record_name(e)),
+            _ => format!("Removed {} from your wantlist", records_label(gone.len())),
+        });
+    }
+
+    /// `releases` are no longer wanted: here, and (with a token) on Discogs.
+    fn dig_forget_wanted(&mut self, releases: &HashSet<u64>) {
+        let Some(d) = &mut self.dig else { return };
+        for &r in releases {
+            if d.memory.wanted.remove(&r) && d.token.is_some() {
+                d.memory.queue_want(r, WantOp::Remove);
             }
         }
         let err = d.save_memory();
-        self.notify(format!("No longer kept: {}", e.display_name()));
         self.dig_notify(err);
+        self.dig_retry_wantlist();
     }
 
     fn dig_wantlist_result(&mut self, release: u64, add: bool, result: Result<bool, ApiError>) {
         let Some(d) = &mut self.dig else { return };
         let op = if add { WantOp::Add } else { WantOp::Remove };
+        d.want_inflight.remove(&(release, op));
         let message = match result {
-            Ok(changed) => {
+            Ok(_) => {
                 d.memory.want_done(release, op);
-                if add && changed {
-                    for k in d.memory.kept.values_mut() {
-                        if k.release == Some(release) {
-                            k.added_to_wantlist = true;
-                        }
-                    }
+                // The user changed their mind while it was on its way.
+                let wanted = d.memory.is_wanted(release);
+                if add != wanted && !d.memory.is_want_pending(release) {
+                    d.memory
+                        .queue_want(release, if wanted { WantOp::Add } else { WantOp::Remove });
                 }
                 None
             }
-            Err(e @ (ApiError::TokenNeeded | ApiError::TokenRejected)) => {
-                d.memory.want_done(release, op);
-                Some(e.message())
-            }
-            Err(ApiError::Offline | ApiError::Other(_)) => {
-                d.memory.queue_want(release, op);
+            Err(ApiError::Offline) => {
+                d.memory
+                    .want_failed(release, op, now_secs(), true, "Discogs offline");
                 None
             }
+            Err(e @ ApiError::Other(_)) => d
+                .memory
+                .want_failed(release, op, now_secs(), false, &e.message())
+                .map(|err| format!("Wantlist change failed for release {release}: {err}")),
             Err(e) => {
                 d.memory.want_done(release, op);
                 Some(e.message())
@@ -1656,6 +2082,96 @@ impl WinampApp {
         let err = d.save_memory();
         self.dig_notify(message);
         self.dig_notify(err);
+        self.dig_retry_wantlist();
+    }
+
+    /// Add to collection: one copy of each record not owned in this pressing (with `check`,
+    /// a retry that first asks Discogs whether the add went through).
+    fn dig_collect(&mut self, c: CrateId, ids: &[EntryId], check: bool) {
+        let Some(d) = &mut self.dig else { return };
+        if d.token.is_none() {
+            d.connect = Some(ConnectDialog {
+                from_wantlist: false,
+            });
+            return;
+        }
+        let (records, _) = self.dig_records(c, ids);
+        let Some(d) = &self.dig else { return };
+        let todo: Vec<(u64, Entry)> = records
+            .into_iter()
+            .filter(|(r, e)| {
+                !matches!(d.owned(e), Some(Owned::ThisPressing)) && !d.collecting.contains_key(r)
+            })
+            .collect();
+        let Some(d) = &mut self.dig else { return };
+        for (r, _) in &todo {
+            d.collecting.insert(*r, c);
+            d.collect_failed.remove(r);
+            d.send(Command::Collect { release: *r, check });
+        }
+        match todo.as_slice() {
+            [] => {}
+            [(_, e)] => self.notify(format!("Adding {} to your collection…", record_name(e))),
+            _ => self.notify(format!(
+                "Adding {} to your collection…",
+                records_label(todo.len())
+            )),
+        }
+    }
+
+    /// Discogs took (or refused) a collection add.
+    fn dig_collected(&mut self, release: u64, result: Result<(u64, Pressing), ApiError>) {
+        let Some(d) = &mut self.dig else { return };
+        let from = d.collecting.remove(&release);
+        let set = HashSet::from([release]);
+        let name = from
+            .and_then(|c| {
+                let p = self.crates.get(c)?;
+                p.entries().iter().find(|e| release_of(e) == Some(release))
+            })
+            .map(record_name)
+            .unwrap_or_else(|| format!("release {release}"));
+        let Some(d) = &mut self.dig else { return };
+        let (instance, pressing) = match result {
+            Ok(ok) => ok,
+            Err(e) => {
+                let msg = e.message();
+                d.collect_failed
+                    .insert(release, (from.unwrap_or(PLAYLIST), msg.clone()));
+                return self.notify(format!("Could not add {name} to your collection: {msg}"));
+            }
+        };
+        // Owned from now on, without a sync.
+        let user = d.identity.as_ref().map(|i| i.username.clone());
+        let mut c = d
+            .collection
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| Collection::new(&user.unwrap_or_default(), now_secs()));
+        if d.collection_syncing {
+            d.local_adds.push((instance, release, pressing.clone()));
+        }
+        c.insert(instance, release, pressing);
+        let saved = d
+            .setup
+            .cache_root
+            .as_deref()
+            .and_then(|root| c.save(root).err())
+            .map(|e| format!("Could not save the collection: {e}"));
+        d.collection = Some(Arc::new(c));
+        d.share_collection();
+        self.dig_notify(saved);
+        // Bought: off the wantlist, out of its crate, into the collection's.
+        let copies = from.map(|c| (c, self.entries_of(c, &set)));
+        if let (Some(coll), Some((src, ids))) = (self.collection_crate(), copies)
+            && src != coll
+            && self.crates.send(src, &ids, coll).is_ok_and(|n| n > 0)
+        {
+            self.mark_crate(coll);
+        }
+        self.leave_wantlist_crate(&set);
+        self.dig_forget_wanted(&set);
+        self.notify(format!("Added {name} to your collection"));
     }
 
     fn dig_pass(&mut self, c: CrateId, id: EntryId) {
@@ -1664,8 +2180,11 @@ impl WinampApp {
         };
         let key = key_of(&e);
         let Some(d) = &mut self.dig else { return };
-        if d.memory.is_kept(&key) {
-            return self.notify(format!("{} is kept (Y undoes the keep)", e.display_name()));
+        if release_of(&e).is_some_and(|r| d.memory.is_wanted(r)) {
+            return self.notify(format!(
+                "{} is on your wantlist (Y removes it)",
+                record_name(&e)
+            ));
         }
         d.memory.passed.insert(key, now_secs());
         let err = d.save_memory();
@@ -1679,30 +2198,356 @@ impl WinampApp {
         }
     }
 
+    // ---- the wantlist crate and the account ------------------------------------------------
+
+    /// Once, on the first launch after wanting replaced keeping: the Keepers crate becomes
+    /// the wantlist crate, named "Wantlist" unless that name is taken.
+    fn dig_migrate_keepers(&mut self) {
+        let Some(d) = &self.dig else { return };
+        if d.settings.wantlist_named {
+            return;
+        }
+        let id = d
+            .settings
+            .wantlist
+            .filter(|&id| self.crates.info(id).is_some())
+            .or_else(|| self.crates.find(KEEPERS));
+        if let Some(id) = id
+            && self.crates.name(id).eq_ignore_ascii_case(KEEPERS)
+            && self.crates.find(WANTLIST).is_none()
+        {
+            let _ = self.crates.rename(id, WANTLIST);
+        }
+        let Some(d) = &mut self.dig else { return };
+        d.settings.wantlist = id;
+        d.settings.wantlist_named = true;
+        let e = d.save_settings();
+        self.dig_notify(e);
+    }
+
+    /// Once the account is known (each session, and after a new token): the wantlist crate
+    /// is "Wantlist: ‹user›" in the DISCOGS group (merged into one sent before), and the
+    /// Discogs wantlist is read to follow it.
+    fn dig_connect_wantlist(&mut self) {
+        let shown = self.crates.shown_id();
+        let Some(d) = &mut self.dig else { return };
+        if d.token.is_none() || !d.started() {
+            return;
+        }
+        // Something to follow (wanted records, changes waiting, the crate on screen), and no
+        // dig has asked whose token it is yet: ask, once.
+        let something = !d.memory.wanted.is_empty()
+            || !d.memory.wantlist_pending.is_empty()
+            || d.settings.wantlist == Some(shown);
+        if d.identity.is_none() && something && !d.identify_asked {
+            d.identify_asked = true;
+            d.send(Command::Identify);
+        }
+        let Some(id) = &d.identity else {
+            return;
+        };
+        if !d.started() || d.connected.as_deref() == Some(id.username.as_str()) {
+            return;
+        }
+        let user = id.username.clone();
+        let name: String = format!("{WANTLIST}: {user}")
+            .chars()
+            .take(MAX_NAME)
+            .collect();
+        let local = d
+            .settings
+            .wantlist
+            .filter(|&id| self.crates.info(id).is_some());
+        let existing = self.crates.find(&name);
+        let wl = match (local, existing) {
+            (Some(l), Some(e)) if l != e => {
+                let ids: Vec<EntryId> = if self.crates.load(l) {
+                    self.crates
+                        .get(l)
+                        .map(|p| p.entries().iter().map(|e| e.id).collect())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                match self.crates.send(l, &ids, e) {
+                    Ok(_) => {
+                        self.mark_crate(e);
+                        // The merged entries are on disk before their old crate goes (one
+                        // that plays stays, unmarked).
+                        let failed = self.crates.save_due(true, Duration::ZERO);
+                        if failed.is_empty() && l != self.crates.playing_id() {
+                            self.delete_crate(l);
+                        }
+                    }
+                    Err(err) => self.notify(err),
+                }
+                e
+            }
+            (Some(l), _) => {
+                if self.crates.name(l) != name {
+                    let _ = self.crates.rename(l, &name);
+                }
+                l
+            }
+            (None, Some(e)) => e,
+            (None, None) => match self.crates.create(&name) {
+                Ok(id) => id,
+                Err(err) => return self.notify(err),
+            },
+        };
+        self.crates.set_wantlist(wl, true);
+        let Some(d) = &mut self.dig else { return };
+        d.connected = Some(user);
+        d.settings.wantlist = Some(wl);
+        let e = d.save_settings();
+        d.send(Command::ReadWants { fresh: false });
+        self.dig_notify(e);
+    }
+
+    /// The Discogs wantlist arrived. For a newly connected account, the records wanted here
+    /// are added to it; otherwise the crate follows it (records removed on discogs.com
+    /// leave). Records missing from the crate are fetched into it.
+    fn dig_wants(&mut self, result: Result<Vec<u64>, ApiError>) {
+        let refresh = self
+            .dig
+            .as_mut()
+            .is_some_and(|d| std::mem::take(&mut d.refreshing_wantlist));
+        let wants = match result {
+            Ok(w) => w,
+            Err(e) => {
+                if refresh {
+                    self.notify(format!("Refresh failed: {}", e.message()));
+                }
+                return;
+            }
+        };
+        let Some(wl) = self.dig.as_ref().and_then(|d| d.settings.wantlist) else {
+            return;
+        };
+        if !self.crates.load(wl) {
+            return;
+        }
+        let remote: HashSet<u64> = wants.into_iter().collect();
+        let masters: HashMap<u64, Option<u64>> = self
+            .crates
+            .get(wl)
+            .map(|p| {
+                p.entries()
+                    .iter()
+                    .filter_map(|e| Some((release_of(e)?, e.origin.as_ref()?.master)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(d) = &mut self.dig else { return };
+        let Some(user) = d.identity.as_ref().map(|i| i.username.clone()) else {
+            return;
+        };
+        let first = d.memory.synced_user.as_deref() != Some(user.as_str());
+        let local: Vec<u64> = d.memory.wanted.iter().copied().collect();
+        let mut gone = HashSet::new();
+        for r in local.into_iter().filter(|r| !remote.contains(r)) {
+            if d.memory.is_want_pending(r) || d.memory.want_failure(r).is_some() {
+                continue;
+            }
+            let owned = d.collection.as_ref().is_some_and(|c| {
+                c.owned(Some(r), masters.get(&r).copied().flatten())
+                    .is_some()
+            });
+            if first && !owned {
+                d.memory.queue_want(r, WantOp::Add);
+            } else {
+                d.memory.wanted.remove(&r);
+                gone.insert(r);
+            }
+        }
+        let removing: HashSet<u64> = d
+            .memory
+            .wantlist_pending
+            .iter()
+            .filter(|p| p.op == WantOp::Remove)
+            .map(|p| p.release)
+            .collect();
+        d.memory
+            .wanted
+            .extend(remote.iter().filter(|r| !removing.contains(r)));
+        d.memory.synced_user = Some(user.clone());
+        let err = d.save_memory();
+        self.dig_notify(err);
+        self.leave_wantlist_crate(&gone);
+        // Records wanted but not in the crate: fetched into it (the whole wantlist when many).
+        let present: HashSet<u64> = self
+            .crates
+            .get(wl)
+            .map(|p| p.entries().iter().filter_map(release_of).collect())
+            .unwrap_or_default();
+        let Some(d) = &self.dig else { return };
+        let missing: Vec<u64> = d
+            .memory
+            .wanted
+            .iter()
+            .copied()
+            .filter(|r| !present.contains(r))
+            .collect();
+        let new = missing.len();
+        if missing.len() > FILL_ONE_BY_ONE {
+            self.dig_fill(Page::new(url::PageKind::Wantlist(user)), wl);
+        } else {
+            for r in missing {
+                self.dig_fill(Page::new(url::PageKind::Release(r)), wl);
+            }
+        }
+        self.dig_retry_wantlist();
+        if refresh {
+            self.notify(changes_line("Wantlist", new, gone.len()));
+        }
+    }
+
+    /// A sync found wanted records the user now owns: they leave the wantlist.
+    fn dig_owned_wants(&mut self, releases: Vec<u64>) {
+        let set: HashSet<u64> = releases.into_iter().collect();
+        if let Some(d) = &mut self.dig {
+            // On Discogs even if this app didn't know they were wanted.
+            for &r in &set {
+                d.memory.wanted.insert(r);
+            }
+        }
+        self.leave_wantlist_crate(&set);
+        self.dig_forget_wanted(&set);
+        self.notify(format!(
+            "Removed {} you now own from your wantlist",
+            records_label(set.len())
+        ));
+    }
+
+    /// Before entries of the shown crate are removed: when that leaves a wanted record with
+    /// no entry in the wantlist crate, a connected account is asked first (true: asked, don't
+    /// remove yet); without a token the record is simply no longer wanted.
+    pub(super) fn dig_before_remove(&mut self, ids: &[EntryId]) -> bool {
+        let c = self.crates.shown_id();
+        let Some(d) = &self.dig else { return false };
+        if d.settings.wantlist != Some(c) {
+            return false;
+        }
+        let p = self.crates.shown();
+        let leaving: HashSet<u64> = p
+            .entries()
+            .iter()
+            .filter(|e| ids.contains(&e.id))
+            .filter_map(release_of)
+            .filter(|&r| d.memory.is_wanted(r))
+            .filter(|&r| {
+                p.entries()
+                    .iter()
+                    .all(|e| release_of(e) != Some(r) || ids.contains(&e.id))
+            })
+            .collect();
+        if leaving.is_empty() {
+            return false;
+        }
+        if d.token.is_none() {
+            self.dig_forget_wanted(&leaving);
+            return false;
+        }
+        if let Some(d) = &mut self.dig {
+            d.confirm_unwant = Some(UnwantConfirm {
+                crate_id: c,
+                ids: ids.to_vec(),
+                releases: leaving,
+            });
+        }
+        true
+    }
+
     // ---- the entry menu ------------------------------------------------------------------
 
     pub(super) fn dig_entry_menu(&self, ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<Action>) {
         let Some(d) = &self.dig else { return };
-        let (kept, passed, _) = d.marks(e);
+        let shown = self.crates.shown();
+        let ids = if shown.is_selected(e.id) {
+            shown.selected_ids()
+        } else {
+            vec![e.id]
+        };
+        let (records, _) = self.dig_records(self.crates.shown_id(), &ids);
+        let marks = d.marks(e);
         ui.separator();
-        let items = [
-            (
-                if kept { "Undo keep" } else { "Keep (Y)" },
-                DigAction::Keep(e.id),
-            ),
-            if passed {
-                ("Undo pass", DigAction::UndoPass(e.id))
+        let mut item = |ui: &mut egui::Ui, label: String, a: Option<DigAction>, tip: &str| {
+            let r = ui.add_enabled(a.is_some(), egui::Button::new(label));
+            let r = if tip.is_empty() {
+                r
             } else {
-                ("Pass (N)", DigAction::Pass(e.id))
-            },
-            ("Open for-sale page (I)", DigAction::OpenForSale(e.id)),
-        ];
-        for (label, a) in items {
-            if ui.button(label).clicked() {
+                r.on_hover_text(tip).on_disabled_hover_text(tip)
+            };
+            if r.clicked()
+                && let Some(a) = a
+            {
                 actions.push(Action::Dig(a));
                 ui.close();
             }
+        };
+        if let Some(r) = release_of(e) {
+            let owned = d.owned(e);
+            let what = owned.as_ref().map(owned_text).unwrap_or_default();
+            if records.len() > 1 {
+                let n = records.len();
+                if marks.wanted {
+                    let label = format!("Remove {} from wantlist", records_label(n));
+                    item(ui, label, Some(DigAction::Unwant(ids.clone())), "");
+                } else {
+                    let label = format!("Add {} to wantlist", records_label(n));
+                    item(ui, label, Some(DigAction::Want(ids.clone())), "");
+                }
+                let label = format!("Add {} to collection", records_label(n));
+                item(ui, label, Some(DigAction::Collect(ids.clone())), "");
+            } else {
+                if owned.is_some() {
+                    item(
+                        ui,
+                        "In collection ✓".into(),
+                        None,
+                        &format!("Owned: {what}"),
+                    );
+                } else if marks.wantlist_failed.is_some() {
+                    item(
+                        ui,
+                        "Retry wantlist".into(),
+                        Some(DigAction::RetryWant(e.id)),
+                        "",
+                    );
+                } else if marks.wanted {
+                    let a = DigAction::Unwant(vec![e.id]);
+                    item(ui, "Remove from wantlist (Y)".into(), Some(a), "");
+                } else {
+                    let a = DigAction::Want(vec![e.id]);
+                    item(ui, "Add to wantlist (Y)".into(), Some(a), "");
+                }
+                match &owned {
+                    Some(Owned::ThisPressing) => {}
+                    _ if d.collect_failed.contains_key(&r) => {
+                        let a = DigAction::RetryCollect(e.id);
+                        item(ui, "Retry add to collection".into(), Some(a), "");
+                    }
+                    _ if d.collecting.contains_key(&r) => {
+                        item(ui, "Adding to collection…".into(), None, "");
+                    }
+                    Some(Owned::Another { .. }) => {
+                        let label = format!("Add to collection (own {})", owned_short(&owned));
+                        item(ui, label, Some(DigAction::Collect(vec![e.id])), "");
+                    }
+                    None => {
+                        let a = DigAction::Collect(vec![e.id]);
+                        item(ui, "Add to collection".into(), Some(a), "");
+                    }
+                }
+            }
         }
+        if marks.passed {
+            item(ui, "Undo pass".into(), Some(DigAction::UndoPass(e.id)), "");
+        } else {
+            item(ui, "Pass (N)".into(), Some(DigAction::Pass(e.id)), "");
+        }
+        let a = DigAction::OpenForSale(e.id);
+        item(ui, "Open for-sale page (I)".into(), Some(a), "");
         if let Some(url) = entry_record_url(e) {
             if ui.button("Open release on Discogs").clicked() {
                 actions.push(Action::Dig(DigAction::OpenRecord(e.id)));
@@ -1740,7 +2585,7 @@ impl WinampApp {
                     d.token = Some(token);
                     let name = id.username.clone();
                     d.identity = Some(id);
-                    d.last_retry = None;
+                    d.connected = None;
                     d.share_collection();
                     Ok(name)
                 }
@@ -1772,19 +2617,88 @@ impl WinampApp {
         }
     }
 
-    /// "You already own this record": Keep anyway (Enter) or Cancel (Esc).
-    fn dig_confirm_keep_ui(&mut self, ctx: &egui::Context) {
-        let Some((c, id, text)) = self.dig.as_ref().and_then(|d| d.confirm_keep.clone()) else {
+    /// "Connect to Discogs": what a token gives, and how to get one.
+    fn dig_connect_ui(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.dig.as_ref().and_then(|d| d.connect.clone()) else {
+            return;
+        };
+        let mut dismiss = false;
+        let (mut close, mut connect, mut open_page) = (false, false, false);
+        egui::Modal::new(egui::Id::new("connect-discogs")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.strong("Connect to Discogs");
+            if dialog.from_wantlist {
+                ui.label("Added to your wantlist here.");
+            }
+            ui.label(
+                "If you have a collection on Discogs, you can keep it up to date from here: \
+                 add records to your wantlist or collection while you dig, and see at a glance \
+                 what you already own. It only takes connecting your account:",
+            );
+            ui.horizontal(|ui| {
+                ui.label("1. Open your Discogs developer settings");
+                if ui.button("Open ↗").clicked() {
+                    open_page = true;
+                }
+            });
+            ui.label("2. Click \"Generate new token\" and copy it");
+            ui.label("3. Paste it in Options ▸ Discogs…");
+            ui.separator();
+            ui.horizontal(|ui| {
+                if dialog.from_wantlist {
+                    ui.checkbox(&mut dismiss, "Don't show this again");
+                }
+                if ui.button("Later").clicked() {
+                    close = true;
+                }
+                if ui.button("Connect…").clicked() {
+                    connect = true;
+                }
+            });
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        if open_page {
+            let err = self
+                .dig
+                .as_ref()
+                .and_then(|d| d.setup.browser.open(TOKEN_PAGE).err());
+            self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
+        }
+        let Some(d) = &mut self.dig else { return };
+        if dismiss {
+            d.settings.connect_hint_dismissed = true;
+            let e = d.save_settings();
+            d.connect = None;
+            self.dig_notify(e);
+        } else if close || connect {
+            d.connect = None;
+        }
+        if connect {
+            self.dig_open_dialog();
+            if let Some(dialog) = self.dig.as_mut().and_then(|d| d.dialog.as_mut()) {
+                dialog.focus_token = 3;
+            }
+        }
+    }
+
+    /// "Remove N records from your Discogs wantlist?" before the wantlist crate loses them:
+    /// Remove (Enter) or Cancel (Esc).
+    fn dig_confirm_unwant_ui(&mut self, ctx: &egui::Context) {
+        let Some(ask) = self.dig.as_ref().and_then(|d| d.confirm_unwant.clone()) else {
             return;
         };
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("confirm-keep")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new("confirm-unwant")).show(ctx, |ui| {
             ui.set_max_width(360.0);
-            ui.strong("Already in your collection");
-            ui.label(&text);
-            ui.label("Keep it anyway? It will be added to your Discogs wantlist.");
+            ui.strong(format!(
+                "Remove {} from your Discogs wantlist?",
+                records_label(ask.releases.len())
+            ));
+            ui.label("They leave this crate and your wantlist on Discogs.");
             ui.horizontal(|ui| {
-                if ui.button("Keep anyway").clicked() {
+                if ui.button("Remove").clicked() {
                     choice = Some(true);
                 }
                 if ui.button("Cancel").clicked() {
@@ -1797,23 +2711,38 @@ impl WinampApp {
         } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             choice = Some(false);
         }
-        if let Some(keep) = choice {
-            if let Some(d) = &mut self.dig {
-                d.confirm_keep = None;
-            }
-            if keep {
-                self.dig_keep_now(c, id);
-            }
+        let Some(remove) = choice else { return };
+        if let Some(d) = &mut self.dig {
+            d.confirm_unwant = None;
+        }
+        if remove {
+            self.dig_confirmed_unwant(ask);
         }
     }
 
-    /// A question is open (the keep confirmation): shortcuts wait.
+    fn dig_confirmed_unwant(&mut self, ask: UnwantConfirm) {
+        if let Some(p) = self.crates.get_mut(ask.crate_id)
+            && p.remove_ids(&ask.ids) > 0
+        {
+            self.mark_crate(ask.crate_id);
+        }
+        self.dig_forget_wanted(&ask.releases);
+        self.notify(format!(
+            "Removed {} from your wantlist",
+            records_label(ask.releases.len())
+        ));
+    }
+
+    /// A question is open (connect, or removing from the wantlist): shortcuts wait.
     pub(super) fn dig_asking(&self) -> bool {
-        self.dig.as_ref().is_some_and(|d| d.confirm_keep.is_some())
+        self.dig
+            .as_ref()
+            .is_some_and(|d| d.connect.is_some() || d.confirm_unwant.is_some())
     }
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
-        self.dig_confirm_keep_ui(ctx);
+        self.dig_connect_ui(ctx);
+        self.dig_confirm_unwant_ui(ctx);
         let Some(d) = &mut self.dig else { return };
         let collection_line = d.collection_line();
         let collection_syncing = d.collection_syncing;
@@ -1849,12 +2778,18 @@ impl WinampApp {
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.add(
+                    let field = ui.add(
                         egui::TextEdit::singleline(&mut dialog.token)
                             .password(true)
                             .hint_text("Personal access token")
                             .desired_width(200.0),
                     );
+                    if dialog.focus_token > 0 {
+                        field.request_focus();
+                        if field.has_focus() {
+                            dialog.focus_token -= 1;
+                        }
+                    }
                     let can = !dialog.token.trim().is_empty() && !dialog.checking;
                     if ui
                         .add_enabled(can, egui::Button::new("Check and save"))
@@ -1956,8 +2891,13 @@ impl WinampApp {
             }
             d.token = None;
             d.identity = None;
+            d.connected = None;
             commands.push(Command::SetToken(None));
             d.share_collection();
+            // Unconnected, the wantlist crate is one of the user's own again.
+            if let Some(wl) = d.settings.wantlist {
+                self.crates.set_wantlist(wl, false);
+            }
         }
         if refresh_collection {
             d.sync_collection();
@@ -2140,8 +3080,9 @@ impl WinampApp {
         d.jobs.retain(|_, j| j.target != id);
         d.active.remove(&id);
         d.focus.remove(&id);
-        if d.settings.keepers == Some(id) {
-            d.settings.keepers = None;
+        d.quiet.remove(&id);
+        if d.settings.wantlist == Some(id) {
+            d.settings.wantlist = None;
             let _ = d.save_settings();
         }
     }

@@ -863,22 +863,10 @@ impl WinampApp {
     /// Kept, passed and wantlist-pending marks for a playlist row.
     /// "this pressing", or "another pressing (AF014, 2018)", when the entry's record is in
     /// the user's collection.
+    /// What of the entry's record the user owns: "this pressing", "another pressing (…)".
     fn dig_owned(&self, e: &crate::playlist::Entry) -> Option<String> {
         #[cfg(not(target_arch = "wasm32"))]
-        return self.dig.as_ref()?.owned(e).map(|o| match o {
-            ::dig::collection::Owned::ThisPressing => "this pressing".to_owned(),
-            ::dig::collection::Owned::Another { catno, year } => {
-                let parts: Vec<String> = [catno, year.map(|y| y.to_string()).unwrap_or_default()]
-                    .into_iter()
-                    .filter(|p| !p.is_empty())
-                    .collect();
-                if parts.is_empty() {
-                    "another pressing".to_owned()
-                } else {
-                    format!("another pressing ({})", parts.join(", "))
-                }
-            }
-        });
+        return self.dig.as_ref()?.owned(e).map(|o| digging::owned_text(&o));
         #[cfg(target_arch = "wasm32")]
         {
             let _ = e;
@@ -886,16 +874,33 @@ impl WinampApp {
         }
     }
 
-    fn dig_marks(&self, e: &crate::playlist::Entry) -> (bool, bool, bool) {
+    /// An entry's dig marks in the shown crate. In the collection's own crate (or entries
+    /// sent from the collection page) everything is owned, so no OWNED badge there.
+    fn dig_marks(&self, e: &crate::playlist::Entry) -> format::DigMarks {
         #[cfg(not(target_arch = "wasm32"))]
-        return self
-            .dig
-            .as_ref()
-            .map_or((false, false, false), |d| d.marks(e));
+        {
+            let Some(d) = &self.dig else {
+                return format::DigMarks::default();
+            };
+            let m = d.marks(e);
+            let from_collection = e.origin.as_ref().is_some_and(|o| {
+                ::dig::discogs::url::parse(&o.page)
+                    .is_ok_and(|p| matches!(p.kind, ::dig::discogs::url::PageKind::Collection(_)))
+            });
+            let badge = !from_collection && !self.crates.is_collection(self.crates.shown_id());
+            format::DigMarks {
+                wanted: m.wanted,
+                passed: m.passed,
+                wantlist_pending: m.wantlist_pending,
+                wantlist_failed: m.wantlist_failed,
+                collection_failed: m.collection_failed,
+                owned: if badge { self.dig_owned(e) } else { None },
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = e;
-            (false, false, false)
+            format::DigMarks::default()
         }
     }
 
@@ -1331,7 +1336,18 @@ impl WinampApp {
     }
 
     fn remove_selected(&mut self) {
-        if self.crates.shown_mut().remove_selected() > 0 {
+        let ids = self.crates.shown().selected_ids();
+        self.remove_entries(&ids);
+    }
+
+    /// Removes entries of the shown crate (Remove, Remove album, Delete). Taking a whole
+    /// record out of the wantlist crate asks first, as it leaves the Discogs wantlist too.
+    fn remove_entries(&mut self, ids: &[EntryId]) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.dig_before_remove(ids) {
+            return;
+        }
+        if self.crates.shown_mut().remove_ids(ids) > 0 {
             self.mark_shown();
         }
     }
@@ -2000,8 +2016,11 @@ impl WinampApp {
             .list()
             .iter()
             .cloned()
-            .partition(|c| !c.collection);
-        // The collection group (DISCOGS and its crates) is anchored to the bottom.
+            .partition(|c| !c.discogs());
+        // The Discogs group (DISCOGS, the wantlist then the collection) is anchored to the
+        // bottom.
+        let mut collection = collection;
+        collection.sort_by_key(|c| !c.wantlist);
         let group = if collection.is_empty() {
             0
         } else {
@@ -2056,7 +2075,7 @@ impl WinampApp {
                     lerp_color(colors.pl_selected_bg, colors.pl_bg, 0.5),
                 );
             }
-            let base = if c.collection {
+            let base = if c.discogs() {
                 colors.pl_owned
             } else if c.id == shown {
                 colors.pl_current
@@ -2090,7 +2109,7 @@ impl WinampApp {
                         ),
                     );
                 }
-                None if c.collection => {
+                None if c.discogs() => {
                     let centre = slot + vec2(4.0 * scale, 0.0);
                     painter.circle_stroke(centre, 3.5 * scale, egui::Stroke::new(scale, col));
                     painter.circle_filled(centre, scale, col);
@@ -2130,6 +2149,8 @@ impl WinampApp {
                 );
                 if c.collection {
                     tip += "\nYour Discogs collection";
+                } else if c.wantlist {
+                    tip += "\nYour Discogs wantlist";
                 }
                 match live {
                     Some(PlayState::Playing) => tip += "\nPlaying from this crate",
@@ -2178,6 +2199,10 @@ impl WinampApp {
                             .small(),
                         );
                         return;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if c.discogs() {
+                        self.dig_refresh_item(ui, c, actions);
                     }
                     if ui
                         .add_enabled(readable, egui::Button::new("Rename crate…"))
@@ -2607,17 +2632,23 @@ impl WinampApp {
                 }
                 let current = shown.current() == Some(e.id);
                 let (mut col, dur) = row_look(e, current, &d.colors);
-                let (kept, passed, pending) = self.dig_marks(e);
-                let owned = self.dig_owned(e);
-                if passed {
+                let marks = self.dig_marks(e);
+                let owned = marks.owned.clone();
+                if marks.passed {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
                 }
+                let failed = marks.wantlist_failed.is_some() || marks.collection_failed.is_some();
                 let marked = |name: String| {
                     format!(
-                        "{}{name}{}",
-                        if kept { "✓ " } else { "" },
-                        if pending { " (wantlist pending)" } else { "" }
+                        "{}{}{name}{}",
+                        if failed { "⚠ " } else { "" },
+                        if marks.wanted { "✓ " } else { "" },
+                        if marks.wantlist_pending {
+                            " (wantlist pending)"
+                        } else {
+                            ""
+                        }
                     )
                 };
                 if columns {
@@ -2696,13 +2727,7 @@ impl WinampApp {
                 let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
-                    let marks = format::DigMarks {
-                        kept,
-                        passed,
-                        wantlist_pending: pending,
-                        owned: owned.clone(),
-                    };
-                    let details = format::entry_details(e, marks, unix_now());
+                    let details = format::entry_details(e, marks.clone(), unix_now());
                     // Only what's in memory: the cover worker reads files and fetches.
                     #[cfg(not(target_arch = "wasm32"))]
                     let cover = self.dig.as_mut().and_then(|d| d.covers.slot(ui.ctx(), e));
@@ -3114,7 +3139,10 @@ impl WinampApp {
         let live = self.position.state != PlayState::Stopped;
         // The user's crates, then their Discogs collection under its own heading.
         let (mine, collection): (Vec<_>, Vec<_>) =
-            self.crates.list().iter().partition(|c| !c.collection);
+            self.crates.list().iter().partition(|c| !c.discogs());
+        let mut collection = collection;
+        collection.sort_by_key(|c| !c.wantlist);
+        let discogs = collection.clone();
         for (i, group) in [mine, collection].into_iter().enumerate() {
             if i == 1 && !group.is_empty() {
                 ui.separator();
@@ -3132,6 +3160,16 @@ impl WinampApp {
                 }
             }
         }
+        // Refresh wantlist / collection, for the Discogs crates (with a token).
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.dig.as_ref().is_some_and(|d| d.has_token()) && !discogs.is_empty() {
+            ui.separator();
+            for c in discogs {
+                self.dig_refresh_item(ui, c, actions);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = discogs;
         ui.separator();
         if ui.button("New crate…").clicked() {
             actions.push(Action::NewCrate);
@@ -3356,19 +3394,15 @@ impl WinampApp {
                 }
             }
             Action::RemoveEntry(entry) => {
-                let p = self.crates.shown_mut();
-                if p.is_selected(entry) {
+                if self.crates.shown().is_selected(entry) {
                     self.remove_selected();
-                } else if p.remove(entry) {
-                    self.mark_shown();
+                } else {
+                    self.remove_entries(&[entry]);
                 }
             }
             Action::RemoveAlbum(entry) => {
-                let p = self.crates.shown_mut();
-                let album = p.album_of(entry);
-                if p.remove_ids(&album) > 0 {
-                    self.mark_shown();
-                }
+                let album = self.crates.shown().album_of(entry);
+                self.remove_entries(&album);
             }
             Action::SelectAlbum(entry) => {
                 let p = self.crates.shown_mut();
@@ -6182,6 +6216,37 @@ mod headless_tests {
         rig.click(side_row(0));
         rig.key(Key::Delete, Modifiers::NONE);
         assert!(rig.app.crates.find("Playlist").is_some());
+    }
+
+    #[test]
+    fn the_sidebar_lists_the_wantlist_above_the_collection_under_discogs() {
+        let (mut rig, _, _, _) = sidebar_rig("sidebar-wantlist");
+        let coll = rig.app.crates.create("Collection: digger").unwrap();
+        rig.app.crates.set_collection(coll);
+        let wl = rig.app.crates.create("Wantlist: digger").unwrap();
+        let out = rig.frame(Vec::new());
+        let y = |out: &egui::FullOutput, name: &str| {
+            texts(out)
+                .into_iter()
+                .find(|t| t.text == name)
+                .map(|t| t.rect.center().y)
+                .unwrap_or_else(|| panic!("{name} in {:?}", text_list(out)))
+        };
+        assert!(
+            y(&out, "Wantlist: digger") < y(&out, "DISCOGS"),
+            "unconnected, one of the user's crates"
+        );
+        rig.app.crates.set_wantlist(wl, true);
+        let out = rig.frame(Vec::new());
+        let (heading, w, c) = (
+            y(&out, "DISCOGS"),
+            y(&out, "Wantlist: digger"),
+            y(&out, "Collection: digger"),
+        );
+        assert!(
+            heading < w && w < c,
+            "DISCOGS, the wantlist, then the collection"
+        );
     }
 
     #[test]

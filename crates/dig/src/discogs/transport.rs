@@ -18,6 +18,7 @@ pub enum Method {
     Get,
     Put,
     Delete,
+    Post,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +111,13 @@ impl Transport for UreqTransport {
                 }
                 b.send_empty()
             }
+            Method::Post => {
+                let mut b = self.agent.post(&url);
+                for (k, v) in &headers {
+                    b = b.header(*k, v);
+                }
+                b.send_empty()
+            }
         };
         let resp = result.map_err(|e| NetError(e.to_string()))?;
         let status = resp.status().as_u16();
@@ -139,12 +147,14 @@ pub enum Fault {
     Delay(Duration),
 }
 
-/// Serves JSON by path: routes added in code, then `<fixtures>/<path>.json` files, where the
-/// path's `/`, `?`, `&` and `=` become `_` (`/releases/1?curr_abbr=EUR` is
-/// `releases_1_curr_abbr_EUR.json`). Anything else is a 404. Records every request it sees.
 /// A request and the headers it carried.
 pub type Logged = (Request, Vec<(&'static str, String)>);
 
+/// Serves JSON by path: routes added in code, then `<fixtures>/<path>.json` files, where the
+/// path's `/`, `?`, `&` and `=` become `_` (`/releases/1?curr_abbr=EUR` is
+/// `releases_1_curr_abbr_EUR.json`). Anything else is a 404. A PUT or DELETE succeeds with an
+/// empty body; a POST (a collection add) answers a new `instance_id` each time, as Discogs
+/// does. Records every request it sees.
 #[derive(Default)]
 pub struct FakeTransport {
     routes: Mutex<HashMap<String, (u16, String)>>,
@@ -153,6 +163,7 @@ pub struct FakeTransport {
     offline: std::sync::atomic::AtomicBool,
     remaining: Mutex<Option<u32>>,
     log: Mutex<Vec<Logged>>,
+    instances: std::sync::atomic::AtomicU64,
 }
 
 impl FakeTransport {
@@ -230,13 +241,26 @@ impl Transport for FakeTransport {
             None => {}
         }
         let remaining = *self.remaining.lock().unwrap();
-        if req.method != Method::Get {
-            let status = if req.method == Method::Put { 201 } else { 204 };
-            return Ok(Response {
-                status,
-                remaining,
-                body: String::new(),
-            });
+        match req.method {
+            Method::Get => {}
+            Method::Post => {
+                let n = self
+                    .instances
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(Response {
+                    status: 201,
+                    remaining,
+                    body: format!(r#"{{"instance_id": {}}}"#, 900_001 + n),
+                });
+            }
+            Method::Put | Method::Delete => {
+                let status = if req.method == Method::Put { 201 } else { 204 };
+                return Ok(Response {
+                    status,
+                    remaining,
+                    body: String::new(),
+                });
+            }
         }
         let routed = self.routes.lock().unwrap().get(&req.path).cloned();
         let (status, body) = routed
@@ -304,5 +328,26 @@ mod tests {
         t.set_offline(true);
         assert!(get("/releases/7?curr_abbr=EUR").is_err());
         assert_eq!(t.count(), 6);
+    }
+
+    #[test]
+    fn a_fake_post_adds_a_new_instance_each_time() {
+        let t = FakeTransport::new();
+        let post = |p: &str| {
+            t.call(&Request {
+                method: Method::Post,
+                path: p.into(),
+                token: Some("tok".into()),
+            })
+            .unwrap()
+        };
+        let a = post("/users/digger/collection/folders/1/releases/1001");
+        let b = post("/users/digger/collection/folders/1/releases/1001");
+        assert_eq!(a.status, 201);
+        assert_eq!(a.body, r#"{"instance_id": 900001}"#);
+        assert_eq!(
+            b.body, r#"{"instance_id": 900002}"#,
+            "every add is another copy"
+        );
     }
 }

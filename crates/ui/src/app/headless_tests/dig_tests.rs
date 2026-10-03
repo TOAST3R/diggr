@@ -129,6 +129,27 @@ fn play_release(rig: &mut Rig) -> CrateId {
     c
 }
 
+/// The wantlist crate, once it exists.
+fn wantlist(rig: &Rig) -> Option<CrateId> {
+    rig.app.dig.as_ref()?.settings.wantlist
+}
+
+/// The clips of release `r` in crate `c`.
+fn clips_of(rig: &Rig, c: CrateId, r: u64) -> Vec<String> {
+    rig.app
+        .crates
+        .get(c)
+        .map(|p| {
+            p.entries()
+                .iter()
+                .filter_map(|e| e.origin.as_ref())
+                .filter(|o| o.release == Some(r))
+                .filter_map(|o| o.clip.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn playing_clip(rig: &Rig) -> Option<String> {
     let p = rig.app.crates.playing();
     p.get(p.current()?)?.origin.as_ref()?.clip.clone()
@@ -223,57 +244,135 @@ fn a_send_for_a_missing_page_takes_its_new_crate_away_again() {
 }
 
 #[test]
-fn y_keeps_the_playing_preview_and_y_again_undoes_it() {
+fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
     let fakes = Fakes::new();
-    let mut rig = rig("dig-keep", &fakes, with_token);
+    let mut rig = rig("dig-want", &fakes, with_token);
     let c = play_release(&mut rig);
     key(&mut rig, Key::Y);
-    let keepers = rig
-        .app
-        .crates
-        .find(digging::KEEPERS)
-        .expect("Keepers created");
-    rig.app.crates.load(keepers);
-    assert_eq!(clips(&rig, keepers), [CLIPS[0]]);
-    assert!(memory(&rig).is_kept(CLIPS[0]));
-    let out = rig.frame(Vec::new());
+    let wl = wantlist(&rig).expect("the wantlist crate");
+    rig.app.crates.load(wl);
+    // The whole record, at once.
+    assert_eq!(clips_of(&rig, wl, 1001), CLIPS);
+    assert!(memory(&rig).is_wanted(1001));
     assert!(
-        texts(&out).iter().any(|t| t.text.starts_with("1. ✓ ")),
-        "{:?}",
-        text_list(&out)
+        message(&rig).contains("to your wantlist"),
+        "{}",
+        message(&rig)
     );
+    let out = rig.frame(Vec::new());
+    for n in 1..=3 {
+        assert!(
+            texts(&out)
+                .iter()
+                .any(|t| t.text.starts_with(&format!("{n}. ✓ "))),
+            "every entry of the record: {:?}",
+            text_list(&out)
+        );
+    }
     let put = (Method::Put, "/users/digger/wants/1001".to_owned());
     rig.until(
-        |r| {
-            memory(r)
-                .kept
-                .get(CLIPS[0])
-                .is_some_and(|k| k.added_to_wantlist)
-        },
-        "on the wantlist",
+        |r| !r.app.dig.as_ref().unwrap().memory.is_want_pending(1001),
+        "sent",
     );
-    assert_eq!(fakes.changes(), std::slice::from_ref(&put));
+    assert!(fakes.changes().contains(&put), "{:?}", fakes.changes());
 
     key(&mut rig, Key::Y);
-    assert!(!memory(&rig).is_kept(CLIPS[0]));
-    assert!(clips(&rig, keepers).is_empty());
+    assert!(!memory(&rig).is_wanted(1001));
+    assert!(clips_of(&rig, wl, 1001).is_empty());
     assert_eq!(clips(&rig, c).len(), 3, "the dug crate keeps it");
-    rig.until(|_| fakes.changes().len() == 2, "taken off the wantlist");
-    assert_eq!(fakes.changes()[1], (Method::Delete, put.1));
+    let delete = (Method::Delete, put.1);
+    rig.until(
+        |_| fakes.changes().contains(&delete),
+        "taken off the wantlist",
+    );
     // Saved for the next session.
     let saved = DigMemory::load(&rig.dir.join("config"));
-    assert!(saved.kept.is_empty());
+    assert!(!saved.is_wanted(1001));
 }
 
 #[test]
-fn keeping_without_a_token_keeps_locally_and_says_why_not_the_wantlist() {
+fn without_a_token_the_record_is_wanted_here_and_the_connect_dialog_explains() {
     let fakes = Fakes::new();
-    let mut rig = rig("dig-keep-anon", &fakes, |_| {});
+    let mut rig = rig("dig-want-anon", &fakes, |_| {});
     play_release(&mut rig);
     key(&mut rig, Key::Y);
-    assert!(memory(&rig).is_kept(CLIPS[0]));
-    assert!(message(&rig).contains("token"), "{}", message(&rig));
+    assert!(memory(&rig).is_wanted(1001));
+    let wl = wantlist(&rig).unwrap();
+    assert_eq!(rig.app.crates.name(wl), "Wantlist");
+    assert!(
+        !rig.app.crates.is_wantlist(wl),
+        "one of the user's own crates"
+    );
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connect to Discogs"),
+        "the dialog shows",
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out)
+            .iter()
+            .any(|t| t.contains("keep it up to date from here"))
+    );
+    // Shortcuts wait while it's open.
+    key(&mut rig, Key::N);
+    assert!(memory(&rig).passed.is_empty());
+    rig.click_text("Open ↗");
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://www.discogs.com/settings/developers"]
+    );
+    rig.click_text("Don't show this again");
+    rig.frame(Vec::new());
+    assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
+    assert!(
+        rig.app
+            .dig
+            .as_ref()
+            .unwrap()
+            .settings
+            .connect_hint_dismissed
+    );
+    // From now on, one line instead (Y once takes it off, again puts it back).
+    key(&mut rig, Key::Y);
+    assert!(!memory(&rig).is_wanted(1001));
+    key(&mut rig, Key::Y);
+    assert!(memory(&rig).is_wanted(1001));
+    assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
+    assert!(
+        message(&rig).contains("Options ▸ Discogs…"),
+        "{}",
+        message(&rig)
+    );
     assert!(fakes.changes().is_empty());
+}
+
+#[test]
+fn connect_opens_the_token_field_and_add_to_collection_always_asks() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-connect", &fakes, |_| {});
+    let c = play_release(&mut rig);
+    let first = rig.ids(c)[0];
+    rig.app.dig_act(c, DigAction::Collect(vec![first]));
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connect to Discogs"),
+        "the dialog shows",
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        !shows(&out, "Don't show this again"),
+        "nothing happened here to stop asking for"
+    );
+    rig.click_text("Connect…");
+    rig.frame(Vec::new());
+    assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
+    assert!(
+        rig.app.dig.as_ref().unwrap().dialog.is_some(),
+        "Options ▸ Discogs… opens"
+    );
+    for _ in 0..5 {
+        rig.frame(Vec::new());
+    }
+    assert!(rig.ctx.text_edit_focused(), "with the token field focused");
 }
 
 #[test]
@@ -315,14 +414,19 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
 }
 
 #[test]
-fn a_kept_preview_cannot_be_passed() {
+fn a_wanted_record_cannot_be_passed() {
     let fakes = Fakes::new();
-    let mut rig = rig("dig-pass-kept", &fakes, |_| {});
+    let mut rig = rig("dig-pass-wanted", &fakes, |_| {});
     play_release(&mut rig);
     key(&mut rig, Key::Y);
+    rig.app.dig.as_mut().unwrap().connect = None;
     key(&mut rig, Key::N);
     assert!(!memory(&rig).is_passed(CLIPS[0]));
-    assert!(message(&rig).contains("is kept"), "{}", message(&rig));
+    assert!(
+        message(&rig).contains("is on your wantlist"),
+        "{}",
+        message(&rig)
+    );
     assert_eq!(playing_clip(&rig).as_deref(), Some(CLIPS[0]));
 }
 
@@ -336,7 +440,7 @@ fn i_opens_the_for_sale_page_and_verdict_keys_wait_while_stopped() {
         fakes.browser.opened.lock().unwrap().is_empty(),
         "nothing plays"
     );
-    assert!(memory(&rig).kept.is_empty());
+    assert!(memory(&rig).wanted.is_empty());
     play_release(&mut rig);
     key(&mut rig, Key::I);
     assert_eq!(*fakes.browser.opened.lock().unwrap(), [sell_url(1001)]);
@@ -346,7 +450,7 @@ fn i_opens_the_for_sale_page_and_verdict_keys_wait_while_stopped() {
     key(&mut rig, Key::I);
     assert_eq!(fakes.browser.opened.lock().unwrap().len(), 2);
     key(&mut rig, Key::Y);
-    assert!(memory(&rig).is_kept(CLIPS[0]));
+    assert!(memory(&rig).is_wanted(1001));
 }
 
 #[test]
@@ -373,7 +477,7 @@ fn i_on_a_local_file_says_it_is_not_from_discogs() {
 }
 
 #[test]
-fn the_entry_menu_keeps_passes_and_opens_the_for_sale_page() {
+fn the_entry_menu_wants_passes_and_opens_the_for_sale_page() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-menu", &fakes, |_| {});
     rig.frame(vec![Event::Paste(RELEASE.into())]);
@@ -386,8 +490,9 @@ fn the_entry_menu_keeps_passes_and_opens_the_for_sale_page() {
     rig.click_text("Undo pass");
     assert!(!memory(&rig).is_passed(CLIPS[1]));
     rig.click_with(row, PointerButton::Secondary);
-    rig.click_text("Keep (Y)");
-    assert!(memory(&rig).is_kept(CLIPS[1]));
+    rig.click_text("Add to wantlist (Y)");
+    assert!(memory(&rig).is_wanted(1001));
+    rig.app.dig.as_mut().unwrap().connect = None;
     rig.click_with(row, PointerButton::Secondary);
     rig.click_text("Open for-sale page (I)");
     assert_eq!(*fakes.browser.opened.lock().unwrap(), [sell_url(1001)]);
@@ -434,6 +539,8 @@ fn the_entry_menu_has_no_discogs_links_for_a_local_file() {
     assert!(shows(&out, "Remove"), "{:?}", text_list(&out));
     assert!(!shows(&out, "Open release on Discogs"));
     assert!(!shows(&out, "Copy Discogs link"));
+    assert!(!shows(&out, "Add to wantlist (Y)"));
+    assert!(!shows(&out, "Add to collection"));
 }
 
 #[test]
@@ -538,9 +645,9 @@ fn without_yt_dlp_entries_say_so_once_and_download_when_it_appears() {
 }
 
 #[test]
-fn a_keep_while_discogs_is_offline_waits_as_wantlist_pending() {
+fn a_want_while_discogs_is_offline_waits_as_wantlist_pending() {
     let fakes = Fakes::new();
-    let mut rig = rig("dig-keep-offline", &fakes, with_token);
+    let mut rig = rig("dig-want-offline", &fakes, with_token);
     play_release(&mut rig);
     fakes.transport.set_offline(true);
     key(&mut rig, Key::Y);
@@ -548,7 +655,7 @@ fn a_keep_while_discogs_is_offline_waits_as_wantlist_pending() {
         |r| memory(r).is_want_pending(1001),
         "the wantlist change is kept for later",
     );
-    assert!(memory(&rig).is_kept(CLIPS[0]), "kept locally all the same");
+    assert!(memory(&rig).is_wanted(1001), "wanted here all the same");
     let out = rig.frame(Vec::new());
     assert!(
         texts(&out)
@@ -826,11 +933,11 @@ fn collection_requests(fakes: &Fakes) -> usize {
 }
 
 #[test]
-fn owned_records_are_marked_and_keeping_one_asks_first() {
+fn owned_records_are_marked_and_cannot_be_wanted() {
     let fakes = Fakes::new();
     owns_the_release(&fakes);
     let mut rig = rig("dig-owned", &fakes, with_token);
-    let c = play_release(&mut rig);
+    play_release(&mut rig);
     rig.until(
         |r| r.app.dig.as_ref().is_some_and(|d| d.collection.is_some()),
         "the collection is synced",
@@ -858,26 +965,21 @@ fn owned_records_are_marked_and_keeping_one_asks_first() {
         "the token page opens"
     );
     rig.app.dig.as_mut().unwrap().dialog = None;
-    let first = rig.ids(c)[0];
-    let key_of_first = || {
-        let p = rig.app.crates.get(c).unwrap();
-        super::super::digging::key_of(p.get(first).unwrap())
-    };
-    let k = key_of_first();
 
-    // Y asks; Esc keeps nothing and sends nothing.
+    // Owned: Y wants nothing, and says so; the menu shows it's in the collection.
     key(&mut rig, Key::Y);
-    assert!(rig.app.dig.as_ref().unwrap().confirm_keep.is_some());
-    assert!(shows(&rig.frame(Vec::new()), "Already in your collection"));
-    key(&mut rig, Key::Escape);
-    assert!(!memory(&rig).is_kept(&k));
+    assert!(!memory(&rig).is_wanted(1001));
+    assert!(
+        message(&rig).contains("is already in your collection (this pressing)"),
+        "{}",
+        message(&rig)
+    );
     assert!(fakes.changes().is_empty(), "no wantlist change");
-
-    // Y again, Enter: kept, and on the wantlist.
-    key(&mut rig, Key::Y);
-    key(&mut rig, Key::Enter);
-    assert!(memory(&rig).is_kept(&k));
-    rig.until(|_| !fakes.changes().is_empty(), "the wantlist is changed");
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Add to wantlist (Y)"));
+    assert!(!shows(&out, "Add to collection"));
 }
 
 #[test]
@@ -1198,4 +1300,613 @@ fn the_footer_gear_opens_the_discogs_dialog() {
     assert!(shows(&out, "Browser…"), "{:?}", text_list(&out));
     rig.click_text("Discogs…");
     assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
+}
+
+// ---- the wantlist and the collection, from the player ------------------------------------
+
+const EMPTY_COLLECTION: &str =
+    r#"{"pagination": {"page": 1, "pages": 1, "items": 0}, "releases": []}"#;
+const RELEASE_1004: &str = "https://www.discogs.com/release/1004";
+
+/// Enters a token in Options ▸ Discogs… and saves it, as the user does.
+fn connect(rig: &mut Rig) {
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Check and save"),
+        "the dialog shows",
+    );
+    let out = rig.frame(Vec::new());
+    let field = texts(&out)
+        .into_iter()
+        .find(|t| t.text == "Personal access token")
+        .unwrap()
+        .rect
+        .center();
+    rig.click(field);
+    rig.frame(vec![Event::Text("secrettoken1234".into())]);
+    rig.click_text("Check and save");
+    rig.until(
+        |r| {
+            r.app
+                .dig
+                .as_ref()
+                .unwrap()
+                .dialog
+                .as_ref()
+                .is_some_and(|d| d.connected())
+        },
+        "connected",
+    );
+    rig.app.dig.as_mut().unwrap().dialog = None;
+}
+
+fn posts(fakes: &Fakes) -> usize {
+    fakes
+        .changes()
+        .iter()
+        .filter(|(m, _)| *m == Method::Post)
+        .count()
+}
+
+#[test]
+fn adding_to_the_collection_owns_it_at_once_and_takes_it_off_the_wantlist() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-collect", &fakes, with_token);
+    let c = play_release(&mut rig);
+    let coll = rig.app.crates.create("Collection: digger").unwrap();
+    rig.app.crates.set_collection(coll);
+    key(&mut rig, Key::Y);
+    let wl = wantlist(&rig).unwrap();
+    let put = (Method::Put, "/users/digger/wants/1001".to_owned());
+    rig.until(|_| fakes.changes().contains(&put), "on the wantlist");
+
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    rig.click_text("Add to collection");
+    rig.until(
+        |r| !r.app.dig.as_ref().unwrap().memory.is_wanted(1001),
+        "bought: no longer wanted",
+    );
+    // Within the frame of the answer: OWNED, out of the wantlist crate, in the collection's.
+    assert!(shows(&rig.frame(Vec::new()), "OWNED"));
+    assert!(clips_of(&rig, wl, 1001).is_empty());
+    rig.app.crates.load(coll);
+    assert_eq!(clips_of(&rig, coll, 1001), CLIPS);
+    assert_eq!(clips(&rig, c).len(), 3, "the dug crate keeps them");
+    let delete = (Method::Delete, put.1);
+    rig.until(
+        |_| fakes.changes().contains(&delete),
+        "off the Discogs wantlist",
+    );
+    assert_eq!(posts(&fakes), 1, "one copy");
+    assert!(fakes.changes().contains(&(
+        Method::Post,
+        "/users/digger/collection/folders/1/releases/1001".to_owned()
+    )));
+    // Kept on disk, so it stays owned without a sync.
+    let cached = ::dig::collection::Collection::load(&rig.dir.join("cache")).unwrap();
+    assert!(cached.owned(Some(1001), None).is_some());
+    // Owned now: the menu says so.
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Add to collection"));
+}
+
+#[test]
+fn a_selection_acts_on_its_records_once_each_and_says_what_it_skipped() {
+    let fakes = Fakes::new();
+    // 1004 is owned.
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1004, "instance_id": 5,
+                          "basic_information": {"id": 1004, "master_id": 0, "year": 1996,
+                                                "labels": [{"catno": "LT-014"}]}}]}"#,
+    );
+    let mut rig = rig("dig-selection", &fakes, with_token);
+    let c = play_release(&mut rig);
+    rig.app
+        .dig_send(url::parse(RELEASE_1004).unwrap(), SendMode::Enqueue, None);
+    rig.until(
+        |r| !clips_of(r, c, 1004).is_empty() && r.app.dig.as_ref().unwrap().collection.is_some(),
+        "both records, and the collection",
+    );
+    let ids = rig.ids(c);
+    rig.app.crates.get_mut(c).unwrap().select_only(&ids, ids[0]);
+    // The menu counts records.
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "Add 2 records to wantlist"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Add 2 records to collection"));
+    rig.click_text("Add 2 records to wantlist");
+    assert!(memory(&rig).is_wanted(1001));
+    assert_eq!(
+        message(&rig),
+        "Added 1 record to your wantlist; 1 skipped (already in your collection)"
+    );
+
+    // Three entries of one release: one copy.
+    let three: Vec<EntryId> = rig
+        .app
+        .crates
+        .get(c)
+        .unwrap()
+        .entries()
+        .iter()
+        .filter(|e| e.origin.as_ref().and_then(|o| o.release) == Some(1001))
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(three.len(), 3);
+    rig.app.dig_act(c, DigAction::Collect(three));
+    rig.until(
+        |r| r.app.dig.as_ref().unwrap().memory.wanted.is_empty() || posts(&fakes) > 0,
+        "added",
+    );
+    rig.until(
+        |r| {
+            r.app
+                .dig_owned(&r.app.crates.get(c).unwrap().entries()[0])
+                .is_some()
+        },
+        "owned",
+    );
+    assert_eq!(posts(&fakes), 1);
+}
+
+#[test]
+fn a_wantlist_change_that_keeps_failing_says_so_and_retries_on_request() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-want-failed", &fakes, with_token);
+    play_release(&mut rig);
+    // The last retry of an add, answered with a server error.
+    {
+        let m = &mut rig.app.dig.as_mut().unwrap().memory;
+        m.wanted.insert(1001);
+        m.queue_want(1001, ::dig::memory::WantOp::Add);
+        let p = &mut m.wantlist_pending[0];
+        p.attempts = 5;
+        p.next_at = u64::MAX;
+    }
+    rig.app.dig_intake_event(::dig::intake::Event::Wantlist {
+        release: 1001,
+        add: true,
+        result: Err(::dig::discogs::client::ApiError::Other("HTTP 503".into())),
+    });
+    assert!(memory(&rig).want_failure(1001).is_some());
+    assert!(
+        message(&rig).starts_with("Wantlist change failed for release 1001"),
+        "{}",
+        message(&rig)
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        texts(&out).iter().any(|t| t.text.starts_with("1. ⚠ ✓ ")),
+        "{:?}",
+        text_list(&out)
+    );
+    let before = fakes.changes().len();
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert_eq!(fakes.changes().len(), before, "nothing more is sent");
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    rig.click_text("Retry wantlist");
+    rig.until(
+        |r| memory(r).wantlist_pending.is_empty(),
+        "sent again, at once",
+    );
+    assert!(
+        fakes
+            .changes()
+            .contains(&(Method::Put, "/users/digger/wants/1001".to_owned()))
+    );
+}
+
+#[test]
+fn a_failed_collection_add_is_retried_only_on_request_and_never_twice() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    // The add went through on Discogs, but its answer was lost.
+    fakes.transport.route(
+        "/users/digger/collection/releases/1001",
+        200,
+        r#"{"releases": [{"id": 1001, "instance_id": 55, "folder_id": 1}]}"#,
+    );
+    let mut rig = rig("dig-collect-failed", &fakes, with_token);
+    let c = play_release(&mut rig);
+    rig.app.dig_intake_event(::dig::intake::Event::Collected {
+        release: 1001,
+        result: Err(::dig::discogs::client::ApiError::Offline),
+    });
+    assert!(message(&rig).contains("Could not add"), "{}", message(&rig));
+    let out = rig.frame(Vec::new());
+    assert!(texts(&out).iter().any(|t| t.text.starts_with("1. ⚠ ")));
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert_eq!(posts(&fakes), 0, "not retried by itself");
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    rig.click_text("Retry add to collection");
+    rig.until(
+        |r| {
+            r.app
+                .dig_owned(&r.app.crates.get(c).unwrap().entries()[0])
+                .is_some()
+        },
+        "found in the collection",
+    );
+    assert_eq!(posts(&fakes), 0, "no second copy");
+}
+
+#[test]
+fn connecting_names_the_wantlist_crate_and_pushes_what_was_wanted_here() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-connect-wantlist", &fakes, |_| {});
+    play_release(&mut rig);
+    key(&mut rig, Key::Y);
+    rig.app.dig.as_mut().unwrap().connect = None;
+    let wl = wantlist(&rig).unwrap();
+    assert_eq!(rig.app.crates.name(wl), "Wantlist");
+    connect(&mut rig);
+    rig.until(
+        |r| r.app.crates.is_wantlist(wl),
+        "the wantlist crate is the account's",
+    );
+    assert_eq!(rig.app.crates.name(wl), "Wantlist: digger");
+    let put = (Method::Put, "/users/digger/wants/1001".to_owned());
+    rig.until(|_| fakes.changes().contains(&put), "pushed to Discogs");
+    // And it follows the Discogs wantlist (1002, 1004 and 1006 are on it).
+    rig.until(
+        |r| !clips_of(r, wl, 1004).is_empty(),
+        "the Discogs wantlist's records come in",
+    );
+    let m = memory(&rig);
+    assert!([1001, 1002, 1004, 1006].iter().all(|&r| m.is_wanted(r)));
+    assert_eq!(m.synced_user.as_deref(), Some("digger"));
+    // Under DISCOGS, above the collection.
+    assert!(
+        rig.app
+            .crates
+            .list()
+            .iter()
+            .any(|c| c.wantlist && c.id == wl)
+    );
+}
+
+#[test]
+fn connecting_merges_into_a_wantlist_crate_sent_before() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-connect-merge", &fakes, |_| {});
+    let sent = rig.app.crates.create("Wantlist: digger").unwrap();
+    play_release(&mut rig);
+    key(&mut rig, Key::Y);
+    rig.app.dig.as_mut().unwrap().connect = None;
+    connect(&mut rig);
+    rig.until(
+        |r| r.app.crates.find("Wantlist").is_none(),
+        "the local crate goes",
+    );
+    assert_eq!(wantlist(&rig), Some(sent));
+    assert!(rig.app.crates.is_wantlist(sent));
+    assert_eq!(clips_of(&rig, sent, 1001), CLIPS);
+}
+
+#[test]
+fn the_wantlist_crate_follows_records_removed_on_discogs() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-mirror", &fakes, |store| {
+        with_token(store);
+        // Wanted last session; since removed on discogs.com (the wantlist is 1002, 1004, 1006).
+        let mut m = DigMemory::default();
+        m.wanted.insert(1003);
+        m.synced_user = Some("digger".into());
+        m.save(store.dir()).unwrap();
+    });
+    rig.until(
+        |r| !memory(r).wanted.is_empty() && !memory(r).is_wanted(1003),
+        "followed",
+    );
+    assert!(memory(&rig).is_wanted(1004));
+    assert!(
+        fakes.changes().is_empty(),
+        "nothing pushed: Discogs is followed"
+    );
+}
+
+#[test]
+fn removing_a_whole_record_from_the_wantlist_crate_asks_first() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-unwant-confirm", &fakes, with_token);
+    play_release(&mut rig);
+    key(&mut rig, Key::Y);
+    let wl = wantlist(&rig).unwrap();
+    rig.app.show_crate(wl);
+    let of_1001 = |r: &Rig| -> Vec<EntryId> {
+        r.app
+            .crates
+            .get(wl)
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|e| e.origin.as_ref().and_then(|o| o.release) == Some(1001))
+            .map(|e| e.id)
+            .collect()
+    };
+    let ctx = rig.ctx.clone();
+    // One clip of three: local, no question.
+    let ids = of_1001(&rig);
+    rig.app
+        .crates
+        .get_mut(wl)
+        .unwrap()
+        .select_only(&ids[..1], ids[0]);
+    rig.app.apply(Action::RemoveSelected, &ctx);
+    assert!(rig.app.dig.as_ref().unwrap().confirm_unwant.is_none());
+    assert_eq!(of_1001(&rig).len(), 2);
+    assert!(memory(&rig).is_wanted(1001));
+    // The rest: asked; Cancel changes nothing.
+    let ids = of_1001(&rig);
+    rig.app
+        .crates
+        .get_mut(wl)
+        .unwrap()
+        .select_only(&ids, ids[0]);
+    rig.app.apply(Action::RemoveSelected, &ctx);
+    rig.until(
+        |r| {
+            shows(
+                &r.frame(Vec::new()),
+                "Remove 1 record from your Discogs wantlist?",
+            )
+        },
+        "the question",
+    );
+    rig.click_text("Cancel");
+    assert_eq!(of_1001(&rig).len(), 2);
+    assert!(memory(&rig).is_wanted(1001));
+    // Remove: gone here and on Discogs.
+    rig.app.apply(Action::RemoveSelected, &ctx);
+    rig.until(|r| shows(&r.frame(Vec::new()), "Remove"), "asked again");
+    key(&mut rig, Key::Enter);
+    assert!(of_1001(&rig).is_empty());
+    assert!(!memory(&rig).is_wanted(1001));
+    let delete = (Method::Delete, "/users/digger/wants/1001".to_owned());
+    rig.until(
+        |_| fakes.changes().contains(&delete),
+        "off the Discogs wantlist",
+    );
+}
+
+#[test]
+fn records_bought_elsewhere_leave_the_wantlist_after_a_sync() {
+    let fakes = Fakes::new();
+    // 1004 is on the wantlist, and now in the collection.
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1004, "instance_id": 9,
+                          "basic_information": {"id": 1004, "master_id": 0, "year": 1996,
+                                                "labels": [{"catno": "LT-014"}]}}]}"#,
+    );
+    let mut rig = rig("dig-owned-wants", &fakes, with_token);
+    play_release(&mut rig);
+    let delete = (Method::Delete, "/users/digger/wants/1004".to_owned());
+    rig.until(
+        |_| fakes.changes().contains(&delete),
+        "off the Discogs wantlist",
+    );
+    assert!(!memory(&rig).is_wanted(1004));
+    let wl = wantlist(&rig).unwrap();
+    assert!(clips_of(&rig, wl, 1004).is_empty());
+}
+
+#[test]
+fn the_keepers_crate_becomes_the_wantlist_crate() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-keepers", &fakes, |_| {});
+    let keepers = rig.app.crates.create("Keepers").unwrap();
+    rig.app.dig.as_mut().unwrap().settings.wantlist_named = false;
+    rig.app.dig.as_mut().unwrap().settings.wantlist = Some(keepers);
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.crates.name(keepers), "Wantlist");
+    assert_eq!(wantlist(&rig), Some(keepers));
+    let saved = ::dig::config::load_settings(&rig.dir.join("config"));
+    assert!(saved.wantlist_named);
+    // Once only: a crate named Keepers later is left alone.
+    rig.app.crates.rename(keepers, "Keepers").unwrap();
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.crates.name(keepers), "Keepers");
+
+    // When "Wantlist" is taken, Keepers keeps its name and still becomes the wantlist crate.
+    let fakes = Fakes::new();
+    let mut rig = self::rig("dig-keepers-taken", &fakes, |_| {});
+    let keepers = rig.app.crates.create("Keepers").unwrap();
+    let taken = rig.app.crates.create("Wantlist").unwrap();
+    rig.app.dig.as_mut().unwrap().settings.wantlist_named = false;
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.crates.name(keepers), "Keepers");
+    assert_eq!(rig.app.crates.name(taken), "Wantlist");
+    assert_eq!(wantlist(&rig), Some(keepers));
+}
+
+#[test]
+fn owning_another_pressing_blocks_the_wantlist_but_not_the_collection() {
+    let fakes = Fakes::new();
+    // Release 7777 of master 98765, which release 1001 belongs to, is owned.
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 7777, "instance_id": 3,
+                          "basic_information": {"id": 7777, "master_id": 98765, "year": 2019,
+                                                "labels": [{"catno": "AF001R"}]}}]}"#,
+    );
+    let mut rig = rig("dig-owned-another", &fakes, with_token);
+    play_release(&mut rig);
+    rig.until(
+        |r| r.app.dig.as_ref().is_some_and(|d| d.collection.is_some()),
+        "the collection is synced",
+    );
+    key(&mut rig, Key::Y);
+    assert!(!memory(&rig).is_wanted(1001));
+    assert!(
+        message(&rig).ends_with("is already in your collection (AF001R, 2019)"),
+        "{}",
+        message(&rig)
+    );
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(shows(&out, "Add to collection (own AF001R, 2019)"));
+}
+
+// ---- refresh from Discogs ------------------------------------------------------------------
+
+/// Whether crate `c` holds an entry of release `r` (a clip, or its "no clip" entry).
+fn holds(rig: &Rig, c: CrateId, r: u64) -> bool {
+    rig.app.crates.get(c).is_some_and(|p| {
+        p.entries()
+            .iter()
+            .any(|e| e.origin.as_ref().and_then(|o| o.release) == Some(r))
+    })
+}
+
+/// Where `text` is drawn.
+fn text_at(out: &egui::FullOutput, text: &str) -> Pos2 {
+    texts(out)
+        .into_iter()
+        .find(|t| t.text == text)
+        .unwrap_or_else(|| panic!("{text} in {:?}", text_list(out)))
+        .rect
+        .center()
+}
+
+#[test]
+fn refresh_collection_brings_the_crate_in_line_with_discogs() {
+    let fakes = Fakes::new();
+    // On Discogs the collection is now release 1003 (1001 was sold).
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1003, "instance_id": 9,
+                          "basic_information": {"id": 1003, "master_id": 0, "year": 1995,
+                                                "labels": [{"catno": "LT-013"}]}}]}"#,
+    );
+    let mut rig = rig("dig-refresh-collection", &fakes, with_token);
+    let coll = rig.app.crates.create("Collection: digger").unwrap();
+    rig.app.crates.set_collection(coll);
+    rig.app.show_crate(coll);
+    rig.app.dig_send(
+        url::parse(RELEASE).unwrap(),
+        SendMode::Crate("Collection: digger".into()),
+        None,
+    );
+    rig.until(
+        |r| clips_of(r, coll, 1001).len() == 3 && r.app.dig.as_ref().unwrap().collection.is_some(),
+        "the crate, and a first sync",
+    );
+    // Wide enough for the sidebar: right-click the crate there.
+    rig.app.settings.playlist_width = 700;
+    let out = rig.frame(Vec::new());
+    rig.click_with(
+        text_at(&out, "Collection: digger"),
+        PointerButton::Secondary,
+    );
+    rig.click_text("Refresh collection");
+    rig.until(
+        |r| message(r).starts_with("Collection:"),
+        "the refresh says what changed",
+    );
+    assert_eq!(message(&rig), "Collection: 1 new, 1 gone");
+    assert!(
+        clips_of(&rig, coll, 1001).is_empty(),
+        "the sold record leaves"
+    );
+    // It has no clip: it comes in as its "no clip" entry.
+    rig.until(|r| holds(r, coll, 1003), "the new one comes in");
+    assert!(fakes.changes().is_empty(), "Discogs is never changed by it");
+
+    // Offline: nothing changes, and it says why.
+    fakes.transport.set_offline(true);
+    rig.app.dig_act(coll, DigAction::RefreshCollection);
+    rig.until(|r| message(r).starts_with("Refresh failed"), "fails");
+    assert!(message(&rig).contains("offline"), "{}", message(&rig));
+    assert!(holds(&rig, coll, 1003));
+}
+
+#[test]
+fn refresh_wantlist_reads_it_again_and_follows_it() {
+    let fakes = Fakes::new();
+    fakes
+        .transport
+        .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
+    let mut rig = rig("dig-refresh-wantlist", &fakes, with_token);
+    play_release(&mut rig);
+    rig.until(
+        |r| wantlist(r).is_some_and(|wl| !clips_of(r, wl, 1006).is_empty()),
+        "the wantlist crate follows Discogs",
+    );
+    let wl = wantlist(&rig).unwrap();
+    // On discogs.com, 1002 and 1006 were removed from the wantlist.
+    fakes.transport.route(
+        "/users/digger/wants?page=1&per_page=100",
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1}, "wants": [{"id": 1004}]}"#,
+    );
+    // The playlist is narrow: the title bar's crate menu has it.
+    rig.click(rig.title_bar());
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Refresh wantlist"), "{:?}", text_list(&out));
+    rig.click_text("Refresh wantlist");
+    rig.until(
+        |r| message(r).starts_with("Wantlist"),
+        "the refresh says what changed",
+    );
+    assert_eq!(message(&rig), "Wantlist: 2 gone");
+    assert!(clips_of(&rig, wl, 1006).is_empty() && clips_of(&rig, wl, 1002).is_empty());
+    assert!(!memory(&rig).is_wanted(1006));
+    assert!(memory(&rig).is_wanted(1004));
+}
+
+#[test]
+fn without_a_token_there_is_nothing_to_refresh() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-refresh-anon", &fakes, |_| {});
+    let coll = rig.app.crates.create("Collection: digger").unwrap();
+    rig.app.crates.set_collection(coll);
+    rig.click(rig.title_bar());
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out)
+            .iter()
+            .any(|t| t.ends_with("Collection: digger")),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(!shows(&out, "Refresh collection"));
 }

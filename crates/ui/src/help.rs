@@ -89,7 +89,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Y",
-                "keep the playing track (again: undo); asks first when you own the record",
+                "add the playing track's record to the wantlist (again: remove it)",
             ),
             ("N", "pass: dimmed, skipped, left out of later sends"),
             ("I", "open the release's for-sale page"),
