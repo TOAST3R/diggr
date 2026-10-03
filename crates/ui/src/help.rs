@@ -12,9 +12,9 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("C", "pause / resume"),
             ("V", "stop"),
             ("Z / B", "previous / next track"),
-            ("← / →", "seek −5 s / +5 s"),
+            ("Left / Right", "seek −5 s / +5 s"),
             (
-                "↑ / ↓",
+                "Up / Down",
                 "volume (with the playlist focused: move in the list)",
             ),
         ],
@@ -47,7 +47,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("F", "fullscreen visuals"),
             ("H or F1", "this help"),
             (
-                "↑ / ↓ (playlist focused)",
+                "Up / Down (playlist focused)",
                 "move in the list (Shift: extend the selection)",
             ),
             (
@@ -59,6 +59,14 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Shift+P",
                 "maximize the playlist beside a thin player strip (again: restore)",
+            ),
+            (
+                "Shift+G",
+                "group the crate by record, one row each with its cover (again: flat)",
+            ),
+            (
+                "Space",
+                "open or close the record under the cursor (grouped)",
             ),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
@@ -108,7 +116,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Column header (wide playlist): click",
-                "sort the crate by that column (again: the other way; also Options ▸ Sort)",
+                "sort the crate by that column (again: the other way; also Options › Sort)",
             ),
             (
                 "Column header: drag a divider / right-click",
@@ -125,7 +133,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  Discogs collection is pinned at the bottom",
             ),
             (
-                "Footer: + / ≡",
+                "Footer: + / ☰",
                 "add files, a folder or an M3U / select, remove, clear, sort, export",
             ),
             (
@@ -254,7 +262,7 @@ mod tests {
             .collect();
         for k in [
             "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
-            "Cmd+V", "Y", "N", "I", "Tab", "P", "Shift+P",
+            "Cmd+V", "Y", "N", "I", "Tab", "P", "Shift+P", "Shift+G", "Space",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

@@ -2,12 +2,14 @@
 //! API, so covers cost none of its request budget), shrunk to a thumbnail, and kept on disk
 //! under `<cache>/covers/`.
 //!
-//! One low-priority thread fetches one cover at a time, at most 4 a second, and only the
-//! newest request waits: sweeping the pointer down a list fetches only where it stops. The UI
-//! never reads these files itself; it gets pixels back. An address that fails isn't tried
-//! again this session, and a 429 pauses fetching for a minute.
+//! One low-priority thread fetches one cover at a time, at most 4 a second. Two kinds of
+//! request wait: the hovered row's (only the newest, so sweeping the pointer down a list
+//! fetches only where it stops), which goes first, and the record rows in view, top first,
+//! replaced whenever the rows in view change. The UI never reads these files itself; it gets
+//! pixels back. An address that fails isn't tried again this session, and a 429 pauses
+//! fetching for a minute.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
@@ -289,9 +291,16 @@ pub fn test_jpeg(w: u32, h: u32) -> Vec<u8> {
     out.into_inner()
 }
 
+enum Request {
+    /// The hovered row's cover: goes first, replacing a hovered one still waiting.
+    Hover(RecordKey, String),
+    /// The covers of the rows in view, top first, replacing the list still waiting.
+    InView(Vec<(RecordKey, String)>),
+}
+
 /// The worker thread's end of the channels.
 pub struct CoverHandle {
-    requests: Sender<(RecordKey, String)>,
+    requests: Sender<Request>,
     results: Receiver<CoverResult>,
 }
 
@@ -302,22 +311,41 @@ impl CoverHandle {
         mut covers: Covers,
         wake: impl Fn() + Send + 'static,
     ) -> Result<Self, platform::PlatformError> {
-        let (req_tx, req_rx) = channel::<(RecordKey, String)>();
+        let (req_tx, req_rx) = channel::<Request>();
         let (res_tx, res_rx) = channel();
         spawner.spawn(
             "covers",
             Priority::Low,
             Box::new(move || {
-                while let Ok(mut req) = req_rx.recv() {
-                    // Only the newest request waits.
+                let mut hover: Option<(RecordKey, String)> = None;
+                let mut in_view: VecDeque<(RecordKey, String)> = VecDeque::new();
+                let take =
+                    |r: Request,
+                     hover: &mut Option<(RecordKey, String)>,
+                     in_view: &mut VecDeque<(RecordKey, String)>| {
+                        match r {
+                            Request::Hover(k, url) => *hover = Some((k, url)),
+                            Request::InView(list) => *in_view = list.into(),
+                        }
+                    };
+                loop {
+                    if hover.is_none() && in_view.is_empty() {
+                        match req_rx.recv() {
+                            Ok(r) => take(r, &mut hover, &mut in_view),
+                            Err(_) => return,
+                        }
+                    }
                     loop {
                         match req_rx.try_recv() {
-                            Ok(newer) => req = newer,
+                            Ok(r) => take(r, &mut hover, &mut in_view),
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
                         }
                     }
-                    if res_tx.send(covers.load(req.0, &req.1)).is_err() {
+                    let next = hover.take().or_else(|| in_view.pop_front());
+                    let Some((key, url)) = next else { continue };
+                    in_view.retain(|(k, _)| *k != key);
+                    if res_tx.send(covers.load(key, &url)).is_err() {
                         return;
                     }
                     wake();
@@ -330,9 +358,14 @@ impl CoverHandle {
         })
     }
 
-    /// Asks for `key`'s cover, replacing any request still waiting.
+    /// Asks for the hovered row's cover first, replacing a hovered one still waiting.
     pub fn request(&self, key: RecordKey, url: &str) {
-        let _ = self.requests.send((key, url.to_owned()));
+        let _ = self.requests.send(Request::Hover(key, url.to_owned()));
+    }
+
+    /// The covers of the rows in view, top first: they replace the list still waiting.
+    pub fn want(&self, list: Vec<(RecordKey, String)>) {
+        let _ = self.requests.send(Request::InView(list));
     }
 
     pub fn poll(&self) -> Vec<CoverResult> {
@@ -483,5 +516,54 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(images.count() <= 2, "{} fetched", images.count());
+    }
+
+    #[test]
+    fn rows_in_view_load_top_first_and_a_hover_jumps_the_queue() {
+        let dir = crate::test_dir("covers-in-view");
+        let images = FakeImages::new(Ok(test_jpeg(10, 10)));
+        let clock = Arc::new(FakeClock::default());
+        let covers = covers(dir.path(), &images, &clock);
+        let h = CoverHandle::start(&platform::native::NativeSpawner, covers, || {}).unwrap();
+        let url = |id: u64| format!("https://i.discogs.com/{id}.jpeg");
+        // Rows 1..=12 in view, then scrolled: 20..=23 replace whatever still waits.
+        h.want(
+            (1..=12)
+                .map(|id| (RecordKey::Release(id), url(id)))
+                .collect(),
+        );
+        h.want(
+            (20..=23)
+                .map(|id| (RecordKey::Release(id), url(id)))
+                .collect(),
+        );
+        h.request(RecordKey::Release(99), &url(99));
+        let key = |r: &CoverResult| match r {
+            CoverResult::Ready(k, _) | CoverResult::Failed(k) | CoverResult::Stale(k) => *k,
+        };
+        let mut keys = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while keys.last() != Some(&RecordKey::Release(23)) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {keys:?}");
+            keys.extend(h.poll().iter().map(key));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let ids: Vec<u64> = keys
+            .iter()
+            .map(|k| match k {
+                RecordKey::Release(id) | RecordKey::Master(id) => *id,
+            })
+            .collect();
+        let at = |id: u64| ids.iter().position(|&i| i == id).unwrap();
+        assert!(at(99) < at(20), "the hover first: {ids:?}");
+        assert!(at(20) < at(21) && at(21) < at(22), "top first: {ids:?}");
+        assert!(!ids.contains(&12), "scrolled past before its turn: {ids:?}");
+        // Cached on disk now: asked again, they come back without a fetch.
+        let fetched = images.count();
+        h.want(vec![(RecordKey::Release(20), url(20))]);
+        while !h.poll().iter().any(|r| key(r) == RecordKey::Release(20)) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(images.count(), fetched);
     }
 }

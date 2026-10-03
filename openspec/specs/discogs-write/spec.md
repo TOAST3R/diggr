@@ -5,7 +5,7 @@ Changes the user's Discogs account from the player: records go on the wantlist w
 ## Requirements
 ### Requirement: Add to wantlist
 Add to wantlist SHALL act on a record: the Discogs release of the entry, or its master's main release. It SHALL:
-- mark the release wanted, so every entry of it, in every crate, shows ✓;
+- mark the release wanted, so every entry of it, in every crate, shows ★;
 - add the record's clips to the wantlist crate, skipping clips the crate already holds, with no request when the release's data is cached;
 - with a Discogs token, add the release to the user's Discogs wantlist.
 
@@ -13,18 +13,18 @@ It SHALL be offered as "Add to wantlist (Y)" in the entry menu and by `Y` on the
 
 #### Scenario: Add a record
 - **WHEN** the user presses Y while "Nightcraft - Glasshouse" from release 123456, a record with three clips, plays, with a token set
-- **THEN** all three clips are in the wantlist crate, every entry of release 123456 shows ✓, and release 123456 is on the user's Discogs wantlist
+- **THEN** all three clips are in the wantlist crate, every entry of release 123456 shows ★, and release 123456 is on the user's Discogs wantlist
 
 #### Scenario: Remove a record
 - **WHEN** the user chooses Remove from wantlist on an entry of release 123456, which was already on the Discogs wantlist before the app was used
-- **THEN** its entries leave the wantlist crate, lose their ✓, and release 123456 is removed from the Discogs wantlist
+- **THEN** its entries leave the wantlist crate, lose their ★, and release 123456 is removed from the Discogs wantlist
 
 #### Scenario: Local file
 - **WHEN** the user right-clicks a local file
 - **THEN** the menu offers neither Add to wantlist nor Add to collection
 
 ### Requirement: Never want what you own
-Add to wantlist SHALL NOT be possible for a record the user owns, in this pressing or another pressing of the same master release. For an owned record, the menu SHALL show "In collection ✓", disabled, with a tooltip naming the owned pressing, and `Y` SHALL only say that the record is already in the collection, naming the pressing. No dialog SHALL offer to add it anyway.
+Add to wantlist SHALL NOT be possible for a record the user owns, in this pressing or another pressing of the same master release. For an owned record, the menu SHALL show "In collection", disabled, with a tooltip naming the owned pressing, and `Y` SHALL only say that the record is already in the collection, naming the pressing. No dialog SHALL offer to add it anyway.
 
 #### Scenario: Another pressing owned
 - **WHEN** the user presses Y on a track of release 111 (master 900) and the collection holds release 222 of master 900, catalog number AF001R, from 2019
@@ -32,10 +32,10 @@ Add to wantlist SHALL NOT be possible for a record the user owns, in this pressi
 
 #### Scenario: Menu for an owned record
 - **WHEN** the user right-clicks an entry whose release is in the collection
-- **THEN** the menu shows "In collection ✓" disabled, instead of Add to wantlist
+- **THEN** the menu shows "In collection" disabled, instead of Add to wantlist
 
 ### Requirement: Add to collection
-With a Discogs token, the entry menu SHALL offer Add to collection for an entry from a Discogs release. It SHALL add one copy of the release to the user's Discogs collection, in the Uncategorized folder, so that it shows under All. When the release is already in the collection, the item SHALL read "In collection ✓" and be disabled. When another pressing of its master is owned, the item SHALL name that pressing ("Add to collection (own AF001R, 2019)") and SHALL act without asking. When Discogs confirms the add:
+With a Discogs token, the entry menu SHALL offer Add to collection for an entry from a Discogs release. It SHALL add one copy of the release to the user's Discogs collection, in the Uncategorized folder, so that it shows under All. When the release is already in the collection, the item SHALL read "In collection" and be disabled. When another pressing of its master is owned, the item SHALL name that pressing ("Add to collection (own AF001R, 2019)") and SHALL act without asking. When Discogs confirms the add:
 - the local collection SHALL hold the release at once, so that its entries show the OWNED badge in every crate within one frame, with no sync;
 - the release SHALL be removed from the Discogs wantlist when it is on it, whoever added it;
 - its entries SHALL leave the wantlist crate, and its clips SHALL be added to the collection crate, skipping clips already there.
@@ -52,10 +52,10 @@ The add SHALL use exactly one request when the release isn't wanted, and two (ad
 
 #### Scenario: Already owned
 - **WHEN** the user right-clicks an entry whose release is in the collection
-- **THEN** the menu shows "In collection ✓" disabled
+- **THEN** the menu shows "In collection" disabled
 
 ### Requirement: Never add a copy twice
-An add to the collection that fails SHALL NOT be retried automatically. The entry SHALL show "collection add failed" in its tooltip with a warning sign in its row, the main window SHALL show the error once, and the menu SHALL offer Retry add to collection. Before adding again, a retry SHALL ask Discogs whether the release is already in the collection. When it is, the retry SHALL handle it as a successful add without adding another copy.
+An add to the collection that fails SHALL NOT be retried automatically. The entry SHALL show "collection add failed" in its tooltip with a ⚑ in its row, the main window SHALL show the error once, and the menu SHALL offer Retry add to collection. Before adding again, a retry SHALL ask Discogs whether the release is already in the collection. When it is, the retry SHALL handle it as a successful add without adding another copy.
 
 #### Scenario: Timed out but done
 - **WHEN** an add times out after Discogs has stored it, and the user chooses Retry add to collection
@@ -141,7 +141,7 @@ Add to wantlist without a Discogs token SHALL still mark the record wanted and a
 ### Requirement: Wantlist changes end
 A wantlist change that Discogs can't take SHALL be kept and retried:
 - while Discogs is unreachable, it SHALL wait without limit and be sent when Discogs answers again;
-- after a server error, it SHALL be retried 1, 2, 5, 15 and 60 minutes later. When the last retry fails too, the entry SHALL show "wantlist failed" in its tooltip with a warning sign in its row, the main window SHALL show the error once, and the menu SHALL offer Retry wantlist, which tries again at once and restarts the schedule.
+- after a server error, it SHALL be retried 1, 2, 5, 15 and 60 minutes later. When the last retry fails too, the entry SHALL show "wantlist failed" in its tooltip with a ⚑ in its row, the main window SHALL show the error once, and the menu SHALL offer Retry wantlist, which tries again at once and restarts the schedule.
 
 While a change waits, the entry SHALL show "wantlist change pending". Waiting changes SHALL survive restarts. An add and a removal of the same release that are both waiting SHALL cancel out. A rejected token or an unknown release SHALL drop the change with a message.
 

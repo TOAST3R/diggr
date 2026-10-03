@@ -45,12 +45,43 @@ pub struct CrateInfo {
     /// collection).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wantlist: bool,
+    /// Shown grouped by record, once toggled; `None` follows the crate's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grouped: Option<bool>,
+    /// Records as of the last save (albums, and entries of no album), for the sidebar of a
+    /// grouped crate that isn't loaded; 0 when not known yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub records: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Records in a playlist: its albums, and each entry that belongs to none.
+pub fn count_records(p: &Playlist) -> usize {
+    let mut albums = HashSet::new();
+    let mut loose = 0;
+    for e in p.entries() {
+        match e.album_key() {
+            Some(k) => {
+                albums.insert(k);
+            }
+            None => loose += 1,
+        }
+    }
+    albums.len() + loose
 }
 
 impl CrateInfo {
     /// One of the user's own Discogs crates (the wantlist or the collection).
     pub fn discogs(&self) -> bool {
         self.collection || self.wantlist
+    }
+
+    /// Grouped by record: as toggled, else the user's Discogs crates are and others aren't.
+    pub fn is_grouped(&self) -> bool {
+        self.grouped.unwrap_or_else(|| self.discogs())
     }
 }
 
@@ -77,6 +108,8 @@ pub struct Crates {
     dirty: HashMap<CrateId, Instant>,
     index_dirty: Option<Instant>,
     playing: CrateId,
+    /// Records per loaded crate, with the playlist revision they were counted at.
+    records: std::cell::RefCell<HashMap<CrateId, (u64, usize)>>,
     pending_meta: Vec<(MetaKey, TrackRef)>,
     messages: Vec<String>,
 }
@@ -102,6 +135,8 @@ impl Crates {
                     created: now_secs(),
                     collection: false,
                     wantlist: false,
+                    grouped: None,
+                    records: 0,
                 }],
             },
             loaded: HashMap::new(),
@@ -109,6 +144,7 @@ impl Crates {
             dirty: HashMap::new(),
             index_dirty: None,
             playing: PLAYLIST,
+            records: std::cell::RefCell::new(HashMap::new()),
             pending_meta: Vec::new(),
             messages: Vec::new(),
         }
@@ -192,6 +228,8 @@ impl Crates {
                 created: id,
                 collection: false,
                 wantlist: false,
+                grouped: None,
+                records: 0,
             });
         }
         self.index.shown = PLAYLIST;
@@ -219,6 +257,8 @@ impl Crates {
                         created: now_secs(),
                         collection: false,
                         wantlist: false,
+                        grouped: None,
+                        records: 0,
                     },
                 );
                 self.mark_index();
@@ -292,11 +332,41 @@ impl Crates {
                 return false;
             }
         };
-        let (playlist, pending) = Playlist::from_saved(saved);
+        let (mut playlist, pending) = Playlist::from_saved(saved);
         self.pending_meta
             .extend(pending.into_iter().map(|(e, t)| ((id, e), t)));
+        let gathered = self
+            .info(id)
+            .is_some_and(|c| c.is_grouped() && playlist.set_grouped(true));
         self.loaded.insert(id, playlist);
+        if gathered {
+            self.touch(id);
+        }
         true
+    }
+
+    pub fn is_grouped(&self, id: CrateId) -> bool {
+        self.info(id).is_some_and(CrateInfo::is_grouped)
+    }
+
+    /// Groups a crate by record (gathering it) or shows it flat, remembered across launches.
+    pub fn set_grouped(&mut self, id: CrateId, on: bool) {
+        if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id) {
+            c.grouped = Some(on);
+            self.mark_index();
+        }
+        self.apply_grouped(id);
+    }
+
+    /// The loaded playlist takes the crate's grouping (after its kind or setting changed).
+    fn apply_grouped(&mut self, id: CrateId) {
+        let on = self.is_grouped(id);
+        if let Some(p) = self.loaded.get_mut(&id)
+            && p.is_grouped() != on
+            && p.set_grouped(on)
+        {
+            self.touch(id);
+        }
     }
 
     pub fn is_loaded(&self, id: CrateId) -> bool {
@@ -337,6 +407,25 @@ impl Crates {
         match self.loaded.get(&id) {
             Some(p) => p.len(),
             None => self.info(id).map_or(0, |c| c.entries),
+        }
+    }
+
+    /// Records in a crate (albums, and entries of no album): counted for a loaded crate
+    /// (again only when it changed), else as of its last save, else its entries.
+    pub fn record_count(&self, id: CrateId) -> usize {
+        let Some(p) = self.loaded.get(&id) else {
+            return self
+                .info(id)
+                .map_or(0, |c| if c.records > 0 { c.records } else { c.entries });
+        };
+        let mut cache = self.records.borrow_mut();
+        match cache.get(&id) {
+            Some(&(rev, n)) if rev == p.rev() => n,
+            _ => {
+                let n = count_records(p);
+                cache.insert(id, (p.rev(), n));
+                n
+            }
         }
     }
 
@@ -452,6 +541,7 @@ impl Crates {
             c.collection = true;
             self.mark_index();
         }
+        self.apply_grouped(id);
     }
 
     /// Whether the crate is the user's Discogs wantlist.
@@ -471,6 +561,10 @@ impl Crates {
         }
         if changed {
             self.mark_index();
+            let ids: Vec<CrateId> = self.loaded.keys().copied().collect();
+            for c in ids {
+                self.apply_grouped(c);
+            }
         }
     }
 
@@ -486,6 +580,8 @@ impl Crates {
             created: now_secs(),
             collection: false,
             wantlist: false,
+            grouped: None,
+            records: 0,
         });
         self.loaded.insert(id, Playlist::default());
         self.touch(id);
@@ -637,12 +733,14 @@ impl Crates {
                 playlist: playlist.to_saved(),
             };
             let count = playlist.len();
+            let records = count_records(playlist);
             match store.save(&file_name(id), &file) {
                 Ok(()) => {
                     if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
-                        && c.entries != count
+                        && (c.entries != count || c.records != records)
                     {
                         c.entries = count;
+                        c.records = records;
                         self.mark_index();
                     }
                 }
@@ -1054,6 +1152,54 @@ mod tests {
             (o.album.as_str(), o.cover.as_str()),
             ("Glasshouse EP", "https://i.discogs.com/x.jpeg")
         );
+    }
+
+    #[test]
+    fn grouping_is_remembered_and_the_discogs_crates_default_to_it() {
+        use crate::playlist::Origin;
+        let cfg = config("grouped");
+        let o = |r: u64, c: &str| Origin {
+            release: Some(r),
+            clip: Some(c.into()),
+            ..Default::default()
+        };
+        let (friday, coll) = {
+            let mut c = Crates::open(&cfg);
+            let friday = c.create("Friday").unwrap();
+            let coll = c.create("Collection: digger").unwrap();
+            for id in [friday, coll] {
+                let p = c.get_mut(id).unwrap();
+                for (r, clip) in [(1, "a"), (2, "b"), (1, "c")] {
+                    p.add_waiting("A", clip, None, Some(o(r, clip)), "listed");
+                }
+                c.touch(id);
+            }
+            assert!(!c.is_grouped(friday), "an ordinary crate is flat");
+            c.set_collection(coll);
+            assert!(c.is_grouped(coll), "the collection is grouped by default");
+            let titles: Vec<String> = c
+                .get(coll)
+                .unwrap()
+                .entries()
+                .iter()
+                .map(|e| e.title.clone())
+                .collect();
+            assert_eq!(titles, ["a", "c", "b"], "and gathered");
+            c.set_grouped(friday, true);
+            c.save_due(true, Duration::ZERO);
+            (friday, coll)
+        };
+        let mut c = Crates::open(&cfg);
+        assert!(c.is_grouped(friday) && c.is_grouped(coll), "remembered");
+        c.load(friday);
+        assert!(c.get(friday).unwrap().is_grouped());
+        c.set_grouped(coll, false);
+        assert!(!c.is_grouped(coll), "a choice beats the default");
+        // An index written before grouping existed loads, every crate by its kind.
+        let old: CrateInfo =
+            ron::from_str(r#"(id: 5, name: "Old", entries: 0, created: 1)"#).unwrap();
+        assert_eq!(old.grouped, None);
+        assert!(!old.is_grouped());
     }
 
     #[test]

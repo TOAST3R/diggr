@@ -41,9 +41,9 @@ Passed clips, wanted releases and wantlist changes still waiting SHALL be rememb
 
 #### Scenario: After a restart
 - **WHEN** the app is restarted
-- **THEN** wanted records still show ✓, passed tracks are still dimmed, and waiting wantlist changes are still retried
+- **THEN** wanted records still show ★, passed tracks are still dimmed, and waiting wantlist changes are still retried
 
 #### Scenario: Kept before the upgrade
 - **WHEN** the app starts with a memory file in which release 123456 was kept
-- **THEN** release 123456 is wanted, and its entries show ✓
+- **THEN** release 123456 is wanted, and its entries show ★
 

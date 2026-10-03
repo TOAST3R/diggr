@@ -23,26 +23,34 @@ The choice SHALL be made with the ▤ button in the playlist title bar (lit whil
 ### Requirement: Record row
 A record row SHALL show, from left to right:
 - the record's cover, as a square of the row's height, or an empty frame while it loads, or a record icon when there is none (a local album, no image, or a failed fetch);
-- an open/close mark (▸ or ▾);
-- on its first line, artist – album and the OWNED and ✓ marks;
+- an open/close mark (⏵ or ⏷);
+- on its first line, artist – album and the OWNED and ★ marks, and the record's Discogs styles right-aligned and dimmed (its genres when it has no style);
 - on its second line, dimmed, the catalog number, year, number of tracks and for-sale snapshot, where known.
 
-When it holds the playing entry, its second line SHALL name that track with the play or pause sign, and the row SHALL be drawn in the highlight colour. In the column layout, a record row SHALL span the full width, and track rows SHALL use the columns. Hovering a record row SHALL show the tooltip of its first entry.
+When it holds the playing entry, its second line SHALL name that track with the play or pause sign, and the row SHALL be drawn in the highlight colour. In the column layout, a record row SHALL span the full width, track rows SHALL use the columns, and no column header SHALL be shown while the crate is grouped (its row goes to the list; ☰ › Sort still sorts). The crate sidebar SHALL show a grouped crate's number of records (albums, and entries of no album) instead of its tracks, and its tooltip both. Hovering a record row SHALL show the tooltip of its first entry.
 
 #### Scenario: A record
 - **WHEN** a grouped crate holds 3 entries of "Glasshouse EP" by Nightcraft, LT-012, 1994, with 6 for sale from €9.00, and its cover is cached
 - **THEN** one record row shows the cover, "Nightcraft – Glasshouse EP", and "LT-012 · 1994 · 3 tracks · 6 for sale from €9.00"
 
+#### Scenario: Styles and no header
+- **WHEN** a grouped crate is shown in columns and a record's styles are Deep House and Minimal
+- **THEN** no column header is drawn, and the record row's first line ends with "Deep House, Minimal"
+
+#### Scenario: Records counted
+- **WHEN** the collection crate holds 4,000 tracks from 1,234 records and is grouped
+- **THEN** its sidebar row shows 1,234
+
 #### Scenario: Playing inside a closed record
 - **WHEN** track A2 "Tidepool" of a closed record plays
-- **THEN** the record row is highlighted and its second line reads "▶ A2 Tidepool"
+- **THEN** the record row is highlighted and its second line reads "⏵ A2 Tidepool"
 
 ### Requirement: Opening a record
-Clicking a record row's ▸, or pressing Space while the cursor is on it and the playlist has focus, SHALL open it: its tracks are shown as indented track rows under it, in crate order. Doing so again SHALL close it. Records SHALL start closed, except that the record of a track being played or armed from a track row stays open. Which records are open SHALL be kept for the session, per crate. ← and → SHALL keep seeking.
+Clicking a record row's ⏵, or pressing Space while the cursor is on it and the playlist has focus, SHALL open it: its tracks are shown as track rows under it, in crate order (indented past the cover in the single-line layout). Doing so again, or pressing Space on one of its track rows, SHALL close it. Records SHALL start closed, except that the record of a track being played or armed from a track row stays open. Which records are open SHALL be kept for the session, per crate. ← and → SHALL keep seeking.
 
 #### Scenario: Open
-- **WHEN** the user clicks ▸ on a record of 3 tracks
-- **THEN** its 3 tracks appear under it, indented, and the mark becomes ▾
+- **WHEN** the user clicks ⏵ on a record of 3 tracks
+- **THEN** its 3 tracks appear under it, indented, and the mark becomes ⏷
 
 #### Scenario: Space
 - **WHEN** the playlist has focus, the cursor is on a closed record row, and the user presses Space

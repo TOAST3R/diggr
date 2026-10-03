@@ -1,7 +1,10 @@
 //! The eframe application: main player, equalizer and playlist stacked in one borderless
 //! window, plus fullscreen visual mode.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -19,7 +22,8 @@ use crate::files;
 use crate::format;
 use crate::fullscreen::{SceneFrame, VisualScene};
 use crate::metadata::{MetaResult, MetaWorker};
-use crate::playlist::{ClickMods, CursorMove, EntryId, EntryStatus};
+use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus};
+use crate::records::{self, ListRow};
 use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
 use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
@@ -108,8 +112,19 @@ pub struct WinampApp {
     lp_knob: f32,
     title_offset: usize,
     title_tick: f64,
+    /// The first row in view (a record row counts as one).
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
+    /// A record row being dragged: all its entries move.
+    pl_drag_block: Option<Vec<EntryId>>,
+    /// A track row of an open record being dragged: it moves within that record only.
+    pl_drag_track: Option<AlbumKey>,
+    /// The records open in each grouped crate (for the session).
+    pl_open: HashMap<CrateId, HashSet<AlbumKey>>,
+    /// Bumped when a record opens or closes.
+    pl_open_rev: u64,
+    /// The shown crate's rows, and what they were built from.
+    pl_rows_cache: RefCell<Option<(RowsKey, Rc<Vec<ListRow>>)>>,
     /// The rest of the album of the entry whose menu is open (tinted; the selection stays).
     pl_tint: Vec<EntryId>,
     /// The BPM range handle being dragged: 0 the low one, 1 the high one.
@@ -292,6 +307,11 @@ impl WinampApp {
             title_tick: 0.0,
             pl_scroll: 0,
             pl_drag_from: None,
+            pl_drag_block: None,
+            pl_drag_track: None,
+            pl_open: HashMap::new(),
+            pl_open_rev: 0,
+            pl_rows_cache: RefCell::new(None),
             pl_tint: Vec::new(),
             bpm_drag: None,
             side_crate: None,
@@ -1236,6 +1256,15 @@ impl WinampApp {
             Key::O if mods.command => self.open_files_dialog(Open::Add),
             Key::A if mods.command => self.crates.shown_mut().select_all(),
             Key::Enter => {
+                // On a closed record row, the record plays.
+                if let Some(ListRow::Record(rec)) = self.pl_cursor_row()
+                    && !rec.single
+                    && !rec.open
+                {
+                    let shown = self.crates.shown();
+                    let ids = rec.members.iter().map(|&i| shown.entries()[i].id).collect();
+                    return self.apply(Action::PlayRecord(ids), ctx);
+                }
                 let shown = self.crates.shown();
                 if let Some(id) = shown
                     .cursor()
@@ -1244,7 +1273,21 @@ impl WinampApp {
                     self.play_entry(self.crates.shown_id(), id);
                 }
             }
+            // Space opens or closes the record under the cursor (grouped): its record row, or
+            // one of its tracks while it's open.
+            Key::Space if self.arrows_move_cursor() => match self.pl_cursor_row() {
+                Some(ListRow::Record(rec)) if !rec.single => {
+                    self.apply(Action::ToggleRecord(rec.key), ctx);
+                }
+                Some(ListRow::Entry { idx, track: true }) => {
+                    if let Some(key) = self.crates.shown().entries()[idx].album_key() {
+                        self.apply(Action::ToggleRecord(key), ctx);
+                    }
+                }
+                _ => {}
+            },
             Key::P if mods.shift && !mods.command => self.apply(Action::ToggleMaximized, ctx),
+            Key::G if mods.shift && !mods.command => self.apply(Action::ToggleGrouped, ctx),
             Key::P if !mods.command => self.show_playing_entry(),
             _ if !mods.command && self.arrows_move_cursor() => {
                 let mv = match key {
@@ -1262,6 +1305,9 @@ impl WinampApp {
                     .then(|| self.crates.shown().current())
                     .flatten();
                 self.side_crate = None;
+                if self.crates.shown().is_grouped() {
+                    return self.move_row_cursor(mv, mods.shift, start);
+                }
                 let p = self.crates.shown_mut();
                 p.move_cursor(mv, mods.shift, page, start);
                 if let Some(i) = p.cursor_index() {
@@ -1270,6 +1316,60 @@ impl WinampApp {
             }
             _ => {}
         }
+    }
+
+    /// The row the keyboard cursor is on (grouped: a closed record's row for any of its
+    /// entries).
+    fn pl_cursor_row(&self) -> Option<ListRow> {
+        let i = self.crates.shown().cursor_index()?;
+        let rows = self.pl_list();
+        let r = records::row_of(&rows, i);
+        rows.get(r)
+            .filter(|row| row.indices().contains(&i))
+            .cloned()
+    }
+
+    /// Grouped, the arrows move over the rows shown: a record row is one step, and selecting
+    /// it selects its entries. Shift extends from the anchor by whole rows.
+    fn move_row_cursor(&mut self, mv: CursorMove, extend: bool, start: Option<EntryId>) {
+        let rows = self.pl_list();
+        if rows.is_empty() {
+            return;
+        }
+        let units = self.pl_visible_rows();
+        let last = rows.len() - 1;
+        let p = self.crates.shown();
+        let row_of_id = |id: EntryId| p.index_of(id).map(|i| records::row_of(&rows, i));
+        let at = p.cursor().and_then(row_of_id);
+        let page = records::fit(&rows, self.pl_scroll, units).max(1);
+        let to = match (at, mv) {
+            (None, CursorMove::Up | CursorMove::Down) => start.and_then(row_of_id).unwrap_or(0),
+            (at, _) => {
+                let at = at.or_else(|| start.and_then(row_of_id)).unwrap_or(0);
+                match mv {
+                    CursorMove::Up => at.saturating_sub(1),
+                    CursorMove::Down => (at + 1).min(last),
+                    CursorMove::PageUp => at.saturating_sub(page),
+                    CursorMove::PageDown => (at + page).min(last),
+                    CursorMove::Home => 0,
+                    CursorMove::End => last,
+                }
+            }
+        };
+        let ids: Vec<EntryId> = rows[to]
+            .indices()
+            .iter()
+            .map(|&i| p.entries()[i].id)
+            .collect();
+        let first = rows[to].first();
+        let last_idx = rows[to].indices().iter().copied().max().unwrap_or(first);
+        let p = self.crates.shown_mut();
+        if extend {
+            p.extend_to(last_idx, &ids, ids[0]);
+        } else {
+            p.select_only(&ids, ids[0]);
+        }
+        self.scroll_into_view(first);
     }
 
     /// ↑/↓ move the playlist cursor while the playlist has the keyboard (not in fullscreen).
@@ -1291,26 +1391,41 @@ impl WinampApp {
         self.mark_settings();
     }
 
-    /// Scrolls the playlist by the least amount that shows entry `index` (a crate index; under
-    /// a BPM filter, its row, or where it would be).
-    fn scroll_into_view(&mut self, index: usize) {
-        let index = self.pl_row_of(index);
-        let rows = self.pl_visible_rows();
-        if index < self.pl_scroll {
-            self.pl_scroll = index;
-        } else if index >= self.pl_scroll + rows {
-            self.pl_scroll = index + 1 - rows;
+    /// The shown crate's rows (see [`records`]), rebuilt only when the crate, its filter, its
+    /// grouping or its open records change.
+    fn pl_list(&self) -> Rc<Vec<ListRow>> {
+        let id = self.crates.shown_id();
+        let p = self.crates.shown();
+        let key = (id, p.rev(), p.is_grouped(), self.pl_open_rev);
+        if let Some((k, rows)) = &*self.pl_rows_cache.borrow()
+            && *k == key
+        {
+            return rows.clone();
         }
+        let empty = HashSet::new();
+        let rows = Rc::new(records::build(p, self.pl_open.get(&id).unwrap_or(&empty)));
+        *self.pl_rows_cache.borrow_mut() = Some((key, rows.clone()));
+        rows
     }
 
-    /// The list row of crate index `index` (under a BPM filter, the first row after it when
-    /// it's hidden).
+    /// Scrolls the playlist by the least amount that shows entry `index` (a crate index): its
+    /// row, its closed record's row, or under a BPM filter where it would be.
+    fn scroll_into_view(&mut self, index: usize) {
+        let rows = self.pl_list();
+        let row = records::row_of(&rows, index);
+        self.pl_scroll = records::scroll_to(&rows, self.pl_scroll, row, self.pl_visible_rows());
+    }
+
+    /// The list row of crate index `index` (see [`Self::scroll_into_view`]).
     fn pl_row_of(&self, index: usize) -> usize {
-        let shown = self.crates.shown();
-        if shown.bpm_filter().is_none() {
-            return index;
-        }
-        shown.shown_rows().partition_point(|&r| r < index)
+        records::row_of(&self.pl_list(), index)
+    }
+
+    /// Whether list row `row` is in view.
+    fn pl_row_in_view(&self, row: usize) -> bool {
+        let rows = self.pl_list();
+        row >= self.pl_scroll
+            && row < self.pl_scroll + records::fit(&rows, self.pl_scroll, self.pl_visible_rows())
     }
 
     /// `P`: the playing crate, scrolled to its playing entry, with the cursor on it.
@@ -1970,9 +2085,15 @@ impl WinampApp {
         self.pl_geometry().0 >= crate::columns::COLUMNS_FROM_WIDTH
     }
 
+    /// The column header shows: wide enough for columns, and not grouped by record (record
+    /// rows span the whole width, so the header's labels would name nothing).
+    fn pl_header(&self) -> bool {
+        self.pl_columns() && !self.crates.shown().is_grouped()
+    }
+
     /// Rows of entries on screen: the playlist's rows, less the column header.
     fn pl_visible_rows(&self) -> usize {
-        (self.pl_rows() - self.pl_columns() as usize).max(1)
+        (self.pl_rows() - self.pl_header() as usize).max(1)
     }
 
     /// The playlist is wide enough for the crate sidebar (whether or not it is on).
@@ -2119,11 +2240,18 @@ impl WinampApp {
                 }
                 None => {}
             }
+            // A grouped crate counts records, not tracks.
+            let grouped = c.is_grouped();
+            let shown_count = if grouped {
+                self.crates.record_count(c.id)
+            } else {
+                self.crates.entry_count(c.id)
+            };
             let count = painter
                 .text(
                     pos2(rr.right() - 3.0 * scale, rr.center().y),
                     egui::Align2::RIGHT_CENTER,
-                    self.crates.entry_count(c.id).to_string(),
+                    shown_count.to_string(),
                     font.clone(),
                     col,
                 )
@@ -2142,11 +2270,18 @@ impl WinampApp {
                 );
             let mut resp = ui.interact(rr, Id::new(("pl_side", c.id)), Sense::click());
             if resp.hovered() && !dragging {
-                let mut tip = format!(
-                    "{} ({})",
-                    c.name,
-                    entries_label(self.crates.entry_count(c.id))
-                );
+                let tracks = entries_label(self.crates.entry_count(c.id));
+                let mut tip = if grouped {
+                    let n = self.crates.record_count(c.id);
+                    let records = if n == 1 {
+                        "1 record".to_owned()
+                    } else {
+                        format!("{n} records")
+                    };
+                    format!("{} ({records}, {tracks})", c.name)
+                } else {
+                    format!("{} ({tracks})", c.name)
+                };
                 if c.collection {
                     tip += "\nYour Discogs collection";
                 } else if c.wantlist {
@@ -2471,13 +2606,12 @@ impl WinampApp {
         if now == self.pl_follow {
             return;
         }
-        let rows = self.pl_visible_rows();
         let shown = self.crates.shown();
         let target = match (self.pl_follow, now) {
             (Some((c0, prev)), Some((c1, new))) if c0 == c1 => shown
                 .index_of(prev)
                 .map(|i| self.pl_row_of(i))
-                .filter(|&i| i >= self.pl_scroll && i < self.pl_scroll + rows)
+                .filter(|&r| self.pl_row_in_view(r))
                 .and_then(|_| shown.index_of(new)),
             _ => None,
         };
@@ -2485,6 +2619,313 @@ impl WinampApp {
         if let Some(i) = target {
             self.scroll_into_view(i);
         }
+    }
+
+    /// The entry menu (right-click) for `e`, or for a record row whose entries are `record`
+    /// (selected, so the selection items act on all of them).
+    fn entry_menu(
+        &self,
+        ui: &mut Ui,
+        e: &crate::playlist::Entry,
+        record: Option<&[EntryId]>,
+        rendering: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        let shown = self.crates.shown();
+        let waiting = matches!(e.status, EntryStatus::Waiting(_));
+        let playable = match record {
+            Some(ids) => ids
+                .iter()
+                .any(|&id| shown.get(id).is_some_and(|x| x.status.in_play_order())),
+            None => e.status.in_play_order(),
+        };
+        if ui
+            .add_enabled(
+                playable,
+                egui::Button::new(if waiting { "Arm" } else { "Play" }),
+            )
+            .clicked()
+        {
+            actions.push(match record {
+                Some(ids) => Action::PlayRecord(ids.to_vec()),
+                None => Action::PlayEntry(e.id),
+            });
+            ui.close();
+        }
+        if ui.button("Remove").clicked() {
+            actions.push(Action::RemoveEntry(e.id));
+            ui.close();
+        }
+        // A record row already is its album.
+        let album = shown.album_of(e.id).len();
+        if album > 0 && record.is_none() {
+            let more = album > 1;
+            let tracks = if album == 1 { "track" } else { "tracks" };
+            if ui
+                .add_enabled(
+                    more,
+                    egui::Button::new(format!("Remove album ({album} {tracks})")),
+                )
+                .clicked()
+            {
+                actions.push(Action::RemoveAlbum(e.id));
+                ui.close();
+            }
+            if ui
+                .add_enabled(more, egui::Button::new("Select album"))
+                .clicked()
+            {
+                actions.push(Action::SelectAlbum(e.id));
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.menu_button("Send to crate", |ui| {
+            for c in self.crates.list() {
+                if c.id == self.crates.shown_id() {
+                    continue;
+                }
+                let readable = !self.crates.is_unreadable(c.id);
+                if ui
+                    .add_enabled(readable, egui::Button::new(&c.name))
+                    .clicked()
+                {
+                    actions.push(Action::SendTo(e.id, Some(c.id)));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New crate…").clicked() {
+                actions.push(Action::SendTo(e.id, None));
+                ui.close();
+            }
+        });
+        if self.show_renderer.is_some() {
+            let (label, action) = if rendering {
+                ("Cancel show render", Action::CancelRender)
+            } else {
+                ("Render show…", Action::RenderShow(e.id))
+            };
+            if ui.button(label).clicked() {
+                actions.push(action);
+                ui.close();
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dig_entry_menu(ui, e, actions);
+    }
+
+    /// A record row: its cover, ▸/▾, "Artist – Album" with its marks, and a dimmed line with
+    /// the pressing, its tracks and what's for sale (or the track playing in it). A click
+    /// selects the record, a double-click plays it, ▸ opens it, and its menu acts on it all; a
+    /// record of one entry acts as that entry. Returns the row's response (drag, hover).
+    #[allow(clippy::too_many_arguments)]
+    fn record_row(
+        &self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        clip: &egui::Painter,
+        rr: Rect,
+        rec: &records::RecordRow,
+        cover: Option<CoverSlot>,
+        look: &RecordLook,
+        actions: &mut Vec<Action>,
+    ) -> egui::Response {
+        let shown = self.crates.shown();
+        let colors = look.colors;
+        let scale = sk.scale;
+        let font = look.font;
+        let first = &shown.entries()[rec.members[0]];
+        let ids: Vec<EntryId> = rec.members.iter().map(|&i| shown.entries()[i].id).collect();
+        let playing_here = shown
+            .current()
+            .filter(|c| ids.contains(c))
+            .and_then(|c| shown.get(c))
+            .filter(|_| self.crates.shown_id() == self.crates.playing_id());
+        if ids.iter().all(|&id| shown.is_selected(id)) {
+            clip.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
+        }
+        if self.focus == Focus::Playlist && shown.cursor().is_some_and(|c| ids.contains(&c)) {
+            clip.rect_stroke(
+                rr,
+                0.0,
+                egui::Stroke::new(scale, color(colors.pl_text)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let (col, _) = row_look(first, playing_here.is_some(), colors);
+        let col = if playing_here.is_some() {
+            color(colors.pl_current)
+        } else {
+            col
+        };
+        let dim = lerp_color(
+            col.to_array()[..3].try_into().unwrap_or([0; 3]),
+            colors.pl_bg,
+            0.4,
+        );
+        // The cover: a square of the row's height.
+        let side = rr.height() - 2.0 * scale;
+        let cr = Rect::from_min_size(rr.min + vec2(scale, scale), vec2(side, side));
+        match cover {
+            Some(CoverSlot::Loaded(tex, size)) => {
+                let fit = size * (side / size.x.max(size.y).max(1.0));
+                clip.image(
+                    tex,
+                    Rect::from_center_size(cr.center(), fit),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            Some(CoverSlot::Waiting) => {
+                clip.rect_stroke(
+                    cr,
+                    0.0,
+                    egui::Stroke::new(scale, dim),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            None => {
+                clip.circle_stroke(cr.center(), side * 0.4, egui::Stroke::new(scale, dim));
+                clip.circle_filled(cr.center(), side * 0.08, dim);
+            }
+        }
+        // The row's area first, so ▸ (added after) takes its own clicks.
+        let resp = ui.interact(
+            rr,
+            Id::new(("pl_record", first.id)),
+            Sense::click_and_drag(),
+        );
+        let x0 = cr.right() + 3.0 * scale;
+        let line1 = rr.top() + rr.height() * 0.27;
+        let line2 = rr.top() + rr.height() * 0.73;
+        let text_clip = clip.with_clip_rect(Rect::from_min_max(pos2(x0, rr.top()), rr.max));
+        let mut at = pos2(x0, line1);
+        if !rec.single {
+            let mark = if rec.open { "⏷" } else { "⏵" };
+            let w = text_clip
+                .text(at, egui::Align2::LEFT_CENTER, mark, font.clone(), col)
+                .width();
+            at.x += w + 3.0 * scale;
+            let tri = Rect::from_min_max(
+                pos2(x0 - 2.0 * scale, rr.top()),
+                pos2(at.x, line1 * 2.0 - rr.top()),
+            );
+            if ui
+                .interact(tri, Id::new(("pl_record_open", first.id)), Sense::click())
+                .on_hover_text(if rec.open {
+                    "Close the record"
+                } else {
+                    "Open the record"
+                })
+                .clicked()
+            {
+                actions.push(Action::ToggleRecord(rec.key.clone()));
+            }
+        }
+        let marks = self.dig_marks(first);
+        if marks.owned.is_some() {
+            at.x += owned_badge(&text_clip, at, font, colors, scale) + 3.0 * scale;
+        }
+        let album = if first.album().is_empty() {
+            first.title.as_str()
+        } else {
+            first.album()
+        };
+        let name = if first.artist.is_empty() {
+            album.to_owned()
+        } else {
+            format!("{} – {album}", first.artist)
+        };
+        let failed = marks.wantlist_failed.is_some() || marks.collection_failed.is_some();
+        let name = format!(
+            "{}{}{name}",
+            if failed { "⚑ " } else { "" },
+            if marks.wanted { "★ " } else { "" }
+        );
+        // The record's styles at the right end of its first line; the name stops short of them.
+        let styles = first.origin.as_ref().map_or("", |o| o.styles.as_str());
+        let mut name_right = rr.right() - 3.0 * scale;
+        if !styles.is_empty() {
+            let small = egui::FontId::proportional(font.size * 0.9);
+            let room = (rr.right() - at.x) * 0.45;
+            let style_clip = clip.with_clip_rect(Rect::from_min_max(
+                pos2(rr.right() - 3.0 * scale - room, rr.top()),
+                rr.max,
+            ));
+            let w = style_clip
+                .text(
+                    pos2(rr.right() - 3.0 * scale, line1),
+                    egui::Align2::RIGHT_CENTER,
+                    styles,
+                    small,
+                    dim,
+                )
+                .width()
+                .min(room);
+            name_right -= w + 8.0 * scale;
+        }
+        let name_clip = text_clip.with_clip_rect(Rect::from_min_max(
+            pos2(x0, rr.top()),
+            pos2(name_right.max(at.x), rr.bottom()),
+        ));
+        name_clip.text(at, egui::Align2::LEFT_CENTER, name, font.clone(), col);
+        let second = match playing_here {
+            Some(p) => {
+                let sign = if self.position.state == PlayState::Paused {
+                    "⏸"
+                } else {
+                    "⏵"
+                };
+                let side = p.origin.as_ref().map(|o| o.position.trim()).unwrap_or("");
+                [sign, side, p.title.as_str()]
+                    .into_iter()
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+            None => format::record_line(first.origin.as_ref(), rec.members.len(), rec.total),
+        };
+        text_clip.text(
+            pos2(x0, line2),
+            egui::Align2::LEFT_CENTER,
+            second,
+            egui::FontId::proportional(font.size * 0.9),
+            dim,
+        );
+        let menu_click = opens_context_menu(
+            resp.secondary_clicked(),
+            resp.clicked(),
+            ui.input(|i| i.modifiers),
+        );
+        if resp.double_clicked() {
+            actions.push(if rec.single {
+                Action::PlayEntry(first.id)
+            } else {
+                Action::PlayRecord(ids.clone())
+            });
+        } else if resp.clicked() && !menu_click {
+            actions.push(if rec.single {
+                Action::Select(rec.members[0], look.mods)
+            } else {
+                Action::SelectRecord(ids.clone(), look.mods)
+            });
+        } else if menu_click && !ids.iter().all(|&id| shown.is_selected(id)) {
+            // The menu acts on the selection, which becomes the record.
+            actions.push(Action::SelectRecord(ids.clone(), ClickMods::default()));
+        }
+        let open = if menu_click {
+            Some(egui::SetOpenCommand::Bool(true))
+        } else if resp.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        let record = (!rec.single).then_some(ids.as_slice());
+        egui::Popup::context_menu(&resp)
+            .open_memory(open)
+            .show(|ui| self.entry_menu(ui, first, record, look.rendering, actions));
+        resp
     }
 
     fn playlist_section(&mut self, ui: &mut Ui, origin: Pos2) {
@@ -2496,11 +2937,13 @@ impl WinampApp {
         let mut actions = Vec::new();
         // The rows the BPM filter shows: row r is crate entry `row_map[r]`.
         let row_map = self.crates.shown().shown_rows();
-        let len = row_map.len();
         // Wide enough: columns under a header row, which takes the first row.
         let columns = self.pl_columns();
         let visible = self.pl_visible_rows();
-        self.pl_scroll = self.pl_scroll.min(len.saturating_sub(visible));
+        // What the list draws: entries, or grouped, record rows and the tracks of open ones.
+        let list_rows = self.pl_list();
+        let max_start = records::max_start(&list_rows, visible);
+        self.pl_scroll = self.pl_scroll.min(max_start);
         {
             let def = d.clone();
             let sk = self.skinned(&def, ui, origin);
@@ -2533,6 +2976,15 @@ impl WinampApp {
             if widgets::button(ui, &sk, "pl_max", "pl_max", "btn_max").clicked() {
                 actions.push(Action::ToggleMaximized);
             }
+            // ▤: one row per record (lit while grouped).
+            let on = self.crates.shown().is_grouped();
+            let sprite = if on { "btn_group_on" } else { "btn_group" };
+            if widgets::button(ui, &sk, "pl_group", "pl_group", sprite)
+                .on_hover_text("Group by record (Shift+G)")
+                .clicked()
+            {
+                actions.push(Action::ToggleGrouped);
+            }
             let top = d.pl_top_h as f32;
             sk.sprite_in("pl_left", sk.rect(0.0, top, 12.0, list_h));
             sk.sprite_in(
@@ -2564,7 +3016,9 @@ impl WinampApp {
             });
             // The column header, then the rows.
             let head_top = top;
-            let rows_top = head_top + columns as usize as f32 * row_h;
+            // Grouped, the record rows span the width: no header (☰ › Sort still sorts).
+            let header = self.pl_header();
+            let rows_top = head_top + header as usize as f32 * row_h;
             let cols = if columns {
                 // The number column fits the biggest number (entries keep their crate numbers).
                 let digits = self.crates.shown().len().max(1).to_string().len() as f32;
@@ -2572,8 +3026,10 @@ impl WinampApp {
                     .settings
                     .columns
                     .layout(l.w as f32, digits * 6.0 + 10.0);
-                let head = sk.rect(l.x as f32, head_top, l.w as f32, row_h);
-                self.column_header(ui, &sk, head, &cols, &font, &mut actions);
+                if header {
+                    let head = sk.rect(l.x as f32, head_top, l.w as f32, row_h);
+                    self.column_header(ui, &sk, head, &cols, &font, &mut actions);
+                }
                 cols
             } else {
                 Vec::new()
@@ -2592,14 +3048,17 @@ impl WinampApp {
                     Id::new("pl_no_match"),
                     Sense::hover(),
                 )
-                .on_hover_text("× after the BPM range, or ≡ ▸ Show all tempos, shows every track");
+                .on_hover_text("× after the BPM range, or ☰ › Show all tempos, shows every track");
             }
             // While an entry's menu is open, the rest of its album is tinted.
-            self.pl_tint = row_map
+            self.pl_tint = list_rows
                 .iter()
                 .skip(self.pl_scroll)
-                .take(visible)
-                .copied()
+                .take(records::fit(&list_rows, self.pl_scroll, visible))
+                .filter_map(|r| match r {
+                    ListRow::Entry { idx, .. } => Some(*idx),
+                    ListRow::Record(_) => None,
+                })
                 .find(|&idx| egui::Popup::is_id_open(ui.ctx(), row_menu_id(idx)))
                 .map(|idx| {
                     let id = shown.entries()[idx].id;
@@ -2609,14 +3068,91 @@ impl WinampApp {
                 })
                 .unwrap_or_default();
             let tint = lerp_color(d.colors.pl_selected_bg, d.colors.pl_bg, 0.65);
-            for r in 0..visible {
-                let Some(&idx) = row_map.get(self.pl_scroll + r) else {
+            let rendering = self
+                .render_job
+                .as_ref()
+                .is_some_and(|(j, _)| !j.status().finished());
+            let mut y = 0usize;
+            // The record rows drawn, for their covers.
+            let mut in_view: Vec<usize> = Vec::new();
+            for row in list_rows.iter().skip(self.pl_scroll) {
+                if y > 0 && y + row.units() > visible {
                     break;
+                }
+                let at_y = y;
+                y += row.units();
+                let (idx, track) = match row {
+                    ListRow::Entry { idx, track } => (*idx, *track),
+                    ListRow::Record(rec) => {
+                        in_view.push(rec.members[0]);
+                        let top = rows_top + at_y as f32 * row_h;
+                        let rr = sk.rect(
+                            l.x as f32,
+                            top,
+                            l.w as f32,
+                            records::RECORD_UNITS as f32 * row_h,
+                        );
+                        let first = &shown.entries()[rec.members[0]];
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let cover = self.dig.as_mut().and_then(|d| d.covers.row_slot(first));
+                        #[cfg(target_arch = "wasm32")]
+                        let cover = None;
+                        let look = RecordLook {
+                            colors: &d.colors,
+                            font: &font,
+                            mods,
+                            rendering,
+                        };
+                        let resp =
+                            self.record_row(ui, &sk, &clip, rr, rec, cover, &look, &mut actions);
+                        if resp.drag_started() {
+                            self.pl_drag_from = Some(rec.members[0]);
+                            self.pl_drag_track = None;
+                            self.pl_drag_block = (!rec.single).then(|| {
+                                rec.members.iter().map(|&i| shown.entries()[i].id).collect()
+                            });
+                        }
+                        if resp.hovered() && self.pl_drag_from.is_none() {
+                            let details =
+                                format::entry_details(first, self.dig_marks(first), unix_now());
+                            #[cfg(not(target_arch = "wasm32"))]
+                            let hover = self
+                                .dig
+                                .as_mut()
+                                .and_then(|d| d.covers.slot(ui.ctx(), first));
+                            #[cfg(target_arch = "wasm32")]
+                            let hover = None;
+                            resp.on_hover_ui(move |ui| entry_tooltip(ui, &details, hover));
+                        }
+                        if self.pl_drag_from.is_some()
+                            && self.pl_drag_track.is_none()
+                            && ui.rect_contains_pointer(rr)
+                        {
+                            drop_target = Some(rec.members[0]);
+                            clip.rect_filled(
+                                Rect::from_min_size(rr.min, vec2(rr.width(), scale)),
+                                0.0,
+                                Color32::WHITE,
+                            );
+                        }
+                        continue;
+                    }
                 };
                 let Some(e) = shown.entries().get(idx) else {
                     break;
                 };
-                let rr = sk.rect(l.x as f32, rows_top + r as f32 * row_h, l.w as f32, row_h);
+                // A track of an open record sits under its record, past the cover.
+                let indent = if track && !columns {
+                    records::RECORD_UNITS as f32 * row_h
+                } else {
+                    0.0
+                };
+                let rr = sk.rect(
+                    l.x as f32 + indent,
+                    rows_top + at_y as f32 * row_h,
+                    l.w as f32 - indent,
+                    row_h,
+                );
                 if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
                 } else if self.pl_tint.contains(&e.id) {
@@ -2642,8 +3178,8 @@ impl WinampApp {
                 let marked = |name: String| {
                     format!(
                         "{}{}{name}{}",
-                        if failed { "⚠ " } else { "" },
-                        if marks.wanted { "✓ " } else { "" },
+                        if failed { "⚑ " } else { "" },
+                        if marks.wanted { "★ " } else { "" },
                         if marks.wantlist_pending {
                             " (wantlist pending)"
                         } else {
@@ -2752,10 +3288,6 @@ impl WinampApp {
                     // The menu acts on the selection, which becomes the clicked entry.
                     actions.push(Action::Select(idx, ClickMods::default()));
                 }
-                let rendering = self
-                    .render_job
-                    .as_ref()
-                    .is_some_and(|(j, _)| !j.status().finished());
                 // egui's context menu opens only on the secondary button; on a Mac,
                 // Control-click is the usual right-click too.
                 let open = if menu_click {
@@ -2767,84 +3299,20 @@ impl WinampApp {
                 };
                 egui::Popup::context_menu(&resp)
                     .open_memory(open)
-                    .show(|ui| {
-                        let waiting = matches!(e.status, EntryStatus::Waiting(_));
-                        let playable = e.status.in_play_order();
-                        if ui
-                            .add_enabled(
-                                playable,
-                                egui::Button::new(if waiting { "Arm" } else { "Play" }),
-                            )
-                            .clicked()
-                        {
-                            actions.push(Action::PlayEntry(e.id));
-                            ui.close();
-                        }
-                        if ui.button("Remove").clicked() {
-                            actions.push(Action::RemoveEntry(e.id));
-                            ui.close();
-                        }
-                        let album = shown.album_of(e.id).len();
-                        if album > 0 {
-                            let more = album > 1;
-                            let tracks = if album == 1 { "track" } else { "tracks" };
-                            if ui
-                                .add_enabled(
-                                    more,
-                                    egui::Button::new(format!("Remove album ({album} {tracks})")),
-                                )
-                                .clicked()
-                            {
-                                actions.push(Action::RemoveAlbum(e.id));
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(more, egui::Button::new("Select album"))
-                                .clicked()
-                            {
-                                actions.push(Action::SelectAlbum(e.id));
-                                ui.close();
-                            }
-                        }
-                        ui.separator();
-                        ui.menu_button("Send to crate", |ui| {
-                            for c in self.crates.list() {
-                                if c.id == self.crates.shown_id() {
-                                    continue;
-                                }
-                                let readable = !self.crates.is_unreadable(c.id);
-                                if ui
-                                    .add_enabled(readable, egui::Button::new(&c.name))
-                                    .clicked()
-                                {
-                                    actions.push(Action::SendTo(e.id, Some(c.id)));
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            if ui.button("New crate…").clicked() {
-                                actions.push(Action::SendTo(e.id, None));
-                                ui.close();
-                            }
-                        });
-                        if self.show_renderer.is_some() {
-                            let (label, action) = if rendering {
-                                ("Cancel show render", Action::CancelRender)
-                            } else {
-                                ("Render show…", Action::RenderShow(e.id))
-                            };
-                            if ui.button(label).clicked() {
-                                actions.push(action);
-                                ui.close();
-                            }
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        self.dig_entry_menu(ui, e, &mut actions);
-                    });
+                    .show(|ui| self.entry_menu(ui, e, None, rendering, &mut actions));
                 if resp.drag_started() {
                     self.pl_drag_from = Some(idx);
+                    self.pl_drag_block = None;
+                    // A track of an open record stays in its record.
+                    self.pl_drag_track = track.then(|| e.album_key()).flatten();
                 }
-                if self.pl_drag_from.is_some() && ui.rect_contains_pointer(rr) {
+                // Where a drag may land: a record moves between rows, a track within its own.
+                let lands = match (&self.pl_drag_block, &self.pl_drag_track) {
+                    (Some(_), _) => !track,
+                    (None, Some(k)) => track && e.album_key().as_ref() == Some(k),
+                    (None, None) => !track,
+                };
+                if self.pl_drag_from.is_some() && lands && ui.rect_contains_pointer(rr) {
                     drop_target = Some(idx);
                     clip.rect_filled(
                         Rect::from_min_size(rr.min, vec2(rr.width(), scale)),
@@ -2856,25 +3324,45 @@ impl WinampApp {
             if let Some(from) = self.pl_drag_from
                 && ui.input(|i| i.pointer.any_released())
             {
-                if let Some(to) = drop_target {
-                    actions.push(Action::Move(from, to));
-                } else if let Some(c) = side_drop
-                    && let Some(e) = self.crates.shown().entries().get(from)
-                {
-                    actions.push(Action::DropOnCrate(e.id, c));
+                let shown = self.crates.shown();
+                match (drop_target, self.pl_drag_block.take()) {
+                    (Some(to), Some(block)) => {
+                        let before = shown.entries().get(to).map(|e| e.id);
+                        actions.push(Action::MoveBlock(block, before));
+                    }
+                    (Some(to), None) => actions.push(Action::Move(from, to)),
+                    (None, _) => {
+                        if let Some(c) = side_drop
+                            && let Some(e) = shown.entries().get(from)
+                        {
+                            actions.push(Action::DropOnCrate(e.id, c));
+                        }
+                    }
                 }
                 self.pl_drag_from = None;
+                self.pl_drag_track = None;
             }
+            // The covers of the record rows in view, top first.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(dig) = &mut self.dig {
+                let shown = self.crates.shown();
+                let es: Vec<&crate::playlist::Entry> = in_view
+                    .iter()
+                    .filter_map(|&i| shown.entries().get(i))
+                    .collect();
+                dig.covers.want_in_view(&es);
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = in_view;
             // Scrolling adds up, so a trackpad's small steps move the list too. The rows sit
             // on top of the list, so "over the list" is where the pointer is, not what egui
             // reports as hovered.
             if ui.rect_contains_pointer(list) {
                 let dy = ui.input(|i| i.smooth_scroll_delta.y);
-                let max = len.saturating_sub(visible);
                 self.pl_scroll = scroll_rows(
                     &mut self.pl_scroll_acc,
                     self.pl_scroll,
-                    max,
+                    max_start,
                     dy,
                     row_h * scale,
                 );
@@ -2886,7 +3374,7 @@ impl WinampApp {
             let sc = d.at("pl_scroll");
             let thumb = d.sprite("pl_scroll_thumb");
             let travel = (list_h - thumb.h as f32).max(0.0);
-            let max_scroll = len.saturating_sub(rows);
+            let max_scroll = max_start;
             let frac = if max_scroll == 0 {
                 0.0
             } else {
@@ -2957,6 +3445,15 @@ impl WinampApp {
                 });
                 if filtered && ui.button("Show all tempos").clicked() {
                     actions.push(Action::SetBpmFilter(None));
+                }
+                let mut grouped = self.crates.shown().is_grouped();
+                if ui
+                    .checkbox(&mut grouped, "Group by record")
+                    .on_hover_text("One row per record, opening to its tracks (Shift+G)")
+                    .clicked()
+                {
+                    actions.push(Action::ToggleGrouped);
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button("Export M3U…").clicked() {
@@ -3319,6 +3816,55 @@ impl WinampApp {
                 self.save_presets();
             }
             Action::PlayEntry(id) => self.play_entry(self.crates.shown_id(), id),
+            Action::ToggleGrouped => {
+                let c = self.crates.shown_id();
+                let on = !self.crates.is_grouped(c);
+                self.crates.set_grouped(c, on);
+                self.mark_crate(c);
+                if let Some(i) = self.crates.shown().cursor_index() {
+                    self.scroll_into_view(i);
+                }
+            }
+            Action::ToggleRecord(key) => {
+                let open = self.pl_open.entry(self.crates.shown_id()).or_default();
+                if !open.remove(&key) {
+                    open.insert(key);
+                }
+                self.pl_open_rev += 1;
+            }
+            Action::SelectRecord(ids, mods) => {
+                self.side_crate = None;
+                let p = self.crates.shown_mut();
+                if mods.command {
+                    p.toggle_ids(&ids);
+                } else if mods.shift {
+                    let last = ids.iter().filter_map(|&id| p.index_of(id)).max();
+                    if let Some(last) = last {
+                        p.extend_to(last, &ids, ids[0]);
+                    }
+                } else {
+                    p.select_only(&ids, ids[0]);
+                }
+            }
+            Action::PlayRecord(ids) => {
+                let p = self.crates.shown();
+                let pick = ids
+                    .iter()
+                    .copied()
+                    .find(|&id| p.get(id).is_some_and(|e| e.status.is_playable()))
+                    .or_else(|| {
+                        ids.iter()
+                            .copied()
+                            .find(|&id| p.get(id).is_some_and(|e| e.status.in_play_order()))
+                    });
+                if let Some(id) = pick {
+                    self.play_entry(self.crates.shown_id(), id);
+                }
+            }
+            Action::MoveBlock(ids, before) => {
+                self.crates.shown_mut().move_block(&ids, before);
+                self.mark_shown();
+            }
             Action::RenderShow(id) => self.open_render_dialog(id),
             Action::CancelRender => {
                 if let Some((job, _)) = &self.render_job {
@@ -3344,7 +3890,7 @@ impl WinampApp {
             Action::SetBpmFilter(range) => {
                 if self.crates.shown_mut().set_bpm_filter(range) {
                     self.mark_shown();
-                    let rows = self.crates.shown().shown_rows().len();
+                    let rows = self.pl_list().len();
                     self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
                 }
             }
@@ -3456,6 +4002,16 @@ impl WinampApp {
 }
 
 enum Action {
+    /// Group the shown crate by record, or show it flat.
+    ToggleGrouped,
+    /// Open or close a record row of the shown crate.
+    ToggleRecord(AlbumKey),
+    /// A click on a record row: these entries, with these modifiers.
+    SelectRecord(Vec<EntryId>, ClickMods),
+    /// Plays a record: its first playable track, or arms its first one.
+    PlayRecord(Vec<EntryId>),
+    /// Moves a record (these entries) before an entry, or to the end.
+    MoveBlock(Vec<EntryId>, Option<EntryId>),
     Prev,
     Play,
     Pause,
@@ -3613,6 +4169,18 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// What the playlist's rows were built from: the crate, its revision, whether it's grouped,
+/// and the open records' revision.
+type RowsKey = (CrateId, u64, bool, u64);
+
+/// How record rows are drawn this frame.
+struct RecordLook<'a> {
+    colors: &'a crate::skin::Colors,
+    font: &'a egui::FontId,
+    mods: ClickMods,
+    rendering: bool,
 }
 
 /// What an entry's tooltip shows where its record's cover goes.
@@ -4041,6 +4609,12 @@ impl WinampApp {
         self.handle_keys(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_update();
+        // A grouped crate places what arrived (sends, digs, tags) with its record.
+        for c in [self.crates.shown_id(), self.crates.playing_id()] {
+            if self.crates.get_mut(c).is_some_and(|p| p.settle()) {
+                self.mark_crate(c);
+            }
+        }
 
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -4895,6 +5469,14 @@ mod headless_tests {
             self.click_with(pos, PointerButton::Primary)
         }
 
+        /// A click with modifiers held (Cmd, Shift).
+        fn click_with_mods(&mut self, pos: Pos2, modifiers: Modifiers) -> egui::FullOutput {
+            self.mods = modifiers;
+            let out = self.click_with(pos, PointerButton::Primary);
+            self.mods = Modifiers::NONE;
+            out
+        }
+
         fn double_click(&mut self, pos: Pos2) -> egui::FullOutput {
             self.frame(vec![Event::PointerMoved(pos)]);
             for _ in 0..2 {
@@ -4998,6 +5580,7 @@ mod headless_tests {
 
     // Digging, with a fake Discogs, fake previews and a fake browser.
     mod dig_tests;
+    mod record_tests;
 
     fn texts(out: &egui::FullOutput) -> Vec<Text> {
         fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {

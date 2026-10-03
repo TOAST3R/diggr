@@ -179,6 +179,19 @@ and Home/End jump), and Enter plays the entry under it.
     waveform, when it's on, runs as a band across the full width above the playlist. Press
     ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
     app opens maximized next time;
+  - **▤** in the title bar (or `Shift+G`, or **≡ ▸ Group by record**) shows the crate one row
+    per record: its cover, "Artist – Album" with its Discogs styles at the right, the catalog
+    number, year, number of tracks and what's for sale (or, while one of its tracks plays, that
+    track). The column header is hidden while grouped (☰ › Sort still sorts), and the sidebar
+    counts a grouped crate's records instead of its tracks. **⏵** (or `Space` on it)
+    opens a record to show its tracks. A click selects the whole record, a double-click (or
+    `Enter`) plays it from its first playable track, its menu acts on all of it, and dragging
+    it moves it whole (a track moves only within its record). The arrows step over records.
+    Turning it on gathers each record's tracks together, like a sort, so what plays next is
+    what you see; tracks added later join their record. Each crate remembers its choice; your
+    Discogs wantlist and collection crates start grouped. Covers load for the record rows in
+    view, top first, from the same cache as the tooltips; under a BPM filter a record says how
+    many of its tracks match ("2 of 4 tracks");
   - scrolling over the list works anywhere on it, and slow two-finger trackpad scrolling adds
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
@@ -242,7 +255,8 @@ and Home/End jump), and Enter plays the entry under it.
 | `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
-| `Shift+P` | maximize the playlist (again: restore) | | | |
+| `Shift+P` | maximize the playlist (again: restore) | | `Shift+G` | group the crate by record (again: flat) |
+| `Space` | open or close the record under the cursor (grouped) | | | |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -271,7 +285,7 @@ ahead of what plays. Other pasted text is ignored.
   3. Each downloaded preview is analyzed and its waveform built before it plays, so section
   jumps and loops work from its first second.
 - **Verdicts on the playing track:** `Y` adds its record to your wantlist: all its tracks go
-  to the **Wantlist** crate, they're marked ✓ wherever they appear, and (with a token) the
+  to the **Wantlist** crate, they're marked ★ wherever they appear, and (with a token) the
   release goes on your Discogs wantlist. Pressing `Y` again takes the record off, here and on
   Discogs, whoever put it there. Without a token the record is wanted here, and a dialog says
   once how connecting your Discogs account keeps your wantlist and collection up to date from
@@ -289,11 +303,11 @@ ahead of what plays. Other pasted text is ignored.
   discogs.com come in, and ones you remove there leave. Removing a whole record from that crate
   asks first ("Remove 1 record from your Discogs wantlist?"); removing one of its tracks, or
   deleting the crate, doesn't touch Discogs. You never want what you own: Add to wantlist is
-  off for a record you own in any pressing ("In collection ✓"), and when a sync finds you
+  off for a record you own in any pressing (the menu says "In collection"), and when a sync finds you
   bought a wanted record elsewhere, it comes off your wantlist and the main window says so.
 - **When Discogs can't take a change:** a wantlist change made while Discogs is offline waits
   ("wantlist pending") and goes out once it answers. After server errors it's tried again 1,
-  2, 5, 15 and 60 minutes later, then the entry shows ⚠ and the menu offers **Retry
+  2, 5, 15 and 60 minutes later, then the entry shows ⚑ and the menu offers **Retry
   wantlist**. A collection add is never repeated by itself, as each try can add a copy: after a
   failure the menu offers **Retry add to collection**, which first asks Discogs whether the add
   went through.
@@ -714,7 +728,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
 
-Crates are kept in `crates/`: `index.ron` lists them and each crate is `<id>.ron`. A crate file
+Crates are kept in `crates/`: `index.ron` lists them (with whether each is grouped by record) and each crate is `<id>.ron`. A crate file
 that can't be read is reported once and left as it is; a damaged `index.ron` is rebuilt from the
 crate files. The single `playlist.ron` of earlier versions is read once, on the first launch
 with crates, to create the Playlist crate, and is then left untouched as a backup (the previous
@@ -746,7 +760,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 578 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 606 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

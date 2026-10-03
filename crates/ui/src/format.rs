@@ -114,6 +114,36 @@ pub fn origin_details(o: &crate::playlist::Origin) -> String {
     parts.iter().map(|p| format!(" · {p}")).collect()
 }
 
+/// A record row's second line: catalog number, year, tracks ("3 tracks", or "2 of 4 tracks"
+/// under a filter) and the for-sale summary, e.g. `LT-012 · 1994 · 3 tracks · 6 for sale from
+/// €9.00`. Parts that aren't known are left out.
+pub fn record_line(o: Option<&crate::playlist::Origin>, shown: usize, total: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(o) = o {
+        if !o.catno.trim().is_empty() {
+            parts.push(o.catno.trim().to_owned());
+        }
+        if let Some(y) = o.year {
+            parts.push(y.to_string());
+        }
+    }
+    let tracks = if total == 1 { "track" } else { "tracks" };
+    parts.push(if shown < total {
+        format!("{shown} of {total} {tracks}")
+    } else {
+        format!("{total} {tracks}")
+    });
+    match o.and_then(|o| o.for_sale.as_ref()) {
+        Some(fs) if fs.count == 0 => parts.push("none for sale".into()),
+        Some(fs) => parts.push(match fs.lowest_cents {
+            Some(c) => format!("{} for sale from {}", fs.count, price(c, &fs.currency)),
+            None => format!("{} for sale", fs.count),
+        }),
+        None => {}
+    }
+    parts.join(" · ")
+}
+
 /// How long ago, roughly: "just now", "12 min ago", "3 h ago", "2 d ago".
 pub fn ago(secs: u64) -> String {
     match secs {
@@ -153,6 +183,7 @@ pub fn entry_details(
         }
     };
     add("Album", e.album());
+    add("Style", e.origin.as_ref().map_or("", |o| o.styles.as_str()));
     if let Some(o) = &e.origin {
         add("Label", &o.label);
         add("Cat#", &o.catno);
@@ -452,5 +483,29 @@ mod tests {
         assert_eq!(scroll("ABCDEFGH", 4, 6), "GH  ");
         // Loops back to the start after text + separator (8 + 7 chars).
         assert_eq!(scroll("ABCDEFGH", 4, 15), "ABCD");
+    }
+
+    #[test]
+    fn a_record_line_names_the_pressing_tracks_and_what_is_for_sale() {
+        let o = crate::playlist::Origin {
+            catno: "LT-012".into(),
+            year: Some(1994),
+            for_sale: Some(crate::playlist::ForSale {
+                count: 6,
+                lowest_cents: Some(900),
+                currency: "EUR".into(),
+                fetched_at: 0,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            record_line(Some(&o), 3, 3),
+            "LT-012 · 1994 · 3 tracks · 6 for sale from €9.00"
+        );
+        assert_eq!(
+            record_line(Some(&o), 2, 4).split(" · ").nth(2),
+            Some("2 of 4 tracks")
+        );
+        assert_eq!(record_line(None, 2, 2), "2 tracks");
     }
 }

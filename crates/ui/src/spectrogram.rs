@@ -121,7 +121,7 @@ pub fn colour_lut(floor: f32, ceiling: f32) -> [Color32; 256] {
 /// The nearest note, e.g. "A4" for 440 Hz.
 pub fn note_name(hz: f32) -> Option<String> {
     const NAMES: [&str; 12] = [
-        "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B",
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
     if !(16.0..=30_000.0).contains(&hz) {
         return None;
@@ -1223,7 +1223,7 @@ mod tests {
         assert_eq!(note_name(440.0).as_deref(), Some("A4"));
         assert_eq!(note_name(261.63).as_deref(), Some("C4"));
         assert_eq!(note_name(27.5).as_deref(), Some("A0"));
-        assert_eq!(note_name(466.16).as_deref(), Some("A♯4"));
+        assert_eq!(note_name(466.16).as_deref(), Some("A#4"));
         assert_eq!(note_name(5.0), None);
     }
 

@@ -1,6 +1,7 @@
-//! Record covers in the entry tooltip, UI side: textures for the covers seen lately, and when
-//! to ask the cover worker for one. The worker reads and writes the files and talks to the
-//! image host; this side only asks, after the pointer has rested on a row, and draws.
+//! Record covers in the entry tooltip and on record rows, UI side: textures for the covers
+//! seen lately, and when to ask the cover worker for one. The worker reads and writes the files
+//! and talks to the image host; this side only asks (for a row the pointer rests on, and for
+//! the record rows in view) and draws.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -14,8 +15,11 @@ use crate::playlist::{Entry, EntryId};
 
 /// A cover is asked for once the pointer has rested on its row this long.
 pub const REST: Duration = Duration::from_millis(250);
-/// Covers kept as textures; older ones are dropped (and read from disk again when needed).
-pub const KEEP: usize = 48;
+/// Covers kept as textures; the least recently drawn are dropped (and read from disk again
+/// when needed). A screenful of record rows and some scrolling back fit.
+pub const KEEP: usize = 128;
+/// Record rows in view asked for at a time.
+pub const IN_VIEW: usize = 40;
 
 #[derive(Default)]
 pub(super) struct CoverCache {
@@ -32,6 +36,8 @@ pub(super) struct CoverCache {
     refreshing: HashSet<RecordKey>,
     /// The row the pointer rests on, and since when.
     hover: Option<(EntryId, Instant)>,
+    /// The covers of the record rows in view last asked for.
+    in_view: Vec<RecordKey>,
 }
 
 /// The record whose cover an entry shows, and the cover's address.
@@ -81,6 +87,48 @@ impl CoverCache {
             self.asked.insert(key);
         }
         Some(CoverSlot::Waiting)
+    }
+
+    /// The cover for a record row (no waiting for the pointer to rest): drawn, waiting, or
+    /// `None` when the record has none.
+    pub(super) fn row_slot(&mut self, e: &Entry) -> Option<CoverSlot> {
+        let (key, _) = cover_of(e)?;
+        if self.failed.contains(&key) {
+            return None;
+        }
+        self.tick += 1;
+        match self.textures.get_mut(&key) {
+            Some((tex, used)) => {
+                *used = self.tick;
+                Some(CoverSlot::Loaded(tex.id(), tex.size_vec2()))
+            }
+            None => Some(CoverSlot::Waiting),
+        }
+    }
+
+    /// The record rows in view, top first: their covers not loaded yet are asked for (at
+    /// most [`IN_VIEW`]), replacing what was still waiting, when the rows in view change.
+    pub(super) fn want_in_view(&mut self, entries: &[&Entry]) {
+        let list: Vec<(RecordKey, String)> = entries
+            .iter()
+            .filter_map(|e| cover_of(e))
+            .filter(|(k, _)| {
+                !self.textures.contains_key(k)
+                    && !self.failed.contains(k)
+                    && !self.refreshing.contains(k)
+            })
+            .take(IN_VIEW)
+            .map(|(k, url)| (k, url.to_owned()))
+            .collect();
+        let keys: Vec<RecordKey> = list.iter().map(|(k, _)| *k).collect();
+        if keys == self.in_view {
+            return;
+        }
+        self.in_view = keys;
+        if let Some(h) = &self.handle {
+            self.asked.extend(self.in_view.iter().copied());
+            h.want(list);
+        }
     }
 
     /// Results from the worker. Returns the records whose address stopped working and should

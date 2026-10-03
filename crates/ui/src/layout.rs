@@ -78,7 +78,14 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
             r.w += extra;
         }
     }
-    for name in ["pl_close", "pl_max", "pl_scroll", "pl_info", "pl_resize"] {
+    for name in [
+        "pl_close",
+        "pl_max",
+        "pl_group",
+        "pl_scroll",
+        "pl_info",
+        "pl_resize",
+    ] {
         if let Some(r) = out.layout.get_mut(name) {
             r.x += extra;
         }

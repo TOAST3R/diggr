@@ -165,6 +165,10 @@ fn a_pasted_release_fills_the_shown_crate_with_playable_previews() {
     let p = rig.app.crates.get(PLAYLIST).unwrap();
     let o = p.entries()[0].origin.clone().unwrap();
     assert_eq!((o.release, o.position.as_str()), (Some(1001), "A1"));
+    assert_eq!(
+        o.styles, "Deep House, Minimal",
+        "the record's styles come along"
+    );
     assert!(
         o.for_sale
             .is_some_and(|f| f.count == 6 && f.lowest_cents == Some(900))
@@ -264,7 +268,7 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
         assert!(
             texts(&out)
                 .iter()
-                .any(|t| t.text.starts_with(&format!("{n}. ✓ "))),
+                .any(|t| t.text.starts_with(&format!("{n}. ★ "))),
             "every entry of the record: {:?}",
             text_list(&out)
         );
@@ -316,7 +320,7 @@ fn without_a_token_the_record_is_wanted_here_and_the_connect_dialog_explains() {
     // Shortcuts wait while it's open.
     key(&mut rig, Key::N);
     assert!(memory(&rig).passed.is_empty());
-    rig.click_text("Open ↗");
+    rig.click_text("Open ⬈");
     assert_eq!(
         *fakes.browser.opened.lock().unwrap(),
         ["https://www.discogs.com/settings/developers"]
@@ -339,7 +343,7 @@ fn without_a_token_the_record_is_wanted_here_and_the_connect_dialog_explains() {
     assert!(memory(&rig).is_wanted(1001));
     assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
     assert!(
-        message(&rig).contains("Options ▸ Discogs…"),
+        message(&rig).contains("Options › Discogs…"),
         "{}",
         message(&rig)
     );
@@ -367,7 +371,7 @@ fn connect_opens_the_token_field_and_add_to_collection_always_asks() {
     assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
     assert!(
         rig.app.dig.as_ref().unwrap().dialog.is_some(),
-        "Options ▸ Discogs… opens"
+        "Options › Discogs… opens"
     );
     for _ in 0..5 {
         rig.frame(Vec::new());
@@ -660,7 +664,7 @@ fn a_want_while_discogs_is_offline_waits_as_wantlist_pending() {
     assert!(
         texts(&out)
             .iter()
-            .any(|t| t.text.starts_with("1. ✓ ") && t.text.ends_with("(wantlist pending)")),
+            .any(|t| t.text.starts_with("1. ★ ") && t.text.ends_with("(wantlist pending)")),
         "{:?}",
         text_list(&out)
     );
@@ -750,7 +754,7 @@ fn open_browser_dialog(rig: &mut Rig) {
                 "Enter this code in the extension's options.",
             )
         },
-        "Options ▸ Browser… shows",
+        "Options › Browser… shows",
     );
 }
 
@@ -952,7 +956,7 @@ fn owned_records_are_marked_and_cannot_be_wanted() {
             let out = r.frame(Vec::new());
             shows(&out, "1 record, updated just now") && shows(&out, "Refresh collection")
         },
-        "Options ▸ Discogs… shows the collection",
+        "Options › Discogs… shows the collection",
     );
     rig.click_text("Open that page");
     assert!(
@@ -977,7 +981,7 @@ fn owned_records_are_marked_and_cannot_be_wanted() {
     assert!(fakes.changes().is_empty(), "no wantlist change");
     rig.click_with(rig.row(0), PointerButton::Secondary);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(shows(&out, "In collection"), "{:?}", text_list(&out));
     assert!(!shows(&out, "Add to wantlist (Y)"));
     assert!(!shows(&out, "Add to collection"));
 }
@@ -1195,6 +1199,32 @@ fn resting_on_an_entry_shows_its_cover_fetched_once() {
 }
 
 #[test]
+fn grouped_record_rows_in_view_load_their_covers_top_first() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-cover-rows", &fakes, |_| {});
+    let urls = cover_crate(&mut rig);
+    // Grouped, each entry is a record row with its cover; the pointer is nowhere near.
+    rig.frame(vec![Event::PointerMoved(pos2(5.0, 5.0))]);
+    rig.key(Key::G, Modifiers::SHIFT);
+    let rows = rig.app.pl_visible_rows() / crate::records::RECORD_UNITS;
+    let in_view = rows.min(6);
+    rig.until(
+        |r| (0..in_view as u64).all(|i| has_cover(r, 100 + i)),
+        "the covers of the rows in view arrive",
+    );
+    let log = fakes.images.log();
+    assert_eq!(
+        log[..in_view],
+        urls[..in_view],
+        "top first, no hover needed"
+    );
+    assert!(
+        log.len() <= in_view,
+        "only the rows in view: {log:?} ({in_view} in view)"
+    );
+}
+
+#[test]
 fn sweeping_down_the_list_fetches_only_where_the_pointer_stops() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-cover-sweep", &fakes, |_| {});
@@ -1392,7 +1422,7 @@ fn adding_to_the_collection_owns_it_at_once_and_takes_it_off_the_wantlist() {
     // Owned now: the menu says so.
     rig.click_with(rig.row(0), PointerButton::Secondary);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(shows(&out, "In collection"), "{:?}", text_list(&out));
     assert!(!shows(&out, "Add to collection"));
 }
 
@@ -1489,7 +1519,7 @@ fn a_wantlist_change_that_keeps_failing_says_so_and_retries_on_request() {
     );
     let out = rig.frame(Vec::new());
     assert!(
-        texts(&out).iter().any(|t| t.text.starts_with("1. ⚠ ✓ ")),
+        texts(&out).iter().any(|t| t.text.starts_with("1. ⚑ ★ ")),
         "{:?}",
         text_list(&out)
     );
@@ -1531,7 +1561,7 @@ fn a_failed_collection_add_is_retried_only_on_request_and_never_twice() {
     });
     assert!(message(&rig).contains("Could not add"), "{}", message(&rig));
     let out = rig.frame(Vec::new());
-    assert!(texts(&out).iter().any(|t| t.text.starts_with("1. ⚠ ")));
+    assert!(texts(&out).iter().any(|t| t.text.starts_with("1. ⚑ ")));
     for _ in 0..20 {
         rig.pump();
     }
@@ -1780,7 +1810,7 @@ fn owning_another_pressing_blocks_the_wantlist_but_not_the_collection() {
     );
     rig.click_with(rig.row(0), PointerButton::Secondary);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "In collection ✓"), "{:?}", text_list(&out));
+    assert!(shows(&out, "In collection"), "{:?}", text_list(&out));
     assert!(shows(&out, "Add to collection (own AF001R, 2019)"));
 }
 
