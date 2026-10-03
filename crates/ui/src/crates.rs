@@ -41,6 +41,17 @@ pub struct CrateInfo {
     /// Made from the user's Discogs collection (the sidebar pins it under DISCOGS).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collection: bool,
+    /// The user's Discogs wantlist, once a token is set (pinned under DISCOGS, above the
+    /// collection).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wantlist: bool,
+}
+
+impl CrateInfo {
+    /// One of the user's own Discogs crates (the wantlist or the collection).
+    pub fn discogs(&self) -> bool {
+        self.collection || self.wantlist
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +101,7 @@ impl Crates {
                     entries: 0,
                     created: now_secs(),
                     collection: false,
+                    wantlist: false,
                 }],
             },
             loaded: HashMap::new(),
@@ -179,6 +191,7 @@ impl Crates {
                 entries: 0,
                 created: id,
                 collection: false,
+                wantlist: false,
             });
         }
         self.index.shown = PLAYLIST;
@@ -205,6 +218,7 @@ impl Crates {
                         entries: 0,
                         created: now_secs(),
                         collection: false,
+                        wantlist: false,
                     },
                 );
                 self.mark_index();
@@ -440,6 +454,26 @@ impl Crates {
         }
     }
 
+    /// Whether the crate is the user's Discogs wantlist.
+    pub fn is_wantlist(&self, id: CrateId) -> bool {
+        self.info(id).is_some_and(|c| c.wantlist)
+    }
+
+    /// Marks (or unmarks) a crate as the user's Discogs wantlist; only one crate is.
+    pub fn set_wantlist(&mut self, id: CrateId, on: bool) {
+        let mut changed = false;
+        for c in &mut self.index.crates {
+            let want = on && c.id == id;
+            if c.wantlist != want && (c.id == id || on) {
+                c.wantlist = want;
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_index();
+        }
+    }
+
     /// Creates an empty crate (at the end of the list); it isn't shown.
     pub fn create(&mut self, name: &str) -> Result<CrateId, String> {
         let name = self.validate_name(name, None)?;
@@ -451,6 +485,7 @@ impl Crates {
             entries: 0,
             created: now_secs(),
             collection: false,
+            wantlist: false,
         });
         self.loaded.insert(id, Playlist::default());
         self.touch(id);
@@ -1019,6 +1054,27 @@ mod tests {
             (o.album.as_str(), o.cover.as_str()),
             ("Glasshouse EP", "https://i.discogs.com/x.jpeg")
         );
+    }
+
+    #[test]
+    fn one_crate_is_the_wantlist_and_the_flag_is_saved() {
+        let cfg = config("wantlist-flag");
+        let (a, b) = {
+            let mut c = Crates::open(&cfg);
+            let a = c.create("Wantlist").unwrap();
+            let b = c.create("Wantlist: digger").unwrap();
+            c.set_wantlist(a, true);
+            c.set_wantlist(b, true);
+            assert!(!c.is_wantlist(a) && c.is_wantlist(b), "only one is");
+            assert!(c.info(b).unwrap().discogs());
+            c.save_due(true, Duration::ZERO);
+            (a, b)
+        };
+        let mut c = Crates::open(&cfg);
+        assert!(c.is_wantlist(b) && !c.is_wantlist(a), "saved");
+        c.set_wantlist(b, false);
+        assert!(!c.is_wantlist(b));
+        assert!(!c.info(b).unwrap().discogs());
     }
 
     #[test]

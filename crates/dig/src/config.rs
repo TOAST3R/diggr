@@ -26,8 +26,14 @@ pub struct DigSettings {
     pub cache_gb: f32,
     /// yt-dlp to run instead of the one on the PATH.
     pub ytdlp_path: Option<String>,
-    /// The Keepers crate, once it exists.
-    pub keepers: Option<u64>,
+    /// The wantlist crate, once it exists (older files call it the Keepers crate).
+    #[serde(alias = "keepers")]
+    pub wantlist: Option<u64>,
+    /// The Keepers crate has been renamed "Wantlist" (done once, on the first launch after
+    /// wanting replaced keeping).
+    pub wantlist_named: bool,
+    /// "Don't show this again" in the Connect to Discogs dialog.
+    pub connect_hint_dismissed: bool,
 }
 
 impl Default for DigSettings {
@@ -37,7 +43,9 @@ impl Default for DigSettings {
             skip_passed: true,
             cache_gb: DEFAULT_CACHE_GB,
             ytdlp_path: None,
-            keepers: None,
+            wantlist: None,
+            wantlist_named: false,
+            connect_hint_dismissed: false,
         }
     }
 }
@@ -138,11 +146,15 @@ mod tests {
             vinyl_only: false,
             cache_gb: 5.0,
             ytdlp_path: Some("/opt/bin/yt-dlp".into()),
-            keepers: Some(7),
+            wantlist: Some(7),
+            connect_hint_dismissed: true,
             ..Default::default()
         };
         save_settings(&d, &s).unwrap();
         assert_eq!(load_settings(&d), s);
+        // An older file's Keepers crate is the wantlist crate.
+        std::fs::write(d.join("dig/settings.ron"), "(keepers: Some(9))").unwrap();
+        assert_eq!(load_settings(&d).wantlist, Some(9));
         std::fs::write(d.join("dig/settings.ron"), "(cache_gb: -3.0)").unwrap();
         let s = load_settings(&d);
         assert_eq!((s.cache_gb, s.vinyl_only), (0.1, true));

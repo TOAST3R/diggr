@@ -415,18 +415,18 @@ fn wantlist_result(ev: &[Event]) -> Result<bool, ApiError> {
 }
 
 #[test]
-fn keep_adds_to_the_wantlist_unless_it_is_there_already() {
+fn want_adds_to_the_wantlist_unless_it_is_there_already() {
     let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
     let mut i = intake(&t, true, None);
-    i.handle(Command::Keep(1004));
+    i.handle(Command::Want(1004));
     assert_eq!(
         wantlist_result(&i.take_events()),
         Ok(false),
         "already on it"
     );
-    i.handle(Command::Keep(1001));
+    i.handle(Command::Want(1001));
     assert_eq!(wantlist_result(&i.take_events()), Ok(true));
-    i.handle(Command::Unkeep(1001));
+    i.handle(Command::Unwant(1001));
     assert_eq!(wantlist_result(&i.take_events()), Ok(true));
     let changes: Vec<(Method, String)> = t
         .log()
@@ -445,15 +445,162 @@ fn keep_adds_to_the_wantlist_unless_it_is_there_already() {
     assert_eq!(reads, 1, "the wantlist is read once per session");
 
     t.fault(Fault::Network);
-    i.handle(Command::Keep(1003));
+    i.handle(Command::Want(1003));
     assert_eq!(wantlist_result(&i.take_events()), Err(ApiError::Offline));
 
     let mut anon = intake(&t, false, None);
-    anon.handle(Command::Keep(1001));
+    anon.handle(Command::Want(1001));
     assert_eq!(
         wantlist_result(&anon.take_events()),
         Err(ApiError::TokenNeeded)
     );
+}
+
+fn collected(ev: &[Event]) -> Result<(u64, dig::collection::Pressing), ApiError> {
+    ev.iter()
+        .find_map(|e| match e {
+            Event::Collected { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn changes(t: &FakeTransport) -> Vec<(Method, String)> {
+    t.log()
+        .into_iter()
+        .filter(|(r, _)| r.method != Method::Get)
+        .map(|(r, _)| (r.method, r.path))
+        .collect()
+}
+
+#[test]
+fn collect_adds_one_copy_to_uncategorized_with_its_pressing() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let dir = temp("collect");
+    let client = Client::new(
+        t.clone(),
+        Arc::new(FakeClock::default()),
+        Some("tok".to_owned()),
+        DiskCache::new(Some(dir.path())),
+    );
+    let mut i = Intake::new(client, None).with_now(|| 1_790_000_000);
+    // The release is cached, as it is once its entries exist.
+    send(&mut i, "https://www.discogs.com/release/1001");
+    run(&mut i, 20);
+    let before = t.count();
+    i.handle(Command::Collect {
+        release: 1001,
+        check: false,
+    });
+    let (instance, pressing) = collected(&i.take_events()).unwrap();
+    assert_eq!(instance, 900_001);
+    assert_eq!(pressing.catno, "LT-012");
+    assert_eq!(
+        changes(&t),
+        [(
+            Method::Post,
+            "/users/digger/collection/folders/1/releases/1001".to_owned()
+        )]
+    );
+    assert_eq!(
+        t.count(),
+        before + 1,
+        "one request, the release data from the cache"
+    );
+
+    let mut anon = intake(&t, false, None);
+    anon.handle(Command::Collect {
+        release: 1001,
+        check: false,
+    });
+    assert_eq!(collected(&anon.take_events()), Err(ApiError::TokenNeeded));
+    t.set_offline(true);
+    i.handle(Command::Collect {
+        release: 1002,
+        check: false,
+    });
+    assert_eq!(collected(&i.take_events()), Err(ApiError::Offline));
+}
+
+#[test]
+fn a_checked_retry_never_adds_a_second_copy() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    // The first add went through although its answer was lost.
+    t.route(
+        "/users/digger/collection/releases/1001",
+        200,
+        r#"{"releases": [{"id": 1001, "instance_id": 41, "folder_id": 1},
+                         {"id": 1001, "instance_id": 77, "folder_id": 1}]}"#,
+    );
+    t.route(
+        "/users/digger/collection/releases/1002",
+        200,
+        r#"{"releases": []}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::Collect {
+        release: 1001,
+        check: true,
+    });
+    assert_eq!(
+        collected(&i.take_events()).unwrap().0,
+        77,
+        "the newest copy"
+    );
+    assert!(changes(&t).is_empty(), "nothing added");
+    i.handle(Command::Collect {
+        release: 1002,
+        check: true,
+    });
+    assert!(collected(&i.take_events()).is_ok());
+    assert_eq!(
+        changes(&t),
+        [(
+            Method::Post,
+            "/users/digger/collection/folders/1/releases/1002".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn the_wantlist_is_read_once_and_owned_wants_follow_a_sync() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    // The collection holds 1002, which is wanted (1004 and 1006 are too, and not owned).
+    t.route(
+        "/users/digger/collection/folders/0/releases?sort=added&sort_order=desc&page=1&per_page=100",
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1002, "instance_id": 7,
+                          "basic_information": {"id": 1002, "master_id": 0, "year": 2016,
+                                                "labels": [{"catno": "LT-002"}]}}]}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::ReadWants { fresh: false });
+    let ev = i.take_events();
+    assert!(
+        ev.contains(&Event::Wants(Ok(vec![1002, 1004, 1006]))),
+        "{ev:?}"
+    );
+    i.handle(Command::SyncCollection(None));
+    let ev = run(&mut i, 10);
+    assert!(ev.contains(&Event::OwnedWants(vec![1002])), "{ev:?}");
+    let reads = t.paths().iter().filter(|p| p.contains("/wants?")).count();
+    assert_eq!(reads, 1, "read once a session");
+    // A refresh reads it again, and sees what changed on discogs.com.
+    t.route(
+        "/users/digger/wants?page=1&per_page=100",
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1}, "wants": [{"id": 1004}]}"#,
+    );
+    i.handle(Command::ReadWants { fresh: false });
+    assert!(
+        i.take_events()
+            .contains(&Event::Wants(Ok(vec![1002, 1004, 1006])))
+    );
+    i.handle(Command::ReadWants { fresh: true });
+    assert!(i.take_events().contains(&Event::Wants(Ok(vec![1004]))));
+    let reads = t.paths().iter().filter(|p| p.contains("/wants?")).count();
+    assert_eq!(reads, 2);
 }
 
 #[test]

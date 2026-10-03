@@ -59,6 +59,15 @@ pub struct Collection {
 }
 
 impl Collection {
+    /// An empty collection for `username`, as of `now` (filled by syncs and adds).
+    pub fn new(username: &str, now: u64) -> Self {
+        Self {
+            username: username.to_owned(),
+            fetched_at: now,
+            ..Default::default()
+        }
+    }
+
     pub fn path(cache: &Path) -> PathBuf {
         cache.join(FILE)
     }
@@ -116,6 +125,21 @@ impl Collection {
     fn add(&mut self, item: &Item) {
         self.instances.insert(item.instance);
         self.releases.insert(item.release, item.pressing.clone());
+    }
+
+    /// A copy the app just added on Discogs (`instance` is its new id): owned from now on,
+    /// and counted, so the next sync stays incremental. Known instances are ignored.
+    pub fn insert(&mut self, instance: u64, release: u64, pressing: Pressing) {
+        if self.instances.contains(&instance) {
+            return;
+        }
+        self.add(&Item {
+            instance,
+            release,
+            pressing,
+        });
+        self.count += 1;
+        self.index();
     }
 }
 
@@ -373,6 +397,62 @@ mod tests {
         );
         assert_eq!(c.owned(Some(99), Some(5)), None);
         assert_eq!(c.owned(None, None), None);
+    }
+
+    #[test]
+    fn an_add_from_the_app_keeps_the_next_sync_incremental() {
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(2, 102, 902), it(1, 101, 901)]], 2);
+        let mut c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        let pressing = Pressing {
+            master: Some(903),
+            catno: "AF103".into(),
+            year: Some(2019),
+        };
+        c.insert(3, 103, pressing.clone());
+        c.insert(3, 103, pressing);
+        assert_eq!((c.len(), c.count), (3, 3), "a known instance counts once");
+        assert!(c.owned(Some(7), Some(903)).is_some(), "indexed by master");
+        // Discogs now lists it first: the sync stops there, with one request.
+        let t = Arc::new(FakeTransport::new());
+        route_pages(
+            &t,
+            &[vec![it(3, 103, 903), it(2, 102, 902), it(1, 101, 901)]],
+            3,
+        );
+        let next = sync(&mut client(&t), "digger", Some(&c), 100).unwrap();
+        assert_eq!(collection_calls(&t), 1);
+        assert_eq!(next.len(), 3);
+    }
+
+    #[test]
+    fn an_add_on_discogs_com_too_forces_a_full_read() {
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(1, 101, 901)]], 1);
+        let mut c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        // 104 was added on discogs.com, then 103 from the app (newest).
+        c.insert(
+            3,
+            103,
+            Pressing {
+                master: None,
+                catno: String::new(),
+                year: None,
+            },
+        );
+        let t = Arc::new(FakeTransport::new());
+        route_pages(
+            &t,
+            &[vec![it(3, 103, 903), it(4, 104, 904), it(1, 101, 901)]],
+            3,
+        );
+        let next = sync(&mut client(&t), "digger", Some(&c), 100).unwrap();
+        assert_eq!(
+            collection_calls(&t),
+            2,
+            "the count doesn't add up: everything again"
+        );
+        assert!(next.owned(Some(104), None).is_some() && next.owned(Some(103), None).is_some());
     }
 
     #[test]

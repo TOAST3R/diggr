@@ -203,9 +203,9 @@ Right-clicking an entry (or Control-clicking it on macOS) SHALL open a menu with
 - Remove album (N tracks) and Select album, when the entry belongs to an album;
 - Send to crate;
 - Render show, when available;
-- for an entry from Discogs: Keep or Undo keep, Pass or Undo pass, Open for-sale page, Open release on Discogs, and Copy Discogs link.
+- for an entry from Discogs: Add to wantlist or Remove from wantlist (or "In collection ✓", disabled, when the record is owned), Add to collection (or "In collection ✓", disabled, when this pressing is owned), Retry wantlist or Retry add to collection after a failure, Pass or Undo pass, Open for-sale page, Open release on Discogs, and Copy Discogs link.
 
-When the clicked entry is selected, Remove and Send to crate SHALL act on the whole selection. Otherwise the selection SHALL first become the clicked entry. Remove album and Select album SHALL act on the clicked entry's album. All other items SHALL act on the clicked entry only.
+When the clicked entry is selected, Remove, Send to crate, Add to wantlist, Remove from wantlist and Add to collection SHALL act on the whole selection (the wantlist and collection items on its distinct releases, see `discogs-write`). Otherwise the selection SHALL first become the clicked entry. Remove album and Select album SHALL act on the clicked entry's album. All other items SHALL act on the clicked entry only.
 
 #### Scenario: Remove a selection
 - **WHEN** entries 3 to 6 are selected and the user right-clicks entry 4 and chooses Remove
@@ -226,6 +226,10 @@ When the clicked entry is selected, Remove and Send to crate SHALL act on the wh
 #### Scenario: Album items
 - **WHEN** the user right-clicks an entry of a release with 4 entries in the crate
 - **THEN** the menu offers "Remove album (4 tracks)" and "Select album" after Remove
+
+#### Scenario: Discogs items
+- **WHEN** the user right-clicks an entry from release 123456, which is neither wanted nor owned
+- **THEN** the menu offers "Add to wantlist (Y)" and "Add to collection", and no Keep item
 
 ### Requirement: Maximized playlist
 A toggle SHALL maximize the playlist: the ⇔ button in the playlist's title bar, or Shift+P. While maximized:
@@ -264,15 +268,20 @@ Scrolling the playlist SHALL add up partial scroll steps, so that slow two-finge
 - **THEN** the next 3 points of scrolling don't move the list
 
 ### Requirement: Playlist footer
-The playlist footer SHALL hold, from left to right: a `+` button, a `≡` button, the BPM filter control (when the crate has two different known tempos), and the "selected/total" time readout, right-aligned in its LCD box beside the resize grip (only the total when both don't fit in the box). Everything SHALL fit at the classic 275 skin pixel width. The buttons SHALL open menus:
+The playlist footer SHALL hold, from left to right: a `+` button, a `≡` button, a gear button, the BPM filter control (when the crate has two different known tempos), and the "selected/total" time readout, right-aligned in its LCD box beside the resize grip (only the total when both don't fit in the box). Everything SHALL fit at the classic 275 skin pixel width. The buttons SHALL open menus:
 - `+`: Add files…, Add folder…, Import M3U…;
-- `≡`: Select all, Select none, Invert selection, Remove selected, Clear crate, Sort ▸ (every column's field), Show all tempos (only while a BPM range is set), Export M3U….
+- `≡`: Select all, Select none, Invert selection, Remove selected, Clear crate, Sort ▸ (every column's field), Show all tempos (only while a BPM range is set), Export M3U…;
+- the gear: the Options menu (see the player window's Options menu), with the same items as the right-click.
 
-Each item SHALL act as the same item did in the footer's earlier menus. No app setting SHALL be in these menus.
+Each item SHALL act as the same item did in the footer's earlier menus. No app setting SHALL be in the `+` and `≡` menus.
 
-#### Scenario: Two buttons
+#### Scenario: Three buttons
 - **WHEN** the playlist is shown at 275 skin pixels wide
-- **THEN** the footer shows `+`, `≡` and the time readout, and no ADD, REM, SEL, MISC or OPT button
+- **THEN** the footer shows `+`, `≡`, the gear and the time readout, and no ADD, REM, SEL, MISC or OPT button
+
+#### Scenario: Options from the footer
+- **WHEN** the user clicks the gear and chooses Discogs…
+- **THEN** the Discogs dialog opens, as from the right-click Options menu
 
 #### Scenario: Add
 - **WHEN** the user clicks `+` and chooses Add folder…

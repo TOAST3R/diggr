@@ -127,9 +127,14 @@ pub fn ago(secs: u64) -> String {
 /// What the dig side knows about an entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DigMarks {
-    pub kept: bool,
+    /// On the wantlist (its record).
+    pub wanted: bool,
     pub passed: bool,
     pub wantlist_pending: bool,
+    /// A wantlist change gave up, with why.
+    pub wantlist_failed: Option<String>,
+    /// Adding the record to the collection failed, with why.
+    pub collection_failed: Option<String>,
     /// In the user's collection: "this pressing", or "another pressing (AF014, 2018)".
     pub owned: Option<String>,
 }
@@ -160,14 +165,18 @@ pub fn entry_details(
     );
     add("Time", &e.duration.map(clock).unwrap_or_default());
     add("Status", &e.status.note().unwrap_or_default());
-    if marks.kept {
-        add("Kept", "yes");
+    if let Some(why) = &marks.wantlist_failed {
+        add("Wantlist", &format!("failed ({why})"));
+    } else if marks.wantlist_pending {
+        add("Wantlist", "change pending");
+    } else if marks.wanted {
+        add("Wantlist", "on it");
+    }
+    if let Some(why) = &marks.collection_failed {
+        add("Collection", &format!("add failed ({why})"));
     }
     if marks.passed {
         add("Passed", "yes");
-    }
-    if marks.wantlist_pending {
-        add("Wantlist", "change pending");
     }
     if let Some(o) = &marks.owned {
         add("Owned", o);
@@ -386,7 +395,7 @@ mod tests {
         let local = p.add([TrackRef::new("/music/Mira Sol - Coastline.flac")])[0].0;
         let e = p.get(dig).unwrap().clone();
         let marks = DigMarks {
-            kept: true,
+            wanted: true,
             wantlist_pending: true,
             owned: Some("another pressing (AF014, 2018)".into()),
             ..Default::default()
@@ -404,7 +413,6 @@ mod tests {
                 ("Side", "A1".into()),
                 ("Year", "1994".into()),
                 ("Status", "downloading 40%".into()),
-                ("Kept", "yes".into()),
                 ("Wantlist", "change pending".into()),
                 ("Owned", "another pressing (AF014, 2018)".into()),
                 ("For sale", "6 from €9.00 (fetched 3 h ago)".into()),

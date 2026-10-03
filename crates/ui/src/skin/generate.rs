@@ -622,7 +622,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             (false, true),
         );
         // The time readout's LCD, just left of the resize grip.
-        c.inset(x + 30, y + 12, 104, 11, LCD_BG);
+        c.inset(x + 50, y + 12, 84, 11, LCD_BG);
     });
     b.sprite("pl_left", 12, 1, |c, x, y| {
         c.grad_h(x, y, 12, 1, &[HI, PANEL_TOP, PANEL_BOT]);
@@ -787,7 +787,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     text_button(&mut b, "eq_presets", 44, 12, "PRESETS", false, false);
     text_button(&mut b, "eq_presets_p", 44, 12, "PRESETS", false, true);
-    // The playlist footer's two buttons: + (add) and ≡ (the crate's menu).
+    // The playlist footer's buttons: + (add) and ≡ (the crate's menu); the gear is below.
     for (name, plus) in [("pl_plus", true), ("pl_menu", false)] {
         for pressed in [false, true] {
             let n = if pressed {
@@ -808,6 +808,33 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 }
             });
         }
+    }
+    // The footer's gear: the Options menu.
+    const GEAR: [&str; 10] = [
+        "....##....",
+        "..#.##.#..",
+        ".########.",
+        "..##..##..",
+        "####..####",
+        "####..####",
+        "..##..##..",
+        ".########.",
+        "..#.##.#..",
+        "....##....",
+    ];
+    for pressed in [false, true] {
+        let n = if pressed { "pl_opts_p" } else { "pl_opts" };
+        b.sprite(n, 18, 18, |c, x, y| {
+            button_face(c, x, y, 18, 18, pressed);
+            let o = pressed as i32;
+            for (gy, row) in GEAR.iter().enumerate() {
+                for (gx, ch) in row.bytes().enumerate() {
+                    if ch == b'#' {
+                        c.px(x + 4 + gx as i32 + o, y + 4 + gy as i32 + o, ICON);
+                    }
+                }
+            }
+        });
     }
     // × after the BPM range: clears it.
     b.sprite("bpm_clear", 7, 7, |c, x, y| {
@@ -1114,10 +1141,11 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_plus", R::new(11, 12, 18, 18)),
         ("pl_menu", R::new(32, 12, 18, 18)),
+        ("pl_opts", R::new(53, 12, 18, 18)),
         // The BPM control starts here and runs to the time readout (its width is worked out
         // at runtime); the readout is right-aligned in `pl_info`.
-        ("pl_bpm", R::new(56, 12, 0, 18)),
-        ("pl_info", R::new(157, 14, 100, 7)),
+        ("pl_bpm", R::new(77, 12, 0, 18)),
+        ("pl_info", R::new(177, 14, 80, 7)),
         ("pl_resize", R::new(263, 26, 11, 11)),
     ];
     let bands: Vec<(String, R)> = (0..10)

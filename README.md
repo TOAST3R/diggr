@@ -103,9 +103,9 @@ No music handy? The repo includes short test tones:
 The window has the classic Winamp parts, side by side: the player column on the left (main
 player, then the waveform and the equalizer when they show) and the playlist on its right, at
 least as tall as the player column. It's drawn from an original pixel-art skin, at double size
-by default (switch in **Options**: right-click the main window anywhere that isn't a control,
-or the player strip while the playlist is maximized; Options also has the spectrogram,
-Discogs… and Browser…).
+by default (switch in **Options**: the gear ⚙ in the playlist's footer, or right-click the main
+window anywhere that isn't a control, or the player strip while the playlist is maximized;
+Options also has the spectrogram, Discogs… and Browser…).
 
 Click in the player or in the playlist (or press `Tab`) to give it the keyboard: its title bar
 lights up and the other side's dims. With the player focused, `↑` / `↓` set the volume. With the
@@ -141,9 +141,10 @@ and Home/End jump), and Enter plays the entry under it.
 - **Playlist window:**
   - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
     menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Show all
-    tempos and Export M3U…. The "selected/total" time sits on the right, beside the grip;
+    tempos and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
+    Browser…). The "selected/total" time sits on the right, beside the grip;
   - **BPM filter:** once the crate on screen has two different known tempos, the footer shows
-    `BPM ◂━●━━●━▸ 124-139` between ≡ and the time. Drag a handle to keep only the tracks in that
+    `BPM ◂━●━━●━▸ 124-139` between the gear and the time. Drag a handle to keep only the tracks in that
     range: they're the only ones shown and the only ones played (next, previous, shuffle, and
     the previews downloaded ahead), while the playing track finishes even if it's hidden.
     Tracks without a known BPM are hidden while a range is set; the slider's tooltip says how
@@ -191,16 +192,20 @@ and Home/End jump), and Enter plays the entry under it.
     track plays on, the main window says it is waiting, and the entry starts as soon as its
     audio arrives. Only files that can't be opened are drawn in red.
   - Hover an entry to see everything known about it: its full name, album, label, catalog
-    number, side, year, BPM, duration, status, kept or passed, and what's for sale (with how
+    number, side, year, BPM, duration, status, wanted or passed (and how a wantlist or
+    collection change is going), and what's for sale (with how
     long ago that was fetched). A local file shows its path. A Discogs entry also shows its
     record's cover once the pointer has rested on it for a moment. Covers come from Discogs'
     image host (not the API, so they don't slow digging down), one at a time, and are kept in
     the cache's `covers/`, so each is fetched once. Crates dug before albums were shown get
     their albums and covers from the cache when they're shown, without asking Discogs.
   - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Remove
-    album (N tracks)**, **Select album**, **Send to crate**, and for a Discogs entry Keep, Pass,
-    Open for-sale page, **Open release on Discogs** and **Copy Discogs link**. Remove and Send to
-    crate act on the whole selection when the entry is part of it; otherwise the entry you
+    album (N tracks)**, **Select album**, **Send to crate**, and for a Discogs entry **Add to
+    wantlist** (or **Remove from wantlist**), **Add to collection**, Pass, Open for-sale page,
+    **Open release on Discogs** and **Copy Discogs link**. Remove, Send to crate and the
+    wantlist and collection items act on the whole selection when the entry is part of it (the
+    wantlist and collection items once per record: "Add 3 records to wantlist"); otherwise the
+    entry you
     clicked becomes the selection. While the menu is open, the rest of the entry's album is
     tinted, wherever it is in the crate. An album is a Discogs release (another pressing is
     another album), or local files with the same artist and album tags.
@@ -234,7 +239,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
 | `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
-| `Y` | keep the playing track (again: undo) | | `Cmd+V` | paste a Discogs page into the crate on screen |
+| `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | `Shift+P` | maximize the playlist (again: restore) | | | |
@@ -265,18 +270,37 @@ ahead of what plays. Other pasted text is ignored.
   the duration goes. While stopped, it's the current entry of the crate on screen and the next
   3. Each downloaded preview is analyzed and its waveform built before it plays, so section
   jumps and loops work from its first second.
-- **Verdicts on the playing track:** `Y` keeps it. It's copied to the **Keepers** crate, marked
-  ✓ wherever it appears, and its release is added to your Discogs wantlist (with a token).
-  Pressing `Y` again undoes this, and the release comes off the wantlist only if the app put it
-  there. `N` passes it: it's dimmed, the next track starts, and later sends leave it out.
+- **Verdicts on the playing track:** `Y` adds its record to your wantlist: all its tracks go
+  to the **Wantlist** crate, they're marked ✓ wherever they appear, and (with a token) the
+  release goes on your Discogs wantlist. Pressing `Y` again takes the record off, here and on
+  Discogs, whoever put it there. Without a token the record is wanted here, and a dialog says
+  once how connecting your Discogs account keeps your wantlist and collection up to date from
+  the player (**Don't show this again** turns it into a one-line message). `N` passes it: it's
+  dimmed, the next track starts, and later sends leave it out.
   `I` opens the release's for-sale page in your browser. A Discogs entry's title line shows its
   catalog number and BPM, then its side, year and what's for sale (`(LT-012) Nightcraft:
-  Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00`). The entry menu (right-click) has Keep, Pass (or Undo pass) and Open for-sale page.
+  Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00`). The entry menu (right-click) has the same, and **Add to collection**.
+- **Bought it:** **Add to collection** adds one copy of the release to your Discogs collection
+  (in Uncategorized, so it's under All), marks it OWNED at once, takes it off your wantlist
+  and moves it from the Wantlist crate to your collection's crate. It needs a token.
+- **Your wantlist on Discogs:** once you're connected, the Wantlist crate is "Wantlist: ‹you›",
+  in amber under DISCOGS in the sidebar, above your collection. It follows your Discogs
+  wantlist: records wanted before you connected are added to it, records you add on
+  discogs.com come in, and ones you remove there leave. Removing a whole record from that crate
+  asks first ("Remove 1 record from your Discogs wantlist?"); removing one of its tracks, or
+  deleting the crate, doesn't touch Discogs. You never want what you own: Add to wantlist is
+  off for a record you own in any pressing ("In collection ✓"), and when a sync finds you
+  bought a wanted record elsewhere, it comes off your wantlist and the main window says so.
+- **When Discogs can't take a change:** a wantlist change made while Discogs is offline waits
+  ("wantlist pending") and goes out once it answers. After server errors it's tried again 1,
+  2, 5, 15 and 60 minutes later, then the entry shows ⚠ and the menu offers **Retry
+  wantlist**. A collection add is never repeated by itself, as each try can add a copy: after a
+  failure the menu offers **Retry add to collection**, which first asks Discogs whether the add
+  went through.
 - **Records you already own:** with a token, entries whose record is in your Discogs
   collection get an amber **OWNED** badge before the title. That covers the same release and
   also another pressing of the same master; the tooltip says which ("Owned: another pressing
-  (AF014, 2018)"). Keeping an owned record asks first ("Already in your collection… Keep it
-  anyway?"), because a keep adds it to your wantlist.
+  (AF014, 2018)").
   - Saving a token also sends your whole collection into a crate "Collection: ‹you›" and
     shows it (once; it isn't made again while it exists). Its entries carry no OWNED badge.
     It can be sent again from your collection page with the browser extension. It's a
@@ -284,6 +308,11 @@ ahead of what plays. Other pasted text is ignored.
   - The collection is synced only when a crate from Discogs is on screen and the cached copy
     is missing or a week old, or from **Refresh collection** in Options ▸ Discogs…, which also
     shows how many records it holds and how old it is.
+  - **Refresh collection** and **Refresh wantlist**, on a right-click of those crates in the
+    sidebar (or in the title-bar crate menu when the playlist is narrow), make the crate match
+    Discogs: records added there come in, records gone from there leave, and the main window
+    says what changed ("Collection: 3 new, 1 gone"). They only read from Discogs, never change
+    it.
   - The first sync reads 100 records a request. After that only what was added since is
     read, newest first, which is usually one request; everything is read again only when
     records were removed. Other pressings are never looked up, and without a token nothing
@@ -692,8 +721,9 @@ with crates, to create the Playlist crate, and is then left untouched as a backu
 version still opens it); the Playlist crate is now the one that counts.
 
 Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
-yt-dlp path, the Keepers crate), `token` (readable only by you), `memory.ron` (kept and passed
-tracks, and wantlist changes still to be sent), `jobs.ron` (sends still in progress) and
+yt-dlp path, the Wantlist crate, whether the Connect to Discogs dialog was turned off), `token`
+(readable only by you), `memory.ron` (wanted records, passed tracks, and wantlist changes still
+to be sent, with their retries), `jobs.ron` (sends still in progress) and
 `bridge.ron` (the browser bridge's port and the SHA-256 of each paired browser's key, readable
 only by you). In the
 cache, `discogs/` keeps API responses: record details for good, listings for a day, and
@@ -716,7 +746,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 554 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 578 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -777,7 +807,8 @@ What's covered:
   - focus-first expansion;
   - jobs resumed after a restart;
   - offline and back;
-  - token checks and wantlist changes;
+  - token checks, wantlist changes, collection adds (one copy, and a checked retry that never
+    adds a second), and wanted records found in the collection after a sync;
   - albums and covers from the cache with no request, and covers: fetched once, shrunk,
     paced to 4 a second, only from Discogs' image hosts, a stale address looked up again.
 

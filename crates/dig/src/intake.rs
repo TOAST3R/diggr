@@ -8,14 +8,14 @@
 //! [`Intake`] is the synchronous core (tests drive it step by step); [`IntakeHandle`] runs it
 //! on a thread and talks to the UI over channels.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::Duration;
 
 use platform::{Priority, Spawner};
 
-use crate::collection::{self, Collection};
+use crate::collection::{self, Collection, Pressing};
 use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
 use crate::discogs::matching::{self, ClipEntry};
@@ -50,10 +50,18 @@ pub enum Command {
     SetToken(Option<String>),
     /// Check a token before it is saved; the current one stays in use.
     CheckToken(String),
-    /// Add a kept release to the user's wantlist (unless it is already there).
-    Keep(u64),
-    /// Remove a release this app added to the wantlist.
-    Unkeep(u64),
+    /// Add a release to the user's wantlist (unless it is already there).
+    Want(u64),
+    /// Take a release off the user's wantlist, whoever added it.
+    Unwant(u64),
+    /// Add one copy of a release to the user's collection (folder 1, Uncategorized). With
+    /// `check`, first ask whether it is there already (a retry after an add that may have
+    /// gone through), and add nothing if it is: a collection add is never repeated blindly.
+    Collect { release: u64, check: bool },
+    /// The releases on the user's wantlist (read once a session; `fresh` reads it again).
+    ReadWants { fresh: bool },
+    /// Learn whose token it is (answered with an identity event), when nothing else has.
+    Identify,
     /// Bring the user's collection up to date from this cached one (or from nothing). Runs
     /// only when no send is waiting.
     SyncCollection(Option<Box<Collection>>),
@@ -182,6 +190,17 @@ pub enum Event {
         add: bool,
         result: Result<bool, ApiError>,
     },
+    /// A collection add: the new copy's instance id and its pressing (from the cached release
+    /// data), or why not.
+    Collected {
+        release: u64,
+        result: Result<(u64, Pressing), ApiError>,
+    },
+    /// The releases on the user's wantlist, or why they can't be read.
+    Wants(Result<Vec<u64>, ApiError>),
+    /// After a collection sync: wanted releases the collection owns (this pressing or another
+    /// of the same master), to take off the wantlist.
+    OwnedWants(Vec<u64>),
 }
 
 pub struct Intake {
@@ -193,7 +212,8 @@ pub struct Intake {
     active: HashSet<JobId>,
     focus: Option<u64>,
     identity_checked: bool,
-    wants: Option<HashSet<u64>>,
+    /// The user's wantlist this session: release → its master release, when known.
+    wants: Option<HashMap<u64, Option<u64>>>,
     offline: bool,
     last_save: Option<Duration>,
     unsaved: bool,
@@ -317,8 +337,34 @@ impl Intake {
                 }
                 self.events.push(Event::TokenChecked(token, result));
             }
-            Command::Keep(release) => self.wantlist(release, true),
-            Command::Unkeep(release) => self.wantlist(release, false),
+            Command::Want(release) => self.wantlist(release, true),
+            Command::Unwant(release) => self.wantlist(release, false),
+            Command::Collect { release, check } => {
+                let result = self.collect(release, check);
+                match &result {
+                    Err(ApiError::Offline) => self.went_offline(),
+                    Ok(_) => self.online(),
+                    _ => {}
+                }
+                self.events.push(Event::Collected { release, result });
+            }
+            Command::Identify => self.ensure_identity(),
+            Command::ReadWants { fresh } => {
+                if fresh {
+                    self.wants = None;
+                }
+                let result = self.ensure_wants().map(|w| {
+                    let mut ids: Vec<u64> = w.keys().copied().collect();
+                    ids.sort_unstable();
+                    ids
+                });
+                match &result {
+                    Err(ApiError::Offline) => self.went_offline(),
+                    Ok(_) => self.online(),
+                    _ => {}
+                }
+                self.events.push(Event::Wants(result));
+            }
             Command::SyncCollection(cached) => self.collection_sync = Some(cached),
             Command::ResolveShopItem(id) => {
                 if !self.shop_items.contains(&id) {
@@ -391,7 +437,23 @@ impl Intake {
             Err(ApiError::Offline) => self.went_offline(),
             Err(_) => {}
         }
+        // Nothing owned stays wanted: the wantlist is read (once a session) to find them.
+        let owned = match &result {
+            Ok(c) => self.ensure_wants().ok().map(|w| {
+                let mut ids: Vec<u64> = w
+                    .iter()
+                    .filter(|&(&r, &m)| c.owned(Some(r), m).is_some())
+                    .map(|(&r, _)| r)
+                    .collect();
+                ids.sort_unstable();
+                ids
+            }),
+            Err(_) => None,
+        };
         self.events.push(Event::Collection(result.map(Box::new)));
+        if let Some(ids) = owned.filter(|ids| !ids.is_empty()) {
+            self.events.push(Event::OwnedWants(ids));
+        }
         true
     }
 
@@ -587,22 +649,41 @@ impl Intake {
         });
     }
 
-    fn change_wantlist(&mut self, release: u64, add: bool) -> Result<bool, ApiError> {
+    /// The account's username, for a change to it (a token is needed).
+    fn user(&mut self) -> Result<String, ApiError> {
         if self.client.token().is_none() {
             return Err(ApiError::TokenNeeded);
         }
         let user = self.client.ensure_identity()?.username;
         self.identity_checked = true;
+        Ok(user)
+    }
+
+    /// The user's wantlist, read once a session.
+    fn ensure_wants(&mut self) -> Result<&HashMap<u64, Option<u64>>, ApiError> {
         if self.wants.is_none() {
+            let user = self.user()?;
             self.wants = Some(self.read_wants(&user)?);
         }
+        Ok(self.wants.get_or_insert_default())
+    }
+
+    fn change_wantlist(&mut self, release: u64, add: bool) -> Result<bool, ApiError> {
+        let user = self.user()?;
+        self.ensure_wants()?;
         let path = format!("/users/{}/wants/{release}", path_segment(&user));
         if add {
-            if self.wants.as_ref().is_some_and(|w| w.contains(&release)) {
+            if self
+                .wants
+                .as_ref()
+                .is_some_and(|w| w.contains_key(&release))
+            {
                 return Ok(false);
             }
             self.client.call(Method::Put, &path)?;
-            self.wants.get_or_insert_default().insert(release);
+            let master = expand::cached_record(&self.client.cache, RecordKey::Release(release))
+                .and_then(|r| r.master);
+            self.wants.get_or_insert_default().insert(release, master);
         } else {
             match self.client.call(Method::Delete, &path) {
                 Ok(_) | Err(ApiError::NotFound) => {}
@@ -613,22 +694,63 @@ impl Intake {
         Ok(true)
     }
 
-    /// The ids on the user's wantlist, once per session (100 a request).
-    fn read_wants(&mut self, user: &str) -> Result<HashSet<u64>, ApiError> {
-        let mut ids = HashSet::new();
+    /// One copy of `release` in the collection: its instance id and pressing.
+    fn collect(&mut self, release: u64, check: bool) -> Result<(u64, Pressing), ApiError> {
+        let user = self.user()?;
+        let pressing = expand::cached_record(&self.client.cache, RecordKey::Release(release))
+            .map(|r| Pressing {
+                master: r.master,
+                catno: r.catno,
+                year: r.year,
+            })
+            .unwrap_or(Pressing {
+                master: None,
+                catno: String::new(),
+                year: None,
+            });
+        if check {
+            let v = self.client.get_json(&format!(
+                "/users/{}/collection/releases/{release}",
+                path_segment(&user)
+            ))?;
+            let newest = v["releases"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|i| i["instance_id"].as_u64())
+                .max();
+            if let Some(instance) = newest {
+                return Ok((instance, pressing));
+            }
+        }
+        let path = format!(
+            "/users/{}/collection/folders/1/releases/{release}",
+            path_segment(&user)
+        );
+        let r = self.client.call(Method::Post, &path)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&r.body).map_err(|e| ApiError::Other(format!("{path}: {e}")))?;
+        let instance = v["instance_id"]
+            .as_u64()
+            .ok_or_else(|| ApiError::Other(format!("{path}: no instance_id")))?;
+        Ok((instance, pressing))
+    }
+
+    /// The user's wantlist, with each release's master, once per session (100 a request).
+    fn read_wants(&mut self, user: &str) -> Result<HashMap<u64, Option<u64>>, ApiError> {
+        let mut ids = HashMap::new();
         let mut n = 1;
         loop {
             let v = self.client.get_json(&format!(
                 "/users/{}/wants?page={n}&per_page={PER_PAGE}",
                 path_segment(user)
             ))?;
-            ids.extend(
-                v["wants"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|w| w["id"].as_u64()),
-            );
+            ids.extend(v["wants"].as_array().into_iter().flatten().filter_map(|w| {
+                let master = w["basic_information"]["master_id"]
+                    .as_u64()
+                    .filter(|&m| m > 0);
+                Some((w["id"].as_u64()?, master))
+            }));
             if n >= v["pagination"]["pages"].as_u64().unwrap_or(1) {
                 return Ok(ids);
             }

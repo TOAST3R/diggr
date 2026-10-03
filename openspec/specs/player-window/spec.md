@@ -48,7 +48,7 @@ The main section SHALL show a 19-bar spectrum analyzer with peak caps (or an osc
 - **THEN** the low bars rise in the same displayed frame (within one UI refresh)
 
 ### Requirement: Keyboard shortcuts
-The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume while the player has focus or in fullscreen; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), Shift+P (maximize the playlist, or restore it), F (fullscreen visuals), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (keep), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page).
+The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume while the player has focus or in fullscreen; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), Shift+P (maximize the playlist, or restore it), F (fullscreen visuals), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page).
 
 #### Scenario: Classic keys
 - **WHEN** the user presses B during playback
@@ -123,7 +123,7 @@ The player side (main, waveform and EQ sections) and the playlist SHALL each tak
 - **THEN** the player has focus
 
 ### Requirement: Options menu
-Right-clicking (or Control-clicking on macOS) anywhere on the main window, or on the strip of a maximized playlist, that is not a control SHALL open the Options menu: Double size (or Classic size), Spectrogram, and, where digging is available, Discogs… and Browser…. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. Opening the menu SHALL NOT affect playback.
+Right-clicking (or Control-clicking on macOS) anywhere on the main window, or on the strip of a maximized playlist, that is not a control SHALL open the Options menu: Double size (or Classic size), Spectrogram, and, where digging is available, Discogs… and Browser…. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. The playlist footer's gear button SHALL open the same menu, so it can be found without knowing about the right-click. Opening the menu SHALL NOT affect playback.
 
 #### Scenario: Open the options
 - **WHEN** the user right-clicks the main window's track-info area
