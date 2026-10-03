@@ -5,8 +5,8 @@ A digger thinks in records, but the playlist shows tracks. A wantlist or a colle
 ## What Changes
 
 - **Group by record**, a view of any crate:
-  - each record (album, see `album-entries`) is one **record row**: the cover on the left, then artist – album, catalog number, year, track count, and the OWNED and ✓ marks;
-  - a record row **opens to show its tracks** (▸ / ▾) as indented track rows; double-clicking a track row plays it;
+  - each record (album, see `album-entries`) is one **record row**: the cover on the left, then artist – album, catalog number, year, track count, and the OWNED and ★ marks;
+  - a record row **opens to show its tracks** (⏵ / ⏷) as indented track rows; double-clicking a track row plays it;
   - entries without an album (a local file with no album tag) stay single rows;
   - a record with only one entry is a record row that plays directly, with nothing to open.
 - **Toggle:**
