@@ -527,7 +527,7 @@ impl Dig {
         if wanted && self.token.is_none() && !self.token_hint_shown {
             self.token_hint_shown = true;
             return Some(
-                "Add a Discogs token (Options ▸ Discogs…) to mark the records you already own"
+                "Add a Discogs token (Options › Discogs…) to mark the records you already own"
                     .into(),
             );
         }
@@ -746,31 +746,39 @@ fn record_key(o: &Origin) -> Option<RecordKey> {
     }
 }
 
-/// The records of a crate's Discogs entries saved without an album, once each.
+/// The records of a crate's Discogs entries saved without an album or styles, once each.
 fn records_to_backfill(p: &Playlist) -> Vec<RecordKey> {
     let mut seen = HashSet::new();
     p.entries()
         .iter()
         .filter_map(|e| e.origin.as_ref())
-        .filter(|o| o.album.is_empty())
+        .filter(|o| o.album.is_empty() || o.styles.is_empty())
         .filter_map(record_key)
         .filter(|k| seen.insert(*k))
         .collect()
 }
 
-/// Fills the album and cover of entries saved without them; true if any changed.
+/// Fills the album, cover and styles of entries saved without them; true if any changed.
 fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
     let by_key: HashMap<RecordKey, &RecordInfo> = infos.iter().map(|i| (i.key, i)).collect();
     let mut changed = false;
     for e in p.entries_mut() {
-        let Some(o) = e.origin.as_mut().filter(|o| o.album.is_empty()) else {
+        let Some(o) = e.origin.as_mut() else {
             continue;
         };
-        if let Some(info) = record_key(o).and_then(|k| by_key.get(&k)) {
+        let Some(info) = record_key(o).and_then(|k| by_key.get(&k)) else {
+            continue;
+        };
+        if o.album.is_empty() && !info.title.is_empty() {
             o.album = info.title.clone();
-            if o.cover.is_empty() {
-                o.cover = info.cover.clone();
-            }
+            changed = true;
+        }
+        if o.cover.is_empty() && !info.cover.is_empty() {
+            o.cover = info.cover.clone();
+            changed = true;
+        }
+        if o.styles.is_empty() && !info.styles.is_empty() {
+            o.styles = info.styles.clone();
             changed = true;
         }
     }
@@ -799,6 +807,7 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         for_sale: for_sale(&info.for_sale),
         album: info.title.clone(),
         cover: info.cover.clone(),
+        styles: info.styles.clone(),
     }
 }
 
@@ -1075,7 +1084,7 @@ impl WinampApp {
                 self.notify(if to == j.name {
                     format!("Digging {to}")
                 } else {
-                    format!("{} → {to}", j.name)
+                    format!("{} › {to}", j.name)
                 });
             }
             Event::Named(j) => {
@@ -1978,7 +1987,7 @@ impl WinampApp {
             match (added.first(), owned.first()) {
                 (Some((_, e)), _) if anon && d.settings.connect_hint_dismissed => format!(
                     "Added {} to your wantlist (a Discogs token would add it to your Discogs \
-                     wantlist too: Options ▸ Discogs…)",
+                     wantlist too: Options › Discogs…)",
                     record_name(e)
                 ),
                 (Some((_, e)), _) => format!("Added {} to your wantlist", record_name(e)),
@@ -2501,12 +2510,7 @@ impl WinampApp {
                 item(ui, label, Some(DigAction::Collect(ids.clone())), "");
             } else {
                 if owned.is_some() {
-                    item(
-                        ui,
-                        "In collection ✓".into(),
-                        None,
-                        &format!("Owned: {what}"),
-                    );
+                    item(ui, "In collection".into(), None, &format!("Owned: {what}"));
                 } else if marks.wantlist_failed.is_some() {
                     item(
                         ui,
@@ -2637,12 +2641,12 @@ impl WinampApp {
             );
             ui.horizontal(|ui| {
                 ui.label("1. Open your Discogs developer settings");
-                if ui.button("Open ↗").clicked() {
+                if ui.button("Open ⬈").clicked() {
                     open_page = true;
                 }
             });
             ui.label("2. Click \"Generate new token\" and copy it");
-            ui.label("3. Paste it in Options ▸ Discogs…");
+            ui.label("3. Paste it in Options › Discogs…");
             ui.separator();
             ui.horizontal(|ui| {
                 if dialog.from_wantlist {
@@ -2816,7 +2820,7 @@ impl WinampApp {
                     None => {}
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Get one at discogs.com ▸ Settings ▸ Developers:");
+                    ui.label("Get one at discogs.com › Settings › Developers:");
                     if ui.button("Open that page").clicked() {
                         open_token_page = true;
                     }

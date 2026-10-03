@@ -103,6 +103,10 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "btn_close_p",
     "btn_max",
     "btn_max_p",
+    "btn_group",
+    "btn_group_p",
+    "btn_group_on",
+    "btn_group_on_p",
     "prev",
     "prev_p",
     "play",
@@ -225,6 +229,7 @@ pub const REQUIRED_LAYOUT: &[&str] = &[
     "pl_titlebar",
     "pl_close",
     "pl_max",
+    "pl_group",
     "pl_list",
     "pl_scroll",
     "pl_plus",
@@ -304,7 +309,10 @@ pub fn fold(c: char) -> char {
         'ç' | 'Ç' => 'C',
         '’' | '‘' => '\'',
         '“' | '”' => '"',
-        '–' | '—' => '-',
+        '–' | '—' | '−' => '-',
+        // Arrows and menu paths ("Options › Discogs…") read as < and >.
+        '›' | '»' | '▸' | '→' | '⏵' => '>',
+        '‹' | '«' | '◂' | '←' | '⏴' => '<',
         other => other,
     };
     c.to_ascii_uppercase()

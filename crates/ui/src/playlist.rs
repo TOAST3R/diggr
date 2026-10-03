@@ -5,7 +5,7 @@
 //! ever having audio (`Unavailable`); neither ever reaches the engine, so the engine's
 //! "track failed" keeps meaning "this file is broken".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use platform::TrackRef;
 
@@ -158,6 +158,9 @@ pub struct Origin {
     /// The address of the record's cover thumbnail.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub cover: String,
+    /// The record's Discogs styles, comma-separated ("Deep House, Minimal").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub styles: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -361,6 +364,15 @@ pub struct Playlist {
     /// The BPM filter, as set (see [`Playlist::bpm_filter`] for what applies).
     bpm_range: Option<(u16, u16)>,
     next_id: EntryId,
+    /// Shown grouped by record: each album's entries are kept together (see
+    /// [`Playlist::gather`]).
+    grouped: bool,
+    /// Entries were added (or an album became known) while grouped: the next
+    /// [`Playlist::settle`] places them with their record.
+    unsettled: bool,
+    /// Bumped whenever the entries, their order, their albums or the filter change, so views
+    /// built from them know when to rebuild.
+    rev: u64,
 }
 
 /// How far the keyboard cursor moves.
@@ -385,6 +397,129 @@ impl Playlist {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Changes whenever the entries, their order, their albums or the BPM filter change.
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    fn changed(&mut self) {
+        self.rev += 1;
+    }
+
+    // ---- grouped by record ---------------------------------------------------------------
+
+    pub fn is_grouped(&self) -> bool {
+        self.grouped
+    }
+
+    /// Groups (or ungroups) the entries by record. Grouping gathers them at once; ungrouping
+    /// keeps the order. Returns whether the order changed.
+    pub fn set_grouped(&mut self, on: bool) -> bool {
+        self.grouped = on;
+        self.unsettled = false;
+        self.changed();
+        let moved = on && self.gather();
+        if moved {
+            self.sorted = None; // like a sort by record
+        }
+        moved
+    }
+
+    /// While grouped, places entries added since the last call with their record. Returns
+    /// whether the order changed (the play order follows it).
+    pub fn settle(&mut self) -> bool {
+        if !std::mem::take(&mut self.unsettled) || !self.grouped {
+            return false;
+        }
+        let moved = self.gather();
+        if moved {
+            self.sorted = None;
+        }
+        moved
+    }
+
+    /// Moves each album's entries up to follow that album's first entry, keeping their order;
+    /// entries of no album keep their place among the rest. A stable reorder, like a sort: the
+    /// crate's order (play, save, export) follows it. Returns whether anything moved.
+    pub fn gather(&mut self) -> bool {
+        let mut slot: HashMap<AlbumKey, usize> = HashMap::new();
+        let mut groups: Vec<Vec<usize>> = Vec::with_capacity(self.entries.len());
+        for (i, e) in self.entries.iter().enumerate() {
+            match e.album_key() {
+                Some(k) => match slot.get(&k) {
+                    Some(&g) => groups[g].push(i),
+                    None => {
+                        slot.insert(k, groups.len());
+                        groups.push(vec![i]);
+                    }
+                },
+                None => groups.push(vec![i]),
+            }
+        }
+        if groups.len() == self.entries.len() {
+            return false; // every album already in one piece, or none at all
+        }
+        let order: Vec<usize> = groups.into_iter().flatten().collect();
+        if order.iter().enumerate().all(|(i, &j)| i == j) {
+            return false;
+        }
+        let mut old: Vec<Option<Entry>> = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.entries = order
+            .into_iter()
+            .map(|i| old[i].take().expect("each index once"))
+            .collect();
+        self.changed();
+        true
+    }
+
+    /// Moves the entries `ids` (a record), in their order, to just before entry `before` (or
+    /// to the end). Nothing happens when `before` is one of them.
+    pub fn move_block(&mut self, ids: &[EntryId], before: Option<EntryId>) {
+        if before.is_some_and(|b| ids.contains(&b)) || ids.is_empty() {
+            return;
+        }
+        let (block, rest): (Vec<Entry>, Vec<Entry>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|e| ids.contains(&e.id));
+        self.entries = rest;
+        let at = before
+            .and_then(|b| self.index_of(b))
+            .unwrap_or(self.entries.len());
+        self.entries.splice(at..at, block);
+        self.sorted = None;
+        self.changed();
+    }
+
+    /// Adds or removes `ids` from the selection as one: when all are selected they leave it,
+    /// otherwise they all join it. The cursor goes to the first.
+    pub fn toggle_ids(&mut self, ids: &[EntryId]) {
+        if ids.iter().all(|id| self.selected.contains(id)) {
+            for id in ids {
+                self.selected.remove(id);
+            }
+        } else {
+            self.selected.extend(ids.iter().copied());
+        }
+        self.cursor = ids.first().copied();
+        self.anchor = self.cursor;
+    }
+
+    /// Selects every shown entry from the anchor to index `to`, and `ids` with them (Shift
+    /// on a record: up to its end). The cursor goes to `cursor`.
+    pub fn extend_to(&mut self, to: usize, ids: &[EntryId], cursor: EntryId) {
+        let anchor = self.anchor.and_then(|a| self.index_of(a)).unwrap_or(to);
+        let (a, b) = (anchor.min(to), anchor.max(to));
+        self.selected = self.shown_ids_between(a, b);
+        self.selected.extend(ids.iter().copied());
+        self.cursor = Some(cursor);
+        if self.anchor.is_none() {
+            self.anchor = Some(cursor);
+        }
     }
 
     pub fn index_of(&self, id: EntryId) -> Option<usize> {
@@ -429,6 +564,7 @@ impl Playlist {
             });
         }
         self.check_sorted(from);
+        self.added();
         added
     }
 
@@ -451,7 +587,14 @@ impl Playlist {
             self.entries.push(entry);
         }
         self.check_sorted(from);
+        self.added();
         pending
+    }
+
+    /// Entries arrived: a grouped list places them at the next settle.
+    fn added(&mut self) {
+        self.unsettled |= self.grouped;
+        self.changed();
     }
 
     fn alloc_id(&mut self) -> EntryId {
@@ -470,12 +613,18 @@ impl Playlist {
             && e.status.note().is_none()
         {
             if e.origin.is_none() {
+                let album = e.album != info.album || e.artist != info.artist;
                 e.title = info.title;
                 e.artist = info.artist;
                 e.album = info.album;
+                if album {
+                    self.added();
+                }
             }
-            e.duration = info.duration_secs;
-            e.status = EntryStatus::Ready;
+            if let Some(e) = self.entry_mut(id) {
+                e.duration = info.duration_secs;
+                e.status = EntryStatus::Ready;
+            }
         }
     }
 
@@ -488,6 +637,9 @@ impl Playlist {
                 e.bpm = Some(bpm);
                 changed = true;
             }
+        }
+        if changed {
+            self.changed();
         }
         changed
     }
@@ -525,6 +677,7 @@ impl Playlist {
             status: EntryStatus::Waiting(status.into()),
         });
         self.check_sorted(self.entries.len() - 1);
+        self.added();
         id
     }
 
@@ -569,6 +722,7 @@ impl Playlist {
             status: EntryStatus::Waiting(n.status),
         });
         self.entries.splice(at..=at, entries);
+        self.changed();
         let first = ids.first().copied();
         if self.current == Some(id) {
             self.current = first;
@@ -605,6 +759,7 @@ impl Playlist {
 
     /// Every entry, for updates that touch many (marketplace numbers of a release).
     pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut Entry> {
+        self.changed();
         self.entries.iter_mut()
     }
 
@@ -814,6 +969,7 @@ impl Playlist {
                 .map(|e| e.id);
         }
         self.entries.retain(|e| !sel.contains(&e.id));
+        self.changed();
         if self.current.is_some_and(|c| sel.contains(&c)) {
             self.current = None;
         }
@@ -821,6 +977,7 @@ impl Playlist {
     }
 
     pub fn clear(&mut self) {
+        self.changed();
         self.entries.clear();
         self.selected.clear();
         self.anchor = None;
@@ -837,6 +994,7 @@ impl Playlist {
         let to = to.min(self.entries.len());
         self.entries.insert(to, e);
         self.sorted = None;
+        self.changed();
     }
 
     // ---- sorting -----------------------------------------------------------------------
@@ -846,7 +1004,12 @@ impl Playlist {
     pub fn sort_by(&mut self, field: Field, dir: Dir) {
         self.entries
             .sort_by(|a, b| crate::columns::compare(a, b, field, dir));
+        // Grouped, each record follows its best-placed track; the mark stays.
+        if self.grouped {
+            self.gather();
+        }
         self.sorted = Some((field, dir));
+        self.changed();
     }
 
     /// What the entries were last sorted by, while that order holds.
@@ -936,6 +1099,7 @@ impl Playlist {
         let before = self.bpm_filter();
         self.bpm_range = range.map(|(a, b)| (a.min(b), a.max(b)));
         self.bpm_range = self.bpm_filter();
+        self.changed();
         before != self.bpm_range
     }
 
@@ -2010,5 +2174,121 @@ mod tests {
         let shuffled = p.play_order(true, Some(ids[1]), 7);
         assert_eq!(shuffled.len(), 2);
         assert_eq!(shuffled[0], ids[1]);
+    }
+
+    /// A crate of `releases` (one entry each, clip `c<i>`), plus a local file without an album
+    /// where `None` is given.
+    fn records(releases: &[Option<u64>]) -> (Playlist, Vec<EntryId>) {
+        let mut p = Playlist::default();
+        let ids = releases
+            .iter()
+            .enumerate()
+            .map(|(i, r)| match r {
+                Some(r) => p.add_waiting(
+                    "A",
+                    format!("t{i}"),
+                    None,
+                    Some(origin(*r, &format!("c{i}"))),
+                    "listed",
+                ),
+                None => p.add([TrackRef::new(format!("/m/{i}.mp3"))])[0].0,
+            })
+            .collect();
+        (p, ids)
+    }
+
+    fn order(p: &Playlist) -> Vec<String> {
+        p.entries().iter().map(|e| e.title.clone()).collect()
+    }
+
+    #[test]
+    fn gathering_moves_each_record_up_to_its_first_entry() {
+        // 12, 13, 14 and 40 are one release (here t0, t1, t2, t5); t3 has no album.
+        let (mut p, ids) = records(&[Some(1), Some(1), Some(1), None, Some(2), Some(1), Some(3)]);
+        p.set_current(Some(ids[5]));
+        let rev = p.rev();
+        assert!(p.set_grouped(true));
+        assert_eq!(
+            order(&p),
+            ["t0", "t1", "t2", "t5", "/m/3", "t4", "t6"]
+                .map(|t| t.trim_start_matches("/m/").to_owned())
+        );
+        assert_eq!(
+            p.current(),
+            Some(ids[5]),
+            "the playing entry is the same one"
+        );
+        assert!(p.rev() > rev);
+        // Already gathered: nothing moves, and ungrouping keeps the order.
+        assert!(!p.gather());
+        p.set_grouped(false);
+        assert_eq!(order(&p)[3], "t5");
+    }
+
+    #[test]
+    fn entries_added_while_grouped_join_their_record_at_the_next_settle() {
+        let (mut p, _) = records(&[Some(1), Some(2), Some(3)]);
+        p.set_grouped(true);
+        p.add_waiting("A", "t3", None, Some(origin(1, "c3")), "listed");
+        assert_eq!(order(&p).last().unwrap(), "t3", "appended until settled");
+        assert!(p.settle());
+        assert_eq!(order(&p), ["t0", "t3", "t1", "t2"]);
+        assert!(!p.settle(), "nothing more to place");
+        // Flat crates never move.
+        let (mut flat, _) = records(&[Some(1), Some(2)]);
+        flat.add_waiting("A", "t2", None, Some(origin(1, "c2")), "listed");
+        assert!(!flat.settle());
+        assert_eq!(order(&flat), ["t0", "t1", "t2"]);
+    }
+
+    #[test]
+    fn sorting_a_grouped_crate_gathers_after_sorting() {
+        let (mut p, _) = records(&[Some(1), Some(2), Some(1)]);
+        for (e, bpm) in p.entries.iter_mut().zip([130, 120, 110]) {
+            e.bpm = Some(bpm);
+        }
+        p.set_grouped(true); // t0, t2, t1
+        p.sort_by(Field::Bpm, Dir::Asc);
+        // By tempo t2 (110) comes first, so its record leads: t2, t0, then t1.
+        assert_eq!(order(&p), ["t2", "t0", "t1"]);
+        assert_eq!(p.sorted(), Some((Field::Bpm, Dir::Asc)));
+    }
+
+    #[test]
+    fn a_record_moves_as_a_block_and_selections_take_whole_records() {
+        let (mut p, ids) = records(&[Some(1), Some(1), Some(2), Some(3)]);
+        p.move_block(&[ids[0], ids[1]], Some(ids[3]));
+        assert_eq!(order(&p), ["t2", "t0", "t1", "t3"]);
+        p.move_block(&[ids[0], ids[1]], Some(ids[1]));
+        assert_eq!(order(&p), ["t2", "t0", "t1", "t3"], "onto itself: nothing");
+        p.move_block(&[ids[2]], None);
+        assert_eq!(order(&p), ["t0", "t1", "t3", "t2"]);
+        p.toggle_ids(&[ids[0], ids[1]]);
+        assert_eq!(p.selected_ids(), [ids[0], ids[1]]);
+        p.toggle_ids(&[ids[0], ids[1]]);
+        assert!(p.selected_ids().is_empty());
+        p.select_only(&[ids[0]], ids[0]);
+        p.extend_to(3, &[ids[2]], ids[2]);
+        assert_eq!(p.selected_ids().len(), 4);
+    }
+
+    #[test]
+    fn gathering_five_thousand_entries_is_quick() {
+        let releases: Vec<Option<u64>> = (0..5000u64).map(|i| Some(i % 1500)).collect();
+        let (scattered, _) = records(&releases);
+        // The best of a few runs (each from the same scattered order).
+        let mut took = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let mut p = Playlist::default();
+            p.add_saved(
+                scattered
+                    .saved_entries(&scattered.entries().iter().map(|e| e.id).collect::<Vec<_>>()),
+            );
+            let t = std::time::Instant::now();
+            assert!(p.set_grouped(true));
+            took = took.min(t.elapsed());
+        }
+        let budget = if cfg!(debug_assertions) { 40 } else { 16 };
+        assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
     }
 }

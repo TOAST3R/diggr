@@ -99,6 +99,8 @@ pub struct Record {
     pub for_sale: Option<ForSale>,
     /// The 150 px thumbnail's address (empty when the record has no image).
     pub cover: String,
+    /// Its Discogs styles ("Deep House", "Minimal"), else its genres.
+    pub styles: Vec<String>,
 }
 
 /// Formats that are records: the listing strings (`12", EP`) and format names.
@@ -291,6 +293,21 @@ fn thumb(uri: &str) -> String {
     }
 }
 
+/// A record's styles, or its genres when it lists no style.
+fn styles(v: &Value) -> Vec<String> {
+    let names = |a: &Value| -> Vec<String> {
+        a.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.as_str())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let s = names(&v["styles"]);
+    if s.is_empty() { names(&v["genres"]) } else { s }
+}
+
 fn year(v: &Value) -> Option<u16> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.get(..4)?.parse().ok()))
@@ -323,6 +340,7 @@ impl Record {
                 fetched_at,
             }),
             cover: cover(&v["images"]),
+            styles: styles(v),
         })
     }
 
@@ -347,6 +365,10 @@ impl Record {
             cover: Some(cover(&v["images"]))
                 .filter(|c| !c.is_empty())
                 .or_else(|| main.map(|m| m.cover.clone()))
+                .unwrap_or_default(),
+            styles: Some(styles(v))
+                .filter(|s| !s.is_empty())
+                .or_else(|| main.map(|m| m.styles.clone()))
                 .unwrap_or_default(),
         })
     }
@@ -575,6 +597,29 @@ mod tests {
         assert_eq!(
             listed_from_list_item(&list).unwrap().cover,
             "https://i.discogs.com/l.jpg"
+        );
+    }
+
+    #[test]
+    fn styles_come_from_the_record_else_its_genres() {
+        let r = Record::from_release(
+            &serde_json::json!({"id": 1, "styles": ["Deep House", " Minimal "], "genres": ["Electronic"]}),
+            "EUR",
+            0,
+        )
+        .unwrap();
+        assert_eq!(r.styles, ["Deep House", "Minimal"]);
+        let g = Record::from_release(
+            &serde_json::json!({"id": 2, "genres": ["Electronic"]}),
+            "EUR",
+            0,
+        )
+        .unwrap();
+        assert_eq!(g.styles, ["Electronic"], "no style: the genres");
+        let m = Record::from_master(&serde_json::json!({"id": 9}), Some(&r)).unwrap();
+        assert_eq!(
+            m.styles, r.styles,
+            "a master without styles takes its main release's"
         );
     }
 }

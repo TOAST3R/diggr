@@ -100,6 +100,8 @@ pub struct RecordInfo {
     pub for_sale: Option<ForSale>,
     /// The record's thumbnail address (empty when unknown).
     pub cover: String,
+    /// Its styles, comma-separated (empty when unknown).
+    pub styles: String,
 }
 
 impl RecordInfo {
@@ -115,6 +117,7 @@ impl RecordInfo {
             year: r.year,
             for_sale: r.for_sale.clone(),
             cover: r.cover.clone(),
+            styles: r.styles.join(", "),
         }
     }
 
@@ -134,6 +137,7 @@ impl RecordInfo {
             year: l.year,
             for_sale: None,
             cover: l.cover.clone(),
+            styles: String::new(),
         }
     }
 }

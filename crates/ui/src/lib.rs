@@ -13,6 +13,7 @@ pub mod layout;
 pub mod metadata;
 pub mod navigation;
 pub mod playlist;
+pub mod records;
 pub mod render_job;
 pub mod settings;
 pub mod skin;

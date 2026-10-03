@@ -665,6 +665,24 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         }
     }
 
+    // ▤ (group by record): a cover square and two lines, lit while the crate is grouped.
+    for (name, pressed, lit) in [
+        ("btn_group", false, false),
+        ("btn_group_p", true, false),
+        ("btn_group_on", false, true),
+        ("btn_group_on_p", true, true),
+    ] {
+        b.sprite(name, 9, 9, |c, x, y| {
+            button_face(c, x, y, 9, 9, pressed);
+            let o = pressed as i32;
+            let ink = if lit { LCD_ON } else { ICON };
+            c.fill(x + 2 + o, y + 2 + o, 2, 2, ink);
+            c.fill(x + 5 + o, y + 2 + o, 2, 1, ink);
+            c.fill(x + 2 + o, y + 5 + o, 2, 2, ink);
+            c.fill(x + 5 + o, y + 5 + o, 2, 1, ink);
+        });
+    }
+
     // ---- transport ------------------------------------------------------------------------
     type Icon = fn(&mut Canvas, i32, i32);
     let icons: [(&str, u16, u16, Icon); 6] = [
@@ -1137,6 +1155,7 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_titlebar", R::new(0, 0, 275, 20)),
         ("pl_close", R::new(262, 6, 9, 9)),
         ("pl_max", R::new(250, 6, 9, 9)),
+        ("pl_group", R::new(238, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_plus", R::new(11, 12, 18, 18)),
