@@ -1,8 +1,5 @@
-# dig-verdicts Specification
+## MODIFIED Requirements
 
-## Purpose
-One-key decisions while digging: keep a record (collected in a Keepers crate and on the user's Discogs wantlist), pass on it (it isn't offered again), or open its for-sale page on Discogs.
-## Requirements
 ### Requirement: Verdict keys
 `Y` (add to wantlist, or remove from it), `N` (pass) and `I` (open the for-sale page) SHALL act on the playing or paused entry, and SHALL do nothing while playback is stopped. The entry right-click menu SHALL offer the same actions for the entry clicked: Add to wantlist or Remove from wantlist (see `discogs-write`), Pass or Undo pass, and Open for-sale page.
 
@@ -29,13 +26,6 @@ Passing on an entry SHALL remember its clip as passed and dim its row; when it i
 - **WHEN** the user presses N on a track whose record is on the wantlist
 - **THEN** nothing is passed, and the main window says the record is on the wantlist
 
-### Requirement: Open for-sale page
-Opening the for-sale page SHALL open the entry's release on the Discogs marketplace, the page that lists its copies for sale, in the default browser. For an entry that isn't from Discogs, the main window SHALL say so.
-
-#### Scenario: Buy page
-- **WHEN** the user presses I while a track from release 123456 plays
-- **THEN** the default browser opens https://www.discogs.com/sell/release/123456
-
 ### Requirement: Dig memory
 Passed clips, wanted releases and wantlist changes still waiting SHALL be remembered in the config folder across restarts. Memory written before this change SHALL load: every release kept before SHALL be wanted.
 
@@ -47,3 +37,8 @@ Passed clips, wanted releases and wantlist changes still waiting SHALL be rememb
 - **WHEN** the app starts with a memory file in which release 123456 was kept
 - **THEN** release 123456 is wanted, and its entries show ✓
 
+## REMOVED Requirements
+
+### Requirement: Keep
+**Reason**: Keep is replaced by Add to wantlist, which acts on whole records and keeps the wantlist crate in step with the Discogs wantlist. Owning a record now blocks it, with no "keep anyway" dialog. Removing from the wantlist no longer depends on who added the release.
+**Migration**: See `discogs-write` (Add to wantlist, Never want what you own, The wantlist crate mirrors Discogs, Wantlist changes end). The Keepers crate becomes the wantlist crate, and kept releases become wanted.
