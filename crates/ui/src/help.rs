@@ -141,6 +141,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "show and play only the tracks in that tempo range / show everything",
             ),
             (
+                "Footer styles (Discogs wantlist and collection): click / double-click",
+                "show only records with the lit styles (STYLES opens the list when they don't \
+                 fit) / show every style",
+            ),
+            (
                 "Main window: right-click",
                 "Options: size, spectrogram, Discogs…, Browser…",
             ),
@@ -156,7 +161,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Entry: right-click",
                 "play or arm, remove, Send to crate (the selection, when the entry is in it); \
                  remove or select its whole album (tinted while the menu is open); keep, pass, \
-                 for-sale page, open or copy its Discogs link",
+                 for-sale page, open or copy its Discogs link; in the collection crate, remove \
+                 one copy from your Discogs collection",
             ),
             (
                 "Entry: hover",

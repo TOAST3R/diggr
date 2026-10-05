@@ -562,6 +562,96 @@ fn a_checked_retry_never_adds_a_second_copy() {
     );
 }
 
+fn discarded(ev: &[Event]) -> Result<dig::intake::Discarded, ApiError> {
+    ev.iter()
+        .find_map(|e| match e {
+            Event::Discarded { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn discard_removes_the_copy_added_last_from_its_folder() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    // Two copies: 41 added in 2021 (folder 1), 77 in 2024 (folder 3).
+    t.route(
+        "/users/digger/collection/releases/1001",
+        200,
+        r#"{"releases": [
+            {"id": 1001, "instance_id": 77, "folder_id": 3, "date_added": "2024-03-01T10:00:00-08:00"},
+            {"id": 1001, "instance_id": 41, "folder_id": 1, "date_added": "2021-06-01T10:00:00-07:00"}]}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::Discard(1001));
+    let d = discarded(&i.take_events()).unwrap();
+    assert_eq!((d.instance, d.remaining), (Some(77), 1));
+    assert_eq!(
+        changes(&t),
+        [(
+            Method::Delete,
+            "/users/digger/collection/folders/3/releases/1001/instances/77".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn discarding_a_copy_already_gone_sends_no_removal() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        "/users/digger/collection/releases/1001",
+        200,
+        r#"{"releases": []}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::Discard(1001));
+    let d = discarded(&i.take_events()).unwrap();
+    assert_eq!((d.instance, d.remaining), (None, 0));
+    // Not in the collection at all: Discogs answers 404, which is the same.
+    i.handle(Command::Discard(1002));
+    assert_eq!(discarded(&i.take_events()).unwrap().instance, None);
+    assert!(changes(&t).is_empty(), "nothing removed");
+    // The copy went between the look-up and the removal: done too.
+    t.route(
+        "/users/digger/collection/releases/1003",
+        200,
+        r#"{"releases": [{"id": 1003, "instance_id": 5, "folder_id": 1, "date_added": "2020"}]}"#,
+    );
+    t.route(
+        "/users/digger/collection/folders/1/releases/1003/instances/5",
+        404,
+        "{}",
+    );
+    i.handle(Command::Discard(1003));
+    let d = discarded(&i.take_events()).unwrap();
+    assert_eq!((d.instance, d.remaining), (Some(5), 0));
+}
+
+#[test]
+fn a_failed_discard_says_why() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        "/users/digger/collection/releases/1001",
+        200,
+        r#"{"releases": [{"id": 1001, "instance_id": 41, "folder_id": 1, "date_added": "2021"}]}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::Identify);
+    i.take_events();
+    t.fault(Fault::Status(503));
+    i.handle(Command::Discard(1001));
+    assert!(matches!(
+        discarded(&i.take_events()),
+        Err(ApiError::Other(_))
+    ));
+    t.set_offline(true);
+    i.handle(Command::Discard(1001));
+    assert_eq!(discarded(&i.take_events()), Err(ApiError::Offline));
+    let mut anon = intake(&t, false, None);
+    anon.handle(Command::Discard(1001));
+    assert_eq!(discarded(&anon.take_events()), Err(ApiError::TokenNeeded));
+}
+
 #[test]
 fn the_wantlist_is_read_once_and_owned_wants_follow_a_sync() {
     let t = Arc::new(FakeTransport::with_fixtures(fixtures()));

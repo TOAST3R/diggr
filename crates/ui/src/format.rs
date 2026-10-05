@@ -165,6 +165,10 @@ pub struct DigMarks {
     pub wantlist_failed: Option<String>,
     /// Adding the record to the collection failed, with why.
     pub collection_failed: Option<String>,
+    /// A copy is waiting to be taken out of the collection.
+    pub discard_pending: bool,
+    /// Taking a copy out of the collection failed, with why.
+    pub discard_failed: Option<String>,
     /// In the user's collection: "this pressing", or "another pressing (AF014, 2018)".
     pub owned: Option<String>,
 }
@@ -205,6 +209,10 @@ pub fn entry_details(
     }
     if let Some(why) = &marks.collection_failed {
         add("Collection", &format!("add failed ({why})"));
+    } else if let Some(why) = &marks.discard_failed {
+        add("Collection", &format!("removal failed ({why})"));
+    } else if marks.discard_pending {
+        add("Collection", "removal pending");
     }
     if marks.passed {
         add("Passed", "yes");

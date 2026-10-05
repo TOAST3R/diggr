@@ -29,7 +29,7 @@ use dig::discogs::client::{ApiError, Client, Identity};
 use dig::discogs::model::RecordKey;
 use dig::discogs::transport::{Transport, UreqTransport};
 use dig::discogs::url::{self, Page, Refused};
-use dig::intake::{Command, Event, Intake, IntakeHandle, JobRef, Outcome, RecordInfo};
+use dig::intake::{Command, Discarded, Event, Intake, IntakeHandle, JobRef, Outcome, RecordInfo};
 use dig::jobs::{Filters, JobId};
 use dig::memory::{DigMemory, WantOp};
 use dig::prepare::PrepareHandle;
@@ -41,7 +41,7 @@ use dig::preview::store;
 use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
-use super::{Action, WinampApp};
+use super::{Action, WinampApp, records_label};
 use crate::crates::{CrateId, MAX_NAME, PLAYLIST};
 use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, WaitKind};
 
@@ -118,6 +118,10 @@ pub enum DigAction {
     RetryWant(EntryId),
     /// Add again after a failure, asking Discogs first whether the add went through.
     RetryCollect(EntryId),
+    /// Ask before taking one copy of the entry's record out of the collection.
+    Discard(EntryId),
+    /// Send a failed collection removal again, from the start of its schedule.
+    RetryDiscard(EntryId),
     /// Make the collection crate match the Discogs collection.
     RefreshCollection,
     /// Make the wantlist crate match the Discogs wantlist.
@@ -181,12 +185,12 @@ pub(super) struct ConnectDialog {
     pub(super) from_wantlist: bool,
 }
 
-/// Removing these entries of the wantlist crate takes `releases` off the Discogs wantlist.
+/// "Remove 1 copy of ‹record› from your Discogs collection?", waiting for an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct UnwantConfirm {
-    crate_id: CrateId,
-    ids: Vec<EntryId>,
-    releases: HashSet<u64>,
+pub(super) struct DiscardConfirm {
+    release: u64,
+    /// "Nightcraft – Glasshouse EP (LT-012, 1994)".
+    name: String,
 }
 
 /// What the dig side marks an entry with.
@@ -197,6 +201,8 @@ pub(super) struct Marks {
     pub(super) wantlist_pending: bool,
     pub(super) wantlist_failed: Option<String>,
     pub(super) collection_failed: Option<String>,
+    pub(super) discard_pending: bool,
+    pub(super) discard_failed: Option<String>,
 }
 
 pub(super) struct Dig {
@@ -229,6 +235,10 @@ pub(super) struct Dig {
     refreshed: HashSet<u64>,
     /// Wantlist changes sent and not answered yet.
     want_inflight: HashSet<(u64, WantOp)>,
+    /// Collection removals sent and not answered yet.
+    discard_inflight: HashSet<u64>,
+    /// Remove from collection…, asking.
+    pub(super) confirm_discard: Option<DiscardConfirm>,
     /// Collection adds on their way: release → the crate they were asked from.
     collecting: HashMap<u64, CrateId>,
     /// Collection adds that failed this session: release → (its crate, why).
@@ -262,14 +272,14 @@ pub(super) struct Dig {
     collection_syncing: bool,
     /// Copies this app added since the running sync started (its result doesn't know them).
     local_adds: Vec<(u64, u64, Pressing)>,
+    /// Copies removed by the app while a sync ran: (instance, release, copies left).
+    local_discards: Vec<(Option<u64>, u64, usize)>,
     /// Why the last sync failed, for Options ▸ Discogs….
     collection_error: Option<String>,
     /// When a sync was last asked for without being needed again (retries wait an hour).
     collection_tried: Option<Instant>,
     /// The Connect to Discogs dialog, while open.
     pub(super) connect: Option<ConnectDialog>,
-    /// Removing whole records from the wantlist crate waits for this answer.
-    pub(super) confirm_unwant: Option<UnwantConfirm>,
     /// "Add a Discogs token…" was said this session.
     token_hint_shown: bool,
     /// Record covers for entry tooltips.
@@ -327,6 +337,8 @@ impl Dig {
             created: HashSet::new(),
             refreshed: HashSet::new(),
             want_inflight: HashSet::new(),
+            discard_inflight: HashSet::new(),
+            confirm_discard: None,
             collecting: HashMap::new(),
             collect_failed: HashMap::new(),
             connected: None,
@@ -345,10 +357,10 @@ impl Dig {
             collection: None,
             collection_syncing: false,
             local_adds: Vec::new(),
+            local_discards: Vec::new(),
             collection_error: None,
             collection_tried: None,
             connect: None,
-            confirm_unwant: None,
             token_hint_shown: false,
             covers: CoverCache::default(),
             bridge_dialog: None,
@@ -567,10 +579,14 @@ impl Dig {
     fn collection_synced(&mut self, result: Result<Box<Collection>, ApiError>) -> Option<String> {
         self.collection_syncing = false;
         let adds = std::mem::take(&mut self.local_adds);
+        let discards = std::mem::take(&mut self.local_discards);
         match result {
             Ok(mut c) => {
                 for (instance, release, pressing) in adds {
                     c.insert(instance, release, pressing);
+                }
+                for (instance, release, remaining) in discards {
+                    c.discard(instance, release, remaining);
                 }
                 self.collection_error = None;
                 self.collection_tried = None;
@@ -643,6 +659,10 @@ impl Dig {
             collection_failed: release
                 .and_then(|r| self.collect_failed.get(&r))
                 .map(|(_, why)| why.clone()),
+            discard_pending: release.is_some_and(|r| self.memory.is_discard_pending(r)),
+            discard_failed: release
+                .and_then(|r| self.memory.discard_failure(r))
+                .map(str::to_owned),
         }
     }
 }
@@ -668,15 +688,6 @@ fn changes_line(what: &str, new: usize, gone: usize) -> String {
         (n, 0) => format!("{what}: {n} new"),
         (0, g) => format!("{what}: {g} gone"),
         (n, g) => format!("{what}: {n} new, {g} gone"),
-    }
-}
-
-/// "1 record", "3 records".
-fn records_label(n: usize) -> String {
-    if n == 1 {
-        "1 record".into()
-    } else {
-        format!("{n} records")
     }
 }
 
@@ -824,10 +835,24 @@ impl WinampApp {
 
     // ---- sending pages ---------------------------------------------------------------------
 
+    /// A send the user asked for (a paste, the browser): never into a Discogs crate, which
+    /// only the Discogs items fill.
+    fn dig_send_asked(&mut self, page: Page, mode: SendMode, filters: Option<Filters>) {
+        let target = match &mode {
+            SendMode::Enqueue => Some(self.crates.shown_id()),
+            SendMode::Crate(name) => self.crates.find(name),
+            SendMode::Play => None,
+        };
+        if target.is_some_and(|c| self.refuse_discogs_insert(c)) {
+            return;
+        }
+        self.dig_send(page, mode, filters);
+    }
+
     /// Cmd+V / Ctrl+V: a Discogs address goes to the shown crate; other text is ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
         match url::parse(text) {
-            Ok(page) => self.dig_send(page, SendMode::Enqueue, None),
+            Ok(page) => self.dig_send_asked(page, SendMode::Enqueue, None),
             Err(Refused::Unsupported) => self.notify(url::SUPPORTED),
             Err(Refused::NotDiscogs) => {}
         }
@@ -974,6 +999,7 @@ impl WinampApp {
         self.dig_focus();
         self.dig_playing_changed();
         self.dig_retry_wantlist();
+        self.dig_retry_discards();
         self.dig_bridge_snapshot();
     }
 
@@ -991,7 +1017,7 @@ impl WinampApp {
                     Mode::Enqueue => SendMode::Enqueue,
                     Mode::Crate(name) => SendMode::Crate(name),
                 };
-                self.dig_send(page, mode, Some(filters));
+                self.dig_send_asked(page, mode, Some(filters));
             }
             BridgeCommand::ResolveShopItem(id) => {
                 if let Some(d) = &self.dig {
@@ -1236,6 +1262,7 @@ impl WinampApp {
                 result,
             } => self.dig_wantlist_result(release, add, result),
             Event::Collected { release, result } => self.dig_collected(release, result),
+            Event::Discarded { release, result } => self.dig_discarded(release, result),
             Event::Wants(result) => self.dig_wants(result),
             Event::OwnedWants(releases) => self.dig_owned_wants(releases),
         }
@@ -1584,6 +1611,19 @@ impl WinampApp {
     }
 
     /// Sends the wantlist changes that are due (each one once until its answer comes back).
+    /// Sends the collection removals that are due.
+    fn dig_retry_discards(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        if d.token.is_none() || !d.started() || d.memory.discards.is_empty() {
+            return;
+        }
+        for release in d.memory.discards_due(now_secs()) {
+            if d.discard_inflight.insert(release) {
+                d.send(Command::Discard(release));
+            }
+        }
+    }
+
     fn dig_retry_wantlist(&mut self) {
         let Some(d) = &mut self.dig else { return };
         if d.token.is_none() || !d.started() || d.memory.wantlist_pending.is_empty() {
@@ -1640,6 +1680,22 @@ impl WinampApp {
             DigAction::Unwant(ids) => self.dig_unwant(c, &ids),
             DigAction::Collect(ids) => self.dig_collect(c, &ids, false),
             DigAction::RetryCollect(id) => self.dig_collect(c, &[id], true),
+            DigAction::Discard(id) => self.dig_ask_discard(c, id),
+            DigAction::RetryDiscard(id) => {
+                let Some(r) = self
+                    .crates
+                    .get(c)
+                    .and_then(|p| p.get(id))
+                    .and_then(release_of)
+                else {
+                    return;
+                };
+                let Some(d) = &mut self.dig else { return };
+                d.memory.retry_discard(r);
+                let e = d.save_memory();
+                self.dig_notify(e);
+                self.dig_retry_discards();
+            }
             DigAction::RetryWant(id) => {
                 let Some(r) = self
                     .crates
@@ -2183,6 +2239,117 @@ impl WinampApp {
         self.notify(format!("Added {name} to your collection"));
     }
 
+    /// Remove from collection…: asks first, naming the record and its pressing.
+    fn dig_ask_discard(&mut self, c: CrateId, id: EntryId) {
+        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)) else {
+            return;
+        };
+        let Some(release) = release_of(e) else { return };
+        let mut name = if e.artist.is_empty() {
+            record_name(e)
+        } else {
+            format!("{} – {}", e.artist, record_name(e))
+        };
+        let pressing: Vec<String> = e
+            .origin
+            .iter()
+            .flat_map(|o| {
+                [
+                    o.catno.clone(),
+                    o.year.map(|y| y.to_string()).unwrap_or_default(),
+                ]
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !pressing.is_empty() {
+            name += &format!(" ({})", pressing.join(", "));
+        }
+        if let Some(d) = &mut self.dig {
+            d.confirm_discard = Some(DiscardConfirm { release, name });
+        }
+    }
+
+    /// Discogs answered a collection removal: the cached collection follows at once, and the
+    /// record leaves the collection crate when no copy is left.
+    fn dig_discarded(&mut self, release: u64, result: Result<Discarded, ApiError>) {
+        let Some(d) = &mut self.dig else { return };
+        d.discard_inflight.remove(&release);
+        let name = self
+            .collection_crate()
+            .and_then(|c| {
+                let p = self.crates.get(c)?;
+                p.entries().iter().find(|e| release_of(e) == Some(release))
+            })
+            .map(record_name)
+            .unwrap_or_else(|| format!("release {release}"));
+        let Some(d) = &mut self.dig else { return };
+        let done = match result {
+            Ok(done) => done,
+            Err(ApiError::Offline) => {
+                d.memory
+                    .discard_failed(release, now_secs(), true, "Discogs offline");
+                let e = d.save_memory();
+                return self.dig_notify(e);
+            }
+            Err(e @ ApiError::Other(_)) => {
+                let failed = d
+                    .memory
+                    .discard_failed(release, now_secs(), false, &e.message())
+                    .map(|err| format!("Could not remove {name} from your collection: {err}"));
+                let e = d.save_memory();
+                self.dig_notify(failed);
+                return self.dig_notify(e);
+            }
+            Err(e) => {
+                d.memory.discard_done(release);
+                let err = d.save_memory();
+                self.dig_notify(err);
+                return self.notify(format!(
+                    "Could not remove {name} from your collection: {}",
+                    e.message()
+                ));
+            }
+        };
+        d.memory.discard_done(release);
+        let err = d.save_memory();
+        let user = d.identity.as_ref().map(|i| i.username.clone());
+        let mut c = d
+            .collection
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| Collection::new(&user.unwrap_or_default(), now_secs()));
+        if d.collection_syncing {
+            d.local_discards
+                .push((done.instance, release, done.remaining));
+        }
+        c.discard(done.instance, release, done.remaining);
+        let saved = d
+            .setup
+            .cache_root
+            .as_deref()
+            .and_then(|root| c.save(root).err())
+            .map(|e| format!("Could not save the collection: {e}"));
+        d.collection = Some(Arc::new(c));
+        d.share_collection();
+        self.dig_notify(err);
+        self.dig_notify(saved);
+        if done.remaining > 0 {
+            let left = done.remaining;
+            return self.notify(format!(
+                "Removed a copy of {name} from your collection ({left} left)"
+            ));
+        }
+        if let Some(coll) = self.collection_crate() {
+            let ids = self.entries_of(coll, &HashSet::from([release]));
+            if let Some(p) = self.crates.get_mut(coll)
+                && p.remove_ids(&ids) > 0
+            {
+                self.mark_crate(coll);
+            }
+        }
+        self.notify(format!("Removed {name} from your collection"));
+    }
+
     fn dig_pass(&mut self, c: CrateId, id: EntryId) {
         let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
             return;
@@ -2428,14 +2595,14 @@ impl WinampApp {
         ));
     }
 
-    /// Before entries of the shown crate are removed: when that leaves a wanted record with
-    /// no entry in the wantlist crate, a connected account is asked first (true: asked, don't
-    /// remove yet); without a token the record is simply no longer wanted.
-    pub(super) fn dig_before_remove(&mut self, ids: &[EntryId]) -> bool {
+    /// Before entries of the shown crate are removed. Without a token, the wantlist crate is
+    /// the user's own: a record that leaves it entirely is no longer wanted. (Connected, it
+    /// takes no hand removals: see [`WinampApp::refuse_discogs_edit`].)
+    pub(super) fn dig_before_remove(&mut self, ids: &[EntryId]) {
         let c = self.crates.shown_id();
-        let Some(d) = &self.dig else { return false };
-        if d.settings.wantlist != Some(c) {
-            return false;
+        let Some(d) = &self.dig else { return };
+        if d.token.is_some() || d.settings.wantlist != Some(c) {
+            return;
         }
         let p = self.crates.shown();
         let leaving: HashSet<u64> = p
@@ -2450,21 +2617,9 @@ impl WinampApp {
                     .all(|e| release_of(e) != Some(r) || ids.contains(&e.id))
             })
             .collect();
-        if leaving.is_empty() {
-            return false;
-        }
-        if d.token.is_none() {
+        if !leaving.is_empty() {
             self.dig_forget_wanted(&leaving);
-            return false;
         }
-        if let Some(d) = &mut self.dig {
-            d.confirm_unwant = Some(UnwantConfirm {
-                crate_id: c,
-                ids: ids.to_vec(),
-                releases: leaving,
-            });
-        }
-        true
     }
 
     // ---- the entry menu ------------------------------------------------------------------
@@ -2477,8 +2632,12 @@ impl WinampApp {
         } else {
             vec![e.id]
         };
-        let (records, _) = self.dig_records(self.crates.shown_id(), &ids);
+        let c = self.crates.shown_id();
+        let (records, _) = self.dig_records(c, &ids);
         let marks = d.marks(e);
+        // In the collection crate everything is owned: nothing to want or collect.
+        let collection = self.crates.is_collection(c);
+        let discogs = self.crates.is_discogs(c);
         ui.separator();
         let mut item = |ui: &mut egui::Ui, label: String, a: Option<DigAction>, tip: &str| {
             let r = ui.add_enabled(a.is_some(), egui::Button::new(label));
@@ -2494,7 +2653,7 @@ impl WinampApp {
                 ui.close();
             }
         };
-        if let Some(r) = release_of(e) {
+        if let Some(r) = release_of(e).filter(|_| !collection) {
             let owned = d.owned(e);
             let what = owned.as_ref().map(owned_text).unwrap_or_default();
             if records.len() > 1 {
@@ -2545,10 +2704,30 @@ impl WinampApp {
                 }
             }
         }
-        if marks.passed {
-            item(ui, "Undo pass".into(), Some(DigAction::UndoPass(e.id)), "");
-        } else {
-            item(ui, "Pass (N)".into(), Some(DigAction::Pass(e.id)), "");
+        // The collection crate: one record at a time comes out, one copy, after a question.
+        if collection
+            && d.token.is_some()
+            && records.len() <= 1
+            && let Some(r) = release_of(e)
+        {
+            if let Some(why) = d.memory.discard_failure(r) {
+                let a = DigAction::RetryDiscard(e.id);
+                let tip = format!("The removal failed: {why}");
+                item(ui, "Retry remove from collection".into(), Some(a), &tip);
+            } else if d.memory.is_discard_pending(r) {
+                item(ui, "Removing from collection…".into(), None, "");
+            } else {
+                let a = DigAction::Discard(e.id);
+                item(ui, "Remove from collection…".into(), Some(a), "");
+            }
+        }
+        // Passing on a record you want or own means nothing.
+        if !discogs {
+            if marks.passed {
+                item(ui, "Undo pass".into(), Some(DigAction::UndoPass(e.id)), "");
+            } else {
+                item(ui, "Pass (N)".into(), Some(DigAction::Pass(e.id)), "");
+            }
         }
         let a = DigAction::OpenForSale(e.id);
         item(ui, "Open for-sale page (I)".into(), Some(a), "");
@@ -2687,20 +2866,20 @@ impl WinampApp {
         }
     }
 
-    /// "Remove N records from your Discogs wantlist?" before the wantlist crate loses them:
-    /// Remove (Enter) or Cancel (Esc).
-    fn dig_confirm_unwant_ui(&mut self, ctx: &egui::Context) {
-        let Some(ask) = self.dig.as_ref().and_then(|d| d.confirm_unwant.clone()) else {
+    /// "Remove 1 copy of ‹record› from your Discogs collection?": Remove (Enter) or Cancel
+    /// (Esc).
+    fn dig_confirm_discard_ui(&mut self, ctx: &egui::Context) {
+        let Some(ask) = self.dig.as_ref().and_then(|d| d.confirm_discard.clone()) else {
             return;
         };
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("confirm-unwant")).show(ctx, |ui| {
-            ui.set_max_width(360.0);
+        egui::Modal::new(egui::Id::new("confirm-discard")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
             ui.strong(format!(
-                "Remove {} from your Discogs wantlist?",
-                records_label(ask.releases.len())
+                "Remove 1 copy of {} from your Discogs collection?",
+                ask.name
             ));
-            ui.label("They leave this crate and your wantlist on Discogs.");
+            ui.label("Its notes and rating on Discogs are lost.");
             ui.horizontal(|ui| {
                 if ui.button("Remove").clicked() {
                     choice = Some(true);
@@ -2716,37 +2895,27 @@ impl WinampApp {
             choice = Some(false);
         }
         let Some(remove) = choice else { return };
-        if let Some(d) = &mut self.dig {
-            d.confirm_unwant = None;
-        }
+        let Some(d) = &mut self.dig else { return };
+        d.confirm_discard = None;
         if remove {
-            self.dig_confirmed_unwant(ask);
+            d.memory.queue_discard(ask.release);
+            let e = d.save_memory();
+            self.dig_notify(e);
+            self.notify(format!("Removing {} from your collection…", ask.name));
+            self.dig_retry_discards();
         }
     }
 
-    fn dig_confirmed_unwant(&mut self, ask: UnwantConfirm) {
-        if let Some(p) = self.crates.get_mut(ask.crate_id)
-            && p.remove_ids(&ask.ids) > 0
-        {
-            self.mark_crate(ask.crate_id);
-        }
-        self.dig_forget_wanted(&ask.releases);
-        self.notify(format!(
-            "Removed {} from your wantlist",
-            records_label(ask.releases.len())
-        ));
-    }
-
-    /// A question is open (connect, or removing from the wantlist): shortcuts wait.
+    /// A question is open (connect, or removing from the collection): shortcuts wait.
     pub(super) fn dig_asking(&self) -> bool {
         self.dig
             .as_ref()
-            .is_some_and(|d| d.connect.is_some() || d.confirm_unwant.is_some())
+            .is_some_and(|d| d.connect.is_some() || d.confirm_discard.is_some())
     }
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
         self.dig_connect_ui(ctx);
-        self.dig_confirm_unwant_ui(ctx);
+        self.dig_confirm_discard_ui(ctx);
         let Some(d) = &mut self.dig else { return };
         let collection_line = d.collection_line();
         let collection_syncing = d.collection_syncing;

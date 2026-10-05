@@ -549,6 +549,12 @@ impl Crates {
         self.info(id).is_some_and(|c| c.wantlist)
     }
 
+    /// The user's Discogs wantlist or collection crate: it mirrors the account, so it takes
+    /// no hand edits and offers the style filter.
+    pub fn is_discogs(&self, id: CrateId) -> bool {
+        self.is_wantlist(id) || self.is_collection(id)
+    }
+
     /// Marks (or unmarks) a crate as the user's Discogs wantlist; only one crate is.
     pub fn set_wantlist(&mut self, id: CrateId, on: bool) {
         let mut changed = false;

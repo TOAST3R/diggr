@@ -1664,70 +1664,297 @@ fn the_wantlist_crate_follows_records_removed_on_discogs() {
 }
 
 #[test]
-fn removing_a_whole_record_from_the_wantlist_crate_asks_first() {
+fn the_wantlist_crate_takes_no_hand_removals() {
     let fakes = Fakes::new();
     fakes
         .transport
         .route(COLLECTION_PAGE, 200, EMPTY_COLLECTION);
-    let mut rig = rig("dig-unwant-confirm", &fakes, with_token);
+    let mut rig = rig("dig-unwant-only", &fakes, with_token);
     play_release(&mut rig);
     key(&mut rig, Key::Y);
     let wl = wantlist(&rig).unwrap();
+    rig.until(|r| r.app.crates.is_wantlist(wl), "the account is known");
     rig.app.show_crate(wl);
-    let of_1001 = |r: &Rig| -> Vec<EntryId> {
-        r.app
-            .crates
-            .get(wl)
-            .unwrap()
-            .entries()
-            .iter()
-            .filter(|e| e.origin.as_ref().and_then(|o| o.release) == Some(1001))
-            .map(|e| e.id)
-            .collect()
-    };
     let ctx = rig.ctx.clone();
-    // One clip of three: local, no question.
-    let ids = of_1001(&rig);
-    rig.app
+    // Delete (or Remove selected) changes nothing, and says how records leave.
+    let ids: Vec<EntryId> = rig
+        .app
         .crates
-        .get_mut(wl)
+        .get(wl)
         .unwrap()
-        .select_only(&ids[..1], ids[0]);
-    rig.app.apply(Action::RemoveSelected, &ctx);
-    assert!(rig.app.dig.as_ref().unwrap().confirm_unwant.is_none());
-    assert_eq!(of_1001(&rig).len(), 2);
-    assert!(memory(&rig).is_wanted(1001));
-    // The rest: asked; Cancel changes nothing.
-    let ids = of_1001(&rig);
+        .entries()
+        .iter()
+        .filter(|e| e.origin.as_ref().and_then(|o| o.release) == Some(1001))
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(ids.len(), 3);
     rig.app
         .crates
         .get_mut(wl)
         .unwrap()
         .select_only(&ids, ids[0]);
     rig.app.apply(Action::RemoveSelected, &ctx);
-    rig.until(
-        |r| {
-            shows(
-                &r.frame(Vec::new()),
-                "Remove 1 record from your Discogs wantlist?",
-            )
-        },
-        "the question",
-    );
-    rig.click_text("Cancel");
-    assert_eq!(of_1001(&rig).len(), 2);
+    assert_eq!(clips_of(&rig, wl, 1001).len(), 3);
     assert!(memory(&rig).is_wanted(1001));
-    // Remove: gone here and on Discogs.
-    rig.app.apply(Action::RemoveSelected, &ctx);
-    rig.until(|r| shows(&r.frame(Vec::new()), "Remove"), "asked again");
-    key(&mut rig, Key::Enter);
-    assert!(of_1001(&rig).is_empty());
+    assert!(
+        message(&rig).contains("Remove from wantlist"),
+        "{}",
+        message(&rig)
+    );
+    // The menu has no Remove, Remove album or Pass.
+    rig.frame(Vec::new());
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    let items = text_list(&out);
+    assert!(shows(&out, "Remove from wantlist (Y)"), "{items:?}");
+    assert!(
+        !items
+            .iter()
+            .any(|t| t == "Remove" || t.starts_with("Remove album"))
+    );
+    assert!(!shows(&out, "Pass (N)"), "{items:?}");
+    // Remove from wantlist acts at once, without a question.
+    rig.frame(vec![Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    rig.app.apply(Action::Dig(DigAction::Unwant(ids)), &ctx);
+    assert!(clips_of(&rig, wl, 1001).is_empty());
     assert!(!memory(&rig).is_wanted(1001));
     let delete = (Method::Delete, "/users/digger/wants/1001".to_owned());
     rig.until(
         |_| fakes.changes().contains(&delete),
         "off the Discogs wantlist",
     );
+}
+
+/// A token, a collection of release 1001 (one copy, instance 11), and the collection crate
+/// holding its three clips, shown.
+fn collection_rig(name: &str, fakes: &Fakes) -> (Rig, CrateId) {
+    fakes.transport.route(
+        COLLECTION_PAGE,
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 1},
+            "releases": [{"id": 1001, "instance_id": 11,
+                          "basic_information": {"id": 1001, "master_id": 0, "year": 1994,
+                                                "labels": [{"catno": "LT-012"}]}}]}"#,
+    );
+    let mut rig = rig(name, fakes, with_token);
+    let coll = rig.app.crates.create("Collection: digger").unwrap();
+    rig.app.crates.set_collection(coll);
+    rig.app.show_crate(coll);
+    rig.app.dig_send(
+        url::parse(RELEASE).unwrap(),
+        SendMode::Crate("Collection: digger".into()),
+        None,
+    );
+    rig.until(
+        |r| clips_of(r, coll, 1001).len() == 3 && r.app.dig.as_ref().unwrap().collection.is_some(),
+        "the crate, and a first sync",
+    );
+    (rig, coll)
+}
+
+#[test]
+fn the_collection_crate_menu_offers_only_what_makes_sense_for_an_owned_record() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = collection_rig("dig-coll-menu", &fakes);
+    rig.frame(Vec::new());
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    let items = text_list(&out);
+    for gone in ["Remove", "Pass (N)", "In collection", "Add to collection"] {
+        assert!(!items.iter().any(|t| t == gone), "{gone}: {items:?}");
+    }
+    assert!(!items.iter().any(|t| t.contains("wantlist")), "{items:?}");
+    assert!(shows(&out, "Open for-sale page (I)"), "{items:?}");
+    assert!(shows(&out, "Send to crate"), "{items:?}");
+}
+
+#[test]
+fn the_collection_crate_takes_nothing_by_hand_but_lets_records_out() {
+    let fakes = Fakes::new();
+    let (mut rig, coll) = collection_rig("dig-coll-in", &fakes);
+    let ctx = rig.ctx.clone();
+    let before = rig.app.crates.get(coll).unwrap().len();
+    // Files added to it, a pasted address, a drop or a send from another crate: refused.
+    rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
+    assert_eq!(rig.app.crates.get(coll).unwrap().len(), before);
+    assert!(
+        message(&rig).contains("Add to collection"),
+        "{}",
+        message(&rig)
+    );
+    rig.app.notify("");
+    rig.app
+        .dig_paste("https://www.discogs.com/release/1003-Undertow");
+    assert!(
+        message(&rig).contains("Add to collection"),
+        "{}",
+        message(&rig)
+    );
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert!(!holds(&rig, coll, 1003), "no send started");
+    rig.app.show_crate(PLAYLIST);
+    rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
+    let local = rig.app.crates.shown().entries()[0].id;
+    rig.app.apply(Action::DropOnCrate(local, coll), &ctx);
+    rig.app.apply(Action::SendTo(local, Some(coll)), &ctx);
+    assert_eq!(rig.app.crates.get(coll).unwrap().len(), before);
+    // Send to crate doesn't list it, and lists the other crates.
+    let friday = rig.app.crates.create("Friday").unwrap();
+    let targets: Vec<CrateId> = rig.app.send_targets().into_iter().map(|(c, _)| c).collect();
+    assert_eq!(targets, [friday]);
+    // Out of it is fine.
+    rig.app.show_crate(coll);
+    let first = rig.app.crates.shown().entries()[0].id;
+    rig.app.apply(Action::SendTo(first, Some(PLAYLIST)), &ctx);
+    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 2);
+    assert_eq!(rig.app.crates.get(coll).unwrap().len(), before);
+}
+
+const COPIES_1001: &str = "/users/digger/collection/releases/1001";
+
+/// Right-clicks the first row and chooses Remove from collection…, then answers the question.
+fn remove_from_collection(rig: &mut Rig, answer: Key) -> egui::FullOutput {
+    rig.frame(Vec::new());
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    rig.click_text("Remove from collection…");
+    let out = rig.frame(Vec::new());
+    key(rig, answer);
+    out
+}
+
+#[test]
+fn remove_from_collection_asks_then_takes_the_record_out() {
+    let fakes = Fakes::new();
+    fakes.transport.route(
+        COPIES_1001,
+        200,
+        r#"{"releases": [{"id": 1001, "instance_id": 11, "folder_id": 1,
+                          "date_added": "2021-06-01T10:00:00-07:00"}]}"#,
+    );
+    let (mut rig, coll) = collection_rig("dig-discard", &fakes);
+    // Cancel: nothing sent.
+    let asked = remove_from_collection(&mut rig, Key::Escape);
+    let question = text_list(&asked)
+        .into_iter()
+        .find(|t| t.ends_with("from your Discogs collection?"))
+        .expect("asked");
+    assert!(
+        question.starts_with("Remove 1 copy of ") && question.contains("(LT-012, 1994)"),
+        "{question}"
+    );
+    assert!(shows(&asked, "Its notes and rating on Discogs are lost."));
+    assert!(rig.app.dig.as_ref().unwrap().confirm_discard.is_none());
+    assert!(fakes.changes().is_empty());
+    assert_eq!(clips_of(&rig, coll, 1001).len(), 3);
+    // Remove: one copy goes, and with it the record.
+    remove_from_collection(&mut rig, Key::Enter);
+    let delete = (
+        Method::Delete,
+        "/users/digger/collection/folders/1/releases/1001/instances/11".to_owned(),
+    );
+    rig.until(|_| fakes.changes().contains(&delete), "removed on Discogs");
+    rig.until(|r| clips_of(r, coll, 1001).is_empty(), "out of the crate");
+    assert_eq!(fakes.changes(), [delete], "one removal");
+    let d = rig.app.dig.as_ref().unwrap();
+    assert!(
+        d.collection
+            .as_ref()
+            .unwrap()
+            .owned(Some(1001), None)
+            .is_none()
+    );
+    assert!(d.memory.discards.is_empty());
+    let cached = ::dig::collection::Collection::load(&rig.dir.join("cache")).unwrap();
+    assert!(cached.owned(Some(1001), None).is_none(), "saved");
+    assert!(message(&rig).starts_with("Removed "), "{}", message(&rig));
+}
+
+#[test]
+fn removing_one_of_two_copies_keeps_the_record() {
+    let fakes = Fakes::new();
+    fakes.transport.route(
+        COPIES_1001,
+        200,
+        r#"{"releases": [
+            {"id": 1001, "instance_id": 11, "folder_id": 1, "date_added": "2021-06-01T10:00:00-07:00"},
+            {"id": 1001, "instance_id": 12, "folder_id": 4, "date_added": "2024-03-01T10:00:00-08:00"}]}"#,
+    );
+    let (mut rig, coll) = collection_rig("dig-discard-two", &fakes);
+    remove_from_collection(&mut rig, Key::Enter);
+    rig.until(|r| message(r).contains("(1 left)"), "says one is left");
+    assert_eq!(
+        fakes.changes(),
+        [(
+            Method::Delete,
+            "/users/digger/collection/folders/4/releases/1001/instances/12".to_owned()
+        )],
+        "the copy added last"
+    );
+    assert_eq!(clips_of(&rig, coll, 1001).len(), 3, "still in the crate");
+    let d = rig.app.dig.as_ref().unwrap();
+    assert!(
+        d.collection
+            .as_ref()
+            .unwrap()
+            .owned(Some(1001), None)
+            .is_some()
+    );
+}
+
+#[test]
+fn a_removal_waits_while_discogs_is_offline() {
+    let fakes = Fakes::new();
+    fakes.transport.route(
+        COPIES_1001,
+        200,
+        r#"{"releases": [{"id": 1001, "instance_id": 11, "folder_id": 1, "date_added": "2021"}]}"#,
+    );
+    let (mut rig, coll) = collection_rig("dig-discard-offline", &fakes);
+    fakes.transport.set_offline(true);
+    remove_from_collection(&mut rig, Key::Enter);
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert!(memory(&rig).is_discard_pending(1001));
+    assert_eq!(clips_of(&rig, coll, 1001).len(), 3, "still there");
+    let saved = DigMemory::load(&rig.dir.join("config"));
+    assert!(saved.is_discard_pending(1001), "kept for the next session");
+    // Pending: the menu says so.
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    assert!(shows(&rig.frame(Vec::new()), "Removing from collection…"));
+    // (When it is sent again, a minute at most after Discogs answers, is the memory's
+    // schedule: see dig::memory's tests.)
+    assert!(fakes.changes().is_empty());
+}
+
+#[test]
+fn remove_from_collection_is_one_record_at_a_time() {
+    let fakes = Fakes::new();
+    let (mut rig, coll) = collection_rig("dig-discard-one", &fakes);
+    rig.app.dig_send(
+        url::parse("https://www.discogs.com/release/1002").unwrap(),
+        SendMode::Crate("Collection: digger".into()),
+        None,
+    );
+    rig.until(|r| holds(r, coll, 1002), "a second record");
+    rig.app.crates.shown_mut().select_all();
+    rig.frame(Vec::new());
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(
+        !shows(&out, "Remove from collection…"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Send to crate"));
 }
 
 #[test]
