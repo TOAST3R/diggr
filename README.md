@@ -153,6 +153,14 @@ and Home/End jump), and Enter plays the entry under it.
     double-click on the slider, or ≡ ▸ Show all tempos shows everything again. The range is
     remembered per crate. `P` on a hidden playing track turns the filter off. Sorting and M3U
     export always take the whole crate;
+  - **Style filter:** in your Discogs wantlist and collection crates, the footer lists the
+    records' styles after the BPM filter, the style of most records first. Click a style to
+    show only the records with it (or with any other style you pick, so Deep House and
+    Minimal show both). Lit styles are on; a double-click, or ≡ ▸ Show all styles, turns them
+    all off. When the styles don't all fit, or there are more than 20, a **STYLES** button opens
+    the list instead, with a search box and each style's number of records. The BPM and style
+    filters add up (a track must pass both), play follows what's shown, and the choice is
+    remembered per crate;
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -215,7 +223,10 @@ and Home/End jump), and Enter plays the entry under it.
   - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Remove
     album (N tracks)**, **Select album**, **Send to crate**, and for a Discogs entry **Add to
     wantlist** (or **Remove from wantlist**), **Add to collection**, Pass, Open for-sale page,
-    **Open release on Discogs** and **Copy Discogs link**. Remove, Send to crate and the
+    **Open release on Discogs** and **Copy Discogs link**. In your Discogs wantlist and
+    collection crates the menu leaves out what makes no sense for a record you want or own
+    (Remove, Remove album and Pass; in the collection, the wantlist and Add to collection
+    items too), and the collection's has **Remove from collection…** instead. Remove, Send to crate and the
     wantlist and collection items act on the whole selection when the entry is part of it (the
     wantlist and collection items once per record: "Add 3 records to wantlist"); otherwise the
     entry you
@@ -300,9 +311,11 @@ ahead of what plays. Other pasted text is ignored.
 - **Your wantlist on Discogs:** once you're connected, the Wantlist crate is "Wantlist: ‹you›",
   in amber under DISCOGS in the sidebar, above your collection. It follows your Discogs
   wantlist: records wanted before you connected are added to it, records you add on
-  discogs.com come in, and ones you remove there leave. Removing a whole record from that crate
-  asks first ("Remove 1 record from your Discogs wantlist?"); removing one of its tracks, or
-  deleting the crate, doesn't touch Discogs. You never want what you own: Add to wantlist is
+  discogs.com come in, and ones you remove there leave. Records leave it only with **Remove
+  from wantlist** (`Y`), **Add to collection** or a sync: it has no Remove, Delete does nothing
+  there, and nothing goes into it by hand (it isn't under Send to crate, and drops, added
+  files and pasted pages are refused with a line saying to use Add to wantlist). The same goes
+  for your collection crate. Deleting the crate doesn't touch Discogs. You never want what you own: Add to wantlist is
   off for a record you own in any pressing (the menu says "In collection"), and when a sync finds you
   bought a wanted record elsewhere, it comes off your wantlist and the main window says so.
 - **When Discogs can't take a change:** a wantlist change made while Discogs is offline waits
@@ -311,6 +324,14 @@ ahead of what plays. Other pasted text is ignored.
   wantlist**. A collection add is never repeated by itself, as each try can add a copy: after a
   failure the menu offers **Retry add to collection**, which first asks Discogs whether the add
   went through.
+- **Sold it:** in the collection crate, **Remove from collection…** on one record (never a
+  selection of several) asks "Remove 1 copy of ‹record› (LT-012, 1994) from your Discogs
+  collection?", as its notes and rating there are lost. Remove takes out one copy, the one
+  added last: one request finds it (and its folder), one removes it. When it was your last
+  copy, the record leaves the crate and its OWNED badge goes (unless you own another pressing
+  of it); the cached collection follows at once, so the next sync stays at one request. A
+  removal waits while Discogs is offline and is retried like a wantlist change, then ⚑ and
+  **Retry remove from collection**; a copy already gone counts as removed.
 - **Records you already own:** with a token, entries whose record is in your Discogs
   collection get an amber **OWNED** badge before the title. That covers the same release and
   also another pressing of the same master; the tooltip says which ("Owned: another pressing
@@ -760,7 +781,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 606 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 626 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

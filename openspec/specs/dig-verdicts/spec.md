@@ -4,7 +4,7 @@
 One-key decisions while digging: keep a record (collected in a Keepers crate and on the user's Discogs wantlist), pass on it (it isn't offered again), or open its for-sale page on Discogs.
 ## Requirements
 ### Requirement: Verdict keys
-`Y` (add to wantlist, or remove from it), `N` (pass) and `I` (open the for-sale page) SHALL act on the playing or paused entry, and SHALL do nothing while playback is stopped. The entry right-click menu SHALL offer the same actions for the entry clicked: Add to wantlist or Remove from wantlist (see `discogs-write`), Pass or Undo pass, and Open for-sale page.
+`Y` (add to wantlist, or remove from it), `N` (pass) and `I` (open the for-sale page) SHALL act on the playing or paused entry, and SHALL do nothing while playback is stopped. The entry right-click menu SHALL offer the same actions for the entry clicked: Add to wantlist or Remove from wantlist (see `discogs-write`), Pass or Undo pass, and Open for-sale page. In the wantlist crate and the collection crate, the menu SHALL NOT offer Pass or Undo pass.
 
 #### Scenario: Stopped
 - **WHEN** playback is stopped and the user presses Y
@@ -13,6 +13,10 @@ One-key decisions while digging: keep a record (collected in a Keepers crate and
 #### Scenario: Add after listening
 - **WHEN** the user right-clicks a track played earlier and chooses Add to wantlist
 - **THEN** its record is added exactly as if Y had been pressed while it played
+
+#### Scenario: No Pass in the Discogs crates
+- **WHEN** the user right-clicks an entry in the wantlist crate
+- **THEN** the menu offers neither Pass nor Undo pass
 
 ### Requirement: Pass
 Passing on an entry SHALL remember its clip as passed and dim its row; when it is the playing entry, the next track SHALL start. Passed clips SHALL be left out of later sends while skip passed is on. Passing on an entry whose record is wanted SHALL do nothing, and the main window SHALL say that it is on the wantlist. Undo pass SHALL forget the pass.

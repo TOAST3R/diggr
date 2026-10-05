@@ -5,7 +5,7 @@
 //! ever having audio (`Unavailable`); neither ever reaches the engine, so the engine's
 //! "track failed" keeps meaning "this file is broken".
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use platform::TrackRef;
 
@@ -254,6 +254,16 @@ impl Entry {
         }
     }
 
+    /// The record's Discogs styles ("Deep House", "Minimal"), none for a local file.
+    pub fn styles(&self) -> impl Iterator<Item = &str> {
+        self.origin
+            .as_ref()
+            .map_or("", |o| o.styles.as_str())
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
     /// What Send to crate compares: the origin's clip when there is one, otherwise the file.
     pub fn duplicate_key(&self) -> DuplicateKey {
         match self.origin.as_ref().and_then(|o| o.clip.clone()) {
@@ -306,6 +316,9 @@ pub struct SavedPlaylist {
     /// The BPM filter's range, when narrower than the crate's tempos.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpm_range: Option<(u16, u16)>,
+    /// The styles the style filter shows, when any is selected.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub styles: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -363,6 +376,8 @@ pub struct Playlist {
     sorted: Option<(Field, Dir)>,
     /// The BPM filter, as set (see [`Playlist::bpm_filter`] for what applies).
     bpm_range: Option<(u16, u16)>,
+    /// The style filter, as set (see [`Playlist::style_filter`] for what applies).
+    styles_on: BTreeSet<String>,
     next_id: EntryId,
     /// Shown grouped by record: each album's entries are kept together (see
     /// [`Playlist::gather`]).
@@ -373,6 +388,29 @@ pub struct Playlist {
     /// Bumped whenever the entries, their order, their albums or the filter change, so views
     /// built from them know when to rebuild.
     rev: u64,
+}
+
+/// What the filters show: an entry whose tempo is in the BPM range (when one is set) and
+/// that has one of the selected styles (when any is). An entry with no tempo, or no style,
+/// shows only while that filter is off.
+#[derive(Debug, Clone, Copy)]
+pub struct Shown<'a> {
+    bpm: Option<(u16, u16)>,
+    styles: Option<&'a BTreeSet<String>>,
+}
+
+impl Shown<'_> {
+    pub fn shows(&self, e: &Entry) -> bool {
+        self.bpm
+            .is_none_or(|(lo, hi)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
+            && self
+                .styles
+                .is_none_or(|on| e.styles().any(|s| on.contains(s)))
+    }
+
+    pub fn is_filtered(&self) -> bool {
+        self.bpm.is_some() || self.styles.is_some()
+    }
 }
 
 /// How far the keyboard cursor moves.
@@ -833,11 +871,12 @@ impl Playlist {
 
     /// The shown entries from index `a` to `b` (inclusive).
     fn shown_ids_between(&self, a: usize, b: usize) -> BTreeSet<EntryId> {
+        let shown = self.shown();
         self.entries
             .get(a..=b.min(self.entries.len().saturating_sub(1)))
             .unwrap_or_default()
             .iter()
-            .filter(|e| self.shows(e))
+            .filter(|e| shown.shows(e))
             .map(|e| e.id)
             .collect()
     }
@@ -855,10 +894,11 @@ impl Playlist {
 
     /// Inverts the selection among the shown entries (hidden ones end up unselected).
     pub fn invert_selection(&mut self) {
+        let shown = self.shown();
         self.selected = self
             .entries
             .iter()
-            .filter(|e| self.shows(e) && !self.selected.contains(&e.id))
+            .filter(|e| shown.shows(e) && !self.selected.contains(&e.id))
             .map(|e| e.id)
             .collect();
     }
@@ -1052,6 +1092,7 @@ impl Playlist {
             entries: self.entries.iter().map(Entry::to_saved).collect(),
             current: self.current_index(),
             bpm_range: self.bpm_filter(),
+            styles: self.style_filter().cloned().unwrap_or_default(),
         }
     }
 
@@ -1070,6 +1111,7 @@ impl Playlist {
         let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         pl.bpm_range = saved.bpm_range;
+        pl.styles_on = saved.styles;
         (pl, pending)
     }
 
@@ -1103,27 +1145,115 @@ impl Playlist {
         before != self.bpm_range
     }
 
-    /// Whether the filter shows `e`. Without a filter, everything shows; with one, an entry
-    /// shows when its tempo is in the range (one without a tempo doesn't).
+    /// Whether the filters show `e` (see [`Shown`]). For many entries, take [`Self::shown`]
+    /// once instead.
     pub fn shows(&self, e: &Entry) -> bool {
-        match self.bpm_filter() {
-            None => true,
-            Some((lo, hi)) => e.bpm.is_some_and(|b| (lo..=hi).contains(&b)),
+        self.shown().shows(e)
+    }
+
+    /// What the BPM and style filters show, worked out once for a pass over the entries.
+    pub fn shown(&self) -> Shown<'_> {
+        Shown {
+            bpm: self.bpm_filter(),
+            styles: self.style_filter(),
         }
     }
 
-    /// The crate indices of the entries the filter shows, in order: row `r` of the list is
+    /// Whether a filter (BPM or style) hides anything.
+    pub fn is_filtered(&self) -> bool {
+        self.shown().is_filtered()
+    }
+
+    /// Turns both filters off. Returns whether that shows more.
+    pub fn clear_filters(&mut self) -> bool {
+        let bpm = self.set_bpm_filter(None);
+        self.clear_styles() || bpm
+    }
+
+    /// The crate indices of the entries the filters show, in order: row `r` of the list is
     /// entry `shown_rows()[r]`, still numbered by its crate position.
     pub fn shown_rows(&self) -> Vec<usize> {
-        let Some((lo, hi)) = self.bpm_filter() else {
+        let shown = self.shown();
+        if !shown.is_filtered() {
             return (0..self.entries.len()).collect();
-        };
+        }
         self.entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
+            .filter(|(_, e)| shown.shows(e))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    // ---- style filter --------------------------------------------------------------------
+
+    /// The crate's styles, each with the number of records (albums, and entries of no
+    /// album) that have it: the most first, then by name.
+    pub fn styles(&self) -> Vec<(String, usize)> {
+        let mut seen: HashMap<&str, HashSet<AlbumKey>> = HashMap::new();
+        let mut loose: HashMap<&str, usize> = HashMap::new();
+        for e in &self.entries {
+            let key = e.album_key();
+            for s in e.styles() {
+                match &key {
+                    Some(k) => {
+                        seen.entry(s).or_default().insert(k.clone());
+                    }
+                    None => *loose.entry(s).or_default() += 1,
+                }
+            }
+        }
+        let mut out: Vec<(String, usize)> = seen
+            .keys()
+            .chain(loose.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|&s| {
+                let n = seen.get(s).map_or(0, HashSet::len) + loose.get(s).copied().unwrap_or(0);
+                (s.to_owned(), n)
+            })
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out
+    }
+
+    /// The styles that filter now: the ones selected, when some entry still has one of them;
+    /// `None` (no filter) otherwise.
+    pub fn style_filter(&self) -> Option<&BTreeSet<String>> {
+        let on = &self.styles_on;
+        let any = !on.is_empty()
+            && self
+                .entries
+                .iter()
+                .any(|e| e.styles().any(|s| on.contains(s)));
+        any.then_some(on)
+    }
+
+    /// Whether `style` is selected.
+    pub fn style_on(&self, style: &str) -> bool {
+        self.styles_on.contains(style)
+    }
+
+    /// Selects or unselects one style.
+    pub fn set_style(&mut self, style: &str, on: bool) {
+        let changed = if on {
+            self.styles_on.insert(style.to_owned())
+        } else {
+            self.styles_on.remove(style)
+        };
+        if changed {
+            self.changed();
+        }
+    }
+
+    /// Unselects every style. Returns whether a style filtered.
+    pub fn clear_styles(&mut self) -> bool {
+        let was = self.style_filter().is_some();
+        if !self.styles_on.is_empty() {
+            self.styles_on.clear();
+            self.changed();
+        }
+        was
     }
 
     /// Entries without a known tempo (hidden while a range is set).
@@ -1139,15 +1269,12 @@ impl Playlist {
     /// A waiting entry keeps its place when its audio arrives, because the set of entries
     /// shuffled doesn't change. Audio producers read what comes next from this order.
     pub fn play_order(&self, shuffle: bool, first: Option<EntryId>, seed: u64) -> Vec<EntryId> {
-        let filter = self.bpm_filter();
+        let shown = self.shown();
         let ids: Vec<EntryId> = self
             .entries
             .iter()
             .filter(|e| e.status.in_play_order())
-            .filter(|e| {
-                Some(e.id) == self.current
-                    || filter.is_none_or(|(lo, hi)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
-            })
+            .filter(|e| Some(e.id) == self.current || shown.shows(e))
             .map(|e| e.id)
             .collect();
         let first = first.and_then(|f| ids.iter().position(|&id| id == f));
@@ -2174,6 +2301,134 @@ mod tests {
         let shuffled = p.play_order(true, Some(ids[1]), 7);
         assert_eq!(shuffled.len(), 2);
         assert_eq!(shuffled[0], ids[1]);
+    }
+
+    /// A crate of one entry per record, release `i + 1` with these styles ("" for none).
+    fn styled(styles: &[&str]) -> (Playlist, Vec<EntryId>) {
+        let mut p = Playlist::default();
+        let ids = styles
+            .iter()
+            .enumerate()
+            .map(|(i, st)| {
+                let o = Origin {
+                    styles: (*st).into(),
+                    ..origin(i as u64 + 1, &format!("c{i}"))
+                };
+                p.add_waiting("A", format!("t{i}"), None, Some(o), "listed")
+            })
+            .collect();
+        (p, ids)
+    }
+
+    #[test]
+    fn a_style_filter_shows_records_with_any_selected_style() {
+        let (mut p, ids) = styled(&["Deep House", "Minimal, Techno", "Electro", ""]);
+        assert!(!p.is_filtered());
+        p.set_style("Deep House", true);
+        p.set_style("Minimal", true);
+        assert_eq!(p.shown_rows(), [0, 1], "any of them; none for no style");
+        assert!(p.is_filtered());
+        assert!(!p.shows(&p.entries[3].clone()));
+        // Both filters: a tempo in the range, and a selected style.
+        for (e, b) in p.entries.iter_mut().zip([124, 134, 134, 134]) {
+            e.bpm = Some(b);
+        }
+        p.set_bpm_filter(Some((130, 140)));
+        assert_eq!(p.shown_rows(), [1]);
+        p.set_current(Some(ids[0]));
+        assert_eq!(
+            p.play_order(false, None, 0),
+            [ids[0], ids[1]],
+            "the current plays on"
+        );
+        assert!(p.clear_filters());
+        assert_eq!(p.shown_rows(), [0, 1, 2, 3]);
+        assert!(!p.clear_filters(), "already off");
+    }
+
+    #[test]
+    fn styles_are_counted_by_record_most_first() {
+        // Two entries of release 1 count once.
+        let (mut p, _) = styled(&["Minimal, Deep House", "Deep House", "Electro"]);
+        let more = Origin {
+            styles: "Minimal, Deep House".into(),
+            ..origin(1, "c9")
+        };
+        p.add_waiting("A", "t9", None, Some(more), "listed");
+        assert_eq!(
+            p.styles(),
+            [
+                ("Deep House".to_owned(), 2),
+                ("Electro".to_owned(), 1),
+                ("Minimal".to_owned(), 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_style_gone_from_the_crate_stops_filtering() {
+        let (mut p, ids) = styled(&["Deep House", "Electro"]);
+        p.set_style("Electro", true);
+        assert_eq!(p.shown_rows(), [1]);
+        p.remove_ids(&[ids[1]]);
+        assert_eq!(p.style_filter(), None);
+        assert_eq!(p.shown_rows(), [0], "everything shows again");
+    }
+
+    #[test]
+    fn the_style_filter_is_saved_with_the_crate() {
+        let (mut p, _) = styled(&["Deep House", "Electro"]);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        assert!(
+            !text.contains("styles: ["),
+            "nothing saved without a filter"
+        );
+        p.set_style("Deep House", true);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert!(restored.style_on("Deep House"));
+        assert_eq!(restored.shown_rows(), [0]);
+    }
+
+    #[test]
+    fn style_filtering_a_big_crate_is_quick() {
+        let names = [
+            "Deep House",
+            "Minimal",
+            "Techno",
+            "Dub Techno",
+            "Electro",
+            "Ambient",
+        ];
+        let st: Vec<String> = (0..5000)
+            .map(|i| format!("{}, {}", names[i % 6], names[(i / 6) % 6]))
+            .collect();
+        let refs: Vec<&str> = st.iter().map(String::as_str).collect();
+        let (mut p, _) = styled(&refs);
+        // The best of three, so a busy machine doesn't decide it.
+        let best = |f: &mut dyn FnMut()| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let budget = if cfg!(debug_assertions) { 40 } else { 16 };
+        let took = best(&mut || {
+            p.set_style("Electro", false);
+            p.set_style("Electro", true);
+            let rows = p.shown_rows();
+            let order = p.play_order(false, None, 0);
+            assert!(!rows.is_empty() && !order.is_empty());
+        });
+        assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
+        // Counting styles runs again only when the crate changes, not per frame.
+        let budget = if cfg!(debug_assertions) { 200 } else { 16 };
+        let took = best(&mut || assert_eq!(p.styles().len(), 6));
+        assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
     }
 
     /// A crate of `releases` (one entry each, clip `c<i>`), plus a local file without an album

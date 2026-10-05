@@ -72,14 +72,14 @@ pub fn build(p: &Playlist, open: &HashSet<AlbumKey>) -> Vec<ListRow> {
             .collect();
     }
     let entries = p.entries();
-    let range = p.bpm_filter();
+    let shown = p.shown();
     // One pass: each album's shown entries and its size, in the order of its first shown
     // entry; entries of no album in place.
     let mut slot: HashMap<AlbumKey, usize> = HashMap::with_capacity(entries.len());
     let mut groups: Vec<(Option<AlbumKey>, Vec<usize>, usize)> = Vec::new();
     let mut hidden: Vec<(AlbumKey, usize)> = Vec::new();
     for (idx, e) in entries.iter().enumerate() {
-        let shows = range.is_none_or(|(lo, hi)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)));
+        let shows = shown.shows(e);
         match e.album_key() {
             Some(k) => match slot.get(&k) {
                 Some(&g) => {
@@ -266,6 +266,22 @@ mod tests {
         p.set_bpm_filter(Some((130, 140)));
         // Release 1 shows 2 of its 4; release 2 shows none, so it has no row.
         assert_eq!(shape(&build(&p, &HashSet::new())), ["r[0, 2]/4"]);
+    }
+
+    #[test]
+    fn under_a_style_filter_records_without_the_style_have_no_row() {
+        let mut p = crate_of(&[Some(1), Some(1), Some(2), Some(3)], true);
+        let styles = ["Deep House", "Deep House", "Electro", "Minimal, Deep House"];
+        for (e, st) in p.entries_mut().zip(styles) {
+            e.origin.as_mut().unwrap().styles = st.into();
+            e.bpm = Some(134);
+        }
+        p.set_style("Deep House", true);
+        assert_eq!(shape(&build(&p, &HashSet::new())), ["r[0, 1]/2", "s3"]);
+        // With the BPM filter too, a record shows only what passes both.
+        p.entries_mut().next().unwrap().bpm = Some(124);
+        p.set_bpm_filter(Some((130, 140)));
+        assert_eq!(shape(&build(&p, &HashSet::new())), ["r[1]/2", "s3"]);
     }
 
     #[test]

@@ -141,6 +141,20 @@ impl Collection {
         self.count += 1;
         self.index();
     }
+
+    /// A copy the app just removed on Discogs (`instance`, or `None` when Discogs had no copy
+    /// left to remove): no longer counted, so the next sync stays incremental; with no copy
+    /// `remaining`, the release is no longer owned.
+    pub fn discard(&mut self, instance: Option<u64>, release: u64, remaining: usize) {
+        if let Some(i) = instance
+            && self.instances.remove(&i)
+        {
+            self.count = self.count.saturating_sub(1);
+        }
+        if remaining == 0 && self.releases.remove(&release).is_some() {
+            self.index();
+        }
+    }
 }
 
 /// One collection item (a copy of a release).
@@ -423,6 +437,50 @@ mod tests {
         let next = sync(&mut client(&t), "digger", Some(&c), 100).unwrap();
         assert_eq!(collection_calls(&t), 1);
         assert_eq!(next.len(), 3);
+    }
+
+    #[test]
+    fn a_removal_from_the_app_keeps_the_next_sync_incremental() {
+        let t = Arc::new(FakeTransport::new());
+        // 102 and 101 are pressings of master 900; 103 has two copies (3 and 4).
+        route_pages(
+            &t,
+            &[vec![
+                it(4, 103, 903),
+                it(3, 103, 903),
+                it(2, 102, 900),
+                it(1, 101, 900),
+            ]],
+            4,
+        );
+        let mut c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        c.discard(Some(4), 103, 1);
+        assert_eq!((c.len(), c.count), (3, 3), "one copy of 103 is left");
+        assert_eq!(c.owned(Some(103), None), Some(Owned::ThisPressing));
+        c.discard(Some(2), 102, 0);
+        assert_eq!((c.len(), c.count), (2, 2));
+        assert_eq!(
+            c.owned(Some(102), Some(900)),
+            Some(Owned::Another {
+                catno: "AF101".into(),
+                year: Some(2018)
+            }),
+            "another pressing of its master is still owned"
+        );
+        c.discard(None, 101, 0);
+        assert_eq!(c.owned(Some(101), Some(900)), None);
+        assert_eq!(c.count, 2, "an unknown copy isn't counted off");
+
+        // With the app's removals only, the next sync takes one request.
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(2, 102, 902), it(1, 101, 901)]], 2);
+        let mut c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        c.discard(Some(2), 102, 0);
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(1, 101, 901)]], 1);
+        let next = sync(&mut client(&t), "digger", Some(&c), 100).unwrap();
+        assert_eq!(collection_calls(&t), 1);
+        assert_eq!(next.len(), 1);
     }
 
     #[test]

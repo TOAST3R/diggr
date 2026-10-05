@@ -58,6 +58,10 @@ pub enum Command {
     /// `check`, first ask whether it is there already (a retry after an add that may have
     /// gone through), and add nothing if it is: a collection add is never repeated blindly.
     Collect { release: u64, check: bool },
+    /// Take one copy of a release out of the user's collection: the one added last. Asks
+    /// Discogs for the copies first (which folder it is in), so a release with no copy left
+    /// counts as done and a retry never removes a second copy.
+    Discard(u64),
     /// The releases on the user's wantlist (read once a session; `fresh` reads it again).
     ReadWants { fresh: bool },
     /// Learn whose token it is (answered with an identity event), when nothing else has.
@@ -200,11 +204,25 @@ pub enum Event {
         release: u64,
         result: Result<(u64, Pressing), ApiError>,
     },
+    /// A collection removal: the copy removed and how many are left, or why not.
+    Discarded {
+        release: u64,
+        result: Result<Discarded, ApiError>,
+    },
     /// The releases on the user's wantlist, or why they can't be read.
     Wants(Result<Vec<u64>, ApiError>),
     /// After a collection sync: wanted releases the collection owns (this pressing or another
     /// of the same master), to take off the wantlist.
     OwnedWants(Vec<u64>),
+}
+
+/// What a collection removal did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Discarded {
+    /// The copy removed; `None` when the collection had no copy of the release.
+    pub instance: Option<u64>,
+    /// Copies of the release still in the collection.
+    pub remaining: usize,
 }
 
 pub struct Intake {
@@ -351,6 +369,15 @@ impl Intake {
                     _ => {}
                 }
                 self.events.push(Event::Collected { release, result });
+            }
+            Command::Discard(release) => {
+                let result = self.discard(release);
+                match &result {
+                    Err(ApiError::Offline) => self.went_offline(),
+                    Ok(_) => self.online(),
+                    _ => {}
+                }
+                self.events.push(Event::Discarded { release, result });
             }
             Command::Identify => self.ensure_identity(),
             Command::ReadWants { fresh } => {
@@ -738,6 +765,50 @@ impl Intake {
             .as_u64()
             .ok_or_else(|| ApiError::Other(format!("{path}: no instance_id")))?;
         Ok((instance, pressing))
+    }
+
+    /// One copy of `release` out of the collection, the one added last (by date added, then
+    /// instance id): one request for its copies, one to remove it.
+    fn discard(&mut self, release: u64) -> Result<Discarded, ApiError> {
+        let user = self.user()?;
+        let v = match self.client.get_json(&format!(
+            "/users/{}/collection/releases/{release}",
+            path_segment(&user)
+        )) {
+            Ok(v) => v,
+            Err(ApiError::NotFound) => serde_json::Value::Null,
+            Err(e) => return Err(e),
+        };
+        let copies: Vec<(String, u64, u64)> = v["releases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some((
+                    c["date_added"].as_str().unwrap_or_default().to_owned(),
+                    c["instance_id"].as_u64()?,
+                    c["folder_id"].as_u64()?,
+                ))
+            })
+            .collect();
+        let Some((_, instance, folder)) = copies.iter().max().cloned() else {
+            return Ok(Discarded {
+                instance: None,
+                remaining: 0,
+            });
+        };
+        let path = format!(
+            "/users/{}/collection/folders/{folder}/releases/{release}/instances/{instance}",
+            path_segment(&user)
+        );
+        match self.client.call(Method::Delete, &path) {
+            Ok(_) | Err(ApiError::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(Discarded {
+            instance: Some(instance),
+            remaining: copies.len() - 1,
+        })
     }
 
     /// The user's wantlist, with each release's master, once per session (100 a request).

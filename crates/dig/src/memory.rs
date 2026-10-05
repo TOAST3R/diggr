@@ -4,7 +4,8 @@
 //! Wanting is per record (a release): the Discogs wantlist holds records. Passing is per clip
 //! (a clip id, or the file path for a local entry), so one track of a record can be passed.
 //!
-//! A wantlist change that Discogs can't take waits here. While Discogs is offline it waits as
+//! A wantlist change, or a copy to take out of the collection, that Discogs can't take waits
+//! here. While Discogs is offline it waits as
 //! long as it takes; after server errors it is tried again 1, 2, 5, 15 and 60 minutes later,
 //! then it stops and says why, until the user asks to retry.
 
@@ -57,6 +58,48 @@ pub struct Pending {
     pub failed: Option<String>,
 }
 
+/// A collection removal waiting to be sent: one copy of `release`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDiscard {
+    pub release: u64,
+    /// Server errors so far (offline tries don't count).
+    #[serde(default)]
+    pub attempts: u32,
+    /// Not before this (seconds since the Unix epoch).
+    #[serde(default)]
+    pub next_at: u64,
+    /// Given up after the last retry, with the error: waits for Retry remove from collection.
+    #[serde(default)]
+    pub failed: Option<String>,
+}
+
+/// After a try that failed at `now`: offline, wait a minute without counting; otherwise wait
+/// for the next retry, or fail after the last one. Returns the error when it has just failed.
+fn back_off(
+    attempts: &mut u32,
+    next_at: &mut u64,
+    failed: &mut Option<String>,
+    now: u64,
+    offline: bool,
+    error: &str,
+) -> Option<String> {
+    if offline {
+        *next_at = now + OFFLINE_RETRY_SECS;
+        return None;
+    }
+    *attempts += 1;
+    match RETRY_MINUTES.get(*attempts as usize - 1) {
+        Some(m) => {
+            *next_at = now + m * 60;
+            None
+        }
+        None => {
+            *failed = Some(error.to_owned());
+            Some(error.to_owned())
+        }
+    }
+}
+
 /// `(release, op)` pairs from older files, or full entries.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -90,6 +133,9 @@ pub struct DigMemory {
     /// Wantlist changes not sent yet, oldest first.
     #[serde(deserialize_with = "pending_list")]
     pub wantlist_pending: Vec<Pending>,
+    /// Copies to take out of the collection, oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub discards: Vec<PendingDiscard>,
     /// The account whose wantlist the wanted releases were last matched with. Another (or
     /// none) means the local ones are pushed to Discogs; the same means Discogs is followed.
     pub synced_user: Option<String>,
@@ -196,21 +242,14 @@ impl DigMemory {
             .wantlist_pending
             .iter_mut()
             .find(|p| p.release == release && p.op == op)?;
-        if offline {
-            p.next_at = now + OFFLINE_RETRY_SECS;
-            return None;
-        }
-        p.attempts += 1;
-        match RETRY_MINUTES.get(p.attempts as usize - 1) {
-            Some(m) => {
-                p.next_at = now + m * 60;
-                None
-            }
-            None => {
-                p.failed = Some(error.to_owned());
-                Some(error.to_owned())
-            }
-        }
+        back_off(
+            &mut p.attempts,
+            &mut p.next_at,
+            &mut p.failed,
+            now,
+            offline,
+            error,
+        )
     }
 
     /// Retry wantlist: a failed change for `release` is tried again at once, from the start of
@@ -221,6 +260,78 @@ impl DigMemory {
             .iter_mut()
             .filter(|p| p.release == release)
         {
+            p.attempts = 0;
+            p.next_at = 0;
+            p.failed = None;
+        }
+    }
+
+    // ---- collection removals ------------------------------------------------------------
+
+    /// Queues taking one copy of `release` out of the collection; one already waiting for
+    /// it stays the only one (a record is removed one copy at a time).
+    pub fn queue_discard(&mut self, release: u64) {
+        if !self.discards.iter().any(|p| p.release == release) {
+            self.discards.push(PendingDiscard {
+                release,
+                attempts: 0,
+                next_at: 0,
+                failed: None,
+            });
+        }
+    }
+
+    /// Removals due at `now`, oldest first; failed ones wait.
+    pub fn discards_due(&self, now: u64) -> Vec<u64> {
+        self.discards
+            .iter()
+            .filter(|p| p.failed.is_none() && p.next_at <= now)
+            .map(|p| p.release)
+            .collect()
+    }
+
+    /// A removal of `release` is waiting to be sent (not failed).
+    pub fn is_discard_pending(&self, release: u64) -> bool {
+        self.discards
+            .iter()
+            .any(|p| p.release == release && p.failed.is_none())
+    }
+
+    /// Why a removal of `release` gave up, if one did.
+    pub fn discard_failure(&self, release: u64) -> Option<&str> {
+        self.discards
+            .iter()
+            .find(|p| p.release == release)
+            .and_then(|p| p.failed.as_deref())
+    }
+
+    /// A removal went through (or can't ever).
+    pub fn discard_done(&mut self, release: u64) {
+        self.discards.retain(|p| p.release != release);
+    }
+
+    /// A removal couldn't be sent at `now`, as [`Self::want_failed`] for wantlist changes.
+    pub fn discard_failed(
+        &mut self,
+        release: u64,
+        now: u64,
+        offline: bool,
+        error: &str,
+    ) -> Option<String> {
+        let p = self.discards.iter_mut().find(|p| p.release == release)?;
+        back_off(
+            &mut p.attempts,
+            &mut p.next_at,
+            &mut p.failed,
+            now,
+            offline,
+            error,
+        )
+    }
+
+    /// Retry remove from collection: tried again at once, from the start of the schedule.
+    pub fn retry_discard(&mut self, release: u64) {
+        for p in self.discards.iter_mut().filter(|p| p.release == release) {
             p.attempts = 0;
             p.next_at = 0;
             p.failed = None;
@@ -318,6 +429,38 @@ mod tests {
             "Retry wantlist sends it at once"
         );
         assert_eq!(m.want_failure(7), None);
+    }
+
+    #[test]
+    fn a_collection_removal_waits_backs_off_and_survives_a_restart() {
+        let d = crate::test_dir("memory-discard");
+        let mut m = DigMemory::default();
+        m.queue_discard(1001);
+        m.queue_discard(1001);
+        assert_eq!(m.discards_due(0), [1001], "one copy at a time");
+        assert_eq!(m.discard_failed(1001, 0, true, "offline"), None);
+        assert!(m.discards_due(59).is_empty() && m.is_discard_pending(1001));
+        m.save(&d).unwrap();
+        let mut m = DigMemory::load(&d);
+        assert_eq!(m.discards_due(60), [1001], "kept across a restart");
+        let mut now = 60;
+        let mut failed = None;
+        while failed.is_none() {
+            if m.discards_due(now).is_empty() {
+                now += 60;
+                continue;
+            }
+            failed = m.discard_failed(1001, now, false, "HTTP 503");
+        }
+        assert_eq!(m.discard_failure(1001), Some("HTTP 503"));
+        assert!(!m.is_discard_pending(1001));
+        m.retry_discard(1001);
+        assert_eq!(m.discards_due(now), [1001]);
+        m.discard_done(1001);
+        assert!(m.discards.is_empty());
+        // An older file, without removals, loads; none are written while there are none.
+        let text = ron::to_string(&DigMemory::default()).unwrap();
+        assert!(!text.contains("discards"), "{text}");
     }
 
     #[test]

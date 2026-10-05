@@ -135,6 +135,15 @@ pub struct WinampApp {
     /// text fit (skin pixels, footer coordinates), for tests.
     #[cfg(test)]
     bpm_slider: Option<(f32, f32, bool)>,
+    /// The shown crate's styles with their record counts, and what they were counted from.
+    style_cache: Option<(CrateId, u64, StyleCounts)>,
+    /// What the style list is narrowed to.
+    style_search: String,
+    /// "Records leave this crate with…" was said this session.
+    discogs_hint_shown: bool,
+    /// Where the footer's style filter was last drawn and whether as chips, for tests.
+    #[cfg(test)]
+    style_drawn: Option<(f32, bool)>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -317,6 +326,11 @@ impl WinampApp {
             side_crate: None,
             #[cfg(test)]
             bpm_slider: None,
+            style_cache: None,
+            style_search: String::new(),
+            discogs_hint_shown: false,
+            #[cfg(test)]
+            style_drawn: None,
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -410,7 +424,7 @@ impl WinampApp {
                 .is_some_and(|p| keys.iter().fold(false, |ch, k| p.set_bpm(k, bpm) | ch));
             // Saved soon. The play order changes only when a BPM filter decides what plays.
             if changed {
-                let filtered = self.crates.get(c).is_some_and(|p| p.bpm_filter().is_some());
+                let filtered = self.crates.get(c).is_some_and(|p| p.is_filtered());
                 if filtered {
                     self.mark_crate(c);
                 } else {
@@ -710,7 +724,7 @@ impl WinampApp {
                     }
                 }
                 // A tempo may decide what plays under a BPM filter.
-                if self.crates.get(c).is_some_and(|p| p.bpm_filter().is_some()) {
+                if self.crates.get(c).is_some_and(|p| p.is_filtered()) {
                     self.mark_crate(c);
                 } else {
                     self.crates.touch(c);
@@ -914,6 +928,8 @@ impl WinampApp {
                 wantlist_pending: m.wantlist_pending,
                 wantlist_failed: m.wantlist_failed,
                 collection_failed: m.collection_failed,
+                discard_pending: m.discard_pending,
+                discard_failed: m.discard_failed,
                 owned: if badge { self.dig_owned(e) } else { None },
             }
         }
@@ -943,6 +959,9 @@ impl WinampApp {
             .map(|p| TrackRef::new(p.to_string_lossy()))
             .collect();
         if found.is_empty() {
+            return;
+        }
+        if open != Open::Replace && self.refuse_discogs_insert(self.crates.shown_id()) {
             return;
         }
         let (crate_id, added, play) = if open == Open::Replace {
@@ -1429,6 +1448,14 @@ impl WinampApp {
     }
 
     /// `P`: the playing crate, scrolled to its playing entry, with the cursor on it.
+    /// The style filter changed: saved soon, the play order follows, and the list keeps a
+    /// row in view.
+    fn style_filter_changed(&mut self) {
+        self.mark_shown();
+        let rows = self.pl_list().len();
+        self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
+    }
+
     fn show_playing_entry(&mut self) {
         let playing = self.crates.playing_id();
         let Some(id) = self.crates.playing().current() else {
@@ -1437,10 +1464,10 @@ impl WinampApp {
         if self.crates.shown_id() != playing {
             self.show_crate(playing);
         }
-        // A BPM filter that hides it is turned off.
+        // Filters that hide it are turned off.
         let p = self.crates.shown_mut();
         if p.get(id).is_some_and(|e| !p.shows(e)) {
-            p.set_bpm_filter(None);
+            p.clear_filters();
             self.mark_shown();
         }
         let p = self.crates.shown_mut();
@@ -1455,16 +1482,58 @@ impl WinampApp {
         self.remove_entries(&ids);
     }
 
-    /// Removes entries of the shown crate (Remove, Remove album, Delete). Taking a whole
-    /// record out of the wantlist crate asks first, as it leaves the Discogs wantlist too.
+    /// Removes entries of the shown crate (Remove, Remove album, Delete), except from the
+    /// Discogs crates, which records leave only through the Discogs items.
     fn remove_entries(&mut self, ids: &[EntryId]) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.dig_before_remove(ids) {
+        if self.refuse_discogs_edit(self.crates.shown_id()) {
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dig_before_remove(ids);
         if self.crates.shown_mut().remove_ids(ids) > 0 {
             self.mark_shown();
         }
+    }
+
+    /// The crates Send to crate offers: every other crate but the Discogs ones, which the
+    /// Discogs items alone fill.
+    fn send_targets(&self) -> Vec<(CrateId, String)> {
+        self.crates
+            .list()
+            .iter()
+            .filter(|c| c.id != self.crates.shown_id() && !self.crates.is_discogs(c.id))
+            .map(|c| (c.id, c.name.clone()))
+            .collect()
+    }
+
+    /// Whether crate `c` is a Discogs crate, which only the Discogs items fill; says how.
+    fn refuse_discogs_insert(&mut self, c: CrateId) -> bool {
+        if !self.crates.is_discogs(c) {
+            return false;
+        }
+        self.notify(if self.crates.is_wantlist(c) {
+            "Records come into this crate with Add to wantlist (Y)"
+        } else {
+            "Records come into this crate with Add to collection"
+        });
+        true
+    }
+
+    /// Whether crate `c` is a Discogs crate, which takes no hand removals; the first refusal
+    /// of the session says how records leave it.
+    fn refuse_discogs_edit(&mut self, c: CrateId) -> bool {
+        if !self.crates.is_discogs(c) {
+            return false;
+        }
+        if !self.discogs_hint_shown {
+            self.discogs_hint_shown = true;
+            self.notify(if self.crates.is_wantlist(c) {
+                "Records leave this crate with Remove from wantlist (Y)"
+            } else {
+                "Records leave this crate with Remove from collection…"
+            });
+        }
+        true
     }
 
     fn set_volume(&mut self, v: f32) {
@@ -2186,8 +2255,11 @@ impl WinampApp {
             let rr = sk.rect(x, y + *row as f32 * row_h, w - 1.0, row_h);
             let readable = !self.crates.is_unreadable(c.id);
             let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
+            // A Discogs crate isn't lit as a target: a drop there only says how to fill it.
             if over {
                 target = Some(c.id);
+            }
+            if over && !self.crates.is_discogs(c.id) {
                 painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
             } else if c.id == shown {
                 painter.rect_filled(
@@ -2372,16 +2444,17 @@ impl WinampApp {
     /// The footer's BPM filter control, from `x` to `x_end` (skin pixels, in the footer at
     /// `y`, `h` tall): "BPM", a two-handle range over the crate's tempos, the range as text and
     /// × while a range is set. Nothing when the crate has fewer than two different tempos.
+    /// Returns where it ends (`x` when nothing is drawn).
     fn bpm_control(
         &mut self,
         ui: &mut Ui,
         sk: &Skinned,
         (x, y, x_end, h): (f32, f32, f32, f32),
         actions: &mut Vec<Action>,
-    ) {
+    ) -> f32 {
         let shown = self.crates.shown();
         let Some((lo, hi)) = shown.tempo_span() else {
-            return;
+            return x;
         };
         let filter = shown.bpm_filter();
         let (a, b) = filter.unwrap_or((lo, hi));
@@ -2403,7 +2476,7 @@ impl WinampApp {
         let x1 = x0 + BPM_SLIDER_W;
         let with_text = x_end - x >= core;
         if x_end - x0 < BPM_SLIDER_W {
-            return;
+            return x;
         }
         #[cfg(test)]
         {
@@ -2415,6 +2488,11 @@ impl WinampApp {
             sk.text(right, ty, &range, lcd);
             right += sk.text_width(&range) + 3.0;
         }
+        let end = if filter.is_some() {
+            right + clear_w
+        } else {
+            right - 3.0
+        };
         if filter.is_some() {
             let cy = y + ((h - clear_w) / 2.0).round();
             sk.sprite("bpm_clear", right, cy);
@@ -2489,6 +2567,137 @@ impl WinampApp {
             );
         }
         resp.on_hover_text(tip);
+        end
+    }
+
+    /// The footer's style filter, from `x` to `x_end` (skin pixels, like
+    /// [`Self::bpm_control`]), in the Discogs wantlist and collection crates whose records
+    /// have at least two styles: one chip per style (lit when selected) when they all fit and
+    /// there are at most [`STYLE_CHIPS_MAX`], or else a STYLES button that opens the list.
+    fn style_control(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        (x, y, x_end, h): (f32, f32, f32, f32),
+        actions: &mut Vec<Action>,
+    ) {
+        let c = self.crates.shown_id();
+        if !self.crates.is_discogs(c) {
+            return;
+        }
+        let shown = self.crates.shown();
+        let rev = shown.rev();
+        let styles = match &self.style_cache {
+            Some((sc, sr, list)) if (*sc, *sr) == (c, rev) => list.clone(),
+            _ => {
+                let list = Rc::new(shown.styles());
+                self.style_cache = Some((c, rev, list.clone()));
+                list
+            }
+        };
+        if styles.len() < 2 {
+            return;
+        }
+        let shown = self.crates.shown();
+        let lcd = color([0, 236, 0]);
+        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
+        let x = x + STYLE_GAP;
+        let names: Vec<String> = styles.iter().map(|(s, _)| s.to_uppercase()).collect();
+        let need = names.iter().map(|n| sk.text_width(n)).sum::<f32>()
+            + STYLE_GAP * (names.len() - 1) as f32;
+        let chips = styles.len() <= STYLE_CHIPS_MAX && need <= x_end - x;
+        #[cfg(test)]
+        {
+            self.style_drawn = Some((x, chips));
+        }
+        if chips {
+            let mut cx = x;
+            for ((style, n), name) in styles.iter().zip(&names) {
+                let w = sk.text_width(name);
+                let on = shown.style_on(style);
+                sk.text(cx, ty, name, if on { lcd } else { dim });
+                let r = ui.interact(
+                    sk.rect(cx - 1.0, y, w + 2.0, h),
+                    Id::new(("style_chip", style.as_str())),
+                    Sense::click(),
+                );
+                if r.double_clicked() {
+                    actions.push(Action::ClearStyles);
+                } else if r.clicked() {
+                    actions.push(Action::ToggleStyle(style.clone()));
+                }
+                r.on_hover_text(format!(
+                    "{style}: {} — click to {} it; double-click shows every style",
+                    records_label(*n),
+                    if on { "unselect" } else { "select" }
+                ));
+                cx += w + STYLE_GAP;
+            }
+            return;
+        }
+        let picked = styles.iter().filter(|(s, _)| shown.style_on(s)).count();
+        let label = if picked > 0 {
+            format!("STYLES {picked}")
+        } else {
+            "STYLES".to_owned()
+        };
+        let w = sk.text_width(&label);
+        if x + w > x_end {
+            return;
+        }
+        sk.text(x, ty, &label, if picked > 0 { lcd } else { dim });
+        let button = ui.interact(
+            sk.rect(x - 1.0, y, w + 2.0, h),
+            Id::new("style_button"),
+            Sense::click(),
+        );
+        if button.double_clicked() {
+            actions.push(Action::ClearStyles);
+        }
+        egui::Popup::menu(&button)
+            .id(Id::new("style_list"))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(200.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.style_search)
+                        .hint_text("Filter styles…")
+                        .desired_width(f32::INFINITY),
+                );
+                let needle = self.style_search.trim().to_lowercase();
+                let shown = self.crates.shown();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (style, n) in styles.iter() {
+                            if !needle.is_empty() && !style.to_lowercase().contains(&needle) {
+                                continue;
+                            }
+                            let mut on = shown.style_on(style);
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut on, style.as_str()).clicked() {
+                                    actions.push(Action::ToggleStyle(style.clone()));
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| ui.weak(n.to_string()),
+                                );
+                            });
+                        }
+                    });
+                ui.separator();
+                if ui
+                    .add_enabled(picked > 0, egui::Button::new("Clear"))
+                    .clicked()
+                {
+                    actions.push(Action::ClearStyles);
+                }
+            });
+        button.on_hover_text(format!(
+            "{} styles: click to choose which records show; double-click shows every style",
+            styles.len()
+        ));
     }
 
     /// The column header: names (with the sort arrow), a click sorts, dragging a divider
@@ -2652,7 +2861,10 @@ impl WinampApp {
             });
             ui.close();
         }
-        if ui.button("Remove").clicked() {
+        // The Discogs crates mirror the account: records leave them with Remove from wantlist
+        // or Remove from collection, never one track at a time.
+        let discogs = self.crates.is_discogs(self.crates.shown_id());
+        if !discogs && ui.button("Remove").clicked() {
             actions.push(Action::RemoveEntry(e.id));
             ui.close();
         }
@@ -2661,12 +2873,13 @@ impl WinampApp {
         if album > 0 && record.is_none() {
             let more = album > 1;
             let tracks = if album == 1 { "track" } else { "tracks" };
-            if ui
-                .add_enabled(
-                    more,
-                    egui::Button::new(format!("Remove album ({album} {tracks})")),
-                )
-                .clicked()
+            if !discogs
+                && ui
+                    .add_enabled(
+                        more,
+                        egui::Button::new(format!("Remove album ({album} {tracks})")),
+                    )
+                    .clicked()
             {
                 actions.push(Action::RemoveAlbum(e.id));
                 ui.close();
@@ -2681,16 +2894,10 @@ impl WinampApp {
         }
         ui.separator();
         ui.menu_button("Send to crate", |ui| {
-            for c in self.crates.list() {
-                if c.id == self.crates.shown_id() {
-                    continue;
-                }
-                let readable = !self.crates.is_unreadable(c.id);
-                if ui
-                    .add_enabled(readable, egui::Button::new(&c.name))
-                    .clicked()
-                {
-                    actions.push(Action::SendTo(e.id, Some(c.id)));
+            for (id, name) in self.send_targets() {
+                let readable = !self.crates.is_unreadable(id);
+                if ui.add_enabled(readable, egui::Button::new(name)).clicked() {
+                    actions.push(Action::SendTo(e.id, Some(id)));
                     ui.close();
                 }
             }
@@ -2837,7 +3044,9 @@ impl WinampApp {
         } else {
             format!("{} – {album}", first.artist)
         };
-        let failed = marks.wantlist_failed.is_some() || marks.collection_failed.is_some();
+        let failed = marks.wantlist_failed.is_some()
+            || marks.collection_failed.is_some()
+            || marks.discard_failed.is_some();
         let name = format!(
             "{}{}{name}",
             if failed { "⚑ " } else { "" },
@@ -2960,7 +3169,7 @@ impl WinampApp {
                 ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
             }
             let shown = self.crates.shown();
-            let count = shown.bpm_filter().map(|_| (row_map.len(), shown.len()));
+            let count = shown.is_filtered().then(|| (row_map.len(), shown.len()));
             draw_crate_name(&sk, self.crates.name(self.crates.shown_id()), count);
             dim_title(&sk, "pl_titlebar", self.focus == Focus::Playlist);
             // The sidebar does the crate menu's job when it shows; narrower, the title bar opens
@@ -3035,7 +3244,7 @@ impl WinampApp {
                 Vec::new()
             };
             let shown = self.crates.shown();
-            if row_map.is_empty() && shown.bpm_filter().is_some() {
+            if row_map.is_empty() && shown.is_filtered() {
                 let y = rows_top + ((row_h - sk.def.font.glyph_h as f32) / 2.0).round();
                 sk.text(
                     l.x as f32 + 3.0,
@@ -3048,7 +3257,11 @@ impl WinampApp {
                     Id::new("pl_no_match"),
                     Sense::hover(),
                 )
-                .on_hover_text("× after the BPM range, or ☰ › Show all tempos, shows every track");
+                .on_hover_text(if shown.style_filter().is_some() {
+                    "☰ › Show all styles, or a click on the lit styles, shows every style"
+                } else {
+                    "× after the BPM range, or ☰ › Show all tempos, shows every track"
+                });
             }
             // While an entry's menu is open, the rest of its album is tinted.
             self.pl_tint = list_rows
@@ -3174,7 +3387,9 @@ impl WinampApp {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
                 }
-                let failed = marks.wantlist_failed.is_some() || marks.collection_failed.is_some();
+                let failed = marks.wantlist_failed.is_some()
+                    || marks.collection_failed.is_some()
+                    || marks.discard_failed.is_some();
                 let marked = |name: String| {
                     format!(
                         "{}{}{name}{}",
@@ -3416,6 +3631,8 @@ impl WinampApp {
             });
             plus.on_hover_text("Add");
             let filtered = self.crates.shown().bpm_filter().is_some();
+            let styled = self.crates.shown().style_filter().is_some();
+            let discogs = self.crates.is_discogs(self.crates.shown_id());
             let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
             egui::Popup::menu(&menu).show(|ui| {
                 if ui.button("Select all").clicked() {
@@ -3428,10 +3645,11 @@ impl WinampApp {
                     actions.push(Action::InvertSelection);
                 }
                 ui.separator();
-                if ui.button("Remove selected").clicked() {
+                // The Discogs crates lose records only through the Discogs items.
+                if !discogs && ui.button("Remove selected").clicked() {
                     actions.push(Action::RemoveSelected);
                 }
-                if ui.button("Clear crate").clicked() {
+                if !discogs && ui.button("Clear crate").clicked() {
                     actions.push(Action::Clear);
                 }
                 ui.separator();
@@ -3445,6 +3663,9 @@ impl WinampApp {
                 });
                 if filtered && ui.button("Show all tempos").clicked() {
                     actions.push(Action::SetBpmFilter(None));
+                }
+                if styled && ui.button("Show all styles").clicked() {
+                    actions.push(Action::ClearStyles);
                 }
                 let mut grouped = self.crates.shown().is_grouped();
                 if ui
@@ -3492,11 +3713,19 @@ impl WinampApp {
 
             // The BPM filter, between the buttons and the time.
             let pb = d.at("pl_bpm");
-            self.bpm_control(
+            // Up to the LCD box (which starts 2 pixels left of the readout's slot).
+            let x_end = pi.x as f32 - 6.0;
+            let bpm_end = self.bpm_control(
                 ui,
                 &bsk,
-                // Up to the LCD box (which starts 2 pixels left of the readout's slot).
-                (pb.x as f32, pb.y as f32, pi.x as f32 - 6.0, pb.h as f32),
+                (pb.x as f32, pb.y as f32, x_end, pb.h as f32),
+                &mut actions,
+            );
+            // Then the style filter, in the Discogs crates.
+            self.style_control(
+                ui,
+                &bsk,
+                (bpm_end, pb.y as f32, x_end, pb.h as f32),
                 &mut actions,
             );
 
@@ -3714,6 +3943,9 @@ impl WinampApp {
 
     /// Copies entries of the shown crate to another one.
     fn send_to(&mut self, ids: &[EntryId], to: CrateId) {
+        if self.refuse_discogs_insert(to) {
+            return;
+        }
         match self.crates.send(self.crates.shown_id(), ids, to) {
             Ok(sent) => {
                 if sent > 0 && to == self.crates.playing_id() {
@@ -3894,6 +4126,17 @@ impl WinampApp {
                     self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
                 }
             }
+            Action::ToggleStyle(style) => {
+                let p = self.crates.shown_mut();
+                let on = !p.style_on(&style);
+                p.set_style(&style, on);
+                self.style_filter_changed();
+            }
+            Action::ClearStyles => {
+                if self.crates.shown_mut().clear_styles() {
+                    self.style_filter_changed();
+                }
+            }
             Action::Sort(field) => {
                 // The same field again sorts the other way.
                 let p = self.crates.shown_mut();
@@ -3912,7 +4155,8 @@ impl WinampApp {
             Action::RemoveSelected => self.remove_selected(),
             Action::Clear => self.apply(Action::ClearCrate(self.crates.shown_id()), ctx),
             Action::ClearCrate(id) => {
-                if self.crates.load(id)
+                if !self.refuse_discogs_edit(id)
+                    && self.crates.load(id)
                     && let Some(p) = self.crates.get_mut(id)
                 {
                     p.clear();
@@ -4027,6 +4271,10 @@ enum Action {
     Sort(Field),
     /// Show (and play) only the shown crate's entries in this BPM range; `None` shows all.
     SetBpmFilter(Option<(u16, u16)>),
+    /// Selects or unselects a style in the shown crate's style filter.
+    ToggleStyle(String),
+    /// Shows every style again.
+    ClearStyles,
     ToggleColumn(Field),
     /// Widen a column by a share of the list's width.
     ResizeColumn(Field, f32),
@@ -4124,6 +4372,15 @@ impl NameFor {
             NameFor::NewCrate | NameFor::SendToNew(_) => ("New crate", "Create"),
             NameFor::RenameCrate(_) => ("Rename crate", "Rename"),
         }
+    }
+}
+
+/// "1 record", "3 records".
+fn records_label(n: usize) -> String {
+    if n == 1 {
+        "1 record".into()
+    } else {
+        format!("{n} records")
     }
 }
 
@@ -4535,6 +4792,12 @@ fn engine_status(slot: &EngineSlot) -> String {
 
 /// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;
+/// A crate's styles, each with its number of records, the most first.
+type StyleCounts = Rc<Vec<(String, usize)>>;
+/// Past this many styles, the footer shows the STYLES button and its list instead of chips.
+const STYLE_CHIPS_MAX: usize = 20;
+/// Skin pixels between two style chips (and before the first).
+const STYLE_GAP: f32 = 5.0;
 
 /// The crate sidebar's width, in skin pixels.
 const SIDEBAR_W: u16 = 110;
@@ -7085,6 +7348,139 @@ mod headless_tests {
         rig.frame(Vec::new());
         let (x0, x1, _) = rig.app.bpm_slider.unwrap();
         assert_eq!(x1 - x0, BPM_SLIDER_W);
+    }
+
+    /// Gives the shown crate's entries a release each (1, 2, …) with these styles.
+    fn set_styles(rig: &mut Rig, styles: &[&str]) {
+        let p = rig.app.crates.shown_mut();
+        for (i, (e, st)) in p.entries_mut().zip(styles).enumerate() {
+            e.origin = Some(crate::playlist::Origin {
+                release: Some(i as u64 + 1),
+                clip: Some(format!("c{i}")),
+                styles: (*st).into(),
+                ..Default::default()
+            });
+        }
+    }
+
+    #[test]
+    fn the_style_filter_shows_chips_in_the_discogs_crates_only() {
+        let mut rig = Rig::new("style-chips", Vec::new(), |_| {});
+        rig.fill_playlist(4);
+        set_styles(
+            &mut rig,
+            &["Deep House", "Minimal, Techno", "Electro", "Deep House"],
+        );
+        rig.app.settings.playlist_width = 700;
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.style_drawn, None, "not a Discogs crate: no control");
+
+        rig.app.crates.set_collection(PLAYLIST);
+        rig.frame(Vec::new());
+        let (x, chips) = rig.app.style_drawn.expect("the control is drawn");
+        assert!(chips, "4 short styles fit at 700 pixels");
+        assert_eq!(rig.app.pl_visible_rows(), rig.app.pl_rows(), "no row taken");
+        // The first chip is the style of most records: DEEP HOUSE.
+        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        let chip = pos2(PL_LEFT + x + 4.0, bottom + 12.0 + 9.0);
+        rig.click(chip);
+        let shown = rig.app.crates.shown();
+        assert!(shown.style_on("Deep House"));
+        assert_eq!(shown.shown_rows().len(), 2, "the two Deep House records");
+        for _ in 0..30 {
+            rig.frame(Vec::new());
+        }
+        rig.double_click(chip);
+        assert_eq!(
+            rig.app.crates.shown().style_filter(),
+            None,
+            "double-click clears"
+        );
+        assert_eq!(rig.app.crates.shown().shown_rows().len(), 4);
+    }
+
+    #[test]
+    fn many_styles_or_a_narrow_playlist_show_the_styles_button_and_its_list() {
+        let mut rig = Rig::new("style-list", Vec::new(), |_| {});
+        rig.fill_playlist(4);
+        set_styles(
+            &mut rig,
+            &["Deep House", "Minimal, Techno", "Electro", "Tech House"],
+        );
+        rig.app.crates.set_collection(PLAYLIST);
+        rig.frame(Vec::new());
+        let (x, chips) = rig.app.style_drawn.expect("the control is drawn");
+        assert!(!chips, "the chips don't fit at the classic width");
+        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0;
+        let label = rig.app.def.font.advance as f32 * "STYLES 1".len() as f32;
+        assert!(x + label <= box_left, "clear of the time's box");
+
+        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        rig.click(pos2(PL_LEFT + x + 4.0, bottom + 12.0 + 9.0));
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "Minimal") && shows(&out, "Electro"),
+            "{:?}",
+            text_list(&out)
+        );
+        // The list's own "Electro" (record rows name their styles too): the last one drawn.
+        let item = texts(&out)
+            .into_iter()
+            .rev()
+            .find(|t| t.text == "Electro")
+            .unwrap()
+            .rect;
+        rig.click(item.center());
+        assert!(rig.app.crates.shown().style_on("Electro"));
+        assert_eq!(rig.app.crates.shown().shown_rows().len(), 1);
+
+        // The search narrows the list.
+        rig.click_text("Filter styles…");
+        rig.frame(vec![Event::Text("house".into())]);
+        let out = rig.frame(Vec::new());
+        let listed = |t: &str| texts(&out).iter().filter(|x| x.text == t).count();
+        // Only Electro's record row shows, so the House styles are drawn by the list alone.
+        assert_eq!((listed("Deep House"), listed("Tech House")), (1, 1));
+        assert_eq!(
+            listed("Electro"),
+            1,
+            "only its record row: {:?}",
+            text_list(&out)
+        );
+        rig.click_text("Clear");
+        assert_eq!(rig.app.crates.shown().style_filter(), None);
+    }
+
+    #[test]
+    fn next_follows_the_style_filter_and_p_clears_it() {
+        let mut rig = Rig::new(
+            "style-next",
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        set_styles(&mut rig, &["Deep House", "Electro", "Deep House"]);
+        let ctx = rig.ctx.clone();
+        rig.app
+            .apply(Action::ToggleStyle("Deep House".into()), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.queue, [ids[0], ids[2]], "Electro is left out");
+        // Electro only: the playing entry is hidden, and P shows it again.
+        rig.app.apply(Action::ClearStyles, &ctx);
+        rig.app.apply(Action::ToggleStyle("Electro".into()), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows(), [1]);
+        rig.app.show_playing_entry();
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().style_filter(), None);
     }
 
     #[test]
