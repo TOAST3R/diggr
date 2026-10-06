@@ -8,7 +8,7 @@ On Discogs release, master release, artist, label, wantlist, collection, list an
 - Play in ‹App›;
 - Enqueue in ‹App›;
 - Send to crate, listing the app's crates and New crate…;
-- the "vinyl only" and "skip passed" switches, which SHALL be remembered.
+- the "skip passed" switch, which SHALL be remembered. There SHALL be no "vinyl only" switch: every send keeps records in every format.
 
 New crate… SHALL open a field in the menu holding a suggested name, taken from the page's title, as editable text; Enter or Create SHALL send:
 - for a release, master release or listing, "Artist - Title";
@@ -43,6 +43,10 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 #### Scenario: Not a supported page
 - **WHEN** the user opens a Discogs forum thread
 - **THEN** no button is shown
+
+#### Scenario: No vinyl only switch
+- **WHEN** the user opens the button's menu on a label page
+- **THEN** it offers the skip passed switch and no vinyl only switch
 
 ### Requirement: Links anywhere
 Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›.
