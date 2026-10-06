@@ -2381,3 +2381,69 @@ fn the_wantlist_crate_keeps_both_releases() {
     ));
     assert_eq!(releases_in(&rig, c), [Some(FLAC), Some(VINYL)]);
 }
+
+#[test]
+fn a_silent_digital_twin_leaves_whichever_comes_first() {
+    // AF069: neither the vinyl nor the FLAC release has a clip on Discogs.
+    for vinyl_first in [true, false] {
+        let fakes = Fakes::new();
+        let mut rig = rig("silent-twins", &fakes, |_| {});
+        let c = rig.app.crates.create("Analogical Force").unwrap();
+        let j = af_job(c);
+        rig.app.dig_intake_event(Intake::Listed(
+            j.clone(),
+            vec![
+                af_listed(VINYL, Format::Vinyl),
+                af_listed(FLAC, Format::File),
+            ],
+        ));
+        let mut arrivals = [
+            (
+                af_info(VINYL, Format::Vinyl),
+                Outcome::Unavailable("no clip".into()),
+            ),
+            (
+                af_info(FLAC, Format::File),
+                Outcome::Unavailable("no clip".into()),
+            ),
+        ];
+        if !vinyl_first {
+            arrivals.reverse();
+        }
+        for (info, outcome) in arrivals {
+            rig.app
+                .dig_intake_event(Intake::Record(j.clone(), info, outcome));
+        }
+        assert_eq!(
+            releases_in(&rig, c),
+            [Some(VINYL)],
+            "vinyl first: {vinyl_first}"
+        );
+    }
+}
+
+#[test]
+fn a_digital_twin_with_tunes_stays_when_the_vinyl_has_none() {
+    let fakes = Fakes::new();
+    let mut rig = rig("tuneful-twin", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![
+            af_listed(VINYL, Format::Vinyl),
+            af_listed(FLAC, Format::File),
+        ],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j.clone(),
+        af_info(VINYL, Format::Vinyl),
+        Outcome::Unavailable("no clip".into()),
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(FLAC, Format::File),
+        af_clips(&["PAPERwings1"]),
+    ));
+    assert_eq!(releases_in(&rig, c), [Some(VINYL), Some(FLAC)]);
+}

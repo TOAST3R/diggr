@@ -1349,19 +1349,41 @@ impl WinampApp {
         let base = origin(&j.page, info);
         let keys = twin_keys(info.master, &info.catno, &info.title);
         let twin_of = |o: &Origin| origin_twins(o).iter().any(|k| keys.contains(k));
-        // A release not on vinyl, whose vinyl release already brought the tunes: nothing.
+        // A release not on vinyl whose record is on vinyl here adds nothing: unless it brings
+        // tunes the vinyl release has none of.
+        let vinyl_twins: Vec<bool> = p
+            .entries()
+            .iter()
+            .filter(|e| e.id != placeholder)
+            .filter_map(|e| e.origin.as_ref())
+            .filter(|o| has_vinyl(&o.formats) && twin_of(o))
+            .map(|o| o.clip.is_some())
+            .collect();
+        let silent = matches!(outcome, Outcome::Unavailable(_));
         if twins
             && not_vinyl(&base)
-            && p.entries().iter().any(|e| {
-                e.id != placeholder
-                    && e.origin
-                        .as_ref()
-                        .is_some_and(|o| o.clip.is_some() && has_vinyl(&o.formats) && twin_of(o))
-            })
+            && !vinyl_twins.is_empty()
+            && (silent || vinyl_twins.iter().any(|&clip| clip))
         {
             p.remove(placeholder);
             self.mark_crate(j.target);
             return;
+        }
+        // A vinyl release: its twins in other formats that came back with no tunes leave (those
+        // still waiting for their details are decided when those arrive).
+        if twins && has_vinyl(&base.formats) {
+            let silent_twins: Vec<EntryId> = p
+                .entries()
+                .iter()
+                .filter(|e| e.id != placeholder && listed_key(e).is_none())
+                .filter(|e| {
+                    e.origin
+                        .as_ref()
+                        .is_some_and(|o| o.clip.is_none() && not_vinyl(o) && twin_of(o))
+                })
+                .map(|e| e.id)
+                .collect();
+            p.remove_ids(&silent_twins);
         }
         let mut leftovers = Vec::new();
         let new: Vec<NewEntry> = match outcome {
