@@ -763,13 +763,14 @@ fn records_to_backfill(p: &Playlist) -> Vec<RecordKey> {
     p.entries()
         .iter()
         .filter_map(|e| e.origin.as_ref())
-        .filter(|o| o.album.is_empty() || o.styles.is_empty())
+        .filter(|o| o.album.is_empty() || o.styles.is_empty() || o.artist.is_empty())
         .filter_map(record_key)
         .filter(|k| seen.insert(*k))
         .collect()
 }
 
-/// Fills the album, cover and styles of entries saved without them; true if any changed.
+/// Fills the album, cover, styles and record artist of entries saved without them; true if any
+/// changed.
 fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
     let by_key: HashMap<RecordKey, &RecordInfo> = infos.iter().map(|i| (i.key, i)).collect();
     let mut changed = false;
@@ -790,6 +791,10 @@ fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
         }
         if o.styles.is_empty() && !info.styles.is_empty() {
             o.styles = info.styles.clone();
+            changed = true;
+        }
+        if o.artist.is_empty() && !info.artist.is_empty() {
+            o.artist = info.artist.clone();
             changed = true;
         }
     }
@@ -819,6 +824,7 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         album: info.title.clone(),
         cover: info.cover.clone(),
         styles: info.styles.clone(),
+        artist: info.artist.clone(),
     }
 }
 
@@ -3258,5 +3264,66 @@ impl WinampApp {
             d.settings.wantlist = None;
             let _ = d.save_settings();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(release: u64, artist: &str) -> RecordInfo {
+        RecordInfo {
+            key: RecordKey::Release(release),
+            release: Some(release),
+            master: None,
+            artist: artist.into(),
+            title: "Night Moves".into(),
+            label: "Lowtide Tapes".into(),
+            catno: "LT-020".into(),
+            year: Some(1996),
+            for_sale: None,
+            cover: String::new(),
+            styles: "Deep House".into(),
+        }
+    }
+
+    #[test]
+    fn every_track_of_a_compilation_carries_the_record_artist() {
+        let base = origin("https://www.discogs.com/release/7", &info(7, "Various"));
+        let mut p = Playlist::default();
+        for (artist, clip) in [("Nightcraft", "a"), ("Lumen", "b")] {
+            let o = Origin {
+                clip: Some(clip.into()),
+                ..base.clone()
+            };
+            p.add_waiting(artist, "t", None, Some(o), "queued");
+        }
+        for (e, own) in p.entries().iter().zip(["Nightcraft", "Lumen"]) {
+            assert_eq!(e.origin.as_ref().unwrap().artist, "Various");
+            assert_eq!(e.artist, own, "the track's own credit stays");
+        }
+    }
+
+    #[test]
+    fn the_record_artist_is_backfilled_only_where_missing() {
+        let mut p = Playlist::default();
+        for (release, artist) in [(7, ""), (8, "Kept")] {
+            let o = Origin {
+                release: Some(release),
+                album: "Album".into(),
+                styles: "Techno".into(),
+                artist: artist.into(),
+                ..Default::default()
+            };
+            p.add_waiting("X", "t", None, Some(o), "queued");
+        }
+        assert_eq!(records_to_backfill(&p), [RecordKey::Release(7)]);
+        assert!(backfill(&mut p, &[info(7, "Various"), info(8, "Other")]));
+        let artists: Vec<&str> = p
+            .entries()
+            .iter()
+            .map(|e| e.origin.as_ref().unwrap().artist.as_str())
+            .collect();
+        assert_eq!(artists, ["Various", "Kept"]);
     }
 }

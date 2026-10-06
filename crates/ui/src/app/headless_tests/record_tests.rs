@@ -304,6 +304,32 @@ fn grouped_has_no_column_header_and_record_rows_show_their_styles() {
 }
 
 #[test]
+fn a_record_row_names_the_record_artist() {
+    // Album 1 is a compilation credited to "Various", its first track by Nightcraft; album 2
+    // carries no record artist (saved before it existed) and takes its first track's.
+    let (mut rig, _) = records_rig("group-artist", &[1, 1, 2]);
+    for (i, e) in rig.app.crates.shown_mut().entries_mut().enumerate() {
+        if i < 2 {
+            e.origin.as_mut().unwrap().artist = "Various".into();
+        }
+        if i == 1 {
+            e.artist = "Lumen".into();
+        }
+    }
+    group(&mut rig);
+    let out = rig.frame(Vec::new());
+    let list = text_list(&out);
+    assert!(
+        list.iter().any(|t| t.starts_with("Various – Album 1")),
+        "{list:?}"
+    );
+    assert!(
+        list.iter().any(|t| t.starts_with("Nightcraft – Album 2")),
+        "{list:?}"
+    );
+}
+
+#[test]
 fn the_sidebar_counts_records_in_a_grouped_crate() {
     let (mut rig, _) = records_rig("group-count", &[1, 1, 1, 2, 2, 3]);
     rig.app.settings.playlist_width = 700;

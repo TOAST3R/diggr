@@ -1132,6 +1132,7 @@ fn entries_saved_without_an_album_get_it_from_the_cache_without_a_request() {
             "https://i.discogs.com/fake/R-1001-front-150.jpeg"
         )
     );
+    assert_eq!(o.artist, "Nightcraft", "the record artist too");
     assert_eq!(p.entries()[2].album(), "", "not cached: left as it is");
     assert_eq!(fakes.transport.count(), 0, "no request to Discogs");
 }

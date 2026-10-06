@@ -141,9 +141,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "show and play only the tracks in that tempo range / show everything",
             ),
             (
-                "Footer styles (Discogs wantlist and collection): click / double-click",
-                "show only records with the lit styles (STYLES opens the list when they don't \
-                 fit) / show every style",
+                "Footer styles, ARTISTS, LABELS (Discogs wantlist and collection): click / \
+                 double-click",
+                "show only records with the picked styles, artists or labels (☰ › Filter by… \
+                 at any width) / turn that filter off",
             ),
             (
                 "Main window: right-click",
