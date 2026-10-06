@@ -137,9 +137,9 @@ pub struct WinampApp {
     bpm_slider: Option<(f32, f32, bool)>,
     /// The shown crate's values per filter (style, artist, label) with their record counts,
     /// and what they were counted from.
-    facet_cache: [Option<(CrateId, u64, FacetCounts)>; 3],
+    facet_cache: [Option<(CrateId, u64, FacetCounts)>; 4],
     /// What each filter's list is narrowed to.
-    facet_search: [String; 3],
+    facet_search: [String; 4],
     /// "Records leave this crate with…" was said this session.
     discogs_hint_shown: bool,
     /// Where the footer's filters were last drawn, and how, for tests.
@@ -327,7 +327,7 @@ impl WinampApp {
             side_crate: None,
             #[cfg(test)]
             bpm_slider: None,
-            facet_cache: [None, None, None],
+            facet_cache: [None, None, None, None],
             facet_search: Default::default(),
             discogs_hint_shown: false,
             #[cfg(test)]
@@ -2587,14 +2587,20 @@ impl WinampApp {
         }
     }
 
-    /// The filters the shown crate offers: in the Discogs crates, those with at least two
-    /// values.
+    /// The filters the shown crate offers, of those with at least two values: style, artist
+    /// and label in the Discogs crates, format in any crate with entries from Discogs.
     fn offered_facets(&mut self) -> Vec<Facet> {
-        if !self.crates.is_discogs(self.crates.shown_id()) {
-            return Vec::new();
-        }
+        let discogs = self.crates.is_discogs(self.crates.shown_id());
+        let dug = discogs
+            || self
+                .crates
+                .shown()
+                .entries()
+                .iter()
+                .any(|e| e.origin.is_some());
         Facet::ALL
             .into_iter()
+            .filter(|&f| if f == Facet::Format { dug } else { discogs })
             .filter(|&f| self.facet_counts(f).len() >= 2)
             .collect()
     }
@@ -2627,6 +2633,7 @@ impl WinampApp {
                 Facet::Style => "STYLES",
                 Facet::Artist => "ARTISTS",
                 Facet::Label => "LABELS",
+                Facet::Format => "FORMATS",
             };
             match shown.filter(f).map(|p| p.len()) {
                 Some(n) => format!("{name} {n}"),
@@ -3107,9 +3114,15 @@ impl WinampApp {
             }
         }
         let marks = self.dig_marks(first);
-        if marks.owned.is_some() {
-            at.x += owned_badge(&text_clip, at, font, colors, scale) + 3.0 * scale;
-        }
+        at.x += entry_badges(
+            &text_clip,
+            at,
+            marks.owned.is_some(),
+            first.format_mark(),
+            font,
+            colors,
+            scale,
+        );
         let album = if first.album().is_empty() {
             first.title.as_str()
         } else {
@@ -3339,7 +3352,7 @@ impl WinampApp {
                     Sense::hover(),
                 )
                 .on_hover_text(if shown.picks_filter() {
-                    "☰ › Show all records shows every style, artist and label"
+                    "☰ › Show all records shows every style, artist, label and format"
                 } else {
                     "× after the BPM range, or ☰ › Show all tempos, shows every track"
                 });
@@ -3496,11 +3509,21 @@ impl WinampApp {
                                 draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
                                 continue;
                             }
-                            Col::Field(Field::Title) if owned.is_some() => {
+                            Col::Field(Field::Title)
+                                if owned.is_some() || e.format_mark().is_some() =>
+                            {
                                 let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
-                                let w = owned_badge(&cell_clip, at, &font, &d.colors, scale);
+                                let w = entry_badges(
+                                    &cell_clip,
+                                    at,
+                                    owned.is_some(),
+                                    e.format_mark(),
+                                    &font,
+                                    &d.colors,
+                                    scale,
+                                );
                                 cell_clip.text(
-                                    at + vec2(w + 3.0 * scale, 0.0),
+                                    at + vec2(w, 0.0),
                                     egui::Align2::LEFT_CENTER,
                                     marked(e.title.clone()),
                                     font.clone(),
@@ -3526,8 +3549,8 @@ impl WinampApp {
                         pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
                     ));
                     let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
-                    if owned.is_some() {
-                        // The number, the badge, then the name.
+                    if owned.is_some() || e.format_mark().is_some() {
+                        // The number, the badges, then the name.
                         let num = name_clip
                             .text(
                                 at,
@@ -3538,9 +3561,17 @@ impl WinampApp {
                             )
                             .width();
                         let at = at + vec2(num, 0.0);
-                        let w = owned_badge(&name_clip, at, &font, &d.colors, scale);
+                        let w = entry_badges(
+                            &name_clip,
+                            at,
+                            owned.is_some(),
+                            e.format_mark(),
+                            &font,
+                            &d.colors,
+                            scale,
+                        );
                         name_clip.text(
-                            at + vec2(w + 3.0 * scale, 0.0),
+                            at + vec2(w, 0.0),
                             egui::Align2::LEFT_CENTER,
                             marked(e.row_name()),
                             font.clone(),
@@ -4736,25 +4767,36 @@ pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String
 
 /// Draws the shown crate's name centred on the playlist title bar, over a plain strip that
 /// hides the bar's decorative lines behind it.
-/// The OWNED badge: dark letters on the skin's amber, its left edge centred on `at`. Returns
-/// its width.
-fn owned_badge(
+/// The badges before an entry's name: OWNED (dark letters on the skin's amber), then the
+/// dim format mark of a record not on vinyl ("FILE", "CD"…), left edge centred on `at`.
+/// Returns their width with the gap after them (0 for none).
+fn entry_badges(
     painter: &egui::Painter,
     at: Pos2,
+    owned: bool,
+    format: Option<&str>,
     font: &egui::FontId,
     colors: &crate::skin::Colors,
     scale: f32,
 ) -> f32 {
     let small = egui::FontId::proportional(font.size * 0.78);
-    let galley = painter.layout_no_wrap("OWNED".into(), small, color(colors.pl_bg));
     let pad = vec2(2.5 * scale, 0.5 * scale);
-    let rect = Rect::from_min_size(
-        pos2(at.x, at.y - galley.size().y / 2.0 - pad.y),
-        galley.size() + pad * 2.0,
-    );
-    painter.rect_filled(rect, 2.0 * scale, color(colors.pl_owned));
-    painter.galley(rect.min + pad, galley, color(colors.pl_bg));
-    rect.width()
+    let mut x = at.x;
+    let badges = [
+        owned.then(|| ("OWNED", color(colors.pl_owned))),
+        format.map(|f| (f, lerp_color(colors.pl_text, colors.pl_bg, 0.55))),
+    ];
+    for (label, fill) in badges.into_iter().flatten() {
+        let galley = painter.layout_no_wrap(label.into(), small.clone(), color(colors.pl_bg));
+        let rect = Rect::from_min_size(
+            pos2(x, at.y - galley.size().y / 2.0 - pad.y),
+            galley.size() + pad * 2.0,
+        );
+        painter.rect_filled(rect, 2.0 * scale, fill);
+        painter.galley(rect.min + pad, galley, color(colors.pl_bg));
+        x += rect.width() + 3.0 * scale;
+    }
+    x - at.x
 }
 
 /// A momentary skin button at any rectangle (the strip's buttons have no layout entry).
@@ -7712,6 +7754,55 @@ mod headless_tests {
         rig.double_click(labels);
         assert_eq!(rig.app.crates.shown().filter(Facet::Label), None);
         assert_eq!(rig.app.crates.shown().shown_rows().len(), 6);
+    }
+
+    #[test]
+    fn a_dig_crate_offers_only_the_format_filter() {
+        let mut rig = Rig::new("format-filter", Vec::new(), |_| {});
+        rig.fill_playlist(4);
+        set_records(
+            &mut rig,
+            &[
+                ("Electro", "A", "Analogical Force"),
+                ("Electro", "B", "Analogical Force"),
+                ("Techno", "C", "Other"),
+                ("Techno", "D", "Other"),
+            ],
+        );
+        for (e, f) in
+            rig.app
+                .crates
+                .shown_mut()
+                .entries_mut()
+                .zip(["Vinyl", "File", "Vinyl, CD", "File"])
+        {
+            e.origin.as_mut().unwrap().formats = f.into();
+        }
+        rig.app.settings.playlist_width = 400;
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.offered_facets(), [Facet::Format]);
+        // No styles here: just the FORMATS button.
+        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::Buttons);
+        rig.click(footer_button(&rig, "pl_menu"));
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Filter by format…"), "{:?}", text_list(&out));
+        assert!(!shows(&out, "Filter by style…"));
+        rig.click_text("Filter by format…");
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "Vinyl") && shows(&out, "File"),
+            "{:?}",
+            text_list(&out)
+        );
+        rig.click_text("Vinyl");
+        assert_eq!(
+            rig.app.crates.shown().shown_rows(),
+            [0, 2],
+            "vinyl records only"
+        );
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::ClearPicks(None), &ctx);
+        assert!(!rig.app.crates.shown().is_filtered());
     }
 
     #[test]

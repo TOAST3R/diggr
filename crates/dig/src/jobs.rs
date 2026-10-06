@@ -16,16 +16,12 @@ pub type JobId = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Filters {
-    pub vinyl_only: bool,
     pub skip_passed: bool,
 }
 
 impl Default for Filters {
     fn default() -> Self {
-        Self {
-            vinyl_only: true,
-            skip_passed: true,
-        }
+        Self { skip_passed: true }
     }
 }
 

@@ -26,7 +26,8 @@ use dig::config::{self as digconf, DigSettings};
 use dig::cover::{CoverHandle, Covers, ImageSource, UreqImages};
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client, Identity};
-use dig::discogs::model::RecordKey;
+use dig::discogs::matching::ClipEntry;
+use dig::discogs::model::{Format, RecordKey};
 use dig::discogs::transport::{Transport, UreqTransport};
 use dig::discogs::url::{self, Page, Refused};
 use dig::intake::{Command, Discarded, Event, Intake, IntakeHandle, JobRef, Outcome, RecordInfo};
@@ -237,6 +238,9 @@ pub(super) struct Dig {
     want_inflight: HashSet<(u64, WantOp)>,
     /// Collection removals sent and not answered yet.
     discard_inflight: HashSet<u64>,
+    /// Tracks of a digital twin that were playing when its vinyl release took over: they
+    /// leave the crate once they stop.
+    twin_leftovers: Vec<(CrateId, EntryId)>,
     /// Remove from collection…, asking.
     pub(super) confirm_discard: Option<DiscardConfirm>,
     /// Collection adds on their way: release → the crate they were asked from.
@@ -338,6 +342,7 @@ impl Dig {
             refreshed: HashSet::new(),
             want_inflight: HashSet::new(),
             discard_inflight: HashSet::new(),
+            twin_leftovers: Vec::new(),
             confirm_discard: None,
             collecting: HashMap::new(),
             collect_failed: HashMap::new(),
@@ -748,6 +753,34 @@ fn listed_key(e: &Entry) -> Option<RecordKey> {
     record_key(e.origin.as_ref().filter(|o| o.clip.is_none())?)
 }
 
+/// What pairs releases of one record across formats: its master release, and its catalog
+/// number with its title (lower-cased), as far as each is known.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Twin {
+    Master(u64),
+    Named(String, String),
+}
+
+fn twin_keys(master: Option<u64>, catno: &str, title: &str) -> Vec<Twin> {
+    let (catno, title) = (catno.trim().to_lowercase(), title.trim().to_lowercase());
+    let named = (!catno.is_empty() && !title.is_empty()).then_some(Twin::Named(catno, title));
+    master.map(Twin::Master).into_iter().chain(named).collect()
+}
+
+fn origin_twins(o: &Origin) -> Vec<Twin> {
+    twin_keys(o.master, &o.catno, &o.album)
+}
+
+/// Whether formats kept on an origin ("Vinyl, CD") include vinyl.
+fn has_vinyl(formats: &str) -> bool {
+    formats.split(',').any(|f| f.trim() == Format::Vinyl.name())
+}
+
+/// A release known to be in some format, but not on vinyl.
+fn not_vinyl(o: &Origin) -> bool {
+    !o.formats.is_empty() && !has_vinyl(&o.formats)
+}
+
 /// The record an origin names: its release, else its master release.
 fn record_key(o: &Origin) -> Option<RecordKey> {
     match (o.release, o.master) {
@@ -763,14 +796,16 @@ fn records_to_backfill(p: &Playlist) -> Vec<RecordKey> {
     p.entries()
         .iter()
         .filter_map(|e| e.origin.as_ref())
-        .filter(|o| o.album.is_empty() || o.styles.is_empty() || o.artist.is_empty())
+        .filter(|o| {
+            o.album.is_empty() || o.styles.is_empty() || o.artist.is_empty() || o.formats.is_empty()
+        })
         .filter_map(record_key)
         .filter(|k| seen.insert(*k))
         .collect()
 }
 
-/// Fills the album, cover, styles and record artist of entries saved without them; true if any
-/// changed.
+/// Fills the album, cover, styles, record artist and formats of entries saved without them;
+/// true if any changed.
 fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
     let by_key: HashMap<RecordKey, &RecordInfo> = infos.iter().map(|i| (i.key, i)).collect();
     let mut changed = false;
@@ -795,6 +830,10 @@ fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
         }
         if o.artist.is_empty() && !info.artist.is_empty() {
             o.artist = info.artist.clone();
+            changed = true;
+        }
+        if o.formats.is_empty() && !info.formats.is_empty() {
+            o.formats = formats_text(&info.formats);
             changed = true;
         }
     }
@@ -825,7 +864,17 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         cover: info.cover.clone(),
         styles: info.styles.clone(),
         artist: info.artist.clone(),
+        formats: formats_text(&info.formats),
     }
+}
+
+/// "Vinyl", "Vinyl, CD": what an entry's origin keeps of a record's formats.
+fn formats_text(formats: &[Format]) -> String {
+    formats
+        .iter()
+        .map(|f| f.name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn now_secs() -> u64 {
@@ -872,7 +921,6 @@ impl WinampApp {
             return;
         }
         let filters = filters.unwrap_or(Filters {
-            vinyl_only: d.settings.vinyl_only,
             skip_passed: d.settings.skip_passed,
         });
         let (target, created, play) = match mode {
@@ -1276,6 +1324,15 @@ impl WinampApp {
 
     /// A listed record's details: its placeholder becomes its clips, "no clip", or goes.
     fn dig_record(&mut self, j: &JobRef, info: &RecordInfo, outcome: Outcome) {
+        // Vinyl first, in crates filled from pages (never the wantlist or collection crates).
+        let twins = !self.crates.is_discogs(j.target)
+            && self
+                .dig
+                .as_ref()
+                .is_some_and(|d| d.settings.wantlist != Some(j.target));
+        let playing = (self.crates.playing_id() == j.target)
+            .then(|| self.crates.playing().current())
+            .flatten();
         let Some(p) = self.crates.get_mut(j.target) else {
             return;
         };
@@ -1290,8 +1347,24 @@ impl WinampApp {
         let Some(d) = &self.dig else { return };
         let dir = d.previews_dir();
         let base = origin(&j.page, info);
+        let keys = twin_keys(info.master, &info.catno, &info.title);
+        let twin_of = |o: &Origin| origin_twins(o).iter().any(|k| keys.contains(k));
+        // A release not on vinyl, whose vinyl release already brought the tunes: nothing.
+        if twins
+            && not_vinyl(&base)
+            && p.entries().iter().any(|e| {
+                e.id != placeholder
+                    && e.origin
+                        .as_ref()
+                        .is_some_and(|o| o.clip.is_some() && has_vinyl(&o.formats) && twin_of(o))
+            })
+        {
+            p.remove(placeholder);
+            self.mark_crate(j.target);
+            return;
+        }
+        let mut leftovers = Vec::new();
         let new: Vec<NewEntry> = match outcome {
-            Outcome::Excluded => Vec::new(),
             Outcome::Unavailable(reason) => {
                 if let Some(e) = p.entries_mut().find(|e| e.id == placeholder) {
                     e.origin = Some(base);
@@ -1308,6 +1381,44 @@ impl WinampApp {
                 return;
             }
             Outcome::Clips(entries) => {
+                // The vinyl release takes over the tracks its non-vinyl twins brought, in
+                // place; their other tracks (and their waiting placeholders) leave.
+                if twins && has_vinyl(&base.formats) {
+                    let by_clip: HashMap<&str, &ClipEntry> =
+                        entries.iter().map(|c| (c.clip.as_str(), c)).collect();
+                    let twin_ids: Vec<EntryId> = p
+                        .entries()
+                        .iter()
+                        .filter(|e| e.id != placeholder)
+                        .filter(|e| {
+                            e.origin
+                                .as_ref()
+                                .is_some_and(|o| not_vinyl(o) && twin_of(o))
+                        })
+                        .map(|e| e.id)
+                        .collect();
+                    let mut gone = Vec::new();
+                    for id in twin_ids {
+                        let Some(e) = p.entries_mut().find(|e| e.id == id) else {
+                            continue;
+                        };
+                        let clip = e.origin.as_ref().and_then(|o| o.clip.clone());
+                        match clip.as_deref().and_then(|c| by_clip.get(c)) {
+                            Some(c) => {
+                                e.origin = Some(Origin {
+                                    position: c.position.clone(),
+                                    clip: Some(c.clip.clone()),
+                                    ..base.clone()
+                                });
+                                e.artist = c.artist.clone();
+                                e.title = c.title.clone();
+                            }
+                            None if playing == Some(id) => leftovers.push((j.target, id)),
+                            None => gone.push(id),
+                        }
+                    }
+                    p.remove_ids(&gone);
+                }
                 let mut have: HashSet<String> = p
                     .entries()
                     .iter()
@@ -1333,6 +1444,12 @@ impl WinampApp {
             }
         };
         let ids = p.replace(placeholder, new);
+        if let Some(d) = &mut self.dig {
+            d.twin_leftovers.extend(leftovers);
+        }
+        let Some(p) = self.crates.get_mut(j.target) else {
+            return;
+        };
         // Previews already in the cache play at once.
         let ready: Vec<(EntryId, TrackRef)> = ids
             .iter()
@@ -1587,7 +1704,7 @@ impl WinampApp {
 
     /// A new track started: mark its preview as just played, and refresh its marketplace
     /// numbers once they are a day old.
-    fn dig_playing_changed(&mut self) {
+    pub(super) fn dig_playing_changed(&mut self) {
         let now = (self.position.state != PlayState::Stopped)
             .then(|| {
                 self.crates
@@ -1601,6 +1718,19 @@ impl WinampApp {
             return;
         }
         d.last_playing = now;
+        // Twin tracks kept while they played leave once something else plays.
+        let (stopped, still): (Vec<_>, Vec<_>) = std::mem::take(&mut d.twin_leftovers)
+            .into_iter()
+            .partition(|&left| Some(left) != now);
+        d.twin_leftovers = still;
+        for (c, id) in stopped {
+            if let Some(p) = self.crates.get_mut(c)
+                && p.remove(id)
+            {
+                self.mark_crate(c);
+            }
+        }
+        let Some(d) = &mut self.dig else { return };
         let Some(e) = now.and_then(|(c, id)| self.crates.get(c)?.get(id)) else {
             return;
         };
@@ -1973,7 +2103,6 @@ impl WinampApp {
             return;
         }
         let filters = Filters {
-            vinyl_only: false,
             skip_passed: d.settings.skip_passed,
         };
         d.quiet.insert(target);
@@ -3055,9 +3184,6 @@ impl WinampApp {
                 ui.separator();
                 ui.strong("Every send");
                 settings_changed |= ui
-                    .checkbox(&mut d.settings.vinyl_only, "Vinyl only")
-                    .changed();
-                settings_changed |= ui
                     .checkbox(&mut d.settings.skip_passed, "Skip what I've passed")
                     .changed();
             });
@@ -3284,6 +3410,7 @@ mod tests {
             for_sale: None,
             cover: String::new(),
             styles: "Deep House".into(),
+            formats: vec![Format::Vinyl],
         }
     }
 
@@ -3313,6 +3440,7 @@ mod tests {
                 album: "Album".into(),
                 styles: "Techno".into(),
                 artist: artist.into(),
+                formats: "Vinyl".into(),
                 ..Default::default()
             };
             p.add_waiting("X", "t", None, Some(o), "queued");
@@ -3325,5 +3453,26 @@ mod tests {
             .map(|e| e.origin.as_ref().unwrap().artist.as_str())
             .collect();
         assert_eq!(artists, ["Various", "Kept"]);
+    }
+
+    #[test]
+    fn formats_are_kept_as_text_and_backfilled() {
+        assert_eq!(formats_text(&[Format::Vinyl, Format::Cd]), "Vinyl, CD");
+        let o = origin("p", &info(7, "Various"));
+        assert_eq!(o.formats, "Vinyl");
+        let mut p = Playlist::default();
+        let saved = Origin {
+            release: Some(9),
+            album: "A".into(),
+            styles: "Techno".into(),
+            artist: "X".into(),
+            ..Default::default()
+        };
+        p.add_waiting("X", "t", None, Some(saved), "queued");
+        assert_eq!(records_to_backfill(&p), [RecordKey::Release(9)]);
+        let mut digital = info(9, "X");
+        digital.formats = vec![Format::File];
+        assert!(backfill(&mut p, &[digital]));
+        assert_eq!(p.entries()[0].origin.as_ref().unwrap().formats, "File");
     }
 }

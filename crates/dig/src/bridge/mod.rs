@@ -240,8 +240,10 @@ struct SendBody {
     mode: ModeName,
     #[serde(rename = "crate", default)]
     crate_name: Option<String>,
-    vinyl_only: bool,
     skip_passed: bool,
+    /// Sent by older extensions; every send now keeps every format.
+    #[serde(default, rename = "vinyl_only")]
+    _vinyl_only: Option<serde::de::IgnoredAny>,
 }
 
 /// Checks a request in the order of the design (host, origin, route, size, key, body) and
@@ -436,7 +438,6 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
         page,
         mode,
         filters: Filters {
-            vinyl_only: b.vinyl_only,
             skip_passed: b.skip_passed,
         },
     };

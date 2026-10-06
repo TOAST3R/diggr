@@ -91,11 +91,12 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         ev.iter()
             .any(|e| matches!(e, Event::Named(j) if j.name == "Label: Lowtide Tapes"))
     );
-    // The CD-only release is known from the listing and never listed.
+    // Every format: the CD-only releases are listed too.
     assert_eq!(
         listed(&ev),
         [
             Release(1001),
+            Release(1002),
             Release(1003),
             Release(1004),
             Release(1005),
@@ -118,6 +119,7 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         keys,
         [
             Release(1001),
+            Release(1002),
             Release(1003),
             Release(1004),
             Release(1005),
@@ -128,12 +130,10 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         clips(&r[0].1),
         ["GLASShouse1", "LUMENremix1", "LASTlight01"]
     );
-    assert_eq!(r[1].1, Outcome::Unavailable("no clip".into()));
-    assert_eq!(
-        r[3].1,
-        Outcome::Excluded,
-        "a CD, known only from its details"
-    );
+    assert_eq!(r[2].1, Outcome::Unavailable("no clip".into()));
+    // The CD releases bring their clips too.
+    assert_eq!(clips(&r[1].1), ["CDglasshou1"]);
+    assert_eq!(clips(&r[4].1), ["UNKNOWNfmt1"]);
     assert!(matches!(ev.last(), Some(Event::Finished(_))));
     let progress = ev.iter().rev().find_map(|e| match e {
         Event::Progress(_, d, t) => Some((*d, *t)),
@@ -253,7 +253,7 @@ fn details_follow_the_focus() {
     send(&mut i, "https://www.discogs.com/label/12345");
     // Name and three listing pages.
     let mut ev = run(&mut i, 4);
-    assert_eq!(listed(&ev).len(), 5);
+    assert_eq!(listed(&ev).len(), 6);
     assert!(records(&ev).is_empty());
     // The user is on the fourth listed record: from there on, wrapping around.
     i.handle(Command::Focus {
@@ -281,7 +281,8 @@ fn details_follow_the_focus() {
             Release(1006),
             Release(1001),
             Release(1003),
-            Release(1004)
+            Release(1004),
+            Release(1002)
         ]
     );
 }
@@ -314,10 +315,10 @@ fn a_half_done_job_resumes_after_a_restart_without_duplicates() {
         .chain(records(&after).iter())
         .map(|(k, _)| *k)
         .collect();
-    assert_eq!(keys.len(), 5);
+    assert_eq!(keys.len(), 6);
     keys.sort();
     keys.dedup();
-    assert_eq!(keys.len(), 5, "each record once");
+    assert_eq!(keys.len(), 6, "each record once");
     assert!(matches!(after.last(), Some(Event::Finished(_))));
     assert!(
         dig::jobs::Jobs::load(&config).jobs.is_empty(),
@@ -351,6 +352,7 @@ fn offline_pauses_and_resumes_where_it_stopped() {
         keys,
         [
             Release(1001),
+            Release(1002),
             Release(1003),
             Release(1004),
             Release(1005),
@@ -739,10 +741,7 @@ fn a_real_release_expands() {
     i.handle(Command::Send {
         page: parse("https://www.discogs.com/release/1-The-Persuader-Stockholm").unwrap(),
         target: CRATE,
-        filters: Filters {
-            vinyl_only: false,
-            skip_passed: false,
-        },
+        filters: Filters { skip_passed: false },
     });
     let ev = run(&mut i, 10);
     let r = records(&ev);

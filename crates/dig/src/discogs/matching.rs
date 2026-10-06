@@ -274,7 +274,7 @@ mod tests {
             label: "Lowtide Tapes".into(),
             catno: "LT-012".into(),
             year: Some(1994),
-            vinyl: true,
+            formats: vec![crate::discogs::model::Format::Vinyl],
             tracks,
             clips,
             for_sale: None,

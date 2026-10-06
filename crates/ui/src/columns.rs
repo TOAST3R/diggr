@@ -27,14 +27,17 @@ pub enum Field {
     Year,
     ForSale,
     Time,
+    /// The record's formats ("Vinyl", "File", "Vinyl, CD").
+    Format,
 }
 
 impl Field {
-    pub const ALL: [Field; 9] = [
+    pub const ALL: [Field; 10] = [
         Field::CatNo,
         Field::Artist,
         Field::Title,
         Field::Album,
+        Field::Format,
         Field::Bpm,
         Field::Side,
         Field::Year,
@@ -53,6 +56,7 @@ impl Field {
             Field::Year => "Year",
             Field::ForSale => "For sale",
             Field::Time => "Time",
+            Field::Format => "Format",
         }
     }
 }
@@ -73,15 +77,16 @@ impl Field {
     /// Its share of the list width when nothing else is set (the title takes what's left).
     fn default_width(self) -> f32 {
         match self {
-            Field::CatNo => 0.12,
-            Field::Artist => 0.20,
+            Field::CatNo => 0.10,
+            Field::Artist => 0.17,
             Field::Title => 0.0,
-            Field::Album => 0.16,
+            Field::Album => 0.14,
             Field::Bpm => 0.07,
             Field::Side => 0.05,
             Field::Year => 0.06,
-            Field::ForSale => 0.12,
+            Field::ForSale => 0.10,
             Field::Time => 0.08,
+            Field::Format => 0.06,
         }
     }
 }
@@ -187,6 +192,7 @@ pub fn cell_text(e: &Entry, f: Field) -> String {
             None => String::new(),
         },
         Field::Time => String::new(),
+        Field::Format => o.map(|o| o.formats.clone()).unwrap_or_default(),
     }
 }
 
@@ -274,6 +280,14 @@ fn key(e: &Entry, field: Field) -> Key {
             .and_then(|o| o.year)
             .map_or(UNKNOWN, |y| Key::Num(y as f64)),
         Field::Time => e.duration.map_or(UNKNOWN, Key::Num),
+        // Vinyl first, then File, CD, Cassette and Other (by the record's first format).
+        Field::Format => {
+            let first = o.map_or("", |o| o.formats.split(',').next().unwrap_or("").trim());
+            ["Vinyl", "File", "CD", "Cassette", "Other"]
+                .iter()
+                .position(|f| *f == first)
+                .map_or(UNKNOWN, |i| Key::Num(i as f64))
+        }
         // Priced first (by the lowest price), then copies with no price, then "none for
         // sale", then no snapshot at all.
         Field::ForSale => match o.and_then(|o| o.for_sale.as_ref()) {
@@ -314,7 +328,7 @@ mod tests {
         let cols = c.layout(600.0, 24.0);
         let names: Vec<Col> = cols.iter().map(|c| c.0).collect();
         assert_eq!(names[0], Col::Number);
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         let (_, x, w) = cols.last().copied().unwrap();
         assert!((x + w - 600.0).abs() < 0.01, "they fill the list exactly");
         let title_w = |c: &ColumnSettings| {
@@ -328,7 +342,7 @@ mod tests {
         c.toggle(Field::Year);
         assert_eq!(
             c.layout(600.0, 24.0).len(),
-            9,
+            10,
             "a hidden column is left out"
         );
         assert!(
@@ -406,6 +420,28 @@ mod tests {
             .collect();
         let at = |f| order.iter().position(|c| *c == Col::Field(f)).unwrap();
         assert_eq!(at(Field::Album), at(Field::Title) + 1, "after the title");
-        assert_eq!(at(Field::Bpm), at(Field::Album) + 1, "before the BPM");
+        assert_eq!(at(Field::Format), at(Field::Album) + 1, "then the format");
+        assert_eq!(at(Field::Bpm), at(Field::Format) + 1, "before the BPM");
+    }
+
+    #[test]
+    fn format_sorts_vinyl_first_and_unknown_last() {
+        use crate::playlist::{Origin, Playlist};
+        let mut p = Playlist::default();
+        for formats in ["File", "Vinyl", "", "CD", "Vinyl, CD"] {
+            let origin = Origin {
+                formats: formats.into(),
+                ..Default::default()
+            };
+            p.add_waiting("x", "t", None, Some(origin), "listed");
+        }
+        let mut v: Vec<&Entry> = p.entries().iter().collect();
+        v.sort_by(|a, b| compare(a, b, Field::Format, Dir::Asc));
+        let cells: Vec<String> = v.iter().map(|e| cell_text(e, Field::Format)).collect();
+        assert_eq!(cells, ["Vinyl", "Vinyl, CD", "File", "CD", ""]);
+        // Saved settings from before the column existed show it.
+        let old: ColumnSettings = ron::from_str("(hidden: [Year], widths: {})").unwrap();
+        assert!(old.shows(Field::Format));
+        assert_eq!(old.width(Field::Format), 0.06);
     }
 }

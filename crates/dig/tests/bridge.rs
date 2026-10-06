@@ -113,7 +113,7 @@ fn wrong(code: &str) -> &'static str {
 const LABEL: &str = "https://www.discogs.com/label/12345-Lowtide-Tapes";
 
 fn send_body(url: &str, mode: &str) -> String {
-    format!(r#"{{"url":"{url}","mode":"{mode}","vinyl_only":true,"skip_passed":false}}"#)
+    format!(r#"{{"url":"{url}","mode":"{mode}","skip_passed":false}}"#)
 }
 
 #[test]
@@ -316,9 +316,10 @@ fn only_supported_discogs_pages_in_the_exact_shape_are_accepted() {
     );
     assert_eq!(r.bridge.poll(), vec![], "nothing was sent");
 
+    // An older extension still sends vinyl only: accepted, and ignored.
     let a = r.send(
         &key,
-        &format!(r#"{{"url":"{LABEL}","mode":"crate","crate":" Friday ","vinyl_only":false,"skip_passed":true}}"#),
+        &format!(r#"{{"url":"{LABEL}","mode":"crate","crate":" Friday ","vinyl_only":true,"skip_passed":true}}"#),
     );
     assert_eq!(a.status, 202);
     assert_eq!(a.json["page"], "Label: Lowtide Tapes");
@@ -333,13 +334,7 @@ fn only_supported_discogs_pages_in_the_exact_shape_are_accepted() {
         ] => {
             assert_eq!(page.url(), "https://www.discogs.com/label/12345");
             assert_eq!(*mode, Mode::Crate("Friday".into()));
-            assert_eq!(
-                *filters,
-                Filters {
-                    vinyl_only: false,
-                    skip_passed: true
-                }
-            );
+            assert_eq!(*filters, Filters { skip_passed: true });
         }
         other => panic!("{other:?}"),
     }

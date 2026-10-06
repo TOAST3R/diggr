@@ -27,8 +27,12 @@ pub struct Listed {
     pub label: String,
     pub catno: String,
     pub year: Option<u16>,
-    /// From the listing's formats, when it gives them.
-    pub vinyl: Option<bool>,
+    /// From the listing's formats, when it gives them (empty when it doesn't).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<Format>,
+    /// Jobs saved before formats only knew whether a record was vinyl.
+    #[serde(default, rename = "vinyl", skip_serializing)]
+    pub old_vinyl: Option<bool>,
     pub role: Role,
     /// A small cover image's address, when the listing gives one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -44,10 +48,23 @@ impl Listed {
             label: String::new(),
             catno: String::new(),
             year: None,
-            vinyl: None,
+            formats: Vec::new(),
+            old_vinyl: None,
             role: Role::Main,
             cover: String::new(),
         }
+    }
+
+    /// The listing's formats, or Vinyl for a job saved when only that was known.
+    pub fn formats(&self) -> Vec<Format> {
+        match (self.formats.is_empty(), self.old_vinyl) {
+            (true, Some(true)) => vec![Format::Vinyl],
+            _ => self.formats.clone(),
+        }
+    }
+
+    pub fn is_vinyl(&self) -> bool {
+        self.formats().contains(&Format::Vinyl)
     }
 }
 
@@ -93,7 +110,8 @@ pub struct Record {
     pub label: String,
     pub catno: String,
     pub year: Option<u16>,
-    pub vinyl: bool,
+    /// Its formats, from the release's details (a master's from its main release).
+    pub formats: Vec<Format>,
     pub tracks: Vec<Track>,
     pub clips: Vec<Clip>,
     pub for_sale: Option<ForSale>,
@@ -103,35 +121,148 @@ pub struct Record {
     pub styles: Vec<String>,
 }
 
-/// Formats that are records: the listing strings (`12", EP`) and format names.
-const VINYL_MARKERS: [&str; 8] = [
-    "Vinyl",
-    "LP",
-    "7\"",
-    "10\"",
-    "12\"",
-    "Flexi-disc",
-    "Lathe Cut",
-    "Acetate",
-];
-
-/// From a listing's format string, such as `12", EP` or `CD, Album`.
-pub fn vinyl_from_format(format: &str) -> bool {
-    format
-        .split([',', ' '])
-        .map(str::trim)
-        .any(|part| VINYL_MARKERS.iter().any(|m| part.eq_ignore_ascii_case(m)))
-        || format.contains("Lathe Cut")
+/// What a record is pressed or published on, grouped: vinyl first (the order sorts by).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Format {
+    Vinyl,
+    File,
+    Cd,
+    Cassette,
+    Other,
 }
 
-/// From a `formats` array (`[{name: "Vinyl", descriptions: [...]}]`).
-pub fn vinyl_from_formats(formats: &Value) -> Option<bool> {
-    let formats = formats.as_array()?;
-    Some(formats.iter().any(|f| {
-        f["name"]
-            .as_str()
-            .is_some_and(|n| VINYL_MARKERS.iter().any(|m| n.eq_ignore_ascii_case(m)))
-    }))
+impl Format {
+    pub const ALL: [Format; 5] = [
+        Format::Vinyl,
+        Format::File,
+        Format::Cd,
+        Format::Cassette,
+        Format::Other,
+    ];
+
+    /// "Vinyl", "File", "CD", "Cassette", "Other".
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Vinyl => "Vinyl",
+            Format::File => "File",
+            Format::Cd => "CD",
+            Format::Cassette => "Cassette",
+            Format::Other => "Other",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Format::ALL.into_iter().find(|f| f.name() == name)
+    }
+
+    /// The row mark of a record with no vinyl: "FILE", "CD", "CASS", "OTHER".
+    pub fn mark(self) -> &'static str {
+        match self {
+            Format::Vinyl => "VINYL",
+            Format::File => "FILE",
+            Format::Cd => "CD",
+            Format::Cassette => "CASS",
+            Format::Other => "OTHER",
+        }
+    }
+}
+
+/// Which format a Discogs format name or listing word is: `None` for descriptions (Album,
+/// Ltd…), containers (Box Set, All Media) and words it doesn't know.
+fn format_of(word: &str) -> Option<Format> {
+    const GROUPS: [(Format, &[&str]); 4] = [
+        (
+            Format::Vinyl,
+            &[
+                "vinyl",
+                "lp",
+                "7\"",
+                "10\"",
+                "12\"",
+                "flexi-disc",
+                "lathe cut",
+                "acetate",
+                "shellac",
+            ],
+        ),
+        (
+            Format::File,
+            &[
+                "file",
+                "flac",
+                "mp3",
+                "wav",
+                "aiff",
+                "alac",
+                "aac",
+                "ogg vorbis",
+            ],
+        ),
+        (Format::Cd, &["cd", "cdr", "sacd", "hybrid"]),
+        (Format::Cassette, &["cass", "cassette"]),
+    ];
+    let w = word.trim().to_ascii_lowercase();
+    GROUPS
+        .iter()
+        .find(|(_, names)| names.contains(&w.as_str()))
+        .map(|(f, _)| *f)
+}
+
+/// Discogs' containers, whose parts are listed as formats of their own.
+fn is_container(word: &str) -> bool {
+    matches!(
+        word.trim().to_ascii_lowercase().as_str(),
+        "box set" | "all media"
+    )
+}
+
+/// A leading count, as in `3x12"` or `17xFile`, taken off.
+fn without_count(part: &str) -> &str {
+    let p = part.trim();
+    let digits = p.bytes().take_while(u8::is_ascii_digit).count();
+    match p[digits..].strip_prefix(['x', 'X']) {
+        Some(rest) if digits > 0 => rest.trim(),
+        _ => p,
+    }
+}
+
+/// Sorted and without repeats; Other when there was a format it doesn't know.
+fn grouped(found: impl IntoIterator<Item = Format>) -> Vec<Format> {
+    let mut out: Vec<Format> = found.into_iter().collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// From a listing's format string, such as `3x12", Comp, Ltd`, `17xFile, FLAC` or `CD, Album`:
+/// the first part is the format; the others add the ones they name.
+pub fn formats_from_listing(format: &str) -> Vec<Format> {
+    let parts: Vec<&str> = format
+        .split(',')
+        .map(without_count)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let mut found: Vec<Format> = parts.iter().filter_map(|p| format_of(p)).collect();
+    if let Some(first) = parts.first()
+        && format_of(first).is_none()
+        && !is_container(first)
+    {
+        found.push(Format::Other);
+    }
+    grouped(found)
+}
+
+/// From a `formats` array (`[{name: "Vinyl", qty: "3", descriptions: [...]}]`).
+pub fn formats_from_details(formats: &Value) -> Vec<Format> {
+    grouped(
+        formats
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["name"].as_str())
+            .filter(|n| !is_container(n))
+            .map(|n| format_of(n).unwrap_or(Format::Other)),
+    )
 }
 
 /// `Nightcraft (2)` → `Nightcraft`.
@@ -330,7 +461,7 @@ impl Record {
             label,
             catno,
             year: year(&v["year"]).or_else(|| year(&v["released"])),
-            vinyl: vinyl_from_formats(&v["formats"]).unwrap_or(false),
+            formats: formats_from_details(&v["formats"]),
             tracks: tracks(&v["tracklist"]),
             clips: clips(&v["videos"]),
             for_sale: Some(ForSale {
@@ -342,6 +473,10 @@ impl Record {
             cover: cover(&v["images"]),
             styles: styles(v),
         })
+    }
+
+    pub fn is_vinyl(&self) -> bool {
+        self.formats.contains(&Format::Vinyl)
     }
 
     /// From `GET /masters/{id}`, with its main release for the label, catalog number and
@@ -358,7 +493,7 @@ impl Record {
             label: main.map(|m| m.label.clone()).unwrap_or_default(),
             catno: main.map(|m| m.catno.clone()).unwrap_or_default(),
             year: year(&v["year"]).or_else(|| main.and_then(|m| m.year)),
-            vinyl: main.is_some_and(|m| m.vinyl),
+            formats: main.map(|m| m.formats.clone()).unwrap_or_default(),
             tracks: tracks(&v["tracklist"]),
             clips: clips(&v["videos"]),
             for_sale: main.and_then(|m| m.for_sale.clone()),
@@ -388,7 +523,8 @@ pub fn listed_from_listing(item: &Value) -> Option<Listed> {
         label: item["label"].as_str().unwrap_or("").trim().to_owned(),
         catno: item["catno"].as_str().unwrap_or("").trim().to_owned(),
         year: year(&item["year"]),
-        vinyl: item["format"].as_str().map(vinyl_from_format),
+        formats: formats_from_listing(item["format"].as_str().unwrap_or("")),
+        old_vinyl: None,
         role: match item["role"].as_str() {
             Some("Remix") => Role::Remix,
             _ => Role::Main,
@@ -409,7 +545,8 @@ pub fn listed_from_want(item: &Value) -> Option<Listed> {
         label,
         catno,
         year: year(&b["year"]),
-        vinyl: vinyl_from_formats(&b["formats"]),
+        formats: formats_from_details(&b["formats"]),
+        old_vinyl: None,
         role: Role::Main,
         cover: thumb(b["thumb"].as_str().unwrap_or("")),
     })
@@ -472,24 +609,49 @@ mod tests {
     }
 
     #[test]
-    fn vinyl_from_listings_and_details() {
-        for f in [
-            "12\", EP",
-            "LP, Album",
-            "Vinyl, 7\", Single",
-            "Lathe Cut, 10\"",
+    fn formats_from_listings_and_details() {
+        use Format::*;
+        for (f, want) in [
+            ("12\", EP", vec![Vinyl]),
+            ("LP, Album", vec![Vinyl]),
+            ("Vinyl, 7\", Single", vec![Vinyl]),
+            ("Lathe Cut, 10\"", vec![Vinyl]),
+            // Multi-disc records carry a count (Analogical Force's listing).
+            ("2x12\", Album, Ltd, Yel", vec![Vinyl]),
+            ("3x12\", Comp, Ltd, Tur", vec![Vinyl]),
+            ("3xLP, Comp, Ltd, Cle", vec![Vinyl]),
+            ("2xLP", vec![Vinyl]),
+            ("17xFile, FLAC, Comp, 16-", vec![File]),
+            ("5xFile, MP3, EP, 320", vec![File]),
+            ("CD, Album", vec![Cd]),
+            ("2xCD, Comp", vec![Cd]),
+            ("Cass, Album", vec![Cassette]),
+            ("DVD, Album", vec![Other]),
+            ("Box Set, Comp", vec![]),
+            ("", vec![]),
         ] {
-            assert!(vinyl_from_format(f), "{f}");
-        }
-        for f in ["CD, Album", "File, MP3", "Cass, Album", ""] {
-            assert!(!vinyl_from_format(f), "{f}");
+            assert_eq!(formats_from_listing(f), want, "{f}");
         }
         assert_eq!(
-            vinyl_from_formats(&json!([{"name":"CD"},{"name":"Vinyl"}])),
-            Some(true)
+            formats_from_details(&json!([{"name":"CD"},{"name":"Vinyl"},{"name":"Box Set"}])),
+            [Vinyl, Cd],
+            "vinyl first, the container skipped"
         );
-        assert_eq!(vinyl_from_formats(&json!([{"name":"CD"}])), Some(false));
-        assert_eq!(vinyl_from_formats(&Value::Null), None);
+        assert_eq!(formats_from_details(&json!([{"name":"DVD"}])), [Other]);
+        assert!(formats_from_details(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn a_job_saved_with_only_vinyl_known_still_reads_it() {
+        let old: Listed = ron::from_str(
+            "(key: Release(1), artist: \"A\", title: \"T\", label: \"L\", catno: \"C\", \
+             year: None, vinyl: Some(true), role: Main)",
+        )
+        .unwrap();
+        assert!(old.is_vinyl());
+        assert_eq!(old.formats(), [Format::Vinyl]);
+        let text = ron::to_string(&old).unwrap();
+        assert!(!text.contains("vinyl"), "{text}");
     }
 
     #[test]
@@ -538,7 +700,7 @@ mod tests {
             (r.label.as_str(), r.catno.as_str()),
             ("Lowtide Tapes", "LT-012")
         );
-        assert!(r.vinyl);
+        assert!(r.is_vinyl());
         let pos: Vec<&str> = r.tracks.iter().map(|t| t.position.as_str()).collect();
         assert_eq!(pos, ["A1", "A2", "B1a"]);
         assert_eq!(r.tracks[0].duration, Some(372.0));

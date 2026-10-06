@@ -165,8 +165,11 @@ and Home/End jump), and Enter plays the entry under it.
       **LABELS** buttons, when they fit; otherwise nothing. A button is lit while its filter is
       on and counts its picks ("LABELS 2"); a double-click on it, or on a chip, turns that
       filter off.
-    - At any width, ≡ ▸ Filter by style… / artist… / label… opens the same lists, and
-      ≡ ▸ Show all records turns the three off (the BPM range stays);
+    - A **format** filter (Vinyl, File, CD, Cassette, Other) works the same way, in every crate
+      dug from Discogs, not only those two: its **FORMATS** button follows the others in the
+      footer.
+    - At any width, ≡ ▸ Filter by style… / artist… / label… / format… opens the same lists, and
+      ≡ ▸ Show all records turns them all off (the BPM range stays);
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -180,7 +183,7 @@ and Home/End jump), and Enter plays the entry under it.
   - drag the bottom-right grip to make the playlist wider (any width) or taller (whole rows);
     its size is remembered, and narrowed to fit a smaller screen;
   - once the playlist is at least 480 pixels wide (at 1×), entries are drawn as columns: #,
-    Cat#, Artist, Title, Album, BPM, Side, Year, For sale and Time. Drag a divider in the header to
+    Cat#, Artist, Title, Album, Format, BPM, Side, Year, For sale and Time. Drag a divider in the header to
     resize a column, and right-click the header to show or hide columns (#, Title and Time
     always show); both are remembered. Click a column's name to **sort** the crate by it, and
     click again for the other way (**≡ ▸ Sort** in the footer does the same at any width). A sort reorders
@@ -293,6 +296,15 @@ ahead of what plays. Other pasted text is ignored.
   which is dug as the release it sells: one lookup, remembered for good. Addresses with or
   without a language prefix, the name part, a query or a fragment all work. Any other Discogs
   page shows which ones do.
+- **Every format, vinyl first:** a page brings all its records, on vinyl (multi-disc ones
+  such as `3x12"` too), as files, on CD or cassette. When a record exists on vinyl and in
+  another format (the same master release, or the same catalog number and title), the vinyl
+  release brings the tunes: its entries carry its catalog number, cover, wantlist and
+  collection actions and what's for sale, and the digital twin adds nothing. The vinyl release
+  is fetched first; if the twin was fetched first, its tracks become the vinyl release's in
+  place (a playing one keeps playing), and the twin's other tracks leave. A record with no
+  vinyl release stays, with a dim **FILE**, **CD**, **CASS** or **OTHER** mark before its
+  title. Your wantlist and collection crates keep whatever releases they hold.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
   (records near the selected or playing entry are fetched first). It then becomes one entry per
   clip, matched to its tracklist, or "no clip". A send that's still going when you quit resumes
@@ -370,8 +382,8 @@ ahead of what plays. Other pasted text is ignored.
     package manager). The dialog shows the version found, and can take a path if it isn't on
     the `PATH`. Until it's found, entries say "needs yt-dlp". If clips keep failing, try
     `yt-dlp -U`.
-  - The dialog also sets the default filters for every send (vinyl only, skip what you've
-    passed) and the preview cache size (2 GB by default; the least recently played go first).
+  - The dialog also sets the default filter for every send (skip what you've passed) and the
+    preview cache size (2 GB by default; the least recently played go first).
 - Previews are for listening while you dig. They stay in the cache and are never exported.
 
 ### From the browser
@@ -390,9 +402,9 @@ that the player starts once its window is up.
   `dig/bridge.ron`. After 5 wrong codes, pairing is locked for a minute. **Forget browsers**
   revokes every key, and each browser then asks to be paired again.
 - **What it accepts:** only a Discogs page address (the pages that paste accepts), a mode
-  (Play, Enqueue, or a crate of 1 to 40 characters), and the vinyl-only and skip-passed
-  switches, in a body of at most 16 KB. Anything else, including file paths and other
-  addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
+  (Play, Enqueue, or a crate of 1 to 40 characters), and the skip-passed switch, in a body of
+  at most 16 KB (a vinyl-only switch from an older extension is accepted and ignored).
+  Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
   playing, and the progress of sends.
 - **No web pages:** requests from web pages (a web origin, another host name, a preflight) are
@@ -407,8 +419,8 @@ that the player starts once its window is up.
 3. On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
    button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
    in ‹App›** and **Send to crate** (the player's crates, or New crate…, which suggests a name
-   from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the vinyl-only and
-   skip-passed switches, which it remembers. On a release, master or marketplace item page
+   from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the skip-passed
+   switch, which it remembers. On a release, master or marketplace item page
    of a record you own, a line under the button says "✓ In your collection" (or "✓ Another
    pressing in your collection (AF014, 2018)"). The extension asks the player, which answers
    from its cached collection: no Discogs request for a release or master, and one lookup the
@@ -788,7 +800,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 635 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 646 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

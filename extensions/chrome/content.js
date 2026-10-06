@@ -191,7 +191,7 @@
     );
     const crates = el("div", {}, el("div", { className: "note sub", textContent: "…" }));
     menu.append(crates);
-    const s = await chrome.storage.local.get({ vinylOnly: true, skipPassed: true });
+    const s = await chrome.storage.local.get({ skipPassed: true });
     const toggle = (key, text) => {
       const box = el("input", { type: "checkbox", checked: s[key] });
       box.addEventListener("change", () => chrome.storage.local.set({ [key]: box.checked }));
@@ -199,7 +199,6 @@
     };
     menu.append(
       el("div", { className: "sep" }),
-      toggle("vinylOnly", "Vinyl only"),
       toggle("skipPassed", "Skip what I've passed"),
     );
     wrap.append(menu);

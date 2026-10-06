@@ -165,6 +165,9 @@ pub struct Origin {
     /// same on every track whatever the track's own credit.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub artist: String,
+    /// The record's formats, vinyl first ("Vinyl", "File", "Vinyl, CD"); empty when unknown.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub formats: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -266,10 +269,27 @@ impl Entry {
             Facet::Style => (o.map_or("", |o| o.styles.as_str()), true),
             Facet::Artist => (o.map_or("", |o| o.artist.as_str()), false),
             Facet::Label => (o.map_or("", |o| o.label.as_str()), false),
+            Facet::Format => (o.map_or("", |o| o.formats.as_str()), true),
         };
         text.split(move |c| list && c == ',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
+    }
+
+    /// The mark of a record known in some format but not on vinyl ("FILE", "CD", "CASS",
+    /// "OTHER", from its first format); `None` for vinyl, local files and unknown formats.
+    pub fn format_mark(&self) -> Option<&'static str> {
+        let formats = &self.origin.as_ref()?.formats;
+        if formats.split(',').any(|f| f.trim() == "Vinyl") {
+            return None;
+        }
+        match formats.split(',').next()?.trim() {
+            "" => None,
+            "File" => Some("FILE"),
+            "CD" => Some("CD"),
+            "Cassette" => Some("CASS"),
+            _ => Some("OTHER"),
+        }
     }
 
     /// What Send to crate compares: the origin's clip when there is one, otherwise the file.
@@ -333,6 +353,9 @@ pub struct SavedPlaylist {
     /// The labels the label filter shows, when any is picked.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub labels: BTreeSet<String>,
+    /// The formats the format filter shows, when any is picked.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub formats: BTreeSet<String>,
 }
 
 /// What a record can be filtered by, besides its tempo.
@@ -344,10 +367,12 @@ pub enum Facet {
     Artist,
     /// Its first label.
     Label,
+    /// Its formats (Vinyl, File, CD, Cassette, Other; any of them).
+    Format,
 }
 
 impl Facet {
-    pub const ALL: [Facet; 3] = [Facet::Style, Facet::Artist, Facet::Label];
+    pub const ALL: [Facet; 4] = [Facet::Style, Facet::Artist, Facet::Label, Facet::Format];
 
     fn index(self) -> usize {
         self as usize
@@ -359,6 +384,7 @@ impl Facet {
             Facet::Style => "style",
             Facet::Artist => "artist",
             Facet::Label => "label",
+            Facet::Format => "format",
         }
     }
 }
@@ -420,7 +446,7 @@ pub struct Playlist {
     bpm_range: Option<(u16, u16)>,
     /// The style, artist and label filters, as set (see [`Playlist::filter`] for what
     /// applies), by [`Facet`].
-    picked: [BTreeSet<String>; 3],
+    picked: [BTreeSet<String>; 4],
     next_id: EntryId,
     /// Shown grouped by record: each album's entries are kept together (see
     /// [`Playlist::gather`]).
@@ -439,7 +465,7 @@ pub struct Playlist {
 #[derive(Debug, Clone, Copy)]
 pub struct Shown<'a> {
     bpm: Option<(u16, u16)>,
-    picks: [Option<&'a BTreeSet<String>>; 3],
+    picks: [Option<&'a BTreeSet<String>>; 4],
 }
 
 impl Shown<'_> {
@@ -1138,6 +1164,7 @@ impl Playlist {
             styles: self.saved_picks(Facet::Style),
             artists: self.saved_picks(Facet::Artist),
             labels: self.saved_picks(Facet::Label),
+            formats: self.saved_picks(Facet::Format),
         }
     }
 
@@ -1156,7 +1183,7 @@ impl Playlist {
         let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         pl.bpm_range = saved.bpm_range;
-        pl.picked = [saved.styles, saved.artists, saved.labels];
+        pl.picked = [saved.styles, saved.artists, saved.labels, saved.formats];
         (pl, pending)
     }
 
@@ -1275,7 +1302,7 @@ impl Playlist {
         any.then_some(on)
     }
 
-    /// Whether a style, artist or label filter hides anything (not the BPM range).
+    /// Whether a style, artist, label or format filter hides anything (not the BPM range).
     pub fn picks_filter(&self) -> bool {
         Facet::ALL.into_iter().any(|f| self.filter(f).is_some())
     }
@@ -1298,7 +1325,7 @@ impl Playlist {
         }
     }
 
-    /// Unpicks every value of `facet`, or of all three with `None`. Returns whether one of
+    /// Unpicks every value of `facet`, or of all of them with `None`. Returns whether one of
     /// them filtered.
     pub fn clear_picks(&mut self, facet: Option<Facet>) -> bool {
         let facets: Vec<Facet> = facet.map_or(Facet::ALL.to_vec(), |f| vec![f]);
@@ -2472,6 +2499,26 @@ mod tests {
         assert!(p.clear_picks(None));
         assert!(!p.picks_filter());
         assert_eq!(p.shown_rows(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_record_not_on_vinyl_is_marked_with_its_first_format() {
+        let mark = |formats: &str| {
+            let mut p = Playlist::default();
+            let o = Origin {
+                formats: formats.into(),
+                ..Default::default()
+            };
+            let id = p.add_waiting("A", "t", None, Some(o), "listed");
+            p.get(id).unwrap().format_mark()
+        };
+        assert_eq!(mark("File"), Some("FILE"));
+        assert_eq!(mark("CD, File"), Some("CD"));
+        assert_eq!(mark("Cassette"), Some("CASS"));
+        assert_eq!(mark("Other"), Some("OTHER"));
+        assert_eq!(mark("Vinyl"), None);
+        assert_eq!(mark("Vinyl, CD"), None, "vinyl is the norm");
+        assert_eq!(mark(""), None, "unknown");
     }
 
     #[test]
