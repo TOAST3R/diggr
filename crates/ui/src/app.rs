@@ -22,7 +22,7 @@ use crate::files;
 use crate::format;
 use crate::fullscreen::{SceneFrame, VisualScene};
 use crate::metadata::{MetaResult, MetaWorker};
-use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus};
+use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus, Facet};
 use crate::records::{self, ListRow};
 use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
 use crate::skin::LoadedSkin;
@@ -135,15 +135,16 @@ pub struct WinampApp {
     /// text fit (skin pixels, footer coordinates), for tests.
     #[cfg(test)]
     bpm_slider: Option<(f32, f32, bool)>,
-    /// The shown crate's styles with their record counts, and what they were counted from.
-    style_cache: Option<(CrateId, u64, StyleCounts)>,
-    /// What the style list is narrowed to.
-    style_search: String,
+    /// The shown crate's values per filter (style, artist, label) with their record counts,
+    /// and what they were counted from.
+    facet_cache: [Option<(CrateId, u64, FacetCounts)>; 3],
+    /// What each filter's list is narrowed to.
+    facet_search: [String; 3],
     /// "Records leave this crate with…" was said this session.
     discogs_hint_shown: bool,
-    /// Where the footer's style filter was last drawn and whether as chips, for tests.
+    /// Where the footer's filters were last drawn, and how, for tests.
     #[cfg(test)]
-    style_drawn: Option<(f32, bool)>,
+    filters_drawn: Option<(f32, FooterFilters)>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -326,11 +327,11 @@ impl WinampApp {
             side_crate: None,
             #[cfg(test)]
             bpm_slider: None,
-            style_cache: None,
-            style_search: String::new(),
+            facet_cache: [None, None, None],
+            facet_search: Default::default(),
             discogs_hint_shown: false,
             #[cfg(test)]
-            style_drawn: None,
+            filters_drawn: None,
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -1448,9 +1449,9 @@ impl WinampApp {
     }
 
     /// `P`: the playing crate, scrolled to its playing entry, with the cursor on it.
-    /// The style filter changed: saved soon, the play order follows, and the list keeps a
-    /// row in view.
-    fn style_filter_changed(&mut self) {
+    /// A style, artist or label filter changed: saved soon, the play order follows, and the
+    /// list keeps a row in view.
+    fn filter_changed(&mut self) {
         self.mark_shown();
         let rows = self.pl_list().len();
         self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
@@ -2570,134 +2571,209 @@ impl WinampApp {
         end
     }
 
-    /// The footer's style filter, from `x` to `x_end` (skin pixels, like
-    /// [`Self::bpm_control`]), in the Discogs wantlist and collection crates whose records
-    /// have at least two styles: one chip per style (lit when selected) when they all fit and
-    /// there are at most [`STYLE_CHIPS_MAX`], or else a STYLES button that opens the list.
-    fn style_control(
+    /// The shown crate's values for `facet` with their record counts, counted again only when
+    /// the crate changes.
+    fn facet_counts(&mut self, facet: Facet) -> FacetCounts {
+        let c = self.crates.shown_id();
+        let rev = self.crates.shown().rev();
+        let slot = &mut self.facet_cache[facet as usize];
+        match slot {
+            Some((sc, sr, list)) if (*sc, *sr) == (c, rev) => list.clone(),
+            _ => {
+                let list = Rc::new(self.crates.shown().counts(facet));
+                *slot = Some((c, rev, list.clone()));
+                list
+            }
+        }
+    }
+
+    /// The filters the shown crate offers: in the Discogs crates, those with at least two
+    /// values.
+    fn offered_facets(&mut self) -> Vec<Facet> {
+        if !self.crates.is_discogs(self.crates.shown_id()) {
+            return Vec::new();
+        }
+        Facet::ALL
+            .into_iter()
+            .filter(|&f| self.facet_counts(f).len() >= 2)
+            .collect()
+    }
+
+    /// The footer's style, artist and label filters, from `x` to `x_end` (skin pixels, like
+    /// [`Self::bpm_control`]), in the Discogs wantlist and collection crates: the style chips
+    /// (at most [`STYLE_CHIPS_MAX`]) then ARTISTS and LABELS when all of it fits, else STYLES,
+    /// ARTISTS and LABELS when they fit, else nothing (☰ still opens every list). Returns the
+    /// filters drawn as buttons or chips, whose lists open from the footer.
+    fn filter_controls(
         &mut self,
         ui: &mut Ui,
         sk: &Skinned,
         (x, y, x_end, h): (f32, f32, f32, f32),
         actions: &mut Vec<Action>,
-    ) {
-        let c = self.crates.shown_id();
-        if !self.crates.is_discogs(c) {
-            return;
+    ) -> Vec<Facet> {
+        let facets = self.offered_facets();
+        if facets.is_empty() {
+            return Vec::new();
         }
-        let shown = self.crates.shown();
-        let rev = shown.rev();
-        let styles = match &self.style_cache {
-            Some((sc, sr, list)) if (*sc, *sr) == (c, rev) => list.clone(),
-            _ => {
-                let list = Rc::new(shown.styles());
-                self.style_cache = Some((c, rev, list.clone()));
-                list
-            }
-        };
-        if styles.len() < 2 {
-            return;
-        }
+        let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
         let shown = self.crates.shown();
         let lcd = color([0, 236, 0]);
         let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
         let x = x + STYLE_GAP;
-        let names: Vec<String> = styles.iter().map(|(s, _)| s.to_uppercase()).collect();
-        let need = names.iter().map(|n| sk.text_width(n)).sum::<f32>()
-            + STYLE_GAP * (names.len() - 1) as f32;
-        let chips = styles.len() <= STYLE_CHIPS_MAX && need <= x_end - x;
+        let room = x_end - x;
+        let label = |f: Facet| {
+            let name = match f {
+                Facet::Style => "STYLES",
+                Facet::Artist => "ARTISTS",
+                Facet::Label => "LABELS",
+            };
+            match shown.filter(f).map(|p| p.len()) {
+                Some(n) => format!("{name} {n}"),
+                None => name.to_owned(),
+            }
+        };
+        let width = |items: &[f32]| {
+            items.iter().sum::<f32>() + STYLE_GAP * items.len().saturating_sub(1) as f32
+        };
+        let buttons: Vec<f32> = facets.iter().map(|&f| sk.text_width(&label(f))).collect();
+        // Chips for the styles, when there are few enough, then the other buttons.
+        let chips: Option<Vec<f32>> = facets
+            .iter()
+            .position(|&f| f == Facet::Style)
+            .filter(|&i| counts[i].len() <= STYLE_CHIPS_MAX)
+            .map(|i| {
+                counts[i]
+                    .iter()
+                    .map(|(s, _)| sk.text_width(&s.to_uppercase()))
+                    .chain(
+                        facets
+                            .iter()
+                            .zip(&buttons)
+                            .filter(|(f, _)| **f != Facet::Style)
+                            .map(|(_, w)| *w),
+                    )
+                    .collect()
+            });
+        let with_chips = chips.is_some_and(|c| width(&c) <= room);
+        let tier = if with_chips {
+            FooterFilters::Chips
+        } else if width(&buttons) <= room {
+            FooterFilters::Buttons
+        } else {
+            FooterFilters::None
+        };
         #[cfg(test)]
         {
-            self.style_drawn = Some((x, chips));
+            self.filters_drawn = Some((x, tier));
         }
-        if chips {
-            let mut cx = x;
-            for ((style, n), name) in styles.iter().zip(&names) {
-                let w = sk.text_width(name);
-                let on = shown.style_on(style);
-                sk.text(cx, ty, name, if on { lcd } else { dim });
-                let r = ui.interact(
-                    sk.rect(cx - 1.0, y, w + 2.0, h),
-                    Id::new(("style_chip", style.as_str())),
-                    Sense::click(),
-                );
-                if r.double_clicked() {
-                    actions.push(Action::ClearStyles);
-                } else if r.clicked() {
-                    actions.push(Action::ToggleStyle(style.clone()));
+        if tier == FooterFilters::None {
+            return Vec::new();
+        }
+        // What to draw, worked out before the lists borrow the app.
+        let texts: Vec<(String, bool)> = facets
+            .iter()
+            .map(|&f| (label(f), shown.filter(f).is_some()))
+            .collect();
+        let styles_on: Vec<bool> = facets
+            .iter()
+            .position(|&f| f == Facet::Style)
+            .map(|i| {
+                counts[i]
+                    .iter()
+                    .map(|(s, _)| shown.picked(Facet::Style, s))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut cx = x;
+        for ((&f, list), (text, on)) in facets.iter().zip(&counts).zip(texts) {
+            if f == Facet::Style && tier == FooterFilters::Chips {
+                for ((style, n), &on) in list.iter().zip(&styles_on) {
+                    let name = style.to_uppercase();
+                    let w = sk.text_width(&name);
+                    sk.text(cx, ty, &name, if on { lcd } else { dim });
+                    let r = ui.interact(
+                        sk.rect(cx - 1.0, y, w + 2.0, h),
+                        Id::new(("style_chip", style.as_str())),
+                        Sense::click(),
+                    );
+                    if r.double_clicked() {
+                        actions.push(Action::ClearPicks(Some(f)));
+                    } else if r.clicked() {
+                        actions.push(Action::TogglePick(f, style.clone()));
+                    }
+                    r.on_hover_text(format!(
+                        "{style}: {} — click to {} it; double-click shows every style",
+                        records_label(*n),
+                        if on { "unselect" } else { "select" }
+                    ));
+                    cx += w + STYLE_GAP;
                 }
-                r.on_hover_text(format!(
-                    "{style}: {} — click to {} it; double-click shows every style",
-                    records_label(*n),
-                    if on { "unselect" } else { "select" }
-                ));
-                cx += w + STYLE_GAP;
+                continue;
             }
-            return;
+            let w = sk.text_width(&text);
+            sk.text(cx, ty, &text, if on { lcd } else { dim });
+            let button = ui.interact(
+                sk.rect(cx - 1.0, y, w + 2.0, h),
+                Id::new(("facet_button", f.name())),
+                Sense::click(),
+            );
+            if button.double_clicked() {
+                actions.push(Action::ClearPicks(Some(f)));
+            }
+            let popup = egui::Popup::from_toggle_button_response(&button)
+                .id(facet_popup_id(f))
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            popup.show(|ui| self.facet_list(ui, f, list, actions));
+            button.on_hover_text(format!(
+                "{} {}s: click to choose which records show; double-click shows them all",
+                list.len(),
+                f.name()
+            ));
+            cx += w + STYLE_GAP;
         }
-        let picked = styles.iter().filter(|(s, _)| shown.style_on(s)).count();
-        let label = if picked > 0 {
-            format!("STYLES {picked}")
-        } else {
-            "STYLES".to_owned()
-        };
-        let w = sk.text_width(&label);
-        if x + w > x_end {
-            return;
-        }
-        sk.text(x, ty, &label, if picked > 0 { lcd } else { dim });
-        let button = ui.interact(
-            sk.rect(x - 1.0, y, w + 2.0, h),
-            Id::new("style_button"),
-            Sense::click(),
+        facets
+            .into_iter()
+            .filter(|&f| !(f == Facet::Style && tier == FooterFilters::Chips))
+            .collect()
+    }
+
+    /// A filter's list: a search field, one checkbox per value with its number of records,
+    /// and Clear.
+    fn facet_list(&mut self, ui: &mut Ui, f: Facet, list: &FacetCounts, actions: &mut Vec<Action>) {
+        ui.set_min_width(220.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.facet_search[f as usize])
+                .hint_text(format!("Filter {}s…", f.name()))
+                .desired_width(f32::INFINITY),
         );
-        if button.double_clicked() {
-            actions.push(Action::ClearStyles);
-        }
-        egui::Popup::menu(&button)
-            .id(Id::new("style_list"))
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| {
-                ui.set_min_width(200.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.style_search)
-                        .hint_text("Filter styles…")
-                        .desired_width(f32::INFINITY),
-                );
-                let needle = self.style_search.trim().to_lowercase();
-                let shown = self.crates.shown();
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
-                    .show(ui, |ui| {
-                        for (style, n) in styles.iter() {
-                            if !needle.is_empty() && !style.to_lowercase().contains(&needle) {
-                                continue;
-                            }
-                            let mut on = shown.style_on(style);
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut on, style.as_str()).clicked() {
-                                    actions.push(Action::ToggleStyle(style.clone()));
-                                }
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| ui.weak(n.to_string()),
-                                );
-                            });
+        let needle = self.facet_search[f as usize].trim().to_lowercase();
+        let shown = self.crates.shown();
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for (value, n) in list.iter() {
+                    if !needle.is_empty() && !value.to_lowercase().contains(&needle) {
+                        continue;
+                    }
+                    let mut on = shown.picked(f, value);
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut on, value.as_str()).clicked() {
+                            actions.push(Action::TogglePick(f, value.clone()));
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.weak(n.to_string())
+                        });
                     });
-                ui.separator();
-                if ui
-                    .add_enabled(picked > 0, egui::Button::new("Clear"))
-                    .clicked()
-                {
-                    actions.push(Action::ClearStyles);
                 }
             });
-        button.on_hover_text(format!(
-            "{} styles: click to choose which records show; double-click shows every style",
-            styles.len()
-        ));
+        ui.separator();
+        if ui
+            .add_enabled(shown.filter(f).is_some(), egui::Button::new("Clear"))
+            .clicked()
+        {
+            actions.push(Action::ClearPicks(Some(f)));
+        }
     }
 
     /// The column header: names (with the sort arrow), a click sorts, dragging a divider
@@ -3039,10 +3115,15 @@ impl WinampApp {
         } else {
             first.album()
         };
-        let name = if first.artist.is_empty() {
+        // The record's own credit ("Various" for a compilation), else its first track's.
+        let artist = match first.origin.as_ref().map(|o| o.artist.as_str()) {
+            Some(a) if !a.is_empty() => a,
+            _ => first.artist.as_str(),
+        };
+        let name = if artist.is_empty() {
             album.to_owned()
         } else {
-            format!("{} – {album}", first.artist)
+            format!("{artist} – {album}")
         };
         let failed = marks.wantlist_failed.is_some()
             || marks.collection_failed.is_some()
@@ -3257,8 +3338,8 @@ impl WinampApp {
                     Id::new("pl_no_match"),
                     Sense::hover(),
                 )
-                .on_hover_text(if shown.style_filter().is_some() {
-                    "☰ › Show all styles, or a click on the lit styles, shows every style"
+                .on_hover_text(if shown.picks_filter() {
+                    "☰ › Show all records shows every style, artist and label"
                 } else {
                     "× after the BPM range, or ☰ › Show all tempos, shows every track"
                 });
@@ -3631,9 +3712,11 @@ impl WinampApp {
             });
             plus.on_hover_text("Add");
             let filtered = self.crates.shown().bpm_filter().is_some();
-            let styled = self.crates.shown().style_filter().is_some();
+            let picks = self.crates.shown().picks_filter();
+            let offered = self.offered_facets();
             let discogs = self.crates.is_discogs(self.crates.shown_id());
             let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
+            let menu_rect = menu.rect;
             egui::Popup::menu(&menu).show(|ui| {
                 if ui.button("Select all").clicked() {
                     actions.push(Action::SelectAll);
@@ -3664,8 +3747,13 @@ impl WinampApp {
                 if filtered && ui.button("Show all tempos").clicked() {
                     actions.push(Action::SetBpmFilter(None));
                 }
-                if styled && ui.button("Show all styles").clicked() {
-                    actions.push(Action::ClearStyles);
+                for &f in &offered {
+                    if ui.button(format!("Filter by {}…", f.name())).clicked() {
+                        actions.push(Action::OpenFacet(f));
+                    }
+                }
+                if picks && ui.button("Show all records").clicked() {
+                    actions.push(Action::ClearPicks(None));
                 }
                 let mut grouped = self.crates.shown().is_grouped();
                 if ui
@@ -3721,13 +3809,29 @@ impl WinampApp {
                 (pb.x as f32, pb.y as f32, x_end, pb.h as f32),
                 &mut actions,
             );
-            // Then the style filter, in the Discogs crates.
-            self.style_control(
+            // Then the style, artist and label filters, in the Discogs crates; the lists that
+            // have no footer button open from ☰.
+            let in_footer = self.filter_controls(
                 ui,
                 &bsk,
                 (bpm_end, pb.y as f32, x_end, pb.h as f32),
                 &mut actions,
             );
+            for f in self.offered_facets() {
+                if in_footer.contains(&f) {
+                    continue;
+                }
+                let list = self.facet_counts(f);
+                egui::Popup::new(
+                    facet_popup_id(f),
+                    ui.ctx().clone(),
+                    menu_rect,
+                    ui.layer_id(),
+                )
+                .open_memory(None)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| self.facet_list(ui, f, &list, &mut actions));
+            }
 
             // The resize grip: whole rows down, any width sideways.
             let rz = bsk.at("pl_resize");
@@ -4126,17 +4230,18 @@ impl WinampApp {
                     self.pl_scroll = self.pl_scroll.min(rows.saturating_sub(1));
                 }
             }
-            Action::ToggleStyle(style) => {
+            Action::TogglePick(f, value) => {
                 let p = self.crates.shown_mut();
-                let on = !p.style_on(&style);
-                p.set_style(&style, on);
-                self.style_filter_changed();
+                let on = !p.picked(f, &value);
+                p.set_pick(f, &value, on);
+                self.filter_changed();
             }
-            Action::ClearStyles => {
-                if self.crates.shown_mut().clear_styles() {
-                    self.style_filter_changed();
+            Action::ClearPicks(f) => {
+                if self.crates.shown_mut().clear_picks(f) {
+                    self.filter_changed();
                 }
             }
+            Action::OpenFacet(f) => egui::Popup::open_id(ctx, facet_popup_id(f)),
             Action::Sort(field) => {
                 // The same field again sorts the other way.
                 let p = self.crates.shown_mut();
@@ -4271,10 +4376,12 @@ enum Action {
     Sort(Field),
     /// Show (and play) only the shown crate's entries in this BPM range; `None` shows all.
     SetBpmFilter(Option<(u16, u16)>),
-    /// Selects or unselects a style in the shown crate's style filter.
-    ToggleStyle(String),
-    /// Shows every style again.
-    ClearStyles,
+    /// Picks or unpicks a value of the shown crate's style, artist or label filter.
+    TogglePick(Facet, String),
+    /// Turns a style, artist or label filter off, or all three with `None`.
+    ClearPicks(Option<Facet>),
+    /// Opens a filter's list (from ☰, at any width).
+    OpenFacet(Facet),
     ToggleColumn(Field),
     /// Widen a column by a share of the list's width.
     ResizeColumn(Field, f32),
@@ -4792,8 +4899,24 @@ fn engine_status(slot: &EngineSlot) -> String {
 
 /// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;
-/// A crate's styles, each with its number of records, the most first.
-type StyleCounts = Rc<Vec<(String, usize)>>;
+/// A crate's values for a filter, each with its number of records, the most first.
+type FacetCounts = Rc<Vec<(String, usize)>>;
+
+/// How the footer shows the style, artist and label filters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FooterFilters {
+    /// Style chips, then ARTISTS and LABELS.
+    Chips,
+    /// STYLES, ARTISTS and LABELS.
+    Buttons,
+    /// No room: ☰ opens the lists.
+    None,
+}
+
+/// The list of a filter, open from its footer button or from ☰.
+fn facet_popup_id(f: Facet) -> Id {
+    Id::new(("facet_list", f.name()))
+}
 /// Past this many styles, the footer shows the STYLES button and its list instead of chips.
 const STYLE_CHIPS_MAX: usize = 20;
 /// Skin pixels between two style chips (and before the first).
@@ -7373,26 +7496,33 @@ mod headless_tests {
         );
         rig.app.settings.playlist_width = 700;
         rig.frame(Vec::new());
-        assert_eq!(rig.app.style_drawn, None, "not a Discogs crate: no control");
+        assert_eq!(
+            rig.app.filters_drawn, None,
+            "not a Discogs crate: no control"
+        );
 
         rig.app.crates.set_collection(PLAYLIST);
         rig.frame(Vec::new());
-        let (x, chips) = rig.app.style_drawn.expect("the control is drawn");
-        assert!(chips, "4 short styles fit at 700 pixels");
+        let (x, tier) = rig.app.filters_drawn.expect("the control is drawn");
+        assert_eq!(
+            tier,
+            FooterFilters::Chips,
+            "4 short styles fit at 700 pixels"
+        );
         assert_eq!(rig.app.pl_visible_rows(), rig.app.pl_rows(), "no row taken");
         // The first chip is the style of most records: DEEP HOUSE.
         let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
         let chip = pos2(PL_LEFT + x + 4.0, bottom + 12.0 + 9.0);
         rig.click(chip);
         let shown = rig.app.crates.shown();
-        assert!(shown.style_on("Deep House"));
+        assert!(shown.picked(Facet::Style, "Deep House"));
         assert_eq!(shown.shown_rows().len(), 2, "the two Deep House records");
         for _ in 0..30 {
             rig.frame(Vec::new());
         }
         rig.double_click(chip);
         assert_eq!(
-            rig.app.crates.shown().style_filter(),
+            rig.app.crates.shown().filter(Facet::Style),
             None,
             "double-click clears"
         );
@@ -7409,8 +7539,12 @@ mod headless_tests {
         );
         rig.app.crates.set_collection(PLAYLIST);
         rig.frame(Vec::new());
-        let (x, chips) = rig.app.style_drawn.expect("the control is drawn");
-        assert!(!chips, "the chips don't fit at the classic width");
+        let (x, tier) = rig.app.filters_drawn.expect("the control is drawn");
+        assert_eq!(
+            tier,
+            FooterFilters::Buttons,
+            "the chips don't fit at the classic width"
+        );
         let box_left = rig.app.def.at("pl_info").x as f32 - 2.0;
         let label = rig.app.def.font.advance as f32 * "STYLES 1".len() as f32;
         assert!(x + label <= box_left, "clear of the time's box");
@@ -7431,7 +7565,7 @@ mod headless_tests {
             .unwrap()
             .rect;
         rig.click(item.center());
-        assert!(rig.app.crates.shown().style_on("Electro"));
+        assert!(rig.app.crates.shown().picked(Facet::Style, "Electro"));
         assert_eq!(rig.app.crates.shown().shown_rows().len(), 1);
 
         // The search narrows the list.
@@ -7448,7 +7582,183 @@ mod headless_tests {
             text_list(&out)
         );
         rig.click_text("Clear");
-        assert_eq!(rig.app.crates.shown().style_filter(), None);
+        assert_eq!(rig.app.crates.shown().filter(Facet::Style), None);
+    }
+
+    /// Gives the shown crate's entries a release each (1, 2, …) with these styles, record
+    /// artists and labels.
+    fn set_records(rig: &mut Rig, records: &[(&str, &str, &str)]) {
+        let p = rig.app.crates.shown_mut();
+        for (i, (e, (st, artist, label))) in p.entries_mut().zip(records).enumerate() {
+            e.origin = Some(crate::playlist::Origin {
+                release: Some(i as u64 + 1),
+                clip: Some(format!("c{i}")),
+                styles: (*st).into(),
+                artist: (*artist).into(),
+                label: (*label).into(),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// A collection crate of six records with 3 styles, 4 artists and 3 labels.
+    fn credited_rig(name: &str) -> Rig {
+        let mut rig = Rig::new(name, Vec::new(), |_| {});
+        rig.fill_playlist(6);
+        set_records(
+            &mut rig,
+            &[
+                ("Deep House", "Theo Parrish", "Sound Signature"),
+                (
+                    "Deep House",
+                    "Theo Parrish & Marcellus Pittman",
+                    "Unirhythm",
+                ),
+                ("Minimal", "Nightcraft", "Lowtide Tapes"),
+                ("Minimal", "Nightcraft", "Lowtide Tapes"),
+                ("Techno", "Various", "Lowtide Tapes"),
+                ("Techno", "Theo Parrish", "Sound Signature"),
+            ],
+        );
+        rig.app.crates.set_collection(PLAYLIST);
+        rig
+    }
+
+    #[test]
+    fn the_footer_shows_chips_then_buttons_then_nothing_as_it_narrows() {
+        let mut rig = credited_rig("filter-tiers");
+        rig.app.settings.playlist_width = 700;
+        rig.frame(Vec::new());
+        let (_, tier) = rig.app.filters_drawn.unwrap();
+        assert_eq!(tier, FooterFilters::Chips);
+        rig.app.settings.playlist_width = 380;
+        rig.frame(Vec::new());
+        let (x, tier) = rig.app.filters_drawn.unwrap();
+        assert_eq!(tier, FooterFilters::Buttons);
+        // The time box moves right with the playlist's width (380 is 105 past 275).
+        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0 + 105.0;
+        let advance = rig.app.def.font.advance as f32;
+        let need = advance * "STYLES ARTISTS LABELS".len() as f32;
+        assert!(x + need <= box_left, "clear of the time's box");
+        // Classic width with tempos: the BPM control takes the room.
+        rig.app.settings.playlist_width = 275;
+        set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::None);
+    }
+
+    #[test]
+    fn the_menu_opens_any_list_at_classic_width() {
+        let mut rig = credited_rig("filter-menu");
+        set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::None);
+        rig.click(footer_button(&rig, "pl_menu"));
+        rig.click_text("Filter by artist…");
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Nightcraft"), "{:?}", text_list(&out));
+        // Search, then pick.
+        rig.click_text("Filter artists…");
+        rig.frame(vec![Event::Text("parrish".into())]);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Theo Parrish") && shows(&out, "Theo Parrish & Marcellus Pittman"));
+        assert!(
+            !text_list(&out).iter().any(|t| t == "Nightcraft"),
+            "{:?}",
+            text_list(&out)
+        );
+        rig.click_text("Theo Parrish");
+        assert_eq!(
+            rig.app.crates.shown().shown_rows().len(),
+            2,
+            "not the joint record"
+        );
+        // Show all records keeps the BPM range.
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
+        rig.app.apply(
+            Action::TogglePick(Facet::Label, "Lowtide Tapes".into()),
+            &ctx,
+        );
+        egui::Popup::close_all(&ctx);
+        rig.frame(Vec::new());
+        rig.click(footer_button(&rig, "pl_menu"));
+        rig.click_text("Show all records");
+        let p = rig.app.crates.shown();
+        assert!(!p.picks_filter());
+        assert!(p.bpm_filter().is_some(), "the BPM range stays");
+    }
+
+    #[test]
+    fn a_lit_button_counts_its_picks_and_a_double_click_clears_them() {
+        let mut rig = credited_rig("filter-button");
+        rig.app.settings.playlist_width = 700;
+        let ctx = rig.ctx.clone();
+        rig.app.apply(
+            Action::TogglePick(Facet::Label, "Lowtide Tapes".into()),
+            &ctx,
+        );
+        rig.app
+            .apply(Action::TogglePick(Facet::Label, "Unirhythm".into()), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows().len(), 4);
+        // Chips (DEEP HOUSE MINIMAL TECHNO), then ARTISTS, then "LABELS 2".
+        let (x, _) = rig.app.filters_drawn.unwrap();
+        let advance = rig.app.def.font.advance as f32;
+        let before = "DEEP HOUSE MINIMAL TECHNO ARTISTS ".len() as f32 * advance - 4.0 * advance
+            + 4.0 * STYLE_GAP;
+        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        let labels = pos2(PL_LEFT + x + before + 6.0, bottom + 12.0 + 9.0);
+        rig.double_click(labels);
+        assert_eq!(rig.app.crates.shown().filter(Facet::Label), None);
+        assert_eq!(rig.app.crates.shown().shown_rows().len(), 6);
+    }
+
+    #[test]
+    fn next_and_p_follow_the_label_filter() {
+        let mut rig = Rig::new(
+            "label-next",
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        set_records(
+            &mut rig,
+            &[
+                ("Techno", "A", "Lowtide Tapes"),
+                ("Techno", "B", "Other"),
+                ("Techno", "C", "Lowtide Tapes"),
+            ],
+        );
+        let ctx = rig.ctx.clone();
+        rig.app.apply(
+            Action::TogglePick(Facet::Label, "Lowtide Tapes".into()),
+            &ctx,
+        );
+        rig.frame(Vec::new());
+        assert_eq!(
+            rig.app.queue,
+            [ids[0], ids[2]],
+            "the other label is left out"
+        );
+        // Only "Other": the playing entry is hidden, and P turns every filter off.
+        rig.app.apply(Action::ClearPicks(None), &ctx);
+        rig.app
+            .apply(Action::TogglePick(Facet::Label, "Other".into()), &ctx);
+        rig.app
+            .apply(Action::TogglePick(Facet::Artist, "B".into()), &ctx);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows(), [1]);
+        rig.app.show_playing_entry();
+        assert!(!rig.app.crates.shown().is_filtered());
     }
 
     #[test]
@@ -7470,17 +7780,18 @@ mod headless_tests {
         set_styles(&mut rig, &["Deep House", "Electro", "Deep House"]);
         let ctx = rig.ctx.clone();
         rig.app
-            .apply(Action::ToggleStyle("Deep House".into()), &ctx);
+            .apply(Action::TogglePick(Facet::Style, "Deep House".into()), &ctx);
         rig.frame(Vec::new());
         assert_eq!(rig.app.queue, [ids[0], ids[2]], "Electro is left out");
         // Electro only: the playing entry is hidden, and P shows it again.
-        rig.app.apply(Action::ClearStyles, &ctx);
-        rig.app.apply(Action::ToggleStyle("Electro".into()), &ctx);
+        rig.app.apply(Action::ClearPicks(None), &ctx);
+        rig.app
+            .apply(Action::TogglePick(Facet::Style, "Electro".into()), &ctx);
         rig.frame(Vec::new());
         assert_eq!(rig.app.crates.shown().shown_rows(), [1]);
         rig.app.show_playing_entry();
         rig.frame(Vec::new());
-        assert_eq!(rig.app.crates.shown().style_filter(), None);
+        assert_eq!(rig.app.crates.shown().filter(Facet::Style), None);
     }
 
     #[test]

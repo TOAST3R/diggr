@@ -198,7 +198,7 @@ pub fn scroll_to(rows: &[ListRow], start: usize, row: usize, units: usize) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playlist::Origin;
+    use crate::playlist::{Facet, Origin};
     use platform::TrackRef;
 
     /// A crate of these releases (`None`: a local file with no album), one entry each.
@@ -276,7 +276,7 @@ mod tests {
             e.origin.as_mut().unwrap().styles = st.into();
             e.bpm = Some(134);
         }
-        p.set_style("Deep House", true);
+        p.set_pick(Facet::Style, "Deep House", true);
         assert_eq!(shape(&build(&p, &HashSet::new())), ["r[0, 1]/2", "s3"]);
         // With the BPM filter too, a record shows only what passes both.
         p.entries_mut().next().unwrap().bpm = Some(124);

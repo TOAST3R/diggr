@@ -161,6 +161,10 @@ pub struct Origin {
     /// The record's Discogs styles, comma-separated ("Deep House, Minimal").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub styles: String,
+    /// The record's credited artist as Discogs shows it ("Various" for a compilation), the
+    /// same on every track whatever the track's own credit.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub artist: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -254,12 +258,16 @@ impl Entry {
         }
     }
 
-    /// The record's Discogs styles ("Deep House", "Minimal"), none for a local file.
-    pub fn styles(&self) -> impl Iterator<Item = &str> {
-        self.origin
-            .as_ref()
-            .map_or("", |o| o.styles.as_str())
-            .split(',')
+    /// The record's values for a filter (see [`Facet`]), none for a local file: its styles
+    /// ("Deep House", "Minimal"), its credited artist, or its first label.
+    pub fn values(&self, facet: Facet) -> impl Iterator<Item = &str> {
+        let o = self.origin.as_ref();
+        let (text, list) = match facet {
+            Facet::Style => (o.map_or("", |o| o.styles.as_str()), true),
+            Facet::Artist => (o.map_or("", |o| o.artist.as_str()), false),
+            Facet::Label => (o.map_or("", |o| o.label.as_str()), false),
+        };
+        text.split(move |c| list && c == ',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
     }
@@ -319,6 +327,40 @@ pub struct SavedPlaylist {
     /// The styles the style filter shows, when any is selected.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub styles: BTreeSet<String>,
+    /// The record artists the artist filter shows, when any is picked.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub artists: BTreeSet<String>,
+    /// The labels the label filter shows, when any is picked.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub labels: BTreeSet<String>,
+}
+
+/// What a record can be filtered by, besides its tempo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Facet {
+    /// Its Discogs styles (any of them).
+    Style,
+    /// Its credited artist, as Discogs shows it.
+    Artist,
+    /// Its first label.
+    Label,
+}
+
+impl Facet {
+    pub const ALL: [Facet; 3] = [Facet::Style, Facet::Artist, Facet::Label];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    /// "style", "artist", "label".
+    pub fn name(self) -> &'static str {
+        match self {
+            Facet::Style => "style",
+            Facet::Artist => "artist",
+            Facet::Label => "label",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -376,8 +418,9 @@ pub struct Playlist {
     sorted: Option<(Field, Dir)>,
     /// The BPM filter, as set (see [`Playlist::bpm_filter`] for what applies).
     bpm_range: Option<(u16, u16)>,
-    /// The style filter, as set (see [`Playlist::style_filter`] for what applies).
-    styles_on: BTreeSet<String>,
+    /// The style, artist and label filters, as set (see [`Playlist::filter`] for what
+    /// applies), by [`Facet`].
+    picked: [BTreeSet<String>; 3],
     next_id: EntryId,
     /// Shown grouped by record: each album's entries are kept together (see
     /// [`Playlist::gather`]).
@@ -390,26 +433,26 @@ pub struct Playlist {
     rev: u64,
 }
 
-/// What the filters show: an entry whose tempo is in the BPM range (when one is set) and
-/// that has one of the selected styles (when any is). An entry with no tempo, or no style,
-/// shows only while that filter is off.
+/// What the filters show: an entry whose tempo is in the BPM range (when one is set) and that
+/// has, for each of style, artist and label that filters, one of the picked values. An entry
+/// with no tempo, or no value for a filter, shows only while that filter is off.
 #[derive(Debug, Clone, Copy)]
 pub struct Shown<'a> {
     bpm: Option<(u16, u16)>,
-    styles: Option<&'a BTreeSet<String>>,
+    picks: [Option<&'a BTreeSet<String>>; 3],
 }
 
 impl Shown<'_> {
     pub fn shows(&self, e: &Entry) -> bool {
         self.bpm
             .is_none_or(|(lo, hi)| e.bpm.is_some_and(|b| (lo..=hi).contains(&b)))
-            && self
-                .styles
-                .is_none_or(|on| e.styles().any(|s| on.contains(s)))
+            && Facet::ALL
+                .into_iter()
+                .all(|f| self.picks[f.index()].is_none_or(|on| e.values(f).any(|v| on.contains(v))))
     }
 
     pub fn is_filtered(&self) -> bool {
-        self.bpm.is_some() || self.styles.is_some()
+        self.bpm.is_some() || self.picks.iter().any(Option::is_some)
     }
 }
 
@@ -1092,7 +1135,9 @@ impl Playlist {
             entries: self.entries.iter().map(Entry::to_saved).collect(),
             current: self.current_index(),
             bpm_range: self.bpm_filter(),
-            styles: self.style_filter().cloned().unwrap_or_default(),
+            styles: self.saved_picks(Facet::Style),
+            artists: self.saved_picks(Facet::Artist),
+            labels: self.saved_picks(Facet::Label),
         }
     }
 
@@ -1111,7 +1156,7 @@ impl Playlist {
         let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         pl.bpm_range = saved.bpm_range;
-        pl.styles_on = saved.styles;
+        pl.picked = [saved.styles, saved.artists, saved.labels];
         (pl, pending)
     }
 
@@ -1151,23 +1196,24 @@ impl Playlist {
         self.shown().shows(e)
     }
 
-    /// What the BPM and style filters show, worked out once for a pass over the entries.
+    /// What the BPM, style, artist and label filters show, worked out once for a pass over
+    /// the entries.
     pub fn shown(&self) -> Shown<'_> {
         Shown {
             bpm: self.bpm_filter(),
-            styles: self.style_filter(),
+            picks: Facet::ALL.map(|f| self.filter(f)),
         }
     }
 
-    /// Whether a filter (BPM or style) hides anything.
+    /// Whether a filter (BPM, style, artist or label) hides anything.
     pub fn is_filtered(&self) -> bool {
         self.shown().is_filtered()
     }
 
-    /// Turns both filters off. Returns whether that shows more.
+    /// Turns every filter off. Returns whether that shows more.
     pub fn clear_filters(&mut self) -> bool {
         let bpm = self.set_bpm_filter(None);
-        self.clear_styles() || bpm
+        self.clear_picks(None) || bpm
     }
 
     /// The crate indices of the entries the filters show, in order: row `r` of the list is
@@ -1185,21 +1231,21 @@ impl Playlist {
             .collect()
     }
 
-    // ---- style filter --------------------------------------------------------------------
+    // ---- style, artist and label filters -------------------------------------------------
 
-    /// The crate's styles, each with the number of records (albums, and entries of no
-    /// album) that have it: the most first, then by name.
-    pub fn styles(&self) -> Vec<(String, usize)> {
+    /// The crate's values for `facet`, each with the number of records (albums, and entries of
+    /// no album) that have it: the most first, then by name.
+    pub fn counts(&self, facet: Facet) -> Vec<(String, usize)> {
         let mut seen: HashMap<&str, HashSet<AlbumKey>> = HashMap::new();
         let mut loose: HashMap<&str, usize> = HashMap::new();
         for e in &self.entries {
             let key = e.album_key();
-            for s in e.styles() {
+            for v in e.values(facet) {
                 match &key {
                     Some(k) => {
-                        seen.entry(s).or_default().insert(k.clone());
+                        seen.entry(v).or_default().insert(k.clone());
                     }
-                    None => *loose.entry(s).or_default() += 1,
+                    None => *loose.entry(v).or_default() += 1,
                 }
             }
         }
@@ -1208,52 +1254,70 @@ impl Playlist {
             .chain(loose.keys())
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|&s| {
-                let n = seen.get(s).map_or(0, HashSet::len) + loose.get(s).copied().unwrap_or(0);
-                (s.to_owned(), n)
+            .map(|&v| {
+                let n = seen.get(v).map_or(0, HashSet::len) + loose.get(v).copied().unwrap_or(0);
+                (v.to_owned(), n)
             })
             .collect();
         out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         out
     }
 
-    /// The styles that filter now: the ones selected, when some entry still has one of them;
-    /// `None` (no filter) otherwise.
-    pub fn style_filter(&self) -> Option<&BTreeSet<String>> {
-        let on = &self.styles_on;
+    /// The values of `facet` that filter now: the ones picked, when some entry still has one
+    /// of them; `None` (no filter) otherwise.
+    pub fn filter(&self, facet: Facet) -> Option<&BTreeSet<String>> {
+        let on = &self.picked[facet.index()];
         let any = !on.is_empty()
             && self
                 .entries
                 .iter()
-                .any(|e| e.styles().any(|s| on.contains(s)));
+                .any(|e| e.values(facet).any(|v| on.contains(v)));
         any.then_some(on)
     }
 
-    /// Whether `style` is selected.
-    pub fn style_on(&self, style: &str) -> bool {
-        self.styles_on.contains(style)
+    /// Whether a style, artist or label filter hides anything (not the BPM range).
+    pub fn picks_filter(&self) -> bool {
+        Facet::ALL.into_iter().any(|f| self.filter(f).is_some())
     }
 
-    /// Selects or unselects one style.
-    pub fn set_style(&mut self, style: &str, on: bool) {
+    /// Whether `value` is picked in `facet`.
+    pub fn picked(&self, facet: Facet, value: &str) -> bool {
+        self.picked[facet.index()].contains(value)
+    }
+
+    /// Picks or unpicks one value of `facet`.
+    pub fn set_pick(&mut self, facet: Facet, value: &str, on: bool) {
+        let set = &mut self.picked[facet.index()];
         let changed = if on {
-            self.styles_on.insert(style.to_owned())
+            set.insert(value.to_owned())
         } else {
-            self.styles_on.remove(style)
+            set.remove(value)
         };
         if changed {
             self.changed();
         }
     }
 
-    /// Unselects every style. Returns whether a style filtered.
-    pub fn clear_styles(&mut self) -> bool {
-        let was = self.style_filter().is_some();
-        if !self.styles_on.is_empty() {
-            self.styles_on.clear();
+    /// Unpicks every value of `facet`, or of all three with `None`. Returns whether one of
+    /// them filtered.
+    pub fn clear_picks(&mut self, facet: Option<Facet>) -> bool {
+        let facets: Vec<Facet> = facet.map_or(Facet::ALL.to_vec(), |f| vec![f]);
+        let was = facets.iter().any(|&f| self.filter(f).is_some());
+        let mut changed = false;
+        for f in facets {
+            let set = &mut self.picked[f.index()];
+            changed |= !set.is_empty();
+            set.clear();
+        }
+        if changed {
             self.changed();
         }
         was
+    }
+
+    /// What is saved of a facet's filter: the picks while they filter.
+    fn saved_picks(&self, facet: Facet) -> BTreeSet<String> {
+        self.filter(facet).cloned().unwrap_or_default()
     }
 
     /// Entries without a known tempo (hidden while a range is set).
@@ -2320,12 +2384,102 @@ mod tests {
         (p, ids)
     }
 
+    /// A crate of one entry per record, release `i + 1`, with these record artists and labels
+    /// (and the style "Techno"); the entries' own artists are "Track <i>".
+    fn credited(records: &[(&str, &str)]) -> (Playlist, Vec<EntryId>) {
+        let mut p = Playlist::default();
+        let ids = records
+            .iter()
+            .enumerate()
+            .map(|(i, (artist, label))| {
+                let o = Origin {
+                    styles: "Techno".into(),
+                    artist: (*artist).into(),
+                    label: (*label).into(),
+                    ..origin(i as u64 + 1, &format!("c{i}"))
+                };
+                p.add_waiting(
+                    format!("Track {i}"),
+                    format!("t{i}"),
+                    None,
+                    Some(o),
+                    "listed",
+                )
+            })
+            .collect();
+        (p, ids)
+    }
+
+    #[test]
+    fn the_artist_filter_matches_the_record_credit_exactly() {
+        let (mut p, _) = credited(&[
+            ("Theo Parrish", "Sound Signature"),
+            ("Theo Parrish & Marcellus Pittman", "Unirhythm"),
+            ("Various", "Sound Signature"),
+            ("Theo Parrish", "Ugly Edits"),
+        ]);
+        p.set_pick(Facet::Artist, "Theo Parrish", true);
+        assert_eq!(
+            p.shown_rows(),
+            [0, 3],
+            "not the joint credit, nor a compilation"
+        );
+        // Any of the picked artists.
+        p.set_pick(Facet::Artist, "Various", true);
+        assert_eq!(p.shown_rows(), [0, 2, 3]);
+        // And the label filter on top: both must pass.
+        p.set_pick(Facet::Label, "Sound Signature", true);
+        assert_eq!(p.shown_rows(), [0, 2]);
+        assert!(p.picks_filter());
+        // The track's own credit plays no part.
+        p.clear_picks(None);
+        p.set_pick(Facet::Artist, "Track 0", true);
+        assert_eq!(p.filter(Facet::Artist), None, "no record is credited so");
+        assert_eq!(p.shown_rows(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn labels_and_artists_are_counted_by_record_and_saved() {
+        let (mut p, _) = credited(&[
+            ("Nightcraft", "Lowtide Tapes"),
+            ("Nightcraft", "Lowtide Tapes"),
+            ("Lumen", "Analogical Force"),
+            ("", ""),
+        ]);
+        assert_eq!(
+            p.counts(Facet::Label),
+            [
+                ("Lowtide Tapes".to_owned(), 2),
+                ("Analogical Force".to_owned(), 1)
+            ]
+        );
+        assert_eq!(p.counts(Facet::Artist)[0], ("Nightcraft".to_owned(), 2));
+        // A record without a label shows only while the label filter is off.
+        p.set_pick(Facet::Label, "Analogical Force", true);
+        assert_eq!(p.shown_rows(), [2]);
+        p.set_pick(Facet::Artist, "Lumen", true);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert!(restored.picked(Facet::Label, "Analogical Force"));
+        assert!(restored.picked(Facet::Artist, "Lumen"));
+        assert_eq!(restored.shown_rows(), [2]);
+        // Show all records: the three filters off, the BPM range kept.
+        let mut p = restored;
+        for (e, b) in p.entries.iter_mut().zip([124, 134, 134, 134]) {
+            e.bpm = Some(b);
+        }
+        p.set_bpm_filter(Some((130, 140)));
+        assert!(p.clear_picks(None));
+        assert!(!p.picks_filter());
+        assert_eq!(p.shown_rows(), [1, 2, 3]);
+    }
+
     #[test]
     fn a_style_filter_shows_records_with_any_selected_style() {
         let (mut p, ids) = styled(&["Deep House", "Minimal, Techno", "Electro", ""]);
         assert!(!p.is_filtered());
-        p.set_style("Deep House", true);
-        p.set_style("Minimal", true);
+        p.set_pick(Facet::Style, "Deep House", true);
+        p.set_pick(Facet::Style, "Minimal", true);
         assert_eq!(p.shown_rows(), [0, 1], "any of them; none for no style");
         assert!(p.is_filtered());
         assert!(!p.shows(&p.entries[3].clone()));
@@ -2356,7 +2510,7 @@ mod tests {
         };
         p.add_waiting("A", "t9", None, Some(more), "listed");
         assert_eq!(
-            p.styles(),
+            p.counts(Facet::Style),
             [
                 ("Deep House".to_owned(), 2),
                 ("Electro".to_owned(), 1),
@@ -2368,10 +2522,10 @@ mod tests {
     #[test]
     fn a_style_gone_from_the_crate_stops_filtering() {
         let (mut p, ids) = styled(&["Deep House", "Electro"]);
-        p.set_style("Electro", true);
+        p.set_pick(Facet::Style, "Electro", true);
         assert_eq!(p.shown_rows(), [1]);
         p.remove_ids(&[ids[1]]);
-        assert_eq!(p.style_filter(), None);
+        assert_eq!(p.filter(Facet::Style), None);
         assert_eq!(p.shown_rows(), [0], "everything shows again");
     }
 
@@ -2383,10 +2537,10 @@ mod tests {
             !text.contains("styles: ["),
             "nothing saved without a filter"
         );
-        p.set_style("Deep House", true);
+        p.set_pick(Facet::Style, "Deep House", true);
         let text = ron::to_string(&p.to_saved()).unwrap();
         let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
-        assert!(restored.style_on("Deep House"));
+        assert!(restored.picked(Facet::Style, "Deep House"));
         assert_eq!(restored.shown_rows(), [0]);
     }
 
@@ -2416,10 +2570,11 @@ mod tests {
                 .min()
                 .unwrap()
         };
-        let budget = if cfg!(debug_assertions) { 40 } else { 16 };
+        // The target is for release builds; debug ones are several times slower.
+        let budget = if cfg!(debug_assertions) { 100 } else { 16 };
         let took = best(&mut || {
-            p.set_style("Electro", false);
-            p.set_style("Electro", true);
+            p.set_pick(Facet::Style, "Electro", false);
+            p.set_pick(Facet::Style, "Electro", true);
             let rows = p.shown_rows();
             let order = p.play_order(false, None, 0);
             assert!(!rows.is_empty() && !order.is_empty());
@@ -2427,7 +2582,7 @@ mod tests {
         assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
         // Counting styles runs again only when the crate changes, not per frame.
         let budget = if cfg!(debug_assertions) { 200 } else { 16 };
-        let took = best(&mut || assert_eq!(p.styles().len(), 6));
+        let took = best(&mut || assert_eq!(p.counts(Facet::Style).len(), 6));
         assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
     }
 

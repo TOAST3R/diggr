@@ -141,7 +141,7 @@ and Home/End jump), and Enter plays the entry under it.
 - **Playlist window:**
   - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
     menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Show all
-    tempos and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
+    tempos, the record filters (see below) and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
     Browser…). The "selected/total" time sits on the right, beside the grip;
   - **BPM filter:** once the crate on screen has two different known tempos, the footer shows
     `BPM ◂━●━━●━▸ 124-139` between the gear and the time. Drag a handle to keep only the tracks in that
@@ -153,14 +153,20 @@ and Home/End jump), and Enter plays the entry under it.
     double-click on the slider, or ≡ ▸ Show all tempos shows everything again. The range is
     remembered per crate. `P` on a hidden playing track turns the filter off. Sorting and M3U
     export always take the whole crate;
-  - **Style filter:** in your Discogs wantlist and collection crates, the footer lists the
-    records' styles after the BPM filter, the style of most records first. Click a style to
-    show only the records with it (or with any other style you pick, so Deep House and
-    Minimal show both). Lit styles are on; a double-click, or ≡ ▸ Show all styles, turns them
-    all off. When the styles don't all fit, or there are more than 20, a **STYLES** button opens
-    the list instead, with a search box and each style's number of records. The BPM and style
-    filters add up (a track must pass both), play follows what's shown, and the choice is
-    remembered per crate;
+  - **Style, artist and label filters:** in your Discogs wantlist and collection crates you
+    can keep only the records of some styles, artists or labels. Pick several and any of them
+    shows (Deep House and Minimal show both). A record's artist is its credit as Discogs shows
+    it ("Theo Parrish", "Various", "Theo Parrish & Marcellus Pittman" are three artists), and
+    its label is its first label. Each list has a search box and each value's number of
+    records, the most first. The filters add up with each other and with the BPM range (a
+    track must pass them all), play follows what's shown, and each crate remembers them.
+    - In the footer, after the BPM filter: the style chips (lit ones are on), then
+      **ARTISTS** and **LABELS**, when all of it fits. Otherwise **STYLES**, **ARTISTS** and
+      **LABELS** buttons, when they fit; otherwise nothing. A button is lit while its filter is
+      on and counts its picks ("LABELS 2"); a double-click on it, or on a chip, turns that
+      filter off.
+    - At any width, ≡ ▸ Filter by style… / artist… / label… opens the same lists, and
+      ≡ ▸ Show all records turns the three off (the BPM range stays);
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -188,7 +194,8 @@ and Home/End jump), and Enter plays the entry under it.
     ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
     app opens maximized next time;
   - **▤** in the title bar (or `Shift+G`, or **≡ ▸ Group by record**) shows the crate one row
-    per record: its cover, "Artist – Album" with its Discogs styles at the right, the catalog
+    per record: its cover, "Artist – Album" (the record's credit, so a compilation reads
+    "Various – …") with its Discogs styles at the right, the catalog
     number, year, number of tracks and what's for sale (or, while one of its tracks plays, that
     track). The column header is hidden while grouped (☰ › Sort still sorts), and the sidebar
     counts a grouped crate's records instead of its tracks. **⏵** (or `Space` on it)
@@ -781,7 +788,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 626 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 635 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
