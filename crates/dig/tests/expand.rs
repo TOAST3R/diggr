@@ -34,6 +34,11 @@ fn keys(items: &[dig::discogs::model::Listed]) -> Vec<RecordKey> {
     items.iter().map(|l| l.key).collect()
 }
 
+/// Whether the listing says vinyl: `None` when it gives no format.
+fn known_vinyl(l: &dig::discogs::model::Listed) -> Option<bool> {
+    (!l.formats().is_empty()).then(|| l.is_vinyl())
+}
+
 #[test]
 fn a_label_lists_all_its_pages_with_formats() {
     let (mut c, t) = client(true, None);
@@ -53,7 +58,7 @@ fn a_label_lists_all_its_pages_with_formats() {
         keys(&all),
         [R(1001), R(1002), R(1003), R(1004), R(1005), R(1006)]
     );
-    let vinyl: Vec<Option<bool>> = all.iter().map(|l| l.vinyl).collect();
+    let vinyl: Vec<Option<bool>> = all.iter().map(known_vinyl).collect();
     assert_eq!(
         vinyl,
         [
@@ -73,7 +78,7 @@ fn a_label_lists_all_its_pages_with_formats() {
             .any(|p| p == "/labels/12345/releases?page=3&per_page=100")
     );
     // Unknown from the listing: the record's details decide.
-    assert!(!record(&mut c, R(1005), false, NOW).unwrap().vinyl);
+    assert!(!record(&mut c, R(1005), false, NOW).unwrap().is_vinyl());
 }
 
 #[test]
@@ -115,12 +120,12 @@ fn a_master_takes_its_main_release_details() {
         (r.release, r.catno.as_str(), r.year),
         (Some(1001), "LT-012", Some(1994))
     );
+    assert!(r.is_vinyl());
     let fs = r.for_sale.unwrap();
     assert_eq!(
         (fs.count, fs.lowest, fs.currency.as_str()),
         (6, Some(9.0), "EUR")
     );
-    assert!(r.vinyl);
 }
 
 #[test]
@@ -204,7 +209,7 @@ fn a_wantlist_and_a_list() {
         keys(&p.items),
         [Release(1004), Release(1002), Release(1006)]
     );
-    let vinyl: Vec<Option<bool>> = p.items.iter().map(|l| l.vinyl).collect();
+    let vinyl: Vec<Option<bool>> = p.items.iter().map(known_vinyl).collect();
     assert_eq!(vinyl, [Some(true), Some(false), Some(true)]);
     assert_eq!(page_name(&mut c, &wl, NOW).unwrap(), "Wantlist: digger");
 

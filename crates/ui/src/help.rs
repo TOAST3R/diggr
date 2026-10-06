@@ -141,10 +141,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "show and play only the tracks in that tempo range / show everything",
             ),
             (
-                "Footer styles, ARTISTS, LABELS (Discogs wantlist and collection): click / \
-                 double-click",
-                "show only records with the picked styles, artists or labels (☰ › Filter by… \
-                 at any width) / turn that filter off",
+                "Footer styles, ARTISTS, LABELS (Discogs wantlist and collection), FORMATS \
+                 (any dig crate): click / double-click",
+                "show only records with the picked styles, artists, labels or formats \
+                 (☰ › Filter by… at any width) / turn that filter off",
             ),
             (
                 "Main window: right-click",

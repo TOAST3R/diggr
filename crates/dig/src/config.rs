@@ -18,8 +18,6 @@ pub const DEFAULT_CACHE_GB: f32 = 2.0;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DigSettings {
-    /// Leave out records with no vinyl format.
-    pub vinyl_only: bool,
     /// Leave out clips the user passed on.
     pub skip_passed: bool,
     /// The preview cache limit, in GB.
@@ -39,7 +37,6 @@ pub struct DigSettings {
 impl Default for DigSettings {
     fn default() -> Self {
         Self {
-            vinyl_only: true,
             skip_passed: true,
             cache_gb: DEFAULT_CACHE_GB,
             ytdlp_path: None,
@@ -143,7 +140,7 @@ mod tests {
         let d = crate::test_dir("config-settings");
         assert_eq!(load_settings(&d), DigSettings::default());
         let s = DigSettings {
-            vinyl_only: false,
+            skip_passed: false,
             cache_gb: 5.0,
             ytdlp_path: Some("/opt/bin/yt-dlp".into()),
             wantlist: Some(7),
@@ -157,7 +154,14 @@ mod tests {
         assert_eq!(load_settings(&d).wantlist, Some(9));
         std::fs::write(d.join("dig/settings.ron"), "(cache_gb: -3.0)").unwrap();
         let s = load_settings(&d);
-        assert_eq!((s.cache_gb, s.vinyl_only), (0.1, true));
+        assert_eq!((s.cache_gb, s.skip_passed), (0.1, true));
+        // Vinyl only is gone: a file that has it still loads.
+        std::fs::write(
+            d.join("dig/settings.ron"),
+            "(vinyl_only: true, cache_gb: 3.0)",
+        )
+        .unwrap();
+        assert_eq!(load_settings(&d).cache_gb, 3.0);
     }
 
     #[test]

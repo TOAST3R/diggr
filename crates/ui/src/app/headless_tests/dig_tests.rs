@@ -1133,6 +1133,7 @@ fn entries_saved_without_an_album_get_it_from_the_cache_without_a_request() {
         )
     );
     assert_eq!(o.artist, "Nightcraft", "the record artist too");
+    assert_eq!(o.formats, "Vinyl", "and its formats");
     assert_eq!(p.entries()[2].album(), "", "not cached: left as it is");
     assert_eq!(fakes.transport.count(), 0, "no request to Discogs");
 }
@@ -2167,4 +2168,216 @@ fn without_a_token_there_is_nothing_to_refresh() {
         text_list(&out)
     );
     assert!(!shows(&out, "Refresh collection"));
+}
+
+// ---- every format, vinyl first ------------------------------------------------------------
+
+use ::dig::discogs::matching::ClipEntry;
+use ::dig::discogs::model::{Format, Listed};
+use ::dig::intake::{Event as Intake, JobRef, Outcome, RecordInfo};
+
+/// The Analogical Force label's job, filling crate `target`.
+fn af_job(target: CrateId) -> JobRef {
+    JobRef {
+        id: 1,
+        target,
+        page: "https://www.discogs.com/label/906282".into(),
+        name: "Label: Analogical Force".into(),
+        filters: Filters::default(),
+    }
+}
+
+fn af_listed(release: u64, format: Format) -> Listed {
+    Listed {
+        catno: "AF060LP".into(),
+        title: "Sixty".into(),
+        artist: "Various".into(),
+        formats: vec![format],
+        ..Listed::new(RecordKey::Release(release))
+    }
+}
+
+fn af_info(release: u64, format: Format) -> RecordInfo {
+    RecordInfo {
+        key: RecordKey::Release(release),
+        release: Some(release),
+        master: Some(3847755),
+        artist: "Various".into(),
+        title: "Sixty".into(),
+        label: "Analogical Force".into(),
+        catno: "AF060LP".into(),
+        year: Some(2025),
+        for_sale: None,
+        cover: String::new(),
+        styles: "Electro".into(),
+        formats: vec![format],
+    }
+}
+
+fn af_clips(clips: &[&str]) -> Outcome {
+    Outcome::Clips(
+        clips
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ClipEntry {
+                clip: (*c).into(),
+                artist: "James Shinra".into(),
+                title: format!("Track {i}"),
+                position: format!("A{}", i + 1),
+                duration: Some(250.0),
+            })
+            .collect(),
+    )
+}
+
+const VINYL: u64 = 33988281;
+const FLAC: u64 = 33337220;
+
+/// The releases of crate `c`'s entries, in order.
+fn releases_in(rig: &Rig, c: CrateId) -> Vec<Option<u64>> {
+    rig.app
+        .crates
+        .get(c)
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|e| e.origin.as_ref().and_then(|o| o.release))
+        .collect()
+}
+
+#[test]
+fn a_vinyl_release_brings_the_tunes_and_its_digital_twin_adds_nothing() {
+    let fakes = Fakes::new();
+    let mut rig = rig("vinyl-first", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![
+            af_listed(FLAC, Format::File),
+            af_listed(VINYL, Format::Vinyl),
+        ],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j.clone(),
+        af_info(VINYL, Format::Vinyl),
+        af_clips(&["CIRRUSclip1", "PENROSEclp1"]),
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(FLAC, Format::File),
+        af_clips(&["CIRRUSclip1", "PENROSEclp1"]),
+    ));
+    assert_eq!(releases_in(&rig, c), [Some(VINYL), Some(VINYL)]);
+}
+
+#[test]
+fn a_digital_twin_fetched_first_hands_its_tracks_to_the_vinyl() {
+    let fakes = Fakes::new();
+    let mut rig = rig("vinyl-handover", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![
+            af_listed(FLAC, Format::File),
+            af_listed(VINYL, Format::Vinyl),
+        ],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j.clone(),
+        af_info(FLAC, Format::File),
+        af_clips(&["CIRRUSclip1", "PENROSEclp1", "BONUSdigit1"]),
+    ));
+    let ids: Vec<EntryId> = rig.app.crates.get(c).unwrap().entries()[..3]
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    // The digital-only bonus track is playing.
+    rig.app.crates.set_playing(c);
+    rig.app.crates.get_mut(c).unwrap().set_current(Some(ids[2]));
+    rig.app.position.state = PlayState::Playing;
+    rig.app.dig_playing_changed();
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        af_clips(&["CIRRUSclip1", "PENROSEclp1"]),
+    ));
+    let p = rig.app.crates.get(c).unwrap();
+    let kept: Vec<(EntryId, Option<u64>)> = p
+        .entries()
+        .iter()
+        .map(|e| (e.id, e.origin.as_ref().and_then(|o| o.release)))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            (ids[0], Some(VINYL)),
+            (ids[1], Some(VINYL)),
+            (ids[2], Some(FLAC))
+        ],
+        "handed over in place; the playing bonus track stays while it plays"
+    );
+    assert_eq!(
+        p.get(ids[0]).unwrap().origin.as_ref().unwrap().formats,
+        "Vinyl"
+    );
+    // Something else plays: the bonus track leaves.
+    rig.app.crates.get_mut(c).unwrap().set_current(Some(ids[0]));
+    rig.app.dig_playing_changed();
+    assert_eq!(releases_in(&rig, c), [Some(VINYL), Some(VINYL)]);
+}
+
+#[test]
+fn a_digital_only_record_stays_marked_as_a_file() {
+    let fakes = Fakes::new();
+    let mut rig = rig("digital-only", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![af_listed(FLAC, Format::File)],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(FLAC, Format::File),
+        af_clips(&["CIRRUSclip1"]),
+    ));
+    let p = rig.app.crates.get(c).unwrap();
+    assert_eq!(releases_in(&rig, c), [Some(FLAC)]);
+    assert_eq!(p.entries()[0].origin.as_ref().unwrap().formats, "File");
+    // Marked on its row, and in the Format column when wide.
+    rig.app.show_crate(c);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "FILE"), "{:?}", text_list(&out));
+    rig.app.settings.playlist_width = 700;
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Format"), "{:?}", text_list(&out));
+}
+
+#[test]
+fn the_wantlist_crate_keeps_both_releases() {
+    let fakes = Fakes::new();
+    let mut rig = rig("vinyl-wantlist", &fakes, |_| {});
+    let c = rig.app.crates.create("Wantlist").unwrap();
+    rig.app.dig.as_mut().unwrap().settings.wantlist = Some(c);
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![
+            af_listed(FLAC, Format::File),
+            af_listed(VINYL, Format::Vinyl),
+        ],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j.clone(),
+        af_info(FLAC, Format::File),
+        af_clips(&["CIRRUSclip1"]),
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        af_clips(&["CIRRUSclip1", "PENROSEclp1"]),
+    ));
+    assert_eq!(releases_in(&rig, c), [Some(FLAC), Some(VINYL)]);
 }

@@ -2,7 +2,7 @@
 //!
 //! A send becomes a [`Job`]: first the page's name, then its listing, 100 records a request,
 //! each record reported at once as "listed"; then each record's details, nearest the playhead
-//! first, reported as its clip entries, "no clip", or left out by the vinyl filter. Jobs are
+//! first, reported as its clip entries or "no clip". Jobs are
 //! saved as they go, so a send interrupted by quitting resumes when its crate is next shown.
 //!
 //! [`Intake`] is the synchronous core (tests drive it step by step); [`IntakeHandle`] runs it
@@ -19,7 +19,7 @@ use crate::collection::{self, Collection, Pressing};
 use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
 use crate::discogs::matching::{self, ClipEntry};
-use crate::discogs::model::{ForSale, Listed, Record, RecordKey, Role};
+use crate::discogs::model::{ForSale, Format, Listed, Record, RecordKey, Role};
 use crate::discogs::transport::Method;
 use crate::discogs::url::{Page, PageKind};
 use crate::jobs::{Filters, Job, JobId, Jobs};
@@ -86,8 +86,6 @@ pub enum Outcome {
     Clips(Vec<ClipEntry>),
     /// Unavailable, with the reason: "no clip", "not found".
     Unavailable(String),
-    /// Not vinyl, with vinyl only on: it leaves the crate.
-    Excluded,
 }
 
 /// A record's details, as the entries' origin carries them.
@@ -106,6 +104,8 @@ pub struct RecordInfo {
     pub cover: String,
     /// Its styles, comma-separated (empty when unknown).
     pub styles: String,
+    /// Its formats, vinyl first (empty when unknown).
+    pub formats: Vec<Format>,
 }
 
 impl RecordInfo {
@@ -122,6 +122,7 @@ impl RecordInfo {
             for_sale: r.for_sale.clone(),
             cover: r.cover.clone(),
             styles: r.styles.join(", "),
+            formats: r.formats.clone(),
         }
     }
 
@@ -142,6 +143,7 @@ impl RecordInfo {
             for_sale: None,
             cover: l.cover.clone(),
             styles: String::new(),
+            formats: l.formats(),
         }
     }
 }
@@ -325,6 +327,7 @@ impl Intake {
                 self.focus = Some(target);
                 for j in self.jobs.jobs.iter_mut().filter(|j| j.target == target) {
                     reorder(&mut j.pending, &order);
+                    vinyl_first(&mut j.pending);
                 }
             }
             Command::Refresh(release) => {
@@ -579,12 +582,9 @@ impl Intake {
         job.pages = Some(lp.pages);
         job.total = lp.total;
         job.next_page = n + 1;
-        let (keep, out): (Vec<Listed>, Vec<Listed>) = lp
-            .items
-            .into_iter()
-            .partition(|l| !(job.filters.vinyl_only && l.vinyl == Some(false)));
-        job.done += out.len();
+        let keep = lp.items;
         job.pending.extend(keep.iter().cloned());
+        vinyl_first(&mut job.pending);
         let r = Self::job_ref(job);
         let (done, total) = (job.done, job.total);
         if !keep.is_empty() {
@@ -597,32 +597,25 @@ impl Intake {
 
     fn expand_next(&mut self, i: usize, now: u64) -> Result<(), ApiError> {
         self.ensure_identity();
-        let (listed, filters, subject) = {
+        let (listed, subject) = {
             let j = &self.jobs.jobs[i];
-            (
-                j.pending[0].clone(),
-                j.filters,
-                j.subject.clone().unwrap_or_default(),
-            )
+            (j.pending[0].clone(), j.subject.clone().unwrap_or_default())
         };
         let (info, outcome) = match expand::record(&mut self.client, listed.key, false, now) {
             Ok(rec) => {
                 let info = RecordInfo::from_record(&rec);
-                let outcome = if filters.vinyl_only && !rec.vinyl {
-                    Outcome::Excluded
+                let artist = if listed.role == Role::Remix {
+                    subject.as_str()
                 } else {
-                    let artist = if listed.role == Role::Remix {
-                        subject.as_str()
-                    } else {
-                        ""
-                    };
-                    let entries = matching::entries(&rec, listed.role, artist);
+                    ""
+                };
+                let entries = matching::entries(&rec, listed.role, artist);
+                let outcome =
                     if entries.is_empty() && (rec.clips.is_empty() || listed.role == Role::Main) {
                         Outcome::Unavailable("no clip".into())
                     } else {
                         Outcome::Clips(entries)
-                    }
-                };
+                    };
                 (info, outcome)
             }
             Err(ApiError::NotFound) => (
@@ -882,6 +875,45 @@ fn reorder(pending: &mut Vec<Listed>, order: &[RecordKey]) {
     *pending = front;
 }
 
+/// A listed record's catalog number and title, to pair a release with its twin in another
+/// format; `None` when either is missing.
+fn twin_key(l: &Listed) -> Option<(String, String)> {
+    let catno = l.catno.trim().to_lowercase();
+    let title = l.title.trim().to_lowercase();
+    (!catno.is_empty() && !title.is_empty()).then_some((catno, title))
+}
+
+/// Moves the vinyl release of a record up to just before its non-vinyl twin (same catalog
+/// number and title) when the twin comes first, so the vinyl release is fetched first and
+/// brings the tunes. The rest keep their order.
+fn vinyl_first(pending: &mut Vec<Listed>) {
+    let twin_of_vinyl: HashSet<(String, String)> = pending
+        .iter()
+        .filter(|l| l.is_vinyl())
+        .filter_map(twin_key)
+        .collect();
+    if twin_of_vinyl.is_empty() {
+        return;
+    }
+    let mut slots: Vec<Option<Listed>> = pending.drain(..).map(Some).collect();
+    let mut out = Vec::with_capacity(slots.len());
+    for i in 0..slots.len() {
+        let Some(l) = slots[i].take() else { continue };
+        if let Some(k) = twin_key(&l).filter(|k| !l.is_vinyl() && twin_of_vinyl.contains(k)) {
+            for later in slots[i + 1..].iter_mut() {
+                if later
+                    .as_ref()
+                    .is_some_and(|v| v.is_vinyl() && twin_key(v).as_ref() == Some(&k))
+                {
+                    out.extend(later.take());
+                }
+            }
+        }
+        out.push(l);
+    }
+    *pending = out;
+}
+
 /// The worker thread's end of the channels.
 pub struct IntakeHandle {
     commands: Sender<Command>,
@@ -940,5 +972,65 @@ impl IntakeHandle {
 
     pub fn poll(&self) -> Vec<Event> {
         self.events.try_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discogs::model::Format;
+
+    fn listed(id: u64, catno: &str, title: &str, format: Option<Format>) -> Listed {
+        Listed {
+            catno: catno.into(),
+            title: title.into(),
+            formats: format.into_iter().collect(),
+            ..Listed::new(RecordKey::Release(id))
+        }
+    }
+
+    fn ids(pending: &[Listed]) -> Vec<RecordKey> {
+        pending.iter().map(|l| l.key).collect()
+    }
+
+    #[test]
+    fn a_digital_twin_waits_for_its_vinyl_release() {
+        use Format::*;
+        let mut pending = vec![
+            listed(1, "AF060LP", "Sixty", Some(File)),
+            listed(2, "AF059", "Other", Some(File)),
+            listed(3, "AF060LP ", "SIXTY", Some(Vinyl)),
+            listed(4, "AF058", "Third", Some(Vinyl)),
+            listed(5, "AF057", "Fourth", Some(File)),
+        ];
+        vinyl_first(&mut pending);
+        use RecordKey::Release as R;
+        assert_eq!(
+            ids(&pending),
+            [R(3), R(1), R(2), R(4), R(5)],
+            "the vinyl comes up to just before its FLAC; digital-only ones keep their place"
+        );
+        // Already in order: unchanged.
+        let before = ids(&pending);
+        vinyl_first(&mut pending);
+        assert_eq!(ids(&pending), before);
+    }
+
+    #[test]
+    fn the_focus_keeps_the_vinyl_ahead_of_its_twin() {
+        use Format::*;
+        let mut pending = vec![
+            listed(3, "AF060LP", "Sixty", Some(Vinyl)),
+            listed(1, "AF060LP", "Sixty", Some(File)),
+            listed(9, "X1", "Elsewhere", Some(Vinyl)),
+        ];
+        // The user is on the FLAC: its vinyl twin is fetched first, right there.
+        reorder(
+            &mut pending,
+            &[RecordKey::Release(1), RecordKey::Release(9)],
+        );
+        vinyl_first(&mut pending);
+        use RecordKey::Release as R;
+        assert_eq!(ids(&pending), [R(3), R(1), R(9)]);
     }
 }

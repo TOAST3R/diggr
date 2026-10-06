@@ -7,7 +7,6 @@ const DEFAULTS = {
   port: WR.DEFAULT_PORT,
   key: null,
   appName: WR.PLACEHOLDER,
-  vinylOnly: true,
   skipPassed: true,
 };
 
@@ -60,7 +59,7 @@ async function hello() {
 
 async function send(url, mode, crate) {
   const s = await settings();
-  const body = { url, mode, vinyl_only: s.vinylOnly, skip_passed: s.skipPassed };
+  const body = { url, mode, skip_passed: s.skipPassed };
   if (mode === "crate") body.crate = crate;
   return bridge("send", { method: "POST", body });
 }
@@ -136,6 +135,8 @@ async function buildMenus() {
 chrome.runtime.onInstalled.addListener((details) => {
   buildMenus();
   hello();
+  // Every send keeps every format now: the old vinyl-only switch is forgotten.
+  chrome.storage.local.remove("vinylOnly");
   if (details.reason === "install") chrome.runtime.openOptionsPage();
 });
 chrome.runtime.onStartup.addListener(buildMenus);
