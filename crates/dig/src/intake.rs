@@ -580,9 +580,14 @@ impl Intake {
         };
         let job = &mut self.jobs.jobs[i];
         job.pages = Some(lp.pages);
-        job.total = lp.total;
         job.next_page = n + 1;
-        let keep = lp.items;
+        // A listing can give a record more than once (a label credited twice on it): it
+        // comes in once.
+        let mut seen: HashSet<RecordKey> = job.pending.iter().map(|l| l.key).collect();
+        let (keep, repeats): (Vec<Listed>, Vec<Listed>) =
+            lp.items.into_iter().partition(|l| seen.insert(l.key));
+        job.repeats += repeats.len();
+        job.total = lp.total.saturating_sub(job.repeats);
         job.pending.extend(keep.iter().cloned());
         vinyl_first(&mut job.pending);
         let r = Self::job_ref(job);

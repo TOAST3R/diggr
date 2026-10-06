@@ -76,7 +76,11 @@ Each usable clip of a record SHALL become one entry. The entry is titled "Artist
 - a wantlist: every release in it;
 - a list: its releases and master releases, in list order.
 
-A clip that the target crate already holds SHALL NOT be added again. A record with no usable clip SHALL appear once, as an unavailable entry marked "no clip".
+A clip that the target crate already holds SHALL NOT be added again. A record with no usable clip SHALL appear once, as an unavailable entry marked "no clip". A record that a page's listing gives more than once (a label credited several times on a release) SHALL be listed, fetched and counted once.
+
+#### Scenario: Listed three times
+- **WHEN** a label's listing gives release 38583846 three times and it has no clip
+- **THEN** the crate holds one "no clip" entry for it, and the progress counts it once
 
 #### Scenario: Release with three clips
 - **WHEN** a release with a four-track tracklist and three clips is sent
@@ -184,11 +188,16 @@ A format written with a count ("2x12\"", "3xLP", "17xFile") SHALL count as that 
 
 ### Requirement: Vinyl first
 In a crate filled from a page (any crate but the user's wantlist and collection crates), two releases SHALL be the same record when they have the same master release, or, when either has none, the same catalog number and title, ignoring case. When a record has a vinyl release in the crate:
-- its tunes SHALL belong to the vinyl release: a non-vinyl release of the same record SHALL add no entry, and its listed placeholder SHALL leave the crate;
+- its tunes SHALL belong to the vinyl release: a non-vinyl release of the same record SHALL add no entry, and its listed placeholder SHALL leave the crate. The one exception is a non-vinyl release that brings clips while the vinyl release has none: its entries stay;
+- a non-vinyl release that has no clip SHALL leave the crate, whichever of the two was fetched first;
 - when the non-vinyl release was expanded first, each of its entries whose clip the vinyl release also has SHALL become an entry of the vinyl release (its origin, catalog number, side, cover and for-sale data), keeping its place, its audio and, when it plays, its playback; its other entries SHALL leave the crate, except the entry that is playing, which SHALL leave once it stops;
 - the expansion SHALL fetch a vinyl release before a non-vinyl release with the same catalog number and title, when both are waiting.
 
 A record with no vinyl release SHALL stay in the crate with all its entries. Resolving twins SHALL NOT make any request beyond expanding the releases, and SHALL NOT interrupt playback. The wantlist and collection crates SHALL keep every release they hold.
+
+#### Scenario: Neither has a clip
+- **WHEN** a label lists AF069 on vinyl (38583846) and as FLAC (38518245), both of master 4361292, and neither has a clip on Discogs
+- **THEN** the crate holds one "no clip" entry, of the vinyl release, whichever is fetched first
 
 #### Scenario: Vinyl and digital of one record
 - **WHEN** a label lists AF060LP as "17xFile, FLAC" (release 33337220) and as "3x12\"" (release 33988281), both of master 3847755

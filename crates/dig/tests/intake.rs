@@ -780,3 +780,35 @@ fn a_stale_cover_is_looked_up_again_once() {
             .any(|e| matches!(e, Event::Cover(Release(424242), url) if url.is_empty()))
     );
 }
+
+#[test]
+fn a_record_listed_more_than_once_comes_in_once() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    // AF069 is listed three times on the label's page (the label is credited thrice).
+    t.route(
+        "/labels/906282",
+        200,
+        r#"{"id": 906282, "name": "Analogical Force"}"#,
+    );
+    t.route(
+        "/labels/906282/releases?page=1&per_page=100",
+        200,
+        r#"{"pagination": {"page": 1, "pages": 1, "items": 4},
+            "releases": [
+              {"id": 1001, "catno": "AF069", "title": "Hidden Soul EP", "format": "12\", EP"},
+              {"id": 1001, "catno": "AF069", "title": "Hidden Soul EP", "format": "12\", EP"},
+              {"id": 1003, "catno": "AF070", "title": "Next", "format": "12\", EP"},
+              {"id": 1001, "catno": "AF069", "title": "Hidden Soul EP", "format": "12\", EP"}]}"#,
+    );
+    let mut i = intake(&t, true, None);
+    send(&mut i, "https://www.discogs.com/label/906282");
+    let ev = run(&mut i, 100);
+    assert_eq!(listed(&ev), [Release(1001), Release(1003)]);
+    let keys: Vec<RecordKey> = records(&ev).iter().map(|(k, _)| *k).collect();
+    assert_eq!(keys, [Release(1001), Release(1003)], "each expanded once");
+    let progress = ev.iter().rev().find_map(|e| match e {
+        Event::Progress(_, d, t) => Some((*d, *t)),
+        _ => None,
+    });
+    assert_eq!(progress, Some((2, 2)), "counted once too");
+}

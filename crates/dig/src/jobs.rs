@@ -36,8 +36,12 @@ pub struct Job {
     pub next_page: u32,
     /// Listing pages in all, once the first has arrived.
     pub pages: Option<u32>,
-    /// Records in the listing, as Discogs counts them.
+    /// Records in the listing, as Discogs counts them, less the repeats left out.
     pub total: usize,
+    /// Records the listing gave more than once (a label credited twice on a release), left
+    /// out so each record comes in once.
+    #[serde(default)]
+    pub repeats: usize,
     /// Records finished (expanded, or left out by a filter).
     pub done: usize,
     /// Listed records still waiting for their details, in crate order.
@@ -61,6 +65,7 @@ impl Job {
             next_page: 1,
             pages: None,
             total: 0,
+            repeats: 0,
             done: 0,
             pending: Vec::new(),
             name,
