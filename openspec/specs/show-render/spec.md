@@ -46,14 +46,3 @@ Before rendering, the system SHALL check for ffmpeg and, if missing, fail with a
 - **WHEN** ffmpeg is not on the PATH
 - **THEN** the command fails immediately with "ffmpeg not found — install it with `brew install ffmpeg`"
 
-### Requirement: Render from the player
-A playlist entry's context menu (right-click, or Control-click on macOS) SHALL offer "Render show…", which opens a dialog with every option of the command (size, frame rate, range, title card, pinned look), then renders in the background with visible progress, can be cancelled, notifies on completion, and does not affect playback. Size, frame rate and the title card setting SHALL be remembered.
-
-#### Scenario: Options in the dialog
-- **WHEN** the user chooses 1280×720, 30 fps, from 1:00 to 1:30 and the look julia_tunnel/solar in the dialog
-- **THEN** the render uses exactly those options, as `--size 1280x720 --fps 30 --from 1:00 --to 1:30 --look julia_tunnel/solar` would
-
-#### Scenario: Background render
-- **WHEN** the user renders a show from the playlist while music plays
-- **THEN** playback continues without underruns and the main window shows the render's progress until it completes
-

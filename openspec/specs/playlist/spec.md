@@ -202,7 +202,6 @@ Right-clicking an entry (or Control-clicking it on macOS) SHALL open a menu with
 - Remove;
 - Remove album (N tracks) and Select album, when the entry belongs to an album;
 - Send to crate;
-- Render show, when available;
 - for an entry from Discogs: Add to wantlist or Remove from wantlist (or "In collection", disabled, when the record is owned), Add to collection (or "In collection", disabled, when this pressing is owned), Retry wantlist or Retry add to collection after a failure, Pass or Undo pass, Open for-sale page, Open release on Discogs, and Copy Discogs link.
 
 When the clicked entry is selected, Remove, Send to crate, Add to wantlist, Remove from wantlist and Add to collection SHALL act on the whole selection (the wantlist and collection items on its distinct releases, see `discogs-write`). Otherwise the selection SHALL first become the clicked entry. Remove album and Select album SHALL act on the clicked entry's album. All other items SHALL act on the clicked entry only.
@@ -230,6 +229,10 @@ When the clicked entry is selected, Remove, Send to crate, Add to wantlist, Remo
 #### Scenario: Discogs items
 - **WHEN** the user right-clicks an entry from release 123456, which is neither wanted nor owned
 - **THEN** the menu offers "Add to wantlist (Y)" and "Add to collection", and no Keep item
+
+#### Scenario: No Render show
+- **WHEN** the user right-clicks any entry, in any crate
+- **THEN** the menu offers no Render show item
 
 ### Requirement: Maximized playlist
 A toggle SHALL maximize the playlist: the ⇔ button in the playlist's title bar, or Shift+P. The title bar SHALL hold, from the right: the close button, ⇔, and the ▤ button that groups the shown crate by record (see `record-view`), all at the classic 275 skin pixel width. While maximized:
