@@ -4,10 +4,14 @@
 //! without `www.`, over http or https (or no scheme), with an optional two-letter language
 //! segment (`/de/`), with or without the name part after the id, and with the legacy
 //! slug-first form of releases and masters. A marketplace item (`/shop/item/…`, or the older
-//! `/sell/item/…`) is accepted too, and dug as the release it sells. The query (except the
-//! wantlist's `user`) and the fragment are ignored.
+//! `/sell/item/…`) is accepted too, and dug as the release it sells. A seller's page
+//! (`/seller/‹name›/profile`, `/seller/‹name›`, or `/user/‹name›` alone) names a seller, which
+//! is added to Top Sellers rather than sent as tracks. The query (except the wantlist's
+//! `user`) and the fragment are ignored.
 
 use serde::{Deserialize, Serialize};
+
+use super::seller::Criteria;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PageKind {
@@ -21,6 +25,17 @@ pub enum PageKind {
     ShopItem(u64),
     /// A user's collection (their own, or a public one).
     Collection(String),
+    /// A seller: added to Top Sellers, never expanded into tracks itself.
+    Seller(String),
+    /// A seller's stock as a send: their copies for sale that pass the criteria, newest
+    /// first. With `fresh`, listing pages are read again rather than taken from the cache (a
+    /// refresh). Made by the app, never parsed from an address.
+    Inventory {
+        seller: String,
+        criteria: Criteria,
+        #[serde(default)]
+        fresh: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +54,7 @@ pub enum Refused {
 }
 
 pub const SUPPORTED: &str = "Supported Discogs pages: a release, master release, artist, \
-     label, wantlist, collection, list or marketplace item";
+     label, wantlist, collection, list, marketplace item or seller";
 
 impl Page {
     pub fn new(kind: PageKind) -> Self {
@@ -58,6 +73,9 @@ impl Page {
             PageKind::List(id) => format!("{base}/lists/{id}"),
             PageKind::ShopItem(id) => format!("{base}/shop/item/{id}"),
             PageKind::Collection(user) => format!("{base}/user/{user}/collection"),
+            PageKind::Seller(user) | PageKind::Inventory { seller: user, .. } => {
+                format!("{base}/seller/{user}/profile")
+            }
         }
     }
 
@@ -72,13 +90,20 @@ impl Page {
             PageKind::List(_) => "List",
             PageKind::ShopItem(_) => "Shop item",
             PageKind::Collection(_) => "Collection",
+            PageKind::Seller(_) | PageKind::Inventory { .. } => "Seller",
         }
     }
 
     /// A name until the API gives the real one: from the slug, else the id.
     pub fn provisional_name(&self) -> String {
         let what = match (&self.kind, &self.slug) {
-            (PageKind::Wantlist(user) | PageKind::Collection(user), _) => user.clone(),
+            (
+                PageKind::Wantlist(user)
+                | PageKind::Collection(user)
+                | PageKind::Seller(user)
+                | PageKind::Inventory { seller: user, .. },
+                _,
+            ) => user.clone(),
             (_, Some(slug)) => slug.replace('-', " "),
             (
                 PageKind::Release(id)
@@ -157,6 +182,10 @@ fn page(segs: &[&str], query: &str) -> Option<Page> {
         ["user", user, "collection"] => {
             let user = percent_decode(user);
             valid_user(&user).then(|| Page::new(PageKind::Collection(user)))
+        }
+        ["seller", user] | ["seller", user, "profile"] | ["user", user] => {
+            let user = percent_decode(user);
+            valid_user(&user).then(|| Page::new(PageKind::Seller(user)))
         }
         ["lists", s] => with_slug(PageKind::List, s),
         ["shop" | "sell", "item", s] => with_slug(PageKind::ShopItem, s),
@@ -296,6 +325,26 @@ mod tests {
             ),
             ("https://www.discogs.com/lists/555", List(555), None),
             ("  https://WWW.DISCOGS.COM/release/1  ", Release(1), None),
+            (
+                "https://www.discogs.com/seller/decks.de/profile?genre=Electronic",
+                Seller("decks.de".into()),
+                None,
+            ),
+            (
+                "https://www.discogs.com/es/seller/logon",
+                Seller("logon".into()),
+                None,
+            ),
+            (
+                "https://discogs.com/user/www.hhv.de",
+                Seller("www.hhv.de".into()),
+                None,
+            ),
+            (
+                "https://www.discogs.com/user/digger/collection",
+                Collection("digger".into()),
+                None,
+            ),
         ];
         for (text, kind, slug) in table {
             let p = parse(text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
@@ -317,6 +366,12 @@ mod tests {
             ("https://www.discogs.com/label/12x-Name", Unsupported),
             ("https://www.discogs.com/wantlist", Unsupported),
             ("https://www.discogs.com/search/?q=lowtide", Unsupported),
+            ("https://www.discogs.com/seller/", Unsupported),
+            (
+                "https://www.discogs.com/seller/decks.de/feedback",
+                Unsupported,
+            ),
+            ("https://www.discogs.com/user/digger/reviews", Unsupported),
             ("https://evil.com/discogs.com/release/1", NotDiscogs),
             ("https://discogs.com.evil.com/release/1", NotDiscogs),
             ("https://www.youtube.com/watch?v=abcdefghijk", NotDiscogs),
@@ -343,5 +398,8 @@ mod tests {
         assert_eq!(p.url(), "https://www.discogs.com/user/digger/collection");
         let p = parse("https://www.discogs.com/sell/item/3923678974").unwrap();
         assert_eq!(p.url(), "https://www.discogs.com/shop/item/3923678974");
+        let p = parse("https://www.discogs.com/user/logon").unwrap();
+        assert_eq!(p.provisional_name(), "Seller: logon");
+        assert_eq!(p.url(), "https://www.discogs.com/seller/logon/profile");
     }
 }

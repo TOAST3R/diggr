@@ -27,6 +27,8 @@ pub struct Request {
     /// Path and query, e.g. `/labels/1/releases?page=2&per_page=100`.
     pub path: String,
     pub token: Option<String>,
+    /// A JSON body (the cart's POST); `None` sends an empty one.
+    pub body: Option<String>,
 }
 
 impl Request {
@@ -35,6 +37,7 @@ impl Request {
             method: Method::Get,
             path: path.into(),
             token: token.map(str::to_owned),
+            body: None,
         }
     }
 
@@ -46,6 +49,9 @@ impl Request {
         ];
         if let Some(t) = &self.token {
             h.push(("Authorization", format!("Discogs token={t}")));
+        }
+        if self.body.is_some() {
+            h.push(("Content-Type", "application/json".to_owned()));
         }
         h
     }
@@ -116,7 +122,10 @@ impl Transport for UreqTransport {
                 for (k, v) in &headers {
                     b = b.header(*k, v);
                 }
-                b.send_empty()
+                match &req.body {
+                    Some(json) => b.send(json.as_str()),
+                    None => b.send_empty(),
+                }
             }
         };
         let resp = result.map_err(|e| NetError(e.to_string()))?;
@@ -152,9 +161,10 @@ pub type Logged = (Request, Vec<(&'static str, String)>);
 
 /// Serves JSON by path: routes added in code, then `<fixtures>/<path>.json` files, where the
 /// path's `/`, `?`, `&` and `=` become `_` (`/releases/1?curr_abbr=EUR` is
-/// `releases_1_curr_abbr_EUR.json`). Anything else is a 404. A PUT or DELETE succeeds with an
-/// empty body; a POST (a collection add) answers a new `instance_id` each time, as Discogs
-/// does. Records every request it sees.
+/// `releases_1_curr_abbr_EUR.json`). Anything else is a 404. A PUT, POST or DELETE answers
+/// its route for that method when one is set ([`FakeTransport::route_for`]); otherwise a PUT
+/// or DELETE succeeds with an empty body, and a POST (a collection add) answers a new
+/// `instance_id` each time, as Discogs does. Records every request it sees.
 #[derive(Default)]
 pub struct FakeTransport {
     routes: Mutex<HashMap<String, (u16, String)>>,
@@ -183,6 +193,21 @@ impl FakeTransport {
             .lock()
             .unwrap()
             .insert(path.into(), (status, body.into()));
+    }
+
+    /// The answer to a PUT, POST or DELETE on `path` (a GET uses [`FakeTransport::route`]).
+    pub fn route_for(
+        &self,
+        method: Method,
+        path: impl Into<String>,
+        status: u16,
+        body: impl Into<String>,
+    ) {
+        let key = format!("{method:?} {}", path.into());
+        self.routes
+            .lock()
+            .unwrap()
+            .insert(key, (status, body.into()));
     }
 
     /// The next calls fail this way, one fault per call.
@@ -241,6 +266,16 @@ impl Transport for FakeTransport {
             None => {}
         }
         let remaining = *self.remaining.lock().unwrap();
+        if req.method != Method::Get {
+            let key = format!("{:?} {}", req.method, req.path);
+            if let Some((status, body)) = self.routes.lock().unwrap().get(&key).cloned() {
+                return Ok(Response {
+                    status,
+                    remaining,
+                    body,
+                });
+            }
+        }
         match req.method {
             Method::Get => {}
             Method::Post => {
@@ -338,6 +373,7 @@ mod tests {
                 method: Method::Post,
                 path: p.into(),
                 token: Some("tok".into()),
+                body: None,
             })
             .unwrap()
         };
@@ -348,6 +384,30 @@ mod tests {
         assert_eq!(
             b.body, r#"{"instance_id": 900002}"#,
             "every add is another copy"
+        );
+    }
+
+    #[test]
+    fn a_json_body_is_sent_and_routed_by_method() {
+        let t = FakeTransport::new();
+        t.route_for(Method::Post, "/cart/items", 201, r#"{"errors":[]}"#);
+        let req = Request {
+            method: Method::Post,
+            path: "/cart/items".into(),
+            token: Some("tok".into()),
+            body: Some(r#"{"item_ids":[7]}"#.into()),
+        };
+        let r = t.call(&req).unwrap();
+        assert_eq!((r.status, r.body.as_str()), (201, r#"{"errors":[]}"#));
+        let (sent, headers) = &t.log()[0];
+        assert_eq!(sent.body.as_deref(), Some(r#"{"item_ids":[7]}"#));
+        assert!(headers.contains(&("Content-Type", "application/json".to_owned())));
+        assert!(
+            !Request::get("/cart", None)
+                .headers()
+                .iter()
+                .any(|(k, _)| *k == "Content-Type"),
+            "no body, no content type"
         );
     }
 }

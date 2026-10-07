@@ -198,6 +198,36 @@ pub struct ForSale {
     pub fetched_at: u64,
 }
 
+/// A copy for sale in a seller crate (Top Sellers): one listing of a record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaleCopy {
+    /// The Discogs listing (`/sell/item/{listing}`).
+    pub listing: u64,
+    pub release: u64,
+    /// The price in hundredths of `currency`.
+    pub cents: u64,
+    /// ISO code, e.g. "EUR".
+    pub currency: String,
+    /// "VG+ / VG": media, then sleeve.
+    pub grades: String,
+    pub ships_from: String,
+    /// When it was listed ("2026-02-06T08:12:00-08:00").
+    pub posted: String,
+    pub comments: String,
+    /// No longer for sale.
+    pub sold: bool,
+    /// The price before the last refresh changed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub was_cents: Option<u64>,
+}
+
+impl SaleCopy {
+    pub fn url(&self) -> String {
+        format!("https://www.discogs.com/sell/item/{}", self.listing)
+    }
+}
+
 /// An entry to add in place of another (see [`Playlist::replace`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewEntry {
@@ -371,6 +401,12 @@ pub struct SavedPlaylist {
     /// The formats the format filter shows, when any is picked.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub formats: BTreeSet<String>,
+    /// A seller crate's copies for sale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<SaleCopy>,
+    /// The CART switch: only records with a copy in the user's cart show.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cart_only: bool,
 }
 
 /// What a record can be filtered by, besides its tempo.
@@ -472,6 +508,12 @@ pub struct Playlist {
     /// Bumped whenever the entries, their order, their albums or the filter change, so views
     /// built from them know when to rebuild.
     rev: u64,
+    /// A seller crate's copies for sale, in the order they came.
+    copies: Vec<SaleCopy>,
+    /// The CART switch is on.
+    cart_only: bool,
+    /// Releases with a copy in the user's cart (kept up to date by the app).
+    in_cart: BTreeSet<u64>,
 }
 
 /// What the filters show: an entry whose tempo is in the BPM range (when one is set) and that
@@ -481,6 +523,8 @@ pub struct Playlist {
 pub struct Shown<'a> {
     bpm: Option<(u16, u16)>,
     picks: [Option<&'a BTreeSet<String>>; 4],
+    /// The CART switch: the releases in the cart.
+    cart: Option<&'a BTreeSet<u64>>,
 }
 
 impl Shown<'_> {
@@ -490,10 +534,16 @@ impl Shown<'_> {
             && Facet::ALL
                 .into_iter()
                 .all(|f| self.picks[f.index()].is_none_or(|on| e.values(f).any(|v| on.contains(v))))
+            && self.cart.is_none_or(|releases| {
+                e.origin
+                    .as_ref()
+                    .and_then(|o| o.release)
+                    .is_some_and(|r| releases.contains(&r))
+            })
     }
 
     pub fn is_filtered(&self) -> bool {
-        self.bpm.is_some() || self.picks.iter().any(Option::is_some)
+        self.bpm.is_some() || self.picks.iter().any(Option::is_some) || self.cart.is_some()
     }
 }
 
@@ -1180,6 +1230,8 @@ impl Playlist {
             artists: self.saved_picks(Facet::Artist),
             labels: self.saved_picks(Facet::Label),
             formats: self.saved_picks(Facet::Format),
+            copies: self.copies.clone(),
+            cart_only: self.cart_only,
         }
     }
 
@@ -1199,7 +1251,69 @@ impl Playlist {
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         pl.bpm_range = saved.bpm_range;
         pl.picked = [saved.styles, saved.artists, saved.labels, saved.formats];
+        pl.copies = saved.copies;
+        pl.cart_only = saved.cart_only;
         (pl, pending)
+    }
+
+    // ---- copies for sale (seller crates) -------------------------------------------------
+
+    pub fn copies(&self) -> &[SaleCopy] {
+        &self.copies
+    }
+
+    /// A record's copies: unsold cheapest first, then the sold ones.
+    pub fn copies_of(&self, release: u64) -> Vec<&SaleCopy> {
+        let mut v: Vec<&SaleCopy> = self
+            .copies
+            .iter()
+            .filter(|c| c.release == release)
+            .collect();
+        v.sort_by_key(|c| (c.sold, c.cents, c.listing));
+        v
+    }
+
+    pub fn copy(&self, listing: u64) -> Option<&SaleCopy> {
+        self.copies.iter().find(|c| c.listing == listing)
+    }
+
+    /// Adds copies not held yet (by listing); returns how many were new.
+    pub fn add_copies(&mut self, copies: impl IntoIterator<Item = SaleCopy>) -> usize {
+        let mut n = 0;
+        for c in copies {
+            if self.copy(c.listing).is_none() {
+                self.copies.push(c);
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.changed();
+        }
+        n
+    }
+
+    /// Replaces the copies (after a refresh).
+    pub fn set_copies(&mut self, copies: Vec<SaleCopy>) {
+        if self.copies != copies {
+            self.copies = copies;
+            self.changed();
+        }
+    }
+
+    /// Marks a copy no longer for sale; returns whether it changed.
+    pub fn mark_sold(&mut self, listing: u64) -> bool {
+        match self
+            .copies
+            .iter_mut()
+            .find(|c| c.listing == listing && !c.sold)
+        {
+            Some(c) => {
+                c.sold = true;
+                self.changed();
+                true
+            }
+            None => false,
+        }
     }
 
     // ---- BPM filter ----------------------------------------------------------------------
@@ -1244,6 +1358,7 @@ impl Playlist {
         Shown {
             bpm: self.bpm_filter(),
             picks: Facet::ALL.map(|f| self.filter(f)),
+            cart: self.cart_only.then_some(&self.in_cart),
         }
     }
 
@@ -1319,7 +1434,29 @@ impl Playlist {
 
     /// Whether a style, artist, label or format filter hides anything (not the BPM range).
     pub fn picks_filter(&self) -> bool {
-        Facet::ALL.into_iter().any(|f| self.filter(f).is_some())
+        Facet::ALL.into_iter().any(|f| self.filter(f).is_some()) || self.cart_only
+    }
+
+    /// The CART switch.
+    pub fn cart_only(&self) -> bool {
+        self.cart_only
+    }
+
+    pub fn set_cart_only(&mut self, on: bool) {
+        if self.cart_only != on {
+            self.cart_only = on;
+            self.changed();
+        }
+    }
+
+    /// The releases with a copy in the cart; the view changes only when the switch is on.
+    pub fn set_in_cart(&mut self, releases: &BTreeSet<u64>) {
+        if self.in_cart != *releases {
+            self.in_cart = releases.clone();
+            if self.cart_only {
+                self.changed();
+            }
+        }
     }
 
     /// Whether `value` is picked in `facet`.
@@ -1344,8 +1481,13 @@ impl Playlist {
     /// them filtered.
     pub fn clear_picks(&mut self, facet: Option<Facet>) -> bool {
         let facets: Vec<Facet> = facet.map_or(Facet::ALL.to_vec(), |f| vec![f]);
-        let was = facets.iter().any(|&f| self.filter(f).is_some());
+        let mut was = facets.iter().any(|&f| self.filter(f).is_some());
         let mut changed = false;
+        // Show all records turns the CART switch off too.
+        if facet.is_none() && self.cart_only {
+            self.cart_only = false;
+            (was, changed) = (true, true);
+        }
         for f in facets {
             let set = &mut self.picked[f.index()];
             changed |= !set.is_empty();
@@ -1481,6 +1623,33 @@ pub fn play_order(len: usize, shuffle: bool, first: Option<usize>, seed: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_are_saved_with_the_crate() {
+        let mut p = Playlist::default();
+        let c = |listing, release, cents, sold| SaleCopy {
+            listing,
+            release,
+            cents,
+            sold,
+            ..SaleCopy::default()
+        };
+        assert_eq!(
+            p.add_copies([
+                c(1, 10, 1800, false),
+                c(2, 10, 900, false),
+                c(3, 11, 500, false)
+            ]),
+            3
+        );
+        assert_eq!(p.add_copies([c(1, 10, 1800, false)]), 0, "by listing, once");
+        assert!(p.mark_sold(2));
+        assert!(!p.mark_sold(2));
+        let (back, _) = Playlist::from_saved(p.to_saved());
+        assert_eq!(back.copies(), p.copies());
+        let order: Vec<u64> = back.copies_of(10).iter().map(|c| c.listing).collect();
+        assert_eq!(order, [1, 2], "unsold cheapest first, sold last");
+    }
 
     fn pl(n: usize) -> Playlist {
         let mut p = Playlist::default();
@@ -2742,6 +2911,43 @@ mod tests {
         p.select_only(&[ids[0]], ids[0]);
         p.extend_to(3, &[ids[2]], ids[2]);
         assert_eq!(p.selected_ids().len(), 4);
+    }
+
+    #[test]
+    fn the_cart_switch_shows_only_records_in_the_cart() {
+        let releases: Vec<Option<u64>> = [1, 1, 2, 3].map(Some).to_vec();
+        let (mut p, _) = records(&releases);
+        p.set_in_cart(&BTreeSet::from([1]));
+        assert!(!p.is_filtered(), "off: everything shows");
+        p.set_cart_only(true);
+        assert_eq!(p.shown_rows(), [0, 1]);
+        assert!(p.is_filtered() && p.picks_filter());
+        let before = p.rev();
+        p.set_in_cart(&BTreeSet::from([1, 3]));
+        assert!(p.rev() > before, "the view follows the cart");
+        assert_eq!(p.shown_rows(), [0, 1, 3]);
+        let (back, _) = Playlist::from_saved(p.to_saved());
+        assert!(back.cart_only(), "remembered with the crate");
+        assert!(p.clear_picks(None), "Show all records turns it off");
+        assert!(!p.cart_only() && !p.is_filtered());
+    }
+
+    #[test]
+    fn the_cart_switch_on_five_thousand_entries_is_quick() {
+        let releases: Vec<Option<u64>> = (0..5000u64).map(|i| Some(i % 1500)).collect();
+        let (mut p, _) = records(&releases);
+        p.set_grouped(true);
+        p.set_in_cart(&(0..40).collect());
+        let mut took = std::time::Duration::MAX;
+        for on in [true, false, true, false, true] {
+            let t = std::time::Instant::now();
+            p.set_cart_only(on);
+            let rows = crate::records::build(&p, &Default::default());
+            took = took.min(t.elapsed());
+            assert!(!rows.is_empty());
+        }
+        let budget = if cfg!(debug_assertions) { 40 } else { 16 };
+        assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
     }
 
     #[test]

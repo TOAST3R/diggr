@@ -22,6 +22,7 @@ pub mod jobs;
 pub mod memory;
 pub mod prepare;
 pub mod preview;
+pub mod sellers;
 
 /// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder
 /// until the rebrand.

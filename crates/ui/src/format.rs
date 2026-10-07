@@ -144,6 +144,57 @@ pub fn record_line(o: Option<&crate::playlist::Origin>, shown: usize, total: usi
     parts.join(" · ")
 }
 
+/// A seller crate's record line: catalog number, year, tracks, then its unsold copies and
+/// their price range ("3 copies €9.00–€18.00"), or "sold" when none is left.
+pub fn seller_record_line(
+    o: Option<&crate::playlist::Origin>,
+    shown: usize,
+    total: usize,
+    copies: &[&crate::playlist::SaleCopy],
+) -> String {
+    let mut line = record_line(
+        o.map(|o| crate::playlist::Origin {
+            for_sale: None,
+            ..o.clone()
+        })
+        .as_ref(),
+        shown,
+        total,
+    );
+    let unsold: Vec<&&crate::playlist::SaleCopy> = copies.iter().filter(|c| !c.sold).collect();
+    let part = match unsold.as_slice() {
+        [] if copies.is_empty() => return line,
+        [] => "sold".to_owned(),
+        [c] => format!("1 copy {}", price(c.cents, &c.currency)),
+        cs => {
+            let lo = cs.iter().map(|c| c.cents).min().unwrap_or(0);
+            let hi = cs.iter().map(|c| c.cents).max().unwrap_or(0);
+            let cur = &cs[0].currency;
+            if lo == hi {
+                format!("{} copies {}", cs.len(), price(lo, cur))
+            } else {
+                format!("{} copies {}–{}", cs.len(), price(lo, cur), price(hi, cur))
+            }
+        }
+    };
+    line.push_str(" · ");
+    line.push_str(&part);
+    line
+}
+
+/// A copy row: "€9.00 · VG+ / VG · Germany".
+pub fn copy_line(c: &crate::playlist::SaleCopy) -> String {
+    [
+        price(c.cents, &c.currency),
+        c.grades.clone(),
+        c.ships_from.clone(),
+    ]
+    .into_iter()
+    .filter(|t| !t.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 /// How long ago, roughly: "just now", "12 min ago", "3 h ago", "2 d ago".
 pub fn ago(secs: u64) -> String {
     match secs {
@@ -171,6 +222,10 @@ pub struct DigMarks {
     pub discard_failed: Option<String>,
     /// In the user's collection: "this pressing", or "another pressing (AF014, 2018)".
     pub owned: Option<String>,
+    /// A copy of the record is in the user's Discogs cart: "from decks.de, €9.00".
+    pub cart: Option<String>,
+    /// In a seller crate, the record's copies: "€9.00 VG+ / VG, €12.00 VG+ / VG+".
+    pub copies: Option<String>,
 }
 
 /// Everything known about an entry, for its tooltip, as (label, value) lines. Nothing unknown
@@ -231,6 +286,12 @@ pub fn entry_details(
     if let Some(o) = &marks.owned {
         add("Owned", o);
     }
+    if let Some(c) = &marks.cart {
+        add("In your cart", c);
+    }
+    if let Some(c) = &marks.copies {
+        add("Copies", c);
+    }
     if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
         let what = match (fs.count, fs.lowest_cents) {
             (0, _) => "none".to_owned(),
@@ -279,6 +340,44 @@ pub fn scroll(text: &str, width: usize, offset: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seller_records_show_their_copies() {
+        use crate::playlist::{Origin, SaleCopy};
+        let o = Origin {
+            catno: "LT-012".into(),
+            year: Some(1994),
+            for_sale: Some(crate::playlist::ForSale {
+                count: 6,
+                lowest_cents: Some(900),
+                currency: "EUR".into(),
+                fetched_at: 0,
+            }),
+            ..Origin::default()
+        };
+        let c = |cents, sold| SaleCopy {
+            cents,
+            sold,
+            currency: "EUR".into(),
+            grades: "VG+ / VG".into(),
+            ships_from: "Germany".into(),
+            ..SaleCopy::default()
+        };
+        let (a, b, x) = (c(900, false), c(1800, false), c(1200, true));
+        assert_eq!(
+            seller_record_line(Some(&o), 3, 3, &[&a, &b, &x]),
+            "LT-012 · 1994 · 3 tracks · 2 copies €9.00–€18.00"
+        );
+        assert_eq!(
+            seller_record_line(Some(&o), 3, 3, &[&a]),
+            "LT-012 · 1994 · 3 tracks · 1 copy €9.00"
+        );
+        assert_eq!(
+            seller_record_line(Some(&o), 3, 3, &[&x]),
+            "LT-012 · 1994 · 3 tracks · sold"
+        );
+        assert_eq!(copy_line(&a), "€9.00 · VG+ / VG · Germany");
+    }
 
     #[test]
     fn clock_formats() {

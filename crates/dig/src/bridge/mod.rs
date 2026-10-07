@@ -67,6 +67,10 @@ pub struct Snapshot {
     pub crates: Vec<CrateState>,
     pub playing: Option<Playing>,
     pub sends: Vec<SendState>,
+    /// Top Sellers' usernames, so a seller's page is answered "added" or "refreshed" (not
+    /// part of any answer itself).
+    #[serde(skip)]
+    pub sellers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -433,6 +437,35 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             .collect(),
         Mode::Crate(name) => name.clone(),
     };
+    // A seller's page adds the seller to Top Sellers (or refreshes it), whatever the mode.
+    if let url::PageKind::Seller(name) = &page.kind {
+        let known = shared
+            .snapshot
+            .load()
+            .sellers
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(name));
+        let message = if known {
+            format!("Refreshed seller {name}")
+        } else {
+            format!("Added seller {name}")
+        };
+        let answer = json!({
+            "page": page.provisional_name(),
+            "crate": page.provisional_name(),
+            "seller": name,
+            "added": !known,
+            "message": message,
+        });
+        let cmd = BridgeCommand::Send {
+            page,
+            mode,
+            filters: Filters {
+                skip_passed: b.skip_passed,
+            },
+        };
+        return (202, answer, Some(cmd));
+    }
     let answer = json!({ "page": page.provisional_name(), "crate": target });
     let cmd = BridgeCommand::Send {
         page,

@@ -25,6 +25,7 @@ use dig::collection::{Collection, Owned, Pressing};
 use dig::config::{self as digconf, DigSettings};
 use dig::cover::{CoverHandle, Covers, ImageSource, UreqImages};
 use dig::discogs::cache::DiskCache;
+use dig::discogs::cart::CartSnapshot;
 use dig::discogs::client::{ApiError, Client, Identity};
 use dig::discogs::matching::ClipEntry;
 use dig::discogs::model::{Format, RecordKey};
@@ -40,6 +41,7 @@ use dig::preview::scheduler::{
 };
 use dig::preview::search::SearchRequest;
 use dig::preview::store;
+use dig::sellers::SellerList;
 use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
@@ -137,6 +139,8 @@ pub enum DigAction {
     OpenRecord(EntryId),
     OpenDialog,
     OpenBrowserDialog,
+    /// Top Sellers and the cart.
+    Seller(super::sellers::SellerAction),
 }
 
 /// What Options ▸ Browser… asks for.
@@ -293,6 +297,12 @@ pub(super) struct Dig {
     token_hint_shown: bool,
     /// Record covers for entry tooltips.
     pub(super) covers: CoverCache,
+    /// Top Sellers (`sellers.ron`).
+    pub(super) sellers: SellerList,
+    /// The user's Discogs cart as last read (`cart.ron` in the cache).
+    pub(super) cart: CartSnapshot,
+    /// Top Sellers' dialogs and running refreshes.
+    pub(super) seller_ui: super::sellers::SellerUi,
 }
 
 /// Where a Discogs personal access token is generated ("Generate new token").
@@ -323,7 +333,16 @@ impl Dig {
             .unwrap_or_default();
         let memory = config.as_deref().map(DigMemory::load).unwrap_or_default();
         let token = config.as_deref().and_then(digconf::load_token);
+        let sellers = config.as_deref().map(SellerList::load).unwrap_or_default();
+        let cart = setup
+            .cache_root
+            .as_deref()
+            .map(CartSnapshot::load)
+            .unwrap_or_default();
         Self {
+            sellers,
+            cart,
+            seller_ui: Default::default(),
             setup,
             spawner,
             files,
@@ -381,6 +400,44 @@ impl Dig {
 
     pub(super) fn has_token(&self) -> bool {
         self.token.is_some()
+    }
+
+    pub(super) fn save_sellers(&self) -> Option<String> {
+        let c = self.config.as_deref()?;
+        self.sellers
+            .save(c)
+            .err()
+            .map(|e| format!("Could not save Top Sellers: {e}"))
+    }
+
+    pub(super) fn save_cart(&self) {
+        if let Some(root) = &self.setup.cache_root {
+            let _ = self.cart.save(root);
+        }
+    }
+
+    /// With a token: the first Top Sellers list (once ever) and the cart, behind other work.
+    fn read_account_lists(&self) {
+        if self.token.is_none() {
+            return;
+        }
+        if !self.sellers.seeded {
+            self.send(Command::FirstSellers);
+        }
+        self.send(Command::ReadCart { soon: false });
+    }
+
+    /// A send into this crate is listed or expanding.
+    pub(super) fn has_job_for(&self, target: CrateId) -> bool {
+        self.jobs.values().any(|j| j.target == target)
+    }
+
+    pub(super) fn send_cmd(&self, cmd: Command) {
+        self.send(cmd);
+    }
+
+    pub(super) fn open_url(&self, url: &str) -> Result<(), String> {
+        self.setup.browser.open(url)
     }
 
     fn started(&self) -> bool {
@@ -468,6 +525,7 @@ impl Dig {
             self.share_collection();
             self.start_bridge();
         }
+        self.read_account_lists();
     }
 
     /// (Re)starts the bridge on its port; a failure is kept for Options ▸ Browser….
@@ -532,8 +590,14 @@ impl Dig {
             .values()
             .filter(|j| j.total > 0)
             .map(|j| {
-                let name = j.name.split_once(": ").map_or(j.name.as_str(), |(_, n)| n);
-                format!("{name}: {} of {} releases", j.done, j.total)
+                let (kind, name) = j.name.split_once(": ").unwrap_or(("", j.name.as_str()));
+                // A seller's job counts the records its copies are of.
+                let what = if kind == "Seller" {
+                    "records"
+                } else {
+                    "releases"
+                };
+                format!("{name}: {} of {} {what}", j.done, j.total)
             })
             .collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
@@ -895,7 +959,7 @@ fn now_secs() -> u64 {
 }
 
 impl WinampApp {
-    fn dig_notify(&mut self, text: Option<String>) {
+    pub(super) fn dig_notify(&mut self, text: Option<String>) {
         if let Some(t) = text {
             self.notify(t);
         }
@@ -906,6 +970,9 @@ impl WinampApp {
     /// A send the user asked for (a paste, the browser): never into a Discogs crate, which
     /// only the Discogs items fill.
     fn dig_send_asked(&mut self, page: Page, mode: SendMode, filters: Option<Filters>) {
+        if matches!(page.kind, url::PageKind::Seller(_)) {
+            return self.dig_send(page, mode, filters);
+        }
         let target = match &mode {
             SendMode::Enqueue => Some(self.crates.shown_id()),
             SendMode::Crate(name) => self.crates.find(name),
@@ -926,8 +993,31 @@ impl WinampApp {
         }
     }
 
-    /// Sends a page's tracks into a crate. `filters` overrides the defaults.
+    /// A page's tracks into the crate `target` (a seller's), announced like any send.
+    pub(super) fn dig_send_to(&mut self, page: Page, target: CrateId) {
+        let Some(d) = &mut self.dig else { return };
+        if !d.started() {
+            return;
+        }
+        let filters = Filters {
+            skip_passed: d.settings.skip_passed,
+        };
+        d.active.insert(target);
+        d.send(Command::Send {
+            page,
+            target,
+            filters,
+        });
+    }
+
+    /// Sends a page's tracks into a crate. `filters` overrides the defaults. A seller's page
+    /// adds the seller to Top Sellers instead (or refreshes it).
     pub(crate) fn dig_send(&mut self, page: Page, mode: SendMode, filters: Option<Filters>) {
+        if let url::PageKind::Seller(name) = &page.kind {
+            let name = name.clone();
+            self.seller_page(&name);
+            return;
+        }
         let Some(d) = &self.dig else { return };
         if !d.started() {
             self.notify("Discogs isn't ready yet");
@@ -1027,6 +1117,9 @@ impl WinampApp {
         for e in events {
             self.dig_intake_event(e);
         }
+        self.seller_dialog_tick();
+        self.seller_add_tick();
+        self.seller_frame();
         let Some(d) = &mut self.dig else { return };
         let ctx = d.wake.clone();
         for key in d.covers.poll(&ctx) {
@@ -1072,7 +1165,7 @@ impl WinampApp {
 
     // ---- the browser bridge ----------------------------------------------------------------
 
-    fn dig_bridge_command(&mut self, c: BridgeCommand) {
+    pub(super) fn dig_bridge_command(&mut self, c: BridgeCommand) {
         match c {
             BridgeCommand::Send {
                 page,
@@ -1084,7 +1177,17 @@ impl WinampApp {
                     Mode::Enqueue => SendMode::Enqueue,
                     Mode::Crate(name) => SendMode::Crate(name),
                 };
+                let seller = matches!(page.kind, url::PageKind::Seller(_));
                 self.dig_send_asked(page, mode, Some(filters));
+                // A seller added from the browser: the app asks to come forward (the system
+                // may only draw attention to it instead, as macOS does for a background app).
+                if seller && let Some(d) = &self.dig {
+                    d.wake.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    d.wake
+                        .send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                            egui::UserAttentionType::Informational,
+                        ));
+                }
             }
             BridgeCommand::ResolveShopItem(id) => {
                 if let Some(d) = &self.dig {
@@ -1144,10 +1247,17 @@ impl WinampApp {
                 total: j.total,
             })
             .collect();
+        let sellers = d
+            .sellers
+            .sellers
+            .iter()
+            .map(|s| s.username.clone())
+            .collect();
         let snap = Snapshot {
             crates,
             playing,
             sends,
+            sellers,
         };
         if snap != d.snapshot {
             shared.snapshot.store(Arc::new(snap.clone()));
@@ -1159,6 +1269,26 @@ impl WinampApp {
 
     pub(super) fn dig_intake_event(&mut self, e: Event) {
         match e {
+            Event::Copies(j, copies) => self.seller_copies(j.target, copies),
+            Event::FirstSellers(result) => self.dig_first_sellers(result),
+            Event::Cart(result) => self.dig_cart_read(result),
+            Event::SellerCount {
+                seller,
+                query,
+                result,
+            } => self.seller_counted(&seller, &query, result),
+            Event::SellerLookup { name, result } => self.seller_looked_up(&name, result),
+            Event::Scanned {
+                seller,
+                copies,
+                read,
+                pages,
+                total,
+                done,
+            } => self.seller_scanned(&seller, copies, (read, pages, total, done)),
+            Event::ScanFailed { seller, error } => self.seller_scan_failed(&seller, &error),
+            Event::CartAdded { listings, result } => self.cart_added(&listings, result),
+            Event::CartRemoved { listing, result } => self.cart_removed(listing, result),
             Event::Started(j) => {
                 let Some(d) = &mut self.dig else { return };
                 d.jobs.insert(
@@ -1237,6 +1367,7 @@ impl WinampApp {
                 if let Some(d) = &mut self.dig {
                     d.jobs.remove(&j.id);
                 }
+                self.seller_job_ended(j.target, true);
             }
             Event::Failed(j, err) => {
                 let Some(d) = &mut self.dig else { return };
@@ -1249,6 +1380,7 @@ impl WinampApp {
                     self.delete_crate(j.target);
                 }
                 self.notify(format!("{}: {}", j.name, err.message()));
+                self.seller_job_ended(j.target, false);
             }
             Event::Offline(off) => {
                 if let Some(d) = &mut self.dig {
@@ -1939,6 +2071,7 @@ impl WinampApp {
 
     pub(super) fn dig_act(&mut self, c: CrateId, a: DigAction) {
         match a {
+            DigAction::Seller(a) => self.seller_act(a),
             DigAction::Want(ids) => self.dig_want(c, &ids),
             DigAction::Unwant(ids) => self.dig_unwant(c, &ids),
             DigAction::Collect(ids) => self.dig_collect(c, &ids, false),
@@ -2966,6 +3099,44 @@ impl WinampApp {
                 }
             }
         }
+        // A seller crate: its copies go in the cart, one at a time.
+        if let Some(r) = release_of(e).filter(|_| self.crates.seller_of(c).is_some()) {
+            let copies: Vec<_> = shown.copies_of(r).into_iter().filter(|c| !c.sold).collect();
+            let label = |c: &crate::playlist::SaleCopy| {
+                format!(
+                    "{} · {}",
+                    crate::format::price(c.cents, &c.currency),
+                    c.grades
+                )
+            };
+            let act = |c: &crate::playlist::SaleCopy| {
+                use super::sellers::SellerAction;
+                if d.cart.has_listing(c.listing) {
+                    DigAction::Seller(SellerAction::CartRemove(c.listing))
+                } else {
+                    DigAction::Seller(SellerAction::CartAdd(vec![c.listing]))
+                }
+            };
+            match copies.as_slice() {
+                [] => {}
+                [c] if d.cart.has_listing(c.listing) => {
+                    item(ui, "Remove from cart".into(), Some(act(c)), "");
+                }
+                [c] => item(ui, format!("Add to cart ({})", label(c)), Some(act(c)), ""),
+                cs => {
+                    ui.menu_button("Add to cart", |ui| {
+                        for c in cs {
+                            let text = if d.cart.has_listing(c.listing) {
+                                format!("Remove {} from cart", label(c))
+                            } else {
+                                label(c)
+                            };
+                            item(ui, text, Some(act(c)), "");
+                        }
+                    });
+                }
+            }
+        }
         // The collection crate: one record at a time comes out, one copy, after a question.
         if collection
             && d.token.is_some()
@@ -3032,6 +3203,7 @@ impl WinampApp {
                     d.identity = Some(id);
                     d.connected = None;
                     d.share_collection();
+                    d.read_account_lists();
                     Ok(name)
                 }
             }
@@ -3170,14 +3342,15 @@ impl WinampApp {
 
     /// A question is open (connect, or removing from the collection): shortcuts wait.
     pub(super) fn dig_asking(&self) -> bool {
-        self.dig
-            .as_ref()
-            .is_some_and(|d| d.connect.is_some() || d.confirm_discard.is_some())
+        self.dig.as_ref().is_some_and(|d| {
+            d.connect.is_some() || d.confirm_discard.is_some() || d.seller_ui.dialog.is_some()
+        })
     }
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
         self.dig_connect_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
+        self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };
         let collection_line = d.collection_line();
         let collection_syncing = d.collection_syncing;

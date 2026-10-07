@@ -5,6 +5,7 @@
 - [ ] 1.3 Write `packaging/macos/Info.plist.in` and the bundle step of `scripts/make-dmg.sh` (template filled from one name constant and the version in `apps/native/Cargo.toml`, `.icns` made with `sips` and `iconutil`, ad-hoc signature); verify with `plutil -lint`, and that `dist/‹App›.app` opens from the Finder, shows its icon and name in the Dock, and plays a local file
 - [ ] 1.4 Add the DMG step (`hdiutil`, app plus an Applications symlink, named `‹App›-‹version›-unsigned.dmg` when unsigned, with the "testing only" warning and the Open Anyway steps); add `dist/` to `.gitignore`; verify the image opens with both icons, installs by dragging, is at most 25 MB, and the app runs after the image is ejected and deleted
 - [ ] 1.5 Measure launch time of the installed bundle (`‹App›.app/Contents/MacOS/winamp-native --startup-time`, second open) and confirm it stays under 300 ms, and that no permission prompt appears when playing a file
+- [ ] 1.6 Register a `winamp-rust://` URL scheme in `Info.plist` (`CFBundleURLTypes`) and handle it in the app, so the extension's Add seller (and later sends) can bring the player to the front, which macOS honours for a URL but not for a background app's own focus request (follow-up from `seller-crates`); verify that opening `winamp-rust://show` from Safari brings the bundle forward
 
 ## 2. Signing and notarization
 

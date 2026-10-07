@@ -140,10 +140,30 @@ impl Client {
 
     /// Sends one request once the rate limit allows it, waiting out 429s.
     pub fn call(&mut self, method: Method, path: &str) -> Result<Response, ApiError> {
+        self.send(method, path, None)
+    }
+
+    /// [`Client::call`] with a JSON body.
+    pub fn call_json(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: &Value,
+    ) -> Result<Response, ApiError> {
+        self.send(method, path, Some(body.to_string()))
+    }
+
+    fn send(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<Response, ApiError> {
         let req = Request {
             method,
             path: path.to_owned(),
             token: self.token.clone(),
+            body,
         };
         for _ in 0..MAX_429 {
             self.clock.sleep(self.limiter.delay(self.clock.now()));
@@ -268,6 +288,22 @@ mod tests {
         assert!(c.get_json("/releases/1").is_ok());
         assert_eq!(t.count(), 3);
         assert_eq!(clock.now(), Duration::from_secs(30), "10 s then 20 s");
+    }
+
+    #[test]
+    fn a_json_call_carries_its_body() {
+        let t = Arc::new(FakeTransport::new());
+        t.route_for(Method::Post, "/cart/items", 201, "{}");
+        let (mut c, _) = client(&t, Some("tok"));
+        let r = c
+            .call_json(
+                Method::Post,
+                "/cart/items",
+                &serde_json::json!({"item_ids": [1]}),
+            )
+            .unwrap();
+        assert_eq!(r.status, 201);
+        assert_eq!(t.log()[0].0.body.as_deref(), Some(r#"{"item_ids":[1]}"#));
     }
 
     #[test]

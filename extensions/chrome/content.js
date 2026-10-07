@@ -125,7 +125,10 @@
     const main = el("button", {
       className: "main",
       textContent: `▶ ${appName} ▾`,
-      title: `Send this ${kind.toLowerCase()} to ${appName}`,
+      title:
+        kind === "Seller"
+          ? `Add this seller to ${appName}'s Top Sellers`
+          : `Send this ${kind.toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
@@ -183,6 +186,12 @@
       b.addEventListener("click", onClick);
       return b;
     };
+    // A seller's page only adds the seller (or refreshes it): no tracks, no crate to pick.
+    if (WR.pageKind(location.href) === "Seller") {
+      menu.append(item(`Add seller to ${appName}`, () => sendPage("enqueue")));
+      wrap.append(menu);
+      return;
+    }
     menu.append(
       item(`Play in ${appName}`, () => sendPage("play")),
       item(`Enqueue in ${appName}`, () => sendPage("enqueue")),
@@ -265,7 +274,8 @@
   async function sendPage(mode, crate) {
     closeMenus();
     const r = await ask({ type: "send", url: location.href, mode, crate });
-    if (r.ok) toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}`);
+    if (r.ok && r.json.message) toast(`${appName}: ${r.json.message}`);
+    else if (r.ok) toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}`);
     else toast(WR.problem(r.error, appName), false);
   }
 

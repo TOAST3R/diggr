@@ -397,6 +397,59 @@ ahead of what plays. Other pasted text is ignored.
     preview cache size (2 GB by default; the least recently played go first).
 - Previews are for listening while you dig. They stay in the cache and are never exported.
 
+### Top Sellers
+
+Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
+listening through a shop's stock and putting the copies you want in your Discogs cart. Click
+the heading to fold or unfold it; right-click it for **Add seller…**.
+
+- **The first list:** the first time a token is saved (or at the first launch with one), the
+  sellers you bought from most in your last 100 purchases go in the list, 10 of them, ties
+  going to the latest order. Shops with nothing for sale are skipped. That happens once: after
+  that the list is yours.
+- **Add seller…** takes a seller's page (`/seller/‹name›/profile`, `/seller/‹name›`,
+  `/user/‹name›`) or a bare name, looks it up once you stop typing, and shows how many copies
+  they have for sale. Pasting a seller's page in the player, or the extension's **Add seller**
+  on a seller's page, does the same (or refreshes a seller already in the list).
+- **A click shows, a double-click digs:** clicking a seller crate only shows what it holds,
+  with no request to Discogs. A double-click on one never dug counts its copies (one request)
+  and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes
+  search text and "only the newest N" (Discogs applies both, so the count is instant), and
+  format, price, minimum condition and ships-from (read from the listings: a progress line
+  shows them coming). Dig is offered once 1 to 1,000 copies match. Discogs only lets anyone
+  read the first 10,000 copies of another user's stock, and the dialog says so. The criteria
+  are kept for refreshes. A double-click on a crate dug more than a day ago refreshes it;
+  within a day it just shows it.
+- **One row per copy:** a seller crate is grouped by record. A record's second line gives its
+  copies and their price range ("3 copies €9.00–€18.00"); open it (⏵) to see each copy, cheapest
+  first, with its price, conditions and country ("€9.00 · VG+ / VG · Germany"), above the
+  record's tracks, which come in once (clips, searches and vinyl first, as for any dig). Copy rows
+  hold no audio: play order, the arrows and the previews skip them. Double-click a copy to
+  open its listing on discogs.com.
+- **Refresh seller** (right-click the crate) reads the listings again with the saved criteria:
+  new copies come in, copies gone stay with a **SOLD** badge (dimmed, listed last; a record
+  whose copies all sold is dimmed and still plays), and prices follow. The main window says
+  what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
+  1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
+  **Remove seller…** takes it out of the list and deletes its crate.
+- **Your cart:** right-click a copy for **Add to cart** (a track or record row offers the
+  record's copies, one item each). It goes into your real Discogs cart, and a cyan **CART**
+  badge shows at once on the copy, its record, and any entry of that release in any crate,
+  your wantlist and collection included (the tooltip says from whom and for how much). If the
+  copy sold meanwhile it gets SOLD; if the cart can't be reached, the listing opens on
+  discogs.com instead. **Remove from cart** takes one copy out. The cart is read at launch,
+  after each dig and cart change, and kept in the cache, so badges show at once and follow
+  what you change on discogs.com. The app never empties your cart, and you always pay on
+  discogs.com.
+- **CART n · subtotal:** in a seller crate with copies in your cart, this footer switch (and
+  ☰ › Show cart only) shows and plays only those records, so you can listen to the order once
+  more before paying; ☰ › Open cart on discogs.com goes to the cart. The subtotal is Discogs',
+  in the seller's currency.
+
+The cart and purchases calls aren't part of Discogs' published API (they are what discogs.com
+itself uses, checked in October 2026). If Discogs changes them, the first list stays empty
+(add sellers by hand), and Add to cart opens the listing instead.
+
 ### From the browser
 
 A Chrome extension (in `extensions/chrome/`) adds a button to Discogs pages: Play in ‹App›,
@@ -427,7 +480,10 @@ that the player starts once its window is up.
    the `extensions/chrome/` folder. It asks for site access to discogs.com and 127.0.0.1 only.
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
-3. On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
+3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
+   ‹App›**, which adds the seller to Top Sellers (or refreshes it) and asks the player to
+   come to the front (macOS may only bounce its Dock icon).
+   On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
    button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
    in ‹App›** and **Send to crate** (the player's crates, or New crate…, which suggests a name
    from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the skip-passed
@@ -460,6 +516,8 @@ player, with the key), `content.js` (the button), `pages.js` (which pages are su
 - [ ] Release, master, artist, label, wantlist, list and marketplace item pages each show the
       button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
       shows no button.
+- [ ] A seller's page shows the button with only Add seller to ‹App›; it adds the seller in the
+      player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
       artist or label, and "Wantlist: user" on a wantlist, within 40 characters.
 - [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
@@ -774,7 +832,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -788,7 +846,9 @@ version still opens it); the Playlist crate is now the one that counts.
 Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
 yt-dlp path, the Wantlist crate, whether the Connect to Discogs dialog was turned off), `token`
 (readable only by you), `memory.ron` (wanted records, passed tracks, and wantlist changes still
-to be sent, with their retries), `jobs.ron` (sends still in progress) and
+to be sent, with their retries), `jobs.ron` (sends still in progress), `sellers.ron` (Top
+Sellers: their order, each one's dig criteria, when it was last dug, and whether the first list
+was made) and
 `bridge.ron` (the browser bridge's port and the SHA-256 of each paired browser's key, readable
 only by you). In the
 cache, `discogs/` keeps API responses: record details for good, listings for a day, and
@@ -796,6 +856,8 @@ for-sale numbers refreshed once a day when their track plays. `previews/` holds 
 clips, and `covers/` the record covers shown in tooltips (150 px PNGs, about 10 KB each; safe to
 delete). `collection.ron` is your Discogs collection (release ids, and each owned pressing's
 master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
+`cart.ron` is your Discogs cart as last read (listing ids, releases, sellers, prices and
+subtotals), for the CART badges at launch.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -811,7 +873,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 663 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 734 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -898,6 +960,14 @@ What's covered:
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget
     browsers, and a taken port that leaves the player working.
+- **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
+  the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
+  click versus double-click (no request on a click), Dig and Narrow down (search text, newest N,
+  criteria read from the listings), refreshes (new, sold, cheaper, past the limit, failed),
+  Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
+  stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
+  cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real
+  inventory, purchases and cart reads by hand (`--ignored`, with `WINAMP_DISCOGS_TOKEN`).
 - **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
   downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared
   preview starts as fast as a local file.
@@ -1012,6 +1082,10 @@ AGENTS.md         conventions and checks for anyone (human or AI) changing the c
 - **WAV tags** (RIFF `INFO`) are read by our own small parser, because symphonia 0.6.1 drops them.
 - **Still to verify:** a 1-hour playlist with zero underruns, and the acoustic clock check.
 - Surround files are played as their front left/right channels.
+- **Top Sellers rely on undocumented Discogs calls** (`/purchases`, `/cart`): see
+  [Top Sellers](#top-sellers) for what happens if they change. Bringing the player to the front
+  from the browser asks the system; macOS often only bounces the Dock icon. A
+  `winamp-rust://` link that macOS would honour needs the app bundle (`macos-release`).
 
 ## Roadmap (OpenSpec)
 
@@ -1043,6 +1117,8 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 12. `browser-bridge`: a Chrome extension with Play in / Enqueue in / Send to crate on Discogs pages
     and links, talking to the player through a paired local bridge (proposed; needs
     `discogs-digging`)
+13. `seller-crates`: Top Sellers, a crate per seller dug on a double-click, one row per copy,
+    SOLD, and your Discogs cart with the CART badge and switch
 
 Finished changes move to `openspec/changes/archive/`, and their requirements become the living
 specs in `openspec/specs/`.
