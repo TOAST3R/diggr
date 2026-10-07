@@ -2,4 +2,5 @@
 
 pub mod fetcher;
 pub mod scheduler;
+pub mod search;
 pub mod store;

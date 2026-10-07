@@ -130,7 +130,22 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         clips(&r[0].1),
         ["GLASShouse1", "LUMENremix1", "LASTlight01"]
     );
-    assert_eq!(r[2].1, Outcome::Unavailable("no clip".into()));
+    // No clip, but a tracklist: its tracks, to be searched for.
+    match &r[2].1 {
+        Outcome::Tracks(t) => {
+            assert_eq!(t.len(), 1);
+            assert_eq!(
+                (
+                    t[0].artist.as_str(),
+                    t[0].title.as_str(),
+                    t[0].position.as_str()
+                ),
+                ("Nightcraft", "Silent Tide", "A1")
+            );
+            assert_eq!(t[0].search_key, "release/1003/A1");
+        }
+        other => panic!("{other:?}"),
+    }
     // The CD releases bring their clips too.
     assert_eq!(clips(&r[1].1), ["CDglasshou1"]);
     assert_eq!(clips(&r[4].1), ["UNKNOWNfmt1"]);
@@ -811,4 +826,19 @@ fn a_record_listed_more_than_once_comes_in_once() {
         _ => None,
     });
     assert_eq!(progress, Some((2, 2)), "counted once too");
+}
+
+#[test]
+fn a_record_with_neither_clips_nor_tracklist_is_no_clip() {
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        "/releases/4242?curr_abbr=EUR",
+        200,
+        r#"{"id": 4242, "title": "Untitled", "artists": [{"name": "Nobody"}],
+            "formats": [{"name": "Vinyl"}], "tracklist": [], "videos": []}"#,
+    );
+    let mut i = intake(&t, true, None);
+    send(&mut i, "https://www.discogs.com/release/4242");
+    let r = records(&run(&mut i, 20));
+    assert_eq!(r, [(Release(4242), Outcome::Unavailable("no clip".into()))]);
 }

@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use super::search::{self, SearchResult};
 use crate::discogs::model::valid_clip_id;
 
 /// The audio format asked for: AAC in M4A, which the decoder plays and YouTube offers for
@@ -42,6 +43,9 @@ pub trait Fetcher: Send + Sync {
 
     /// The fetcher's version, if it can run at all.
     fn version(&self) -> Option<String>;
+
+    /// Lists search results for `query` (see [`super::search`]), downloading nothing.
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, FetchError>;
 }
 
 /// Where a clip's preview lives.
@@ -218,6 +222,50 @@ impl Fetcher for YtDlp {
         let v = out.lines().next()?.trim();
         (!v.is_empty()).then(|| v.to_owned())
     }
+
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, FetchError> {
+        let mut child = Command::new(&self.program)
+            .args(search::args(query))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| FetchError::NoProgram)?;
+        let mut stdout = child.stdout.take().expect("piped");
+        let reader = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = stdout.read_to_string(&mut s);
+            s
+        });
+        let mut stderr = child.stderr.take().expect("piped");
+        let err_reader = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = stderr.read_to_string(&mut s);
+            s
+        });
+        let deadline = Instant::now() + search::TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) if Instant::now() > deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(FetchError::Failed("search timed out".into()));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => return Err(FetchError::Failed(e.to_string())),
+            }
+        };
+        let out = reader.join().unwrap_or_default();
+        let errors = err_reader.join().unwrap_or_default();
+        if !status.success() {
+            let last = errors.lines().rev().find(|l| !l.trim().is_empty());
+            return Err(FetchError::Failed(
+                last.unwrap_or("yt-dlp search failed").trim().to_owned(),
+            ));
+        }
+        Ok(search::parse(&out))
+    }
 }
 
 /// Deletes what an unfinished download leaves behind (`<id>.*.part`, `<id>.*.ytdl`, …).
@@ -244,6 +292,12 @@ pub struct FakeFetcher {
     pub available: AtomicBool,
     /// Every fetch started, in order.
     pub started: std::sync::Mutex<Vec<String>>,
+    /// Canned search results, by query (none listed: no results).
+    pub results: std::sync::Mutex<std::collections::HashMap<String, Vec<SearchResult>>>,
+    /// Every search run, in order.
+    pub searched: std::sync::Mutex<Vec<String>>,
+    /// Searches fail (as offline) while this is set.
+    pub search_fails: AtomicBool,
 }
 
 impl FakeFetcher {
@@ -255,7 +309,22 @@ impl FakeFetcher {
             delay: Duration::from_millis(20),
             available: AtomicBool::new(true),
             started: Default::default(),
+            results: Default::default(),
+            searched: Default::default(),
+            search_fails: AtomicBool::new(false),
         }
+    }
+
+    /// What a search for `query` lists.
+    pub fn answer(&self, query: &str, results: Vec<SearchResult>) {
+        self.results
+            .lock()
+            .unwrap()
+            .insert(query.to_owned(), results);
+    }
+
+    pub fn searched(&self) -> Vec<String> {
+        self.searched.lock().unwrap().clone()
     }
 
     pub fn fail(&self, clip: &str, times: u32) {
@@ -321,6 +390,23 @@ impl Fetcher for FakeFetcher {
         self.available
             .load(Ordering::SeqCst)
             .then(|| "2026.01.01-fake".into())
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, FetchError> {
+        if !self.available.load(Ordering::SeqCst) {
+            return Err(FetchError::NoProgram);
+        }
+        self.searched.lock().unwrap().push(query.to_owned());
+        if self.search_fails.load(Ordering::SeqCst) {
+            return Err(FetchError::Failed("offline".into()));
+        }
+        Ok(self
+            .results
+            .lock()
+            .unwrap()
+            .get(query)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 

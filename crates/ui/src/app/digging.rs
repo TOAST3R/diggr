@@ -38,13 +38,16 @@ use dig::preview::fetcher::{clip_url, preview_path};
 use dig::preview::scheduler::{
     self, Finder, PreviewCommand, PreviewEvent, PreviewHandle, system_finder,
 };
+use dig::preview::search::SearchRequest;
 use dig::preview::store;
 use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
 use super::{Action, WinampApp, records_label};
 use crate::crates::{CrateId, MAX_NAME, PLAYLIST};
-use crate::playlist::{Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, WaitKind};
+use crate::playlist::{
+    Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, UnavailableKind, WaitKind,
+};
 
 /// Failed clips in a row before suggesting that yt-dlp needs an update.
 const FAILS_BEFORE_UPDATE_HINT: u32 = 3;
@@ -225,6 +228,8 @@ pub(super) struct Dig {
     jobs: BTreeMap<JobId, JobView>,
     /// The clips last asked for, in priority order.
     horizon: Vec<String>,
+    /// The tracks last asked to be searched for, best first.
+    searching: Vec<SearchRequest>,
     prepared_list: Vec<TrackRef>,
     /// Per crate being expanded: the focus entry and how many records were still listed.
     focus: HashMap<CrateId, (Option<EntryId>, usize)>,
@@ -335,6 +340,7 @@ impl Dig {
             offline: false,
             jobs: BTreeMap::new(),
             horizon: Vec::new(),
+            searching: Vec::new(),
             prepared_list: Vec::new(),
             focus: HashMap::new(),
             active: HashSet::new(),
@@ -418,11 +424,16 @@ impl Dig {
         let wake = self.wake.clone();
         self.previews = PreviewHandle::start(
             self.spawner.clone(),
-            scheduler::Config::new(
-                self.previews_dir(),
-                self.settings.cache_bytes(),
-                self.settings.ytdlp_path.clone(),
-            ),
+            scheduler::Config {
+                // Search results are remembered beside the previews' folder, not in it, so
+                // clearing previews keeps them.
+                searches: self.setup.cache_root.clone(),
+                ..scheduler::Config::new(
+                    self.previews_dir(),
+                    self.settings.cache_bytes(),
+                    self.settings.ytdlp_path.clone(),
+                )
+            },
             self.setup.finder.clone(),
             move || wake.request_repaint(),
         )
@@ -865,6 +876,8 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         styles: info.styles.clone(),
         artist: info.artist.clone(),
         formats: formats_text(&info.formats),
+        search_key: String::new(),
+        found: String::new(),
     }
 }
 
@@ -1359,7 +1372,8 @@ impl WinampApp {
             .filter(|o| has_vinyl(&o.formats) && twin_of(o))
             .map(|o| o.clip.is_some())
             .collect();
-        let silent = matches!(outcome, Outcome::Unavailable(_));
+        // No clip of its own (a "no clip" record, or tracks still to search for).
+        let silent = matches!(outcome, Outcome::Unavailable(_) | Outcome::Tracks(_));
         if twins
             && not_vinyl(&base)
             && !vinyl_twins.is_empty()
@@ -1402,6 +1416,21 @@ impl WinampApp {
                 self.mark_crate(j.target);
                 return;
             }
+            Outcome::Tracks(tracks) => tracks
+                .into_iter()
+                .map(|t| NewEntry {
+                    source: None,
+                    origin: Some(Origin {
+                        position: t.position,
+                        search_key: t.search_key,
+                        ..base.clone()
+                    }),
+                    artist: t.artist,
+                    title: t.title,
+                    duration: t.duration,
+                    status: WaitKind::Search,
+                })
+                .collect(),
             Outcome::Clips(entries) => {
                 // The vinyl release takes over the tracks its non-vinyl twins brought, in
                 // place; their other tracks (and their waiting placeholders) leave.
@@ -1492,8 +1521,57 @@ impl WinampApp {
         }
     }
 
+    /// Every loaded crate's entries still waiting to be searched for under `key`, changed by
+    /// `f`; returns them.
+    fn dig_each_searched(
+        &mut self,
+        key: &str,
+        mut f: impl FnMut(&mut Entry),
+    ) -> Vec<(CrateId, EntryId)> {
+        let mut hits = Vec::new();
+        for c in self.crates.loaded_ids() {
+            let before = hits.len();
+            if let Some(p) = self.crates.get_mut(c) {
+                for e in p.entries_mut() {
+                    let waiting = e.status == EntryStatus::Waiting(WaitKind::Search);
+                    if waiting && e.origin.as_ref().is_some_and(|o| o.search_key == key) {
+                        f(e);
+                        hits.push((c, e.id));
+                    }
+                }
+            }
+            if hits.len() > before {
+                self.mark_crate(c);
+            }
+        }
+        hits
+    }
+
     fn dig_preview_event(&mut self, e: PreviewEvent) {
         match e {
+            PreviewEvent::Found { key, clip, title } => {
+                let found = self.dig_each_searched(&key, |e| {
+                    let o = e.origin.as_mut().expect("searched entries have an origin");
+                    o.clip = Some(clip.clone());
+                    o.found = title.clone();
+                    e.source = Some(clip_url(&clip));
+                    e.status = EntryStatus::Waiting(WaitKind::Queued);
+                });
+                // A preview downloaded already (for another crate) plays at once.
+                let Some(d) = &self.dig else { return };
+                let path = preview_path(&d.previews_dir(), &clip);
+                if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                    let track = TrackRef::new(path.to_string_lossy());
+                    for (c, id) in found {
+                        self.set_audio(c, id, track.clone());
+                    }
+                }
+            }
+            PreviewEvent::NotFound(key) => {
+                let _ = self.dig_each_searched(&key, |e| {
+                    e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
+                });
+            }
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {
                     p.set_status(id, WaitKind::Downloading(pct));
@@ -1647,6 +1725,29 @@ impl WinampApp {
             .and_then(clip_of)
             .map(str::to_owned);
         let wanted = scheduler::horizon(&clips, at, armed.as_deref());
+        // Tracks of records with no clip, in the same window: searched for, best first.
+        let armed_entry = self.armed.filter(|(c, _)| *c == cid).map(|(_, id)| id);
+        let searches: Vec<SearchRequest> = armed_entry
+            .into_iter()
+            .chain(order.iter().skip(at).take(scheduler::AHEAD + 1).copied())
+            .filter_map(|id| p.get(id))
+            .filter(|e| e.status == EntryStatus::Waiting(WaitKind::Search))
+            .filter_map(|e| {
+                let o = e.origin.as_ref()?;
+                (!o.search_key.is_empty()).then(|| SearchRequest {
+                    key: o.search_key.clone(),
+                    artist: e.artist.clone(),
+                    record_artist: o.artist.clone(),
+                    title: e.title.clone(),
+                    duration: e.duration,
+                })
+            })
+            .fold(Vec::new(), |mut v: Vec<SearchRequest>, r| {
+                if !v.iter().any(|x| x.key == r.key) {
+                    v.push(r);
+                }
+                v
+            });
         // Downloaded previews near the playhead, to prepare (not the playing one: the
         // analyzer is on it already).
         let playing_id = if playing { start } else { None };
@@ -1666,6 +1767,10 @@ impl WinampApp {
                 .as_ref()
                 .is_some_and(|s| s.complete || s.downbeats.len() >= 32);
         let Some(d) = &mut self.dig else { return };
+        if searches != d.searching {
+            d.preview(PreviewCommand::Search(searches.clone()));
+            d.searching = searches;
+        }
         if let Some(pr) = &d.prepare {
             pr.set_gate(gate);
             if prepare != d.prepared_list {

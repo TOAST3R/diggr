@@ -30,7 +30,7 @@ The app SHALL keep previews ready for the playing entry and the next 3 entries i
 - **THEN** the previews of the new crate's first 4 entries are downloaded, and the first entry plays as soon as its preview is ready
 
 ### Requirement: Safe invocation
-yt-dlp SHALL only be given a clip id made of exactly 11 letters, digits, `-` or `_`. The id SHALL be passed as its own argument, never through a shell, and the user's yt-dlp configuration SHALL be ignored. Output SHALL be confined to the preview folder. A clip whose id doesn't match SHALL be treated as unusable. A download that hasn't finished after 120 s SHALL be stopped and retried once. A clip that fails twice SHALL make its entry unavailable, with the reason "clip failed".
+yt-dlp SHALL only be given a clip id made of exactly 11 letters, digits, `-` or `_`, or a search (see `preview-search`): a query built only from a tracklist's artist and title, without control characters, at most 120 characters, after `--` with the `ytsearch5:` prefix, listing results without downloading them. Only a result's id that passes the same check SHALL ever be kept. The id or query SHALL be passed as its own argument, never through a shell, and the user's yt-dlp configuration SHALL be ignored. Output SHALL be confined to the preview folder. A clip whose id doesn't match SHALL be treated as unusable. A download that hasn't finished after 120 s SHALL be stopped and retried once. A clip that fails twice SHALL make its entry unavailable, with the reason "clip failed".
 
 #### Scenario: Malformed clip id
 - **WHEN** a record's clip address carries an id with other characters (for example `abc;rm -rf`)
@@ -39,6 +39,10 @@ yt-dlp SHALL only be given a clip id made of exactly 11 letters, digits, `-` or 
 #### Scenario: Dead clip
 - **WHEN** a clip no longer exists
 - **THEN** after one retry its entry becomes unavailable with "clip failed", and playback moves on to the next ready entry
+
+#### Scenario: A hostile track title
+- **WHEN** a tracklist's title is `--exec rm -rf ~` and its entry is searched
+- **THEN** yt-dlp receives it inside one `ytsearch5:` argument after `--`, runs no command, and nothing is downloaded by the search
 
 ### Requirement: Preview cache
 Previews SHALL be stored in `previews/` in the cache folder. They SHALL use at most the preview cache size, which is 2 GB by default and set in Options ▸ Discogs…. When a new preview doesn't fit, the previews played least recently SHALL be deleted first. The previews of the playing entry, the armed entry and the next 3 entries SHALL never be deleted. A deleted preview SHALL be downloaded again when it is needed. When the downloaded file is identical, its cached analysis and waveform SHALL be reused.

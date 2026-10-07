@@ -305,6 +305,17 @@ ahead of what plays. Other pasted text is ignored.
   place (a playing one keeps playing), and the twin's other tracks leave. A record with no
   vinyl release stays, with a dim **FILE**, **CD**, **CASS** or **OTHER** mark before its
   title. Your wantlist and collection crates keep whatever releases they hold.
+- **Records with no clip on Discogs:** a record whose release has no video but has a
+  tracklist (often a new one) comes in as its tracks, "Artist - Title" with their sides and
+  lengths, each "to search". When one gets near the playhead (the armed entry, the playing one
+  and the next 3), your yt-dlp lists a few YouTube results for "artist title" (nothing is
+  downloaded for that), one search at a time. A result is used only when its title holds the
+  track's title, the artist is in its title or channel, and its length is within 10 s (or
+  5 %) of the tracklist's; otherwise the track says "not found by search". A found video then
+  downloads and plays like any clip, and the tooltip names it ("Preview: found by search
+  (…)"). Results are remembered in the cache's `searches.ron` (a track not found is tried
+  again after a week), so a record is searched once. A record with neither clips nor a
+  tracklist is still one "no clip" entry.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
   (records near the selected or playing entry are fetched first). It then becomes one entry per
   clip, matched to its tracklist, or "no clip". A send that's still going when you quit resumes
@@ -763,7 +774,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
 
 \* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -800,7 +811,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 649 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 663 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

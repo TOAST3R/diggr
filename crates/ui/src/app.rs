@@ -4671,7 +4671,7 @@ fn row_look(
             dim,
             match w {
                 W::Listed => RowEnd::Icon("st_listed"),
-                W::Queued => RowEnd::Icon("st_queued"),
+                W::Queued | W::Search => RowEnd::Icon("st_queued"),
                 W::Downloading(p) => RowEnd::Bar(*p),
                 W::NeedsYtDlp => RowEnd::Icon("st_needs_tool"),
                 W::Other(_) => RowEnd::Icon("st_other"),
@@ -4680,7 +4680,7 @@ fn row_look(
         EntryStatus::Unavailable(u) => (
             dim,
             RowEnd::Icon(match u {
-                U::NoClip | U::ClipFailed => "st_unavailable",
+                U::NoClip | U::ClipFailed | U::NotFound => "st_unavailable",
                 U::Other(_) => "st_other",
             }),
         ),

@@ -76,7 +76,7 @@ Each usable clip of a record SHALL become one entry. The entry is titled "Artist
 - a wantlist: every release in it;
 - a list: its releases and master releases, in list order.
 
-A clip that the target crate already holds SHALL NOT be added again. A record with no usable clip SHALL appear once, as an unavailable entry marked "no clip". A record that a page's listing gives more than once (a label credited several times on a release) SHALL be listed, fetched and counted once.
+A clip that the target crate already holds SHALL NOT be added again. A record with no usable clip SHALL become one entry per track of its tracklist, waiting to be searched (see `preview-search`). A record with no usable clip and no tracklist SHALL appear once, as an unavailable entry marked "no clip". A record that a page's listing gives more than once (a label credited several times on a release) SHALL be listed, fetched and counted once.
 
 #### Scenario: Listed three times
 - **WHEN** a label's listing gives release 38583846 three times and it has no clip
@@ -97,6 +97,10 @@ A clip that the target crate already holds SHALL NOT be added again. A record wi
 #### Scenario: Sent twice
 - **WHEN** the same release is sent twice to the same crate
 - **THEN** its clips appear only once
+
+#### Scenario: No clip, but a tracklist
+- **WHEN** release 38583846, with five tracks and no clip, is expanded
+- **THEN** the crate holds five entries, "The 89th Passenger - Paper Wings" to "The 89th Passenger - Analog Serenade", with their sides and durations, waiting to be searched
 
 ### Requirement: Filters
 Every send SHALL apply the skip passed filter, on by default: clips the user has passed on are left out. Its default can be changed in Options ▸ Discogs…, and each send can override it. Pasting SHALL use the default. A send SHALL keep records in every format: vinyl, digital files, CD, cassette and others.
