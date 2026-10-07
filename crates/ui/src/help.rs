@@ -138,8 +138,13 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  Refresh, Narrow down, Remove",
             ),
             (
-                "Copy (open record, seller crate): double-click / right-click",
-                "open its listing / Add to cart, Remove from cart",
+                "Copy (open record, seller crate): + CART / IN CART",
+                "put the copy in your Discogs cart / take it out (a record with one copy for \
+                 sale has the button on its own row)",
+            ),
+            (
+                "Copy: double-click / right-click",
+                "open its listing / Open on discogs.com",
             ),
             (
                 "Footer: + / ☰",

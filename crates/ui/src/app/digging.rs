@@ -221,7 +221,7 @@ pub(super) struct Dig {
     config: Option<PathBuf>,
     pub(super) settings: DigSettings,
     pub(super) memory: DigMemory,
-    token: Option<String>,
+    pub(super) token: Option<String>,
     identity: Option<Identity>,
     intake: Option<IntakeHandle>,
     previews: Option<PreviewHandle>,
@@ -3096,44 +3096,6 @@ impl WinampApp {
                         let a = DigAction::Collect(vec![e.id]);
                         item(ui, "Add to collection".into(), Some(a), "");
                     }
-                }
-            }
-        }
-        // A seller crate: its copies go in the cart, one at a time.
-        if let Some(r) = release_of(e).filter(|_| self.crates.seller_of(c).is_some()) {
-            let copies: Vec<_> = shown.copies_of(r).into_iter().filter(|c| !c.sold).collect();
-            let label = |c: &crate::playlist::SaleCopy| {
-                format!(
-                    "{} · {}",
-                    crate::format::price(c.cents, &c.currency),
-                    c.grades
-                )
-            };
-            let act = |c: &crate::playlist::SaleCopy| {
-                use super::sellers::SellerAction;
-                if d.cart.has_listing(c.listing) {
-                    DigAction::Seller(SellerAction::CartRemove(c.listing))
-                } else {
-                    DigAction::Seller(SellerAction::CartAdd(vec![c.listing]))
-                }
-            };
-            match copies.as_slice() {
-                [] => {}
-                [c] if d.cart.has_listing(c.listing) => {
-                    item(ui, "Remove from cart".into(), Some(act(c)), "");
-                }
-                [c] => item(ui, format!("Add to cart ({})", label(c)), Some(act(c)), ""),
-                cs => {
-                    ui.menu_button("Add to cart", |ui| {
-                        for c in cs {
-                            let text = if d.cart.has_listing(c.listing) {
-                                format!("Remove {} from cart", label(c))
-                            } else {
-                                label(c)
-                            };
-                            item(ui, text, Some(act(c)), "");
-                        }
-                    });
                 }
             }
         }

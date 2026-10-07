@@ -952,7 +952,8 @@ fn a_copy_put_in_the_cart_on_discogs_shows_after_the_next_read() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-elsewhere", &fakes);
     open_record(&mut rig, 1001);
-    assert!(!shows(&rig.frame(Vec::new()), "CART"));
+    let out = rig.frame(Vec::new());
+    assert!(!shows(&out, "CART") && !shows(&out, "IN CART"));
     fakes.transport.route(
         "/cart",
         200,
@@ -969,8 +970,13 @@ fn a_copy_put_in_the_cart_on_discogs_shows_after_the_next_read() {
         "the cart is read",
     );
     let out = rig.frame(Vec::new());
+    assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "IN CART");
     let carts = texts(&out).iter().filter(|t| t.text == "CART").count();
-    assert!(carts >= 2, "the copy and its record: {:?}", text_list(&out));
+    assert!(
+        carts >= 1,
+        "the record and its tracks: {:?}",
+        text_list(&out)
+    );
 }
 
 fn cart_answer(fakes: &Fakes, errors: &str) {
@@ -1005,18 +1011,24 @@ fn add_to_cart_marks_the_copy_at_once_and_says_so() {
             "cart_items": [{"item_id": 14, "price": {"formatted": "€12.00"}, "release": {"id": 1001}}]}]"#,
     );
     open_record(&mut rig, 1001);
-    let pos = at(&mut rig, "€12.00 · VG+ / VG · Germany");
-    rig.click_with(pos, PointerButton::Secondary);
+    let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
     // Discogs takes half a second to answer the add.
     fakes
         .transport
         .fault(::dig::discogs::transport::Fault::Delay(
             std::time::Duration::from_millis(500),
         ));
-    rig.click_text("Add to cart");
+    let selected = rig.app.crates.shown().selected_ids();
+    let out = rig.click(pill);
     assert!(
         rig.app.dig.as_ref().unwrap().cart.has_listing(14),
-        "CART within the frame, before Discogs answers"
+        "in the cart within the frame, before Discogs answers"
+    );
+    assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "REMOVE");
+    assert_eq!(
+        rig.app.crates.shown().selected_ids(),
+        selected,
+        "the pill's click doesn't select the row"
     );
     rig.until(|r| message(r) == "Added to your cart", "Discogs answers");
     assert_eq!(posted(&fakes), [r#"{"item_ids":[14]}"#]);
@@ -1030,10 +1042,54 @@ fn add_to_cart_marks_the_copy_at_once_and_says_so() {
     );
 }
 
+/// The pill drawn on the row whose text is `row` (its label).
+fn pill_of(out: &egui::FullOutput, row: &str) -> String {
+    let all = texts(out);
+    let y = all
+        .iter()
+        .find(|t| t.text == row)
+        .unwrap_or_else(|| panic!("{row:?}: {:?}", text_list(out)))
+        .rect
+        .center()
+        .y;
+    all.into_iter()
+        .filter(|t| ["+ CART", "IN CART", "REMOVE"].contains(&t.text.as_str()))
+        .find(|t| (t.rect.center().y - y).abs() < 3.0)
+        .map(|t| t.text)
+        .unwrap_or_default()
+}
+
+/// Where the pill of the row whose text is `row` is.
+fn pill_at(rig: &mut Rig, row: &str) -> Pos2 {
+    let out = rig.frame(Vec::new());
+    let all = texts(&out);
+    let y = all
+        .iter()
+        .find(|t| t.text == row)
+        .unwrap_or_else(|| panic!("{row:?}: {:?}", text_list(&out)))
+        .rect
+        .center()
+        .y;
+    all.into_iter()
+        .filter(|t| ["+ CART", "IN CART", "REMOVE"].contains(&t.text.as_str()))
+        .find(|t| (t.rect.center().y - y).abs() < 3.0)
+        .unwrap_or_else(|| panic!("no pill on {row:?}: {:?}", text_list(&out)))
+        .rect
+        .center()
+}
+
+fn pills(out: &egui::FullOutput) -> usize {
+    texts(out)
+        .iter()
+        .filter(|t| ["+ CART", "IN CART", "REMOVE"].contains(&t.text.as_str()))
+        .count()
+}
+
 #[test]
-fn a_track_offers_each_copy_of_its_record() {
+fn no_menu_offers_the_cart_or_render_show() {
     let fakes = Fakes::new();
     let (mut rig, logon) = dug("cart-menu", &fakes);
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     open_record(&mut rig, 1001);
     let title = rig
         .app
@@ -1046,15 +1102,126 @@ fn a_track_offers_each_copy_of_its_record() {
         .unwrap()
         .title
         .clone();
-    let pos = at(&mut rig, &title);
-    rig.click_with(pos, PointerButton::Secondary);
-    let pos = at(&mut rig, "Add to cart");
-    rig.frame(vec![egui::Event::PointerMoved(pos)]);
-    rig.click(pos);
-    let out = rig.frame(Vec::new());
-    for t in ["€9.00 · VG+ / VG", "€12.00 · VG+ / VG", "€18.00 · VG+ / VG"] {
-        assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+    let record = text_list(&rig.frame(Vec::new()))
+        .into_iter()
+        .find(|t| t.contains("Nightcraft") || t.contains(" – "))
+        .unwrap();
+    for row in [
+        "€9.00 · VG+ / VG · Germany",
+        "€12.00 · VG+ / VG · Germany",
+        &title,
+        &record,
+    ] {
+        let pos = at(&mut rig, row);
+        let out = rig.click_with(pos, PointerButton::Secondary);
+        let items = text_list(&out);
+        assert!(
+            !items.iter().any(|t| t.contains("Add to cart")
+                || t.contains("Remove from cart")
+                || t.contains("Render show")),
+            "{row}: {items:?}"
+        );
+        if row.starts_with('€') {
+            assert!(shows(&out, "Open on discogs.com"), "{row}: {items:?}");
+        }
+        rig.frame(vec![egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        rig.frame(Vec::new());
     }
+}
+
+#[test]
+fn a_record_with_one_copy_left_carries_its_pill() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-one-copy", &fakes);
+    cart_answer(&fakes, "");
+    // Release 1002 has one copy (12); release 1001 three, the €9.00 one in the cart.
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    let out = rig.frame(Vec::new());
+    assert_eq!(
+        pills(&out),
+        1,
+        "only 1002's record row: {:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "+ CART"));
+    assert!(shows(&out, "CART"), "1001's record row keeps the badge");
+    let pos = texts(&out)
+        .into_iter()
+        .find(|t| t.text == "+ CART")
+        .unwrap()
+        .rect
+        .center();
+    let opened = rig.app.pl_open_rev;
+    rig.click(pos);
+    assert_eq!(rig.app.pl_open_rev, opened, "the record didn't open");
+    rig.until(|r| message(r) == "Added to your cart", "Discogs answers");
+    assert_eq!(posted(&fakes), [r#"{"item_ids":[12]}"#]);
+}
+
+#[test]
+fn copy_pills_line_up_and_a_sold_copy_has_none() {
+    let fakes = Fakes::new();
+    let (mut rig, logon) = dug("cart-pills", &fakes);
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    assert!(rig.app.crates.get_mut(logon).unwrap().mark_sold(13));
+    open_record(&mut rig, 1001);
+    let out = rig.frame(Vec::new());
+    assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "IN CART");
+    assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "+ CART");
+    assert_eq!(
+        pill_of(&out, "€18.00 · VG+ / VG · Germany"),
+        "",
+        "sold: SOLD only"
+    );
+    let left = |t: &str| {
+        texts(&out)
+            .into_iter()
+            .find(|x| x.text == t)
+            .unwrap()
+            .rect
+            .left()
+    };
+    assert!(
+        (left("€9.00 · VG+ / VG · Germany") - left("€12.00 · VG+ / VG · Germany")).abs() < 0.5,
+        "IN CART and + CART are as wide"
+    );
+}
+
+#[test]
+fn a_double_click_on_the_pill_never_opens_the_listing() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-double", &fakes);
+    cart_answer(&fakes, "");
+    fakes.empty_cart();
+    open_record(&mut rig, 1001);
+    let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
+    rig.double_click(pill);
+    assert!(
+        fakes.browser.opened.lock().unwrap().is_empty(),
+        "no listing opened"
+    );
+    assert!(
+        !rig.app.dig.as_ref().unwrap().cart.has_listing(14),
+        "added and taken out again"
+    );
+}
+
+#[test]
+fn without_a_token_the_pill_asks_to_connect() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-pill-no-token", &fakes);
+    rig.app.dig.as_mut().unwrap().token = None;
+    open_record(&mut rig, 1001);
+    let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
+    rig.click(pill);
+    assert!(rig.app.dig.as_ref().unwrap().connect.is_some());
+    assert!(posted(&fakes).is_empty());
 }
 
 #[test]
@@ -1119,10 +1286,16 @@ fn remove_from_cart_takes_one_copy_out() {
     rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     fakes.empty_cart();
     open_record(&mut rig, 1001);
-    let pos = at(&mut rig, "€9.00 · VG+ / VG · Germany");
-    rig.click_with(pos, PointerButton::Secondary);
-    rig.click_text("Remove from cart");
+    let pill = pill_at(&mut rig, "€9.00 · VG+ / VG · Germany");
+    assert_eq!(
+        pill_of(&rig.frame(Vec::new()), "€9.00 · VG+ / VG · Germany"),
+        "IN CART"
+    );
+    let out = rig.frame(vec![egui::Event::PointerMoved(pill)]);
+    assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "REMOVE");
+    let out = rig.click(pill);
     assert!(!rig.app.dig.as_ref().unwrap().cart.has_listing(11));
+    assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "+ CART");
     rig.until(
         |_| {
             fakes
@@ -1244,4 +1417,44 @@ fn a_seller_sent_from_the_browser_is_added_and_the_app_comes_forward() {
             .map(|p| p.len()),
         Some(0)
     );
+}
+
+#[test]
+fn a_pill_is_as_wide_whatever_it_reads() {
+    let rig = rig("pill-width", &Fakes::new(), |_| {});
+    let colors = rig.app.def.colors.clone();
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let painter = ui.painter();
+        let font = egui::FontId::proportional(11.0);
+        let width = |in_cart: bool, pointer: Option<Pos2>| {
+            let marks = Badges {
+                pill: Some(Pill { in_cart, pointer }),
+                ..Default::default()
+            };
+            let (w, rect) =
+                entry_badges(painter, pos2(10.0, 10.0), marks, None, &font, &colors, 1.0);
+            assert!(rect.is_some());
+            w
+        };
+        let over = Some(pos2(14.0, 10.0));
+        let plus = width(false, None);
+        assert_eq!(width(true, None), plus, "IN CART");
+        assert_eq!(width(true, over), plus, "REMOVE");
+        assert_eq!(width(false, over), plus, "+ CART hovered");
+    });
+    out.textures_delta.clear();
+}
+
+#[test]
+fn the_flat_view_keeps_the_cart_badge() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-flat", &fakes);
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    assert!(!rig.app.crates.shown().is_grouped());
+    let out = rig.frame(Vec::new());
+    assert_eq!(pills(&out), 0, "{:?}", text_list(&out));
+    assert!(shows(&out, "CART"), "{:?}", text_list(&out));
 }

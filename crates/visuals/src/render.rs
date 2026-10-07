@@ -19,7 +19,6 @@ use audio::{PlayState, Position, TapChunk};
 use eframe::egui_wgpu::wgpu;
 use platform::{FileSource, TrackRef};
 use ui::fullscreen::SceneFrame;
-use ui::render_job::{JobStatus, RenderJob, RenderRequest, ShowRenderer};
 use ui::spectrum::Analyzer;
 
 use crate::engine::{Tick, VisualEngine};
@@ -233,7 +232,10 @@ fn cs_uv(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 "#;
 
-pub use ui::render_job::size_ok;
+/// A size the encoder takes: at least 16×16, the width divisible by 8 and the height even.
+pub fn size_ok(size: (u32, u32)) -> bool {
+    size.0 >= 16 && size.1 >= 16 && size.0.is_multiple_of(8) && size.1.is_multiple_of(2)
+}
 
 /// Converts an Rgba8 texture to planar YUV 4:2:0 (BT.709, limited range) on the GPU, so only
 /// 1.5 bytes per pixel leave the GPU and ffmpeg needs no conversion.
@@ -767,121 +769,6 @@ pub fn render_show(
     })
 }
 
-/// Renders shows on a low-priority background thread for the player's "Render show…".
-pub struct BackgroundRenderer {
-    files: Arc<dyn FileSource>,
-    spawner: Arc<dyn platform::Spawner>,
-    visuals_dir: PathBuf,
-    cache: Option<ScoreCache>,
-}
-
-impl BackgroundRenderer {
-    /// Renders with the live looks (`<config>/winamp_rust/visuals`) and the score cache.
-    pub fn new(files: Arc<dyn FileSource>, spawner: Arc<dyn platform::Spawner>) -> Self {
-        Self {
-            files,
-            spawner,
-            visuals_dir: crate::library::default_dir(),
-            cache: ScoreCache::platform_default(),
-        }
-    }
-
-    /// Other folders for looks and scores.
-    pub fn with_dirs(mut self, visuals_dir: PathBuf, cache: Option<ScoreCache>) -> Self {
-        self.visuals_dir = visuals_dir;
-        self.cache = cache;
-        self
-    }
-}
-
-struct Job {
-    status: std::sync::Mutex<JobStatus>,
-    cancel: AtomicBool,
-    paused: AtomicBool,
-}
-
-impl RenderJob for Job {
-    fn status(&self) -> JobStatus {
-        self.status.lock().expect("not poisoned").clone()
-    }
-
-    fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
-
-    fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::Relaxed);
-    }
-}
-
-impl ShowRenderer for BackgroundRenderer {
-    fn looks(&self) -> Vec<(String, String)> {
-        let _ = crate::library::install(&self.visuals_dir);
-        let mut out = Vec::new();
-        for id in crate::library::scene_ids(&self.visuals_dir) {
-            let (variants, _) = crate::library::load_variants(&self.visuals_dir, &id);
-            if variants.is_empty() {
-                out.push((id.clone(), "default".to_string()));
-            }
-            out.extend(variants.into_iter().map(|v| (id.clone(), v.name)));
-        }
-        out
-    }
-
-    fn start(&self, r: RenderRequest) -> Arc<dyn RenderJob> {
-        let (track, out) = (r.track.clone(), r.out.clone());
-        let job = Arc::new(Job {
-            status: std::sync::Mutex::new(JobStatus::Running {
-                fraction: 0.0,
-                eta_secs: None,
-            }),
-            cancel: AtomicBool::new(false),
-            paused: AtomicBool::new(false),
-        });
-        let opts = Options {
-            size: r.size,
-            fps: r.fps,
-            from: r.from,
-            to: r.to,
-            overlay: r.overlay,
-            look: r.look,
-            visuals_dir: self.visuals_dir.clone(),
-            cache: self.cache.clone(),
-            ..Options::new(track, out.clone())
-        };
-        let (j, files) = (job.clone(), self.files.clone());
-        let spawned = self.spawner.spawn(
-            "show-render",
-            platform::Priority::Low,
-            Box::new(move || {
-                let set = |s: JobStatus| *j.status.lock().expect("not poisoned") = s;
-                let result = render_show(&*files, &opts, |p| {
-                    while j.paused.load(Ordering::Relaxed) && !j.cancel.load(Ordering::Relaxed) {
-                        set(JobStatus::Paused {
-                            fraction: p.fraction(),
-                        });
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    set(JobStatus::Running {
-                        fraction: p.fraction(),
-                        eta_secs: p.eta_secs(),
-                    });
-                    !j.cancel.load(Ordering::Relaxed)
-                });
-                set(match result {
-                    Ok(_) => JobStatus::Done { out },
-                    Err(RenderError::Cancelled) => JobStatus::Cancelled,
-                    Err(e) => JobStatus::Failed(e.to_string()),
-                });
-            }),
-        );
-        if let Err(e) = spawned {
-            *job.status.lock().expect("not poisoned") = JobStatus::Failed(e.to_string());
-        }
-        job
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1149,85 +1036,9 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    struct Threads;
-    impl platform::Spawner for Threads {
-        fn spawn(
-            &self,
-            _: &str,
-            _: platform::Priority,
-            f: Box<dyn FnOnce() + Send + 'static>,
-        ) -> Result<(), platform::PlatformError> {
-            std::thread::spawn(f);
-            Ok(())
-        }
-    }
-
-    fn wait_finished(job: &dyn RenderJob) -> JobStatus {
-        let t = Instant::now();
-        loop {
-            let s = job.status();
-            if s.finished() {
-                return s;
-            }
-            assert!(
-                t.elapsed().as_secs() < 120,
-                "render finished in time: {s:?}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-
     #[test]
-    fn background_jobs_finish_pause_and_cancel() {
-        if check_ffmpeg().is_err() || headless_gpu().is_err() {
-            return;
-        }
-        let dir = temp_dir("job");
-        let t = track(&dir);
-        let r = BackgroundRenderer::new(Arc::new(NativeFileSource), Arc::new(Threads)).with_dirs(
-            dir.join("visuals"),
-            Some(ScoreCache::new(dir.join("cache"))),
-        );
-        // The whole 30 s track at 1080p60 would be slow for a test; the job API renders the
-        // whole track, so check it on this short one.
-        let out = dir.join("job.mp4");
-        let req = |out: PathBuf| RenderRequest {
-            track: t.clone(),
-            out,
-            size: (320, 180),
-            fps: 30,
-            from: 14.0,
-            to: Some(16.0),
-            overlay: false,
-            look: None,
-        };
-        assert!(
-            r.looks()
-                .contains(&("flame".to_string(), "silk".to_string()))
-        );
-        let job = r.start(req(out.clone()));
-        job.set_paused(true);
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        assert!(
-            matches!(
-                job.status(),
-                JobStatus::Paused { .. } | JobStatus::Running { fraction: 0.0, .. }
-            ),
-            "{:?}",
-            job.status()
-        );
-        job.set_paused(false);
-        assert_eq!(wait_finished(&*job), JobStatus::Done { out: out.clone() });
-        assert!(out.exists());
-        let cancelled = dir.join("cancelled.mp4");
-        let job = r.start(RenderRequest {
-            to: None,
-            ..req(cancelled.clone())
-        });
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        job.cancel();
-        assert_eq!(wait_finished(&*job), JobStatus::Cancelled);
-        assert!(!cancelled.exists());
-        std::fs::remove_dir_all(dir).ok();
+    fn sizes_the_encoder_takes() {
+        assert!(size_ok((1920, 1080)) && size_ok((1080, 1920)));
+        assert!(!size_ok((1082, 1920)) && !size_ok((1920, 1081)) && !size_ok((8, 8)));
     }
 }

@@ -152,10 +152,6 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                     Arc::new(NativeFileSource),
                     cache.as_ref().map(|c| c.dir().to_path_buf()),
                 )),
-                show_renderer: Some(Box::new(visuals::render::BackgroundRenderer::new(
-                    Arc::new(NativeFileSource),
-                    Arc::new(NativeSpawner),
-                ))),
                 dig: Some(ui::DigSetup::system(
                     cache.as_ref().map(|c| c.dir().to_path_buf()),
                 )),
