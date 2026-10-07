@@ -200,6 +200,17 @@ pub fn entry_details(
     );
     add("Time", &e.duration.map(clock).unwrap_or_default());
     add("Status", &e.status.note().unwrap_or_default());
+    // A track of a record with no clip: how its preview was found.
+    if let Some(o) = e.origin.as_ref().filter(|o| !o.search_key.is_empty()) {
+        let preview = if !o.found.is_empty() {
+            format!("found by search ({})", o.found)
+        } else if matches!(&e.status, crate::playlist::EntryStatus::Unavailable(_)) {
+            "not found by search".to_owned()
+        } else {
+            "to search".to_owned()
+        };
+        add("Preview", &preview);
+    }
     if let Some(why) = &marks.wantlist_failed {
         add("Wantlist", &format!("failed ({why})"));
     } else if marks.wantlist_pending {
@@ -403,6 +414,37 @@ mod tests {
         assert_eq!(ago(720), "12 min ago");
         assert_eq!(ago(3 * 3600 + 100), "3 h ago");
         assert_eq!(ago(2 * 86_400), "2 d ago");
+    }
+
+    #[test]
+    fn a_searched_track_says_how_its_preview_was_found() {
+        use crate::playlist::{Origin, Playlist};
+        let mut p = Playlist::default();
+        let mut add = |found: &str, status: &str| {
+            let o = Origin {
+                search_key: "release/38583846/A1".into(),
+                found: found.into(),
+                ..Default::default()
+            };
+            let id = p.add_waiting("The 89th Passenger", "Paper Wings", None, Some(o), status);
+            p.get(id).unwrap().clone()
+        };
+        let preview = |e| {
+            entry_details(&e, DigMarks::default(), 0)
+                .into_iter()
+                .find(|(l, _)| *l == "Preview")
+                .map(|(_, v)| v)
+        };
+        assert_eq!(preview(add("", "to search")).as_deref(), Some("to search"));
+        let found = add("The 89th Passenger – Paper Wings [AF069]", "queued");
+        assert_eq!(
+            preview(found).as_deref(),
+            Some("found by search (The 89th Passenger – Paper Wings [AF069])")
+        );
+        let mut gone = add("", "to search");
+        gone.status =
+            crate::playlist::EntryStatus::Unavailable(crate::playlist::UnavailableKind::NotFound);
+        assert_eq!(preview(gone).as_deref(), Some("not found by search"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use platform::{Priority, Spawner};
 
 use super::fetcher::{FetchError, Fetcher, preview_path};
+use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
 
 /// Entries kept ready after the playing one.
@@ -26,6 +27,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(120);
 pub const RECHECK: Duration = Duration::from_secs(30);
 /// Tries per clip: the first and one retry.
 const ATTEMPTS: u32 = 2;
+/// A search that failed (offline, yt-dlp error) is tried again after this long.
+const SEARCH_RETRY: Duration = Duration::from_secs(60);
 
 /// The clips to have ready, in priority order: the armed entry's, then from `start` (the
 /// playing entry, or the shown crate's current one when stopped) the next `AHEAD + 1` entries
@@ -64,6 +67,9 @@ pub enum PreviewCommand {
     CheckProgram,
     /// A preview started playing: it is now the most recently played.
     Played(PathBuf),
+    /// The tracks to find in the window, best first (replacing the previous list): each is
+    /// answered from the remembered results, or searched for, one at a time.
+    Search(Vec<SearchRequest>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,10 +84,20 @@ pub enum PreviewEvent {
     NeedsYtDlp,
     /// yt-dlp was found, with its version.
     YtDlp(String),
+    /// A search found a track's preview: `clip` is the video, `title` its title.
+    Found {
+        key: String,
+        clip: String,
+        title: String,
+    },
+    /// A search found nothing usable for a track.
+    NotFound(String),
 }
 
 pub struct Config {
     pub dir: PathBuf,
+    /// Where search results are remembered (`searches.ron`); `None` keeps them in memory.
+    pub searches: Option<PathBuf>,
     pub limit: u64,
     pub program: Option<String>,
     pub timeout: Duration,
@@ -92,6 +108,7 @@ impl Config {
     pub fn new(dir: PathBuf, limit: u64, program: Option<String>) -> Self {
         Self {
             dir,
+            searches: None,
             limit,
             program,
             timeout: TIMEOUT,
@@ -104,6 +121,7 @@ enum Msg {
     Cmd(PreviewCommand),
     Progress(String, u8),
     Result(String, Result<PathBuf, FetchError>),
+    Searched(SearchRequest, Result<Vec<SearchResult>, FetchError>),
 }
 
 struct Running {
@@ -128,6 +146,14 @@ struct Scheduler {
     given_up: HashSet<String>,
     delivered: HashSet<String>,
     events: Vec<PreviewEvent>,
+    /// Search results remembered across sessions.
+    remembered: Searches,
+    /// The window's tracks to find, best first.
+    to_search: Vec<SearchRequest>,
+    /// The track being searched for.
+    searching: Option<String>,
+    /// Tracks whose search failed, and when (tried again after [`SEARCH_RETRY`]).
+    search_failed: HashMap<String, Instant>,
 }
 
 impl Scheduler {
@@ -177,6 +203,100 @@ impl Scheduler {
             }
             PreviewCommand::CheckProgram => self.look(),
             PreviewCommand::Played(path) => store::touch(&path),
+            PreviewCommand::Search(list) => self.to_search = list,
+        }
+    }
+
+    /// Answers the window's tracks from the remembered results, and starts one search for the
+    /// first that isn't remembered.
+    fn search_next(&mut self) {
+        let now = crate::now_secs();
+        let todo = std::mem::take(&mut self.to_search);
+        let mut left = Vec::new();
+        for req in todo {
+            match self.remembered.get(&req.key, now) {
+                Some(Remembered::Found { clip, title }) => self.events.push(PreviewEvent::Found {
+                    key: req.key.clone(),
+                    clip: clip.clone(),
+                    title: title.clone(),
+                }),
+                Some(Remembered::NotFound { .. }) => {
+                    self.events.push(PreviewEvent::NotFound(req.key.clone()))
+                }
+                None => left.push(req),
+            }
+        }
+        self.to_search = left;
+        if self.searching.is_some() {
+            return;
+        }
+        let Some(i) = self.to_search.iter().position(|r| {
+            self.search_failed
+                .get(&r.key)
+                .is_none_or(|t| t.elapsed() >= SEARCH_RETRY)
+        }) else {
+            return;
+        };
+        if self.fetcher.is_none() {
+            if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
+                self.look();
+            }
+            if self.fetcher.is_none() {
+                return;
+            }
+        }
+        let req = self.to_search.remove(i);
+        let fetcher = self.fetcher.clone().expect("checked");
+        let inbox = self.inbox.clone();
+        self.searching = Some(req.key.clone());
+        let spawned = self.spawner.spawn(
+            "dig-search",
+            Priority::Low,
+            Box::new(move || {
+                let result = fetcher.search(&search::query(&req.artist, &req.title));
+                let _ = inbox.send(Msg::Searched(req, result));
+            }),
+        );
+        if spawned.is_err() {
+            self.searching = None;
+        }
+    }
+
+    fn searched(&mut self, req: SearchRequest, result: Result<Vec<SearchResult>, FetchError>) {
+        self.searching = None;
+        let found = match result {
+            Ok(results) => search::best(&req, &results).map(|r| (r.id.clone(), r.title.clone())),
+            Err(FetchError::NoProgram) => {
+                self.fetcher = None;
+                self.said_missing = false;
+                self.look();
+                return;
+            }
+            Err(_) => {
+                self.search_failed.insert(req.key, Instant::now());
+                return;
+            }
+        };
+        self.search_failed.remove(&req.key);
+        let remembered = match found {
+            Some((clip, title)) => {
+                self.events.push(PreviewEvent::Found {
+                    key: req.key.clone(),
+                    clip: clip.clone(),
+                    title: title.clone(),
+                });
+                Remembered::Found { clip, title }
+            }
+            None => {
+                self.events.push(PreviewEvent::NotFound(req.key.clone()));
+                Remembered::NotFound {
+                    at: crate::now_secs(),
+                }
+            }
+        };
+        self.remembered.put(&req.key, remembered);
+        if let Some(dir) = &self.cfg.searches {
+            let _ = self.remembered.save(dir);
         }
     }
 
@@ -337,11 +457,18 @@ impl PreviewHandle {
             given_up: HashSet::new(),
             delivered: HashSet::new(),
             events: Vec::new(),
+            remembered: Searches::default(),
+            to_search: Vec::new(),
+            searching: None,
+            search_failed: HashMap::new(),
         };
         spawner.spawn(
             "dig-previews",
             Priority::Low,
             Box::new(move || {
+                if let Some(dir) = &s.cfg.searches {
+                    s.remembered = Searches::load(dir);
+                }
                 loop {
                     let tick = if s.running.is_empty() && s.fetcher.is_some() {
                         Duration::from_secs(5)
@@ -356,10 +483,15 @@ impl PreviewHandle {
                             }
                         }
                         Ok(Msg::Result(clip, r)) => s.finished(clip, r),
+                        Ok(Msg::Searched(req, r)) => s.searched(req, r),
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                     s.check_timeouts();
+                    // Searches first: a found track joins the downloads at the next horizon.
+                    if !s.to_search.is_empty() {
+                        s.search_next();
+                    }
                     if !s.wanted.is_empty() {
                         s.fill();
                     }

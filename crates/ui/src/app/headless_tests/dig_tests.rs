@@ -2447,3 +2447,224 @@ fn a_digital_twin_with_tunes_stays_when_the_vinyl_has_none() {
     ));
     assert_eq!(releases_in(&rig, c), [Some(VINYL), Some(FLAC)]);
 }
+
+// ---- records without clips: tracks to search -----------------------------------------------
+
+use ::dig::discogs::matching::TrackEntry;
+
+fn af_tracks(release: u64) -> Outcome {
+    let names = [("A1", "Paper Wings", 291.0), ("A2", "Hidden Soul", 299.0)];
+    Outcome::Tracks(
+        names
+            .iter()
+            .map(|(pos, title, secs)| TrackEntry {
+                artist: "The 89th Passenger".into(),
+                title: (*title).into(),
+                position: (*pos).into(),
+                duration: Some(*secs),
+                search_key: format!("release/{release}/{pos}"),
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn a_record_without_clips_brings_its_tracks_to_search() {
+    let fakes = Fakes::new();
+    let mut rig = rig("tracks-to-search", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![af_listed(VINYL, Format::Vinyl)],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        af_tracks(VINYL),
+    ));
+    let p = rig.app.crates.get(c).unwrap();
+    let rows: Vec<(String, String, String)> = p
+        .entries()
+        .iter()
+        .map(|e| {
+            let o = e.origin.as_ref().unwrap();
+            (
+                e.display_name(),
+                o.position.clone(),
+                e.status.note().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "(AF060LP) The 89th Passenger: Paper Wings".to_owned(),
+                "A1".to_owned(),
+                "to search".to_owned()
+            ),
+            (
+                "(AF060LP) The 89th Passenger: Hidden Soul".to_owned(),
+                "A2".to_owned(),
+                "to search".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(p.entries()[0].duration, Some(291.0));
+    // Saved and loaded again: still to search, with their keys.
+    let (back, _) = crate::playlist::Playlist::from_saved(p.to_saved());
+    let e = &back.entries()[1];
+    assert_eq!(e.status.note().as_deref(), Some("to search"));
+    assert_eq!(
+        e.origin.as_ref().unwrap().search_key,
+        format!("release/{VINYL}/A2")
+    );
+}
+
+#[test]
+fn only_the_vinyl_release_of_a_record_without_clips_is_searched() {
+    for vinyl_first in [true, false] {
+        let fakes = Fakes::new();
+        let mut rig = rig("search-twins", &fakes, |_| {});
+        let c = rig.app.crates.create("Analogical Force").unwrap();
+        let j = af_job(c);
+        rig.app.dig_intake_event(Intake::Listed(
+            j.clone(),
+            vec![
+                af_listed(VINYL, Format::Vinyl),
+                af_listed(FLAC, Format::File),
+            ],
+        ));
+        let mut arrivals = [
+            (af_info(VINYL, Format::Vinyl), af_tracks(VINYL)),
+            (af_info(FLAC, Format::File), af_tracks(FLAC)),
+        ];
+        if !vinyl_first {
+            arrivals.reverse();
+        }
+        for (info, outcome) in arrivals {
+            rig.app
+                .dig_intake_event(Intake::Record(j.clone(), info, outcome));
+        }
+        assert_eq!(
+            releases_in(&rig, c),
+            [Some(VINYL), Some(VINYL)],
+            "vinyl first: {vinyl_first}"
+        );
+    }
+}
+
+/// A record with no clip and six tracks, `T1` to `T6` (3:00 each), into a new crate `name`.
+fn six_tracks(rig: &mut Rig, name: &str) -> CrateId {
+    let c = rig.app.crates.create(name).unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![af_listed(VINYL, Format::Vinyl)],
+    ));
+    let tracks = (1..=6)
+        .map(|i| TrackEntry {
+            artist: "The 89th Passenger".into(),
+            title: format!("T{i}"),
+            position: format!("A{i}"),
+            duration: Some(180.0),
+            search_key: format!("release/{VINYL}/A{i}"),
+        })
+        .collect();
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        Outcome::Tracks(tracks),
+    ));
+    rig.app.show_crate(c);
+    c
+}
+
+#[test]
+fn tracks_near_the_playhead_are_searched_found_and_downloaded() {
+    let fakes = Fakes::new();
+    for i in 1..=6 {
+        // T2 has no upload; the others do.
+        let results = if i == 2 {
+            Vec::new()
+        } else {
+            vec![::dig::preview::search::SearchResult {
+                id: format!("track{i:06}"),
+                duration: Some(181.0),
+                channel: "Analogical Force".into(),
+                title: format!("The 89th Passenger - T{i}"),
+            }]
+        };
+        fakes
+            .fetcher
+            .answer(&format!("The 89th Passenger T{i}"), results);
+    }
+    let mut rig = rig("search-window", &fakes, |_| {});
+    let c = six_tracks(&mut rig, "AF069");
+    let status = |r: &Rig, i: usize| {
+        r.app.crates.get(c).unwrap().entries()[i]
+            .status
+            .note()
+            .unwrap_or_default()
+    };
+    rig.until(
+        |r| {
+            r.app.crates.get(c).unwrap().entries()[0]
+                .status
+                .is_playable()
+        },
+        "T1 ready",
+    );
+    rig.until(|r| status(r, 1) == "not found by search", "T2 not found");
+    rig.until(
+        |r| {
+            r.app.crates.get(c).unwrap().entries()[3]
+                .status
+                .is_playable()
+        },
+        "T4 ready",
+    );
+    // Stopped, the window is the first entry and the 3 after it in play order. T2 left it
+    // when it wasn't found, so T5 came in; T6 waits.
+    rig.until(
+        |r| {
+            r.app.crates.get(c).unwrap().entries()[4]
+                .status
+                .is_playable()
+        },
+        "T5 ready",
+    );
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert_eq!(status(&rig, 5), "to search");
+    assert_eq!(fakes.fetcher.searched().len(), 5);
+    let e = &rig.app.crates.get(c).unwrap().entries()[0];
+    let o = e.origin.as_ref().unwrap();
+    assert_eq!(o.clip.as_deref(), Some("track000001"));
+    assert_eq!(o.found, "The 89th Passenger - T1");
+
+    // The same record in another crate: its tracks are answered without searching again.
+    let again = six_tracks(&mut rig, "Again");
+    rig.until(
+        |r| {
+            r.app.crates.get(again).unwrap().entries()[0]
+                .status
+                .is_playable()
+        },
+        "found from what was remembered",
+    );
+    assert_eq!(fakes.fetcher.searched().len(), 5, "no new search");
+}
+
+#[test]
+fn an_armed_track_is_searched_first() {
+    let fakes = Fakes::new();
+    let mut rig = rig("search-armed", &fakes, |_| {});
+    let c = six_tracks(&mut rig, "AF069");
+    let last = rig.app.crates.get(c).unwrap().entries()[5].id;
+    rig.app.armed = Some((c, last));
+    rig.until(|_| !fakes.fetcher.searched().is_empty(), "a search");
+    assert_eq!(fakes.fetcher.searched()[0], "The 89th Passenger T6");
+}

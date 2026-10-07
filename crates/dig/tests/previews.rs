@@ -251,3 +251,124 @@ fn the_cache_limit_evicts_all_but_the_protected() {
     until(&h, |ev| done_count(ev) == 1);
     assert_eq!(fake.started().iter().filter(|c| **c == clip(1)).count(), 2);
 }
+
+// ---- searching for tracks without a clip ---------------------------------------------------
+
+use dig::preview::search::{SearchRequest, SearchResult, Searches};
+
+fn track(key: &str, title: &str, secs: f64) -> SearchRequest {
+    SearchRequest {
+        key: key.into(),
+        artist: "The 89th Passenger".into(),
+        record_artist: "The 89th Passenger".into(),
+        title: title.into(),
+        duration: Some(secs),
+    }
+}
+
+fn upload(id: &str, title: &str, secs: f64) -> SearchResult {
+    SearchResult {
+        id: id.into(),
+        duration: Some(secs),
+        channel: "Analogical Force".into(),
+        title: format!("The 89th Passenger - {title}"),
+    }
+}
+
+fn answers(ev: &[PreviewEvent]) -> usize {
+    ev.iter()
+        .filter(|e| matches!(e, PreviewEvent::Found { .. } | PreviewEvent::NotFound(_)))
+        .count()
+}
+
+#[test]
+fn tracks_are_searched_one_at_a_time_and_remembered() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.answer(
+        "The 89th Passenger Paper Wings",
+        vec![upload("paperwings1", "Paper Wings", 292.0)],
+    );
+    // "Hidden Soul": only a live set, far too long.
+    fake.answer(
+        "The 89th Passenger Hidden Soul",
+        vec![upload("hiddenlive1", "Hidden Soul (live)", 900.0)],
+    );
+    // Results are remembered in the test's own folder.
+    let (h, d) = start("search", &fake, |c| c.searches = Some(c.dir.clone()));
+    h.send(PreviewCommand::Search(vec![
+        track("release/1/A1", "Paper Wings", 291.0),
+        track("release/1/A2", "Hidden Soul", 299.0),
+    ]));
+    let ev = until(&h, |ev| answers(ev) == 2);
+    assert!(ev.contains(&PreviewEvent::Found {
+        key: "release/1/A1".into(),
+        clip: "paperwings1".into(),
+        title: "The 89th Passenger - Paper Wings".into(),
+    }));
+    assert!(ev.contains(&PreviewEvent::NotFound("release/1/A2".into())));
+    assert_eq!(fake.searched().len(), 2, "one search each");
+    assert_eq!(Searches::load(&d).results.len(), 2, "both remembered");
+
+    // Asked again (another crate, a restart): answered without searching.
+    h.send(PreviewCommand::Search(vec![track(
+        "release/1/A1",
+        "Paper Wings",
+        291.0,
+    )]));
+    until(&h, |ev| answers(ev) == 1);
+    assert_eq!(fake.searched().len(), 2);
+}
+
+#[test]
+fn a_failed_search_is_not_remembered() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.search_fails.store(true, Ordering::SeqCst);
+    let (h, d) = start("search-offline", &fake, |c| {
+        c.searches = Some(c.dir.clone())
+    });
+    let cache = d.to_path_buf();
+    h.send(PreviewCommand::Search(vec![track(
+        "release/1/A1",
+        "Paper Wings",
+        291.0,
+    )]));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut ev = Vec::new();
+    while Instant::now() < deadline {
+        ev.extend(h.poll());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(answers(&ev), 0, "no answer: the entry stays to search");
+    assert_eq!(fake.searched().len(), 1, "not tried again at once");
+    assert!(Searches::load(&cache).results.is_empty());
+}
+
+/// The real yt-dlp against YouTube: run by hand (`cargo test -p dig --test previews -- --ignored
+/// --nocapture`), it needs yt-dlp and the network.
+#[test]
+#[ignore]
+fn the_real_search_finds_hidden_soul_ep() {
+    let (ytdlp, version) = dig::preview::fetcher::find(None).expect("yt-dlp on this machine");
+    println!("yt-dlp {version}");
+    let tracks = [
+        ("A1", "Paper Wings", 291.0),
+        ("A2", "Hidden Soul", 299.0),
+        ("B1", "What It Takes To Fly", 276.0),
+        ("B2", "Eren", 237.0),
+        ("B3", "Analog Serenade", 241.0),
+    ];
+    let mut found = 0;
+    for (pos, title, secs) in tracks {
+        let req = SearchRequest {
+            key: format!("release/38583846/{pos}"),
+            ..track("", title, secs)
+        };
+        let results = ytdlp
+            .search(&dig::preview::search::query(&req.artist, &req.title))
+            .expect("a search");
+        let best = dig::preview::search::best(&req, &results);
+        println!("{pos} {title}: {} results, best {best:?}", results.len());
+        found += best.is_some() as usize;
+    }
+    assert!(found > 0, "at least one track of the EP found");
+}

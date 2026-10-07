@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use super::model::{Clip, Record, Role};
+use super::model::{Clip, Record, RecordKey, Role};
 
 /// Minimum word overlap (Jaccard) for a clip to be a track.
 const MIN_SCORE: f64 = 0.5;
@@ -21,6 +21,52 @@ pub struct ClipEntry {
     pub position: String,
     /// The clip's duration, as a hint until the file is read.
     pub duration: Option<f64>,
+}
+
+/// One entry for a track of a record with no clip: its preview is searched for when it is
+/// about to play.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackEntry {
+    pub artist: String,
+    pub title: String,
+    /// The side, e.g. "A1".
+    pub position: String,
+    /// From the tracklist, when it gives one.
+    pub duration: Option<f64>,
+    /// What its search result is remembered by: `release/<id>/<position>` (or `master/…`).
+    pub search_key: String,
+}
+
+/// The tracks of a record that has no clip, one entry each (none without a tracklist).
+pub fn track_entries(record: &Record) -> Vec<TrackEntry> {
+    let owner = match record.key {
+        RecordKey::Release(id) => format!("release/{id}"),
+        RecordKey::Master(id) => format!("master/{id}"),
+    };
+    record
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.title.trim().is_empty())
+        .map(|(i, t)| {
+            let place = if t.position.trim().is_empty() {
+                (i + 1).to_string()
+            } else {
+                t.position.trim().to_owned()
+            };
+            TrackEntry {
+                artist: if t.artist.is_empty() {
+                    record.artist.clone()
+                } else {
+                    t.artist.clone()
+                },
+                title: t.title.trim().to_owned(),
+                position: t.position.trim().to_owned(),
+                duration: t.duration,
+                search_key: format!("{owner}/{place}"),
+            }
+        })
+        .collect()
 }
 
 /// Words that say nothing about which track a clip is.

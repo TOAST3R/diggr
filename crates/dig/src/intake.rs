@@ -18,7 +18,7 @@ use platform::{Priority, Spawner};
 use crate::collection::{self, Collection, Pressing};
 use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
-use crate::discogs::matching::{self, ClipEntry};
+use crate::discogs::matching::{self, ClipEntry, TrackEntry};
 use crate::discogs::model::{ForSale, Format, Listed, Record, RecordKey, Role};
 use crate::discogs::transport::Method;
 use crate::discogs::url::{Page, PageKind};
@@ -84,6 +84,8 @@ pub enum Command {
 pub enum Outcome {
     /// One entry per usable clip (possibly none left after a remix-credit filter).
     Clips(Vec<ClipEntry>),
+    /// No clip, but a tracklist: one entry per track, its preview to be searched for.
+    Tracks(Vec<TrackEntry>),
     /// Unavailable, with the reason: "no clip", "not found".
     Unavailable(String),
 }
@@ -615,12 +617,19 @@ impl Intake {
                     ""
                 };
                 let entries = matching::entries(&rec, listed.role, artist);
-                let outcome =
-                    if entries.is_empty() && (rec.clips.is_empty() || listed.role == Role::Main) {
-                        Outcome::Unavailable("no clip".into())
-                    } else {
-                        Outcome::Clips(entries)
-                    };
+                let tracks = if entries.is_empty() && listed.role == Role::Main {
+                    matching::track_entries(&rec)
+                } else {
+                    Vec::new()
+                };
+                let outcome = if !tracks.is_empty() {
+                    Outcome::Tracks(tracks)
+                } else if entries.is_empty() && (rec.clips.is_empty() || listed.role == Role::Main)
+                {
+                    Outcome::Unavailable("no clip".into())
+                } else {
+                    Outcome::Clips(entries)
+                };
                 (info, outcome)
             }
             Err(ApiError::NotFound) => (

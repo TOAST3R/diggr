@@ -38,6 +38,8 @@ pub enum WaitKind {
     Downloading(u8),
     /// Previews can't download until yt-dlp is found.
     NeedsYtDlp,
+    /// A track of a record with no clip: its preview is searched for near the playhead.
+    Search,
     Other(String),
 }
 
@@ -48,6 +50,8 @@ pub enum UnavailableKind {
     NoClip,
     /// Its clip failed to download twice.
     ClipFailed,
+    /// A track of a record with no clip, for which a search found no usable video.
+    NotFound,
     Other(String),
 }
 
@@ -58,6 +62,7 @@ impl std::fmt::Display for WaitKind {
             WaitKind::Queued => f.write_str("queued"),
             WaitKind::Downloading(p) => write!(f, "downloading {p}%"),
             WaitKind::NeedsYtDlp => f.write_str("needs yt-dlp"),
+            WaitKind::Search => f.write_str("to search"),
             WaitKind::Other(t) => f.write_str(t),
         }
     }
@@ -68,6 +73,7 @@ impl std::fmt::Display for UnavailableKind {
         match self {
             UnavailableKind::NoClip => f.write_str("no clip"),
             UnavailableKind::ClipFailed => f.write_str("clip failed"),
+            UnavailableKind::NotFound => f.write_str("not found by search"),
             UnavailableKind::Other(t) => f.write_str(t),
         }
     }
@@ -81,6 +87,7 @@ impl From<&str> for WaitKind {
             "listed" => WaitKind::Listed,
             "queued" => WaitKind::Queued,
             "needs yt-dlp" => WaitKind::NeedsYtDlp,
+            "to search" => WaitKind::Search,
             _ => t
                 .strip_prefix("downloading ")
                 .and_then(|p| p.strip_suffix('%'))
@@ -101,6 +108,7 @@ impl From<&str> for UnavailableKind {
         match t {
             "no clip" => UnavailableKind::NoClip,
             "clip failed" => UnavailableKind::ClipFailed,
+            "not found by search" => UnavailableKind::NotFound,
             _ => UnavailableKind::Other(t.to_owned()),
         }
     }
@@ -168,6 +176,13 @@ pub struct Origin {
     /// The record's formats, vinyl first ("Vinyl", "File", "Vinyl, CD"); empty when unknown.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub formats: String,
+    /// A track of a record with no clip: what its search result is remembered by
+    /// (`release/<id>/<position>`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub search_key: String,
+    /// The title of the video a search found for it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub found: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
