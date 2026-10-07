@@ -34,6 +34,8 @@ mod covers;
 #[cfg(not(target_arch = "wasm32"))]
 mod digging;
 #[cfg(not(target_arch = "wasm32"))]
+mod sellers;
+#[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
 
 pub type EngineFactory = Box<dyn FnOnce() -> Result<Engine, String> + Send>;
@@ -145,6 +147,9 @@ pub struct WinampApp {
     /// Where the footer's filters were last drawn, and how, for tests.
     #[cfg(test)]
     filters_drawn: Option<(f32, FooterFilters)>,
+    /// The CART switch as last drawn (its label and where, in points), for tests.
+    #[cfg(test)]
+    cart_drawn: Option<(String, Pos2)>,
     pl_resize_acc: egui::Vec2,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
@@ -332,6 +337,8 @@ impl WinampApp {
             discogs_hint_shown: false,
             #[cfg(test)]
             filters_drawn: None,
+            #[cfg(test)]
+            cart_drawn: None,
             pl_resize_acc: egui::Vec2::ZERO,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
@@ -932,6 +939,23 @@ impl WinampApp {
                 discard_pending: m.discard_pending,
                 discard_failed: m.discard_failed,
                 owned: if badge { self.dig_owned(e) } else { None },
+                cart: e
+                    .origin
+                    .as_ref()
+                    .and_then(|o| o.release)
+                    .and_then(|r| d.cart.for_release(r))
+                    .map(|i| format!("from {}, {}", i.seller, i.price)),
+                copies: e.origin.as_ref().and_then(|o| o.release).and_then(|r| {
+                    let copies = self.crates.shown().copies_of(r);
+                    let text: Vec<String> = copies
+                        .iter()
+                        .map(|c| {
+                            let sold = if c.sold { " (sold)" } else { "" };
+                            format!("{} {}{sold}", format::price(c.cents, &c.currency), c.grades)
+                        })
+                        .collect();
+                    (!text.is_empty()).then(|| text.join(", "))
+                }),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -1376,6 +1400,19 @@ impl WinampApp {
                 }
             }
         };
+        // Copy rows hold no audio: the cursor steps over them the way it was going.
+        let down = matches!(
+            mv,
+            CursorMove::Down | CursorMove::PageDown | CursorMove::End
+        );
+        let mut to = to;
+        while matches!(rows[to], ListRow::Copy { .. }) {
+            match (down, to) {
+                (true, t) if t < last => to += 1,
+                (_, t) if t > 0 => to -= 1,
+                _ => return,
+            }
+        }
         let ids: Vec<EntryId> = rows[to]
             .indices()
             .iter()
@@ -2171,6 +2208,23 @@ impl WinampApp {
         self.settings.playlist_maximized || self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
     }
 
+    /// The seller crates for the sidebar (crate, dug, refreshing), in Top Sellers order, and
+    /// whether TOP SELLERS is folded.
+    fn sidebar_sellers(&self) -> (Vec<(CrateId, bool, bool)>, bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (rows, folded) = self.seller_rows();
+            (
+                rows.into_iter()
+                    .map(|r| (r.crate_id, r.dug, r.refreshing))
+                    .collect(),
+                folded,
+            )
+        }
+        #[cfg(target_arch = "wasm32")]
+        (Vec::new(), false)
+    }
+
     /// The crate sidebar shows exactly when it fits.
     fn pl_sidebar(&self) -> bool {
         self.pl_sidebar_fits()
@@ -2202,65 +2256,117 @@ impl WinampApp {
         );
         let painter = sk.painter.with_clip_rect(sk.rect(x, y, w - 1.0, h));
         let rows = ((h / row_h).floor() as usize).max(1);
+        let (sellers, folded) = self.sidebar_sellers();
+        let seller_ids: HashSet<CrateId> = sellers.iter().map(|s| s.0).collect();
         let (mine, collection): (Vec<_>, Vec<_>) = self
             .crates
             .list()
             .iter()
+            .filter(|c| !seller_ids.contains(&c.id))
             .cloned()
             .partition(|c| !c.discogs());
-        // The Discogs group (DISCOGS, the wantlist then the collection) is anchored to the
-        // bottom.
+        // The Discogs group is anchored to the bottom: DISCOGS, the wantlist then the
+        // collection, then TOP SELLERS and the seller crates (unless folded). When it doesn't
+        // all fit, the seller crates at its end are left out first.
         let mut collection = collection;
         collection.sort_by_key(|c| !c.wantlist);
-        let group = if collection.is_empty() {
-            0
-        } else {
-            (collection.len() + 1).min(rows.saturating_sub(1))
-        };
+        let mut bottom: Vec<SideRow> = Vec::new();
+        if !collection.is_empty() || !sellers.is_empty() {
+            bottom.push(SideRow::Discogs);
+        }
+        bottom.extend(collection.into_iter().map(|c| SideRow::Crate(c, None)));
+        if !sellers.is_empty() {
+            bottom.push(SideRow::Sellers(sellers.len(), folded));
+            if !folded {
+                for (id, dug, busy) in &sellers {
+                    if let Some(c) = self.crates.info(*id) {
+                        bottom.push(SideRow::Crate(c.clone(), Some((*dug, *busy))));
+                    }
+                }
+            }
+        }
+        bottom.truncate(rows.saturating_sub(1));
+        let group = bottom.len();
         let top_rows = rows - group;
-        let mut placed: Vec<(crate::crates::CrateInfo, usize)> = mine
+        let mut placed: Vec<Placed> = mine
             .into_iter()
             .take(top_rows.saturating_sub(1))
             .enumerate()
-            .map(|(i, c)| (c, i))
+            .map(|(i, c)| (c, i, None))
             .collect();
         let new_row = placed.len();
-        if group > 0 {
-            let divider = rows - group;
-            let dr = sk.rect(x, y + divider as f32 * row_h, w - 1.0, row_h);
-            painter.text(
-                pos2(dr.left() + 3.0 * scale, dr.center().y),
-                egui::Align2::LEFT_CENTER,
-                "DISCOGS",
-                egui::FontId::proportional(font.size * 0.75),
-                color(colors.pl_owned),
-            );
+        let heading = |row: usize, text: &str| {
+            let dr = sk.rect(x, y + row as f32 * row_h, w - 1.0, row_h);
+            let width = painter
+                .text(
+                    pos2(dr.left() + 3.0 * scale, dr.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    text,
+                    egui::FontId::proportional(font.size * 0.75),
+                    color(colors.pl_owned),
+                )
+                .width();
             painter.hline(
-                dr.left() + 46.0 * scale..=dr.right() - 3.0 * scale,
+                dr.left() + width + 6.0 * scale..=dr.right() - 3.0 * scale,
                 dr.center().y,
                 egui::Stroke::new(1.0, lerp_color(colors.pl_owned, colors.pl_bg, 0.5)),
             );
-            placed.extend(
-                collection
-                    .into_iter()
-                    .take(group - 1)
-                    .enumerate()
-                    .map(|(i, c)| (c, divider + 1 + i)),
-            );
+            dr
+        };
+        for (i, row) in bottom.into_iter().enumerate() {
+            let r = top_rows + i;
+            match row {
+                SideRow::Discogs => {
+                    heading(r, "DISCOGS");
+                }
+                SideRow::Sellers(n, folded) => {
+                    let mark = if folded { "⏵" } else { "⏷" };
+                    let dr = heading(r, &format!("{mark} TOP SELLERS ({n})"));
+                    let resp = ui
+                        .interact(dr, Id::new("pl_side_sellers"), Sense::click())
+                        .on_hover_text("Your Top Sellers: click to fold, right-click to add one");
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        use crate::app::sellers::SellerAction;
+                        let menu_click = opens_context_menu(
+                            resp.secondary_clicked(),
+                            resp.clicked(),
+                            ui.input(|i| i.modifiers),
+                        );
+                        if resp.clicked() && !menu_click {
+                            actions.push(Action::Dig(DigAction::Seller(SellerAction::ToggleFold)));
+                        }
+                        let open = menu_click.then_some(egui::SetOpenCommand::Bool(true));
+                        egui::Popup::context_menu(&resp)
+                            .open_memory(open)
+                            .show(|ui| {
+                                if ui.button("Add seller…").clicked() {
+                                    actions.push(Action::Dig(DigAction::Seller(SellerAction::Add)));
+                                    ui.close();
+                                }
+                            });
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    let _ = resp;
+                }
+                SideRow::Crate(c, seller) => placed.push((c, r, seller)),
+            }
         }
         let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
         let state = self.position.state;
         let dragging = self.pl_drag_from.is_some();
         let mut target = None;
-        for (c, row) in &placed {
+        for (c, row, seller) in &placed {
             let rr = sk.rect(x, y + *row as f32 * row_h, w - 1.0, row_h);
             let readable = !self.crates.is_unreadable(c.id);
+            // A seller crate never dug is dimmed and shows no count.
+            let undug = seller.is_some_and(|(dug, _)| !dug);
             let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
             // A Discogs crate isn't lit as a target: a drop there only says how to fill it.
             if over {
                 target = Some(c.id);
             }
-            if over && !self.crates.is_discogs(c.id) {
+            if over && !self.crates.is_discogs(c.id) && seller.is_none() {
                 painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
             } else if c.id == shown {
                 painter.rect_filled(
@@ -2276,7 +2382,7 @@ impl WinampApp {
             } else {
                 colors.pl_text
             };
-            let col = if readable {
+            let col = if readable && !undug {
                 color(base)
             } else {
                 lerp_color(base, colors.pl_bg, 0.55)
@@ -2320,11 +2426,16 @@ impl WinampApp {
             } else {
                 self.crates.entry_count(c.id)
             };
+            let count_text = if undug {
+                String::new()
+            } else {
+                shown_count.to_string()
+            };
             let count = painter
                 .text(
                     pos2(rr.right() - 3.0 * scale, rr.center().y),
                     egui::Align2::RIGHT_CENTER,
-                    shown_count.to_string(),
+                    count_text,
                     font.clone(),
                     col,
                 )
@@ -2359,6 +2470,10 @@ impl WinampApp {
                     tip += "\nYour Discogs collection";
                 } else if c.wantlist {
                     tip += "\nYour Discogs wantlist";
+                } else if undug {
+                    tip += "\nTop Sellers: double-click to dig it";
+                } else if seller.is_some() {
+                    tip += "\nTop Sellers: double-click to refresh it (once a day)";
                 }
                 match live {
                     Some(PlayState::Playing) => tip += "\nPlaying from this crate",
@@ -2375,6 +2490,12 @@ impl WinampApp {
             );
             if resp.clicked() && !menu_click && readable {
                 actions.push(Action::ShowCrate(c.id));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if resp.double_clicked() && seller.is_some() && readable {
+                actions.push(Action::Dig(DigAction::Seller(
+                    crate::app::sellers::SellerAction::Dig(c.id),
+                )));
             }
             if resp.clicked() || menu_click {
                 self.side_crate = Some(c.id);
@@ -2412,12 +2533,45 @@ impl WinampApp {
                     if c.discogs() {
                         self.dig_refresh_item(ui, c, actions);
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some((dug, busy)) = *seller {
+                        use crate::app::sellers::SellerAction;
+                        if dug {
+                            let label = if busy { "Refreshing…" } else { "Refresh seller" };
+                            if ui
+                                .add_enabled(!busy, egui::Button::new(label))
+                                .on_hover_text("Read this seller's copies for sale again")
+                                .clicked()
+                            {
+                                actions.push(Action::Dig(DigAction::Seller(
+                                    SellerAction::Refresh(c.id),
+                                )));
+                                ui.close();
+                            }
+                            if ui.button("Narrow down…").clicked() {
+                                actions.push(Action::Dig(DigAction::Seller(
+                                    SellerAction::Narrow(c.id),
+                                )));
+                                ui.close();
+                            }
+                        }
+                    }
                     if ui
                         .add_enabled(readable, egui::Button::new("Rename crate…"))
                         .clicked()
                     {
                         actions.push(Action::RenameCrate(c.id));
                         ui.close();
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if seller.is_some() {
+                        if ui.button("Remove seller…").clicked() {
+                            actions.push(Action::Dig(DigAction::Seller(
+                                crate::app::sellers::SellerAction::Remove(c.id),
+                            )));
+                            ui.close();
+                        }
+                        return;
                     }
                     if ui.button("Delete crate…").clicked() {
                         actions.push(Action::DeleteCrate(c.id));
@@ -2616,10 +2770,10 @@ impl WinampApp {
         sk: &Skinned,
         (x, y, x_end, h): (f32, f32, f32, f32),
         actions: &mut Vec<Action>,
-    ) -> Vec<Facet> {
+    ) -> (Vec<Facet>, f32) {
         let facets = self.offered_facets();
         if facets.is_empty() {
-            return Vec::new();
+            return (Vec::new(), x);
         }
         let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
         let shown = self.crates.shown();
@@ -2675,7 +2829,7 @@ impl WinampApp {
             self.filters_drawn = Some((x, tier));
         }
         if tier == FooterFilters::None {
-            return Vec::new();
+            return (Vec::new(), x);
         }
         // What to draw, worked out before the lists borrow the app.
         let texts: Vec<(String, bool)> = facets
@@ -2739,10 +2893,85 @@ impl WinampApp {
             ));
             cx += w + STYLE_GAP;
         }
-        facets
+        let drawn = facets
             .into_iter()
             .filter(|&f| !(f == Facet::Style && tier == FooterFilters::Chips))
-            .collect()
+            .collect();
+        (drawn, cx)
+    }
+
+    /// The footer's CART switch, from `x` (skin pixels, like [`Self::filter_controls`]), in a
+    /// seller crate with copies in the cart: "CART 3 · €41.20", lit while on. Nothing when
+    /// it doesn't fit (☰ › Show cart only does the same).
+    fn cart_switch(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        (x, y, x_end, h): (f32, f32, f32, f32),
+        actions: &mut Vec<Action>,
+    ) {
+        let on = self.crates.shown().cart_only();
+        #[cfg(test)]
+        {
+            self.cart_drawn = None;
+        }
+        let Some(label) = self.cart_label() else {
+            return;
+        };
+        let x = x + STYLE_GAP;
+        let w = sk.text_width(&label);
+        if x + w > x_end {
+            return;
+        }
+        let lcd = color([0, 236, 0]);
+        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
+        sk.text(x, ty, &label, if on { lcd } else { dim });
+        let r = ui
+            .interact(
+                sk.rect(x - 1.0, y, w + 2.0, h),
+                Id::new("cart_switch"),
+                Sense::click(),
+            )
+            .on_hover_text(if on {
+                "Only what's in your cart: click to show every record"
+            } else {
+                "Click to show and play only the records in your cart"
+            });
+        #[cfg(test)]
+        {
+            self.cart_drawn = Some((label, r.rect.center()));
+        }
+        if r.clicked() {
+            actions.push(Action::ToggleCartOnly);
+        }
+    }
+
+    /// "CART 3 · €41.20": the shown seller crate's part of the cart, when it has one (or the
+    /// switch is on).
+    fn cart_label(&self) -> Option<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let seller = self.crates.seller_of(self.crates.shown_id())?;
+            let d = self.dig.as_ref()?;
+            let part = d
+                .cart
+                .sellers
+                .iter()
+                .find(|(s, _)| s.eq_ignore_ascii_case(seller))
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default();
+            if part.count == 0 && !self.crates.shown().cart_only() {
+                return None;
+            }
+            Some(if part.subtotal.is_empty() {
+                format!("CART {}", part.count)
+            } else {
+                format!("CART {} · {}", part.count, part.subtotal)
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        None
     }
 
     /// A filter's list: a search field, one checkbox per value with its number of records,
@@ -3005,9 +3234,113 @@ impl WinampApp {
         self.dig_entry_menu(ui, e, actions);
     }
 
-    /// A record row: its cover, ▸/▾, "Artist – Album" with its marks, and a dimmed line with
+    /// Whether a listing is in the user's Discogs cart.
+    fn copy_in_cart(&self, listing: u64) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self
+            .dig
+            .as_ref()
+            .is_some_and(|d| d.cart.has_listing(listing));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = listing;
+            false
+        }
+    }
+
+    /// A copy for sale under its open record: its marks, price, grades and country. It holds
+    /// no audio; a double-click opens its listing, and its menu offers the cart.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_row(
+        &self,
+        ui: &mut Ui,
+        clip: &egui::Painter,
+        rr: Rect,
+        listing: u64,
+        font: &egui::FontId,
+        colors: &crate::skin::Colors,
+        scale: f32,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(c) = self.crates.shown().copy(listing) else {
+            return;
+        };
+        let in_cart = self.copy_in_cart(listing);
+        let col = if c.sold {
+            lerp_color(colors.pl_text, colors.pl_bg, 0.5)
+        } else {
+            color(colors.pl_text)
+        };
+        let row_clip = clip.with_clip_rect(rr);
+        let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
+        let marks = Badges {
+            owned: false,
+            cart: in_cart,
+            sold: c.sold,
+        };
+        let w = entry_badges(&row_clip, at, marks, None, font, colors, scale);
+        row_clip.text(
+            at + vec2(w, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format::copy_line(c),
+            font.clone(),
+            col,
+        );
+        let mut tip = String::new();
+        if let Some(day) = c.posted.get(..10) {
+            tip += &format!("Listed {day}");
+        }
+        if let Some(was) = c.was_cents {
+            tip += &format!("\nWas {}", format::price(was, &c.currency));
+        }
+        if !c.comments.trim().is_empty() {
+            tip += &format!("\n{}", c.comments.trim());
+        }
+        tip += "\nDouble-click to open it on discogs.com";
+        let resp = ui
+            .interact(rr, Id::new(("pl_copy", listing)), Sense::click())
+            .on_hover_text(tip.trim_start());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use crate::app::sellers::SellerAction;
+            if resp.double_clicked() {
+                actions.push(Action::Dig(DigAction::Seller(SellerAction::OpenCopy(
+                    listing,
+                ))));
+            }
+            let sold = c.sold;
+            egui::Popup::context_menu(&resp).show(|ui| {
+                if in_cart {
+                    if ui.button("Remove from cart").clicked() {
+                        actions.push(Action::Dig(DigAction::Seller(SellerAction::CartRemove(
+                            listing,
+                        ))));
+                        ui.close();
+                    }
+                } else if ui
+                    .add_enabled(!sold, egui::Button::new("Add to cart"))
+                    .clicked()
+                {
+                    actions.push(Action::Dig(DigAction::Seller(SellerAction::CartAdd(vec![
+                        listing,
+                    ]))));
+                    ui.close();
+                }
+                if ui.button("Open on discogs.com").clicked() {
+                    actions.push(Action::Dig(DigAction::Seller(SellerAction::OpenCopy(
+                        listing,
+                    ))));
+                    ui.close();
+                }
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (resp, actions);
+    }
+
+    /// A record row: its cover, ⏵/⏷, "Artist – Album" with its marks, and a dimmed line with
     /// the pressing, its tracks and what's for sale (or the track playing in it). A click
-    /// selects the record, a double-click plays it, ▸ opens it, and its menu acts on it all; a
+    /// selects the record, a double-click plays it, ⏵ opens it, and its menu acts on it all; a
     /// record of one entry acts as that entry. Returns the row's response (drag, hover).
     #[allow(clippy::too_many_arguments)]
     fn record_row(
@@ -3043,9 +3376,21 @@ impl WinampApp {
                 egui::StrokeKind::Inside,
             );
         }
+        let copies = match rec.key {
+            AlbumKey::Release(r) => shown.copies_of(r),
+            _ => Vec::new(),
+        };
+        let all_sold = !copies.is_empty() && copies.iter().all(|c| c.sold);
         let (col, _) = row_look(first, playing_here.is_some(), colors);
         let col = if playing_here.is_some() {
             color(colors.pl_current)
+        } else if all_sold {
+            // Every copy sold: the record stays (it still plays), dimmed.
+            lerp_color(
+                col.to_array()[..3].try_into().unwrap_or([0; 3]),
+                colors.pl_bg,
+                0.45,
+            )
         } else {
             col
         };
@@ -3114,10 +3459,15 @@ impl WinampApp {
             }
         }
         let marks = self.dig_marks(first);
+        let badges = Badges {
+            owned: marks.owned.is_some(),
+            cart: marks.cart.is_some(),
+            sold: all_sold,
+        };
         at.x += entry_badges(
             &text_clip,
             at,
-            marks.owned.is_some(),
+            badges,
             first.format_mark(),
             font,
             colors,
@@ -3187,6 +3537,12 @@ impl WinampApp {
                     .collect::<Vec<_>>()
                     .join(" ")
             }
+            None if !copies.is_empty() => format::seller_record_line(
+                first.origin.as_ref(),
+                rec.members.len(),
+                rec.total,
+                &copies,
+            ),
             None => format::record_line(first.origin.as_ref(), rec.members.len(), rec.total),
         };
         text_clip.text(
@@ -3364,7 +3720,7 @@ impl WinampApp {
                 .take(records::fit(&list_rows, self.pl_scroll, visible))
                 .filter_map(|r| match r {
                     ListRow::Entry { idx, .. } => Some(*idx),
-                    ListRow::Record(_) => None,
+                    ListRow::Record(_) | ListRow::Copy { .. } => None,
                 })
                 .find(|&idx| egui::Popup::is_id_open(ui.ctx(), row_menu_id(idx)))
                 .map(|idx| {
@@ -3390,6 +3746,30 @@ impl WinampApp {
                 y += row.units();
                 let (idx, track) = match row {
                     ListRow::Entry { idx, track } => (*idx, *track),
+                    ListRow::Copy { listing, .. } => {
+                        let indent = if columns {
+                            0.0
+                        } else {
+                            records::RECORD_UNITS as f32 * row_h
+                        };
+                        let rr = sk.rect(
+                            l.x as f32 + indent,
+                            rows_top + at_y as f32 * row_h,
+                            l.w as f32 - indent,
+                            row_h,
+                        );
+                        self.copy_row(
+                            ui,
+                            &clip,
+                            rr,
+                            *listing,
+                            &font,
+                            &d.colors,
+                            scale,
+                            &mut actions,
+                        );
+                        continue;
+                    }
                     ListRow::Record(rec) => {
                         in_view.push(rec.members[0]);
                         let top = rows_top + at_y as f32 * row_h;
@@ -3477,6 +3857,11 @@ impl WinampApp {
                 let (mut col, dur) = row_look(e, current, &d.colors);
                 let marks = self.dig_marks(e);
                 let owned = marks.owned.clone();
+                let badges = Badges {
+                    owned: owned.is_some(),
+                    cart: marks.cart.is_some(),
+                    sold: false,
+                };
                 if marks.passed {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
@@ -3510,13 +3895,13 @@ impl WinampApp {
                                 continue;
                             }
                             Col::Field(Field::Title)
-                                if owned.is_some() || e.format_mark().is_some() =>
+                                if badges.any() || e.format_mark().is_some() =>
                             {
                                 let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
                                 let w = entry_badges(
                                     &cell_clip,
                                     at,
-                                    owned.is_some(),
+                                    badges,
                                     e.format_mark(),
                                     &font,
                                     &d.colors,
@@ -3549,7 +3934,7 @@ impl WinampApp {
                         pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
                     ));
                     let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
-                    if owned.is_some() || e.format_mark().is_some() {
+                    if badges.any() || e.format_mark().is_some() {
                         // The number, the badges, then the name.
                         let num = name_clip
                             .text(
@@ -3564,7 +3949,7 @@ impl WinampApp {
                         let w = entry_badges(
                             &name_clip,
                             at,
-                            owned.is_some(),
+                            badges,
                             e.format_mark(),
                             &font,
                             &d.colors,
@@ -3746,6 +4131,7 @@ impl WinampApp {
             let picks = self.crates.shown().picks_filter();
             let offered = self.offered_facets();
             let discogs = self.crates.is_discogs(self.crates.shown_id());
+            let seller_crate = self.crates.seller_of(self.crates.shown_id()).is_some();
             let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
             let menu_rect = menu.rect;
             egui::Popup::menu(&menu).show(|ui| {
@@ -3781,6 +4167,24 @@ impl WinampApp {
                 for &f in &offered {
                     if ui.button(format!("Filter by {}…", f.name())).clicked() {
                         actions.push(Action::OpenFacet(f));
+                    }
+                }
+                if seller_crate {
+                    let mut cart_only = self.crates.shown().cart_only();
+                    if ui
+                        .checkbox(&mut cart_only, "Show cart only")
+                        .on_hover_text("Only the records with a copy in your Discogs cart")
+                        .clicked()
+                    {
+                        actions.push(Action::ToggleCartOnly);
+                        ui.close();
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui.button("Open cart on discogs.com").clicked() {
+                        actions.push(Action::Dig(DigAction::Seller(
+                            crate::app::sellers::SellerAction::OpenCart,
+                        )));
+                        ui.close();
                     }
                 }
                 if picks && ui.button("Show all records").clicked() {
@@ -3842,10 +4246,16 @@ impl WinampApp {
             );
             // Then the style, artist and label filters, in the Discogs crates; the lists that
             // have no footer button open from ☰.
-            let in_footer = self.filter_controls(
+            let (in_footer, filters_end) = self.filter_controls(
                 ui,
                 &bsk,
                 (bpm_end, pb.y as f32, x_end, pb.h as f32),
+                &mut actions,
+            );
+            self.cart_switch(
+                ui,
+                &bsk,
+                (filters_end, pb.y as f32, x_end, pb.h as f32),
                 &mut actions,
             );
             for f in self.offered_facets() {
@@ -4272,6 +4682,12 @@ impl WinampApp {
                     self.filter_changed();
                 }
             }
+            Action::ToggleCartOnly => {
+                let p = self.crates.shown_mut();
+                let on = !p.cart_only();
+                p.set_cart_only(on);
+                self.filter_changed();
+            }
             Action::OpenFacet(f) => egui::Popup::open_id(ctx, facet_popup_id(f)),
             Action::Sort(field) => {
                 // The same field again sorts the other way.
@@ -4381,6 +4797,19 @@ impl WinampApp {
     }
 }
 
+/// A crate placed in the sidebar: its row, and for a seller crate whether it was dug and
+/// is being refreshed.
+type Placed = (crate::crates::CrateInfo, usize, Option<(bool, bool)>);
+
+/// A row of the sidebar's Discogs group.
+enum SideRow {
+    Discogs,
+    /// TOP SELLERS: how many, and whether folded.
+    Sellers(usize, bool),
+    /// A crate; for a seller crate, whether it was dug and is being refreshed.
+    Crate(crate::crates::CrateInfo, Option<(bool, bool)>),
+}
+
 enum Action {
     /// Group the shown crate by record, or show it flat.
     ToggleGrouped,
@@ -4411,6 +4840,8 @@ enum Action {
     TogglePick(Facet, String),
     /// Turns a style, artist or label filter off, or all three with `None`.
     ClearPicks(Option<Facet>),
+    /// The CART switch of the shown (seller) crate.
+    ToggleCartOnly,
     /// Opens a filter's list (from ☰, at any width).
     OpenFacet(Facet),
     ToggleColumn(Field),
@@ -4770,10 +5201,30 @@ pub fn crate_title(def: &crate::skin::SkinDef, name: &str, max_w: f32) -> String
 /// The badges before an entry's name: OWNED (dark letters on the skin's amber), then the
 /// dim format mark of a record not on vinyl ("FILE", "CD"…), left edge centred on `at`.
 /// Returns their width with the gap after them (0 for none).
+/// The marks drawn before a row's name.
+#[derive(Debug, Clone, Copy, Default)]
+struct Badges {
+    owned: bool,
+    /// A copy is in the user's Discogs cart.
+    cart: bool,
+    /// No longer for sale (a copy, or a record whose copies all sold).
+    sold: bool,
+}
+
+impl Badges {
+    fn any(self) -> bool {
+        self.owned || self.cart || self.sold
+    }
+}
+
+/// CART's fill: apart from OWNED's amber, whatever the skin.
+const CART_FILL: [u8; 3] = [64, 196, 232];
+const SOLD_FILL: [u8; 3] = [196, 84, 84];
+
 fn entry_badges(
     painter: &egui::Painter,
     at: Pos2,
-    owned: bool,
+    marks: Badges,
     format: Option<&str>,
     font: &egui::FontId,
     colors: &crate::skin::Colors,
@@ -4783,7 +5234,9 @@ fn entry_badges(
     let pad = vec2(2.5 * scale, 0.5 * scale);
     let mut x = at.x;
     let badges = [
-        owned.then(|| ("OWNED", color(colors.pl_owned))),
+        marks.owned.then(|| ("OWNED", color(colors.pl_owned))),
+        marks.cart.then(|| ("CART", color(CART_FILL))),
+        marks.sold.then(|| ("SOLD", color(SOLD_FILL))),
         format.map(|f| (f, lerp_color(colors.pl_text, colors.pl_bg, 0.55))),
     ];
     for (label, fill) in badges.into_iter().flatten() {
@@ -6009,6 +6462,8 @@ mod headless_tests {
     // Digging, with a fake Discogs, fake previews and a fake browser.
     mod dig_tests;
     mod record_tests;
+    // Top Sellers and the cart, with a fake Discogs.
+    mod seller_tests;
 
     fn texts(out: &egui::FullOutput) -> Vec<Text> {
         fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {

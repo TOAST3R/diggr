@@ -45,6 +45,9 @@ pub struct CrateInfo {
     /// collection).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wantlist: bool,
+    /// A Top Sellers crate: the seller's username (pinned under TOP SELLERS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller: Option<String>,
     /// Shown grouped by record, once toggled; `None` follows the crate's kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouped: Option<bool>,
@@ -79,9 +82,11 @@ impl CrateInfo {
         self.collection || self.wantlist
     }
 
-    /// Grouped by record: as toggled, else the user's Discogs crates are and others aren't.
+    /// Grouped by record: as toggled, else the user's Discogs crates and seller crates are
+    /// and others aren't.
     pub fn is_grouped(&self) -> bool {
-        self.grouped.unwrap_or_else(|| self.discogs())
+        self.grouped
+            .unwrap_or_else(|| self.discogs() || self.seller.is_some())
     }
 }
 
@@ -135,6 +140,7 @@ impl Crates {
                     created: now_secs(),
                     collection: false,
                     wantlist: false,
+                    seller: None,
                     grouped: None,
                     records: 0,
                 }],
@@ -228,6 +234,7 @@ impl Crates {
                 created: id,
                 collection: false,
                 wantlist: false,
+                seller: None,
                 grouped: None,
                 records: 0,
             });
@@ -257,6 +264,7 @@ impl Crates {
                         created: now_secs(),
                         collection: false,
                         wantlist: false,
+                        seller: None,
                         grouped: None,
                         records: 0,
                     },
@@ -574,6 +582,22 @@ impl Crates {
         }
     }
 
+    /// The seller whose Top Sellers crate this is.
+    pub fn seller_of(&self, id: CrateId) -> Option<&str> {
+        self.info(id).and_then(|c| c.seller.as_deref())
+    }
+
+    /// Marks a crate as a seller's (Top Sellers); it stays theirs after a rename.
+    pub fn set_seller(&mut self, id: CrateId, seller: &str) {
+        if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
+            && c.seller.as_deref() != Some(seller)
+        {
+            c.seller = Some(seller.to_owned());
+            self.mark_index();
+        }
+        self.apply_grouped(id);
+    }
+
     /// Creates an empty crate (at the end of the list); it isn't shown.
     pub fn create(&mut self, name: &str) -> Result<CrateId, String> {
         let name = self.validate_name(name, None)?;
@@ -586,6 +610,7 @@ impl Crates {
             created: now_secs(),
             collection: false,
             wantlist: false,
+            seller: None,
             grouped: None,
             records: 0,
         });
@@ -1158,6 +1183,29 @@ mod tests {
             (o.album.as_str(), o.cover.as_str()),
             ("Glasshouse EP", "https://i.discogs.com/x.jpeg")
         );
+    }
+
+    #[test]
+    fn a_seller_crate_stays_the_sellers_and_is_grouped() {
+        let cfg = config("seller");
+        let id = {
+            let mut c = Crates::open(&cfg);
+            let id = c.create("Seller: decks.de").unwrap();
+            assert_eq!(c.seller_of(id), None);
+            c.set_seller(id, "decks.de");
+            assert!(c.is_grouped(id), "seller crates are grouped by default");
+            c.rename(id, "decks").unwrap();
+            c.save_due(true, Duration::ZERO);
+            id
+        };
+        let c = Crates::open(&cfg);
+        assert_eq!(
+            c.seller_of(id),
+            Some("decks.de"),
+            "after a rename and a restart"
+        );
+        assert!(c.is_grouped(id));
+        assert_eq!(c.seller_of(PLAYLIST), None);
     }
 
     #[test]

@@ -842,3 +842,294 @@ fn a_record_with_neither_clips_nor_tracklist_is_no_clip() {
     let r = records(&run(&mut i, 20));
     assert_eq!(r, [(Release(4242), Outcome::Unavailable("no clip".into()))]);
 }
+
+fn inventory_listing(id: u64, release: u64, price: f64) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "status": "For Sale",
+        "price": {"value": price, "currency": "EUR"},
+        "condition": "Very Good Plus (VG+)", "sleeve_condition": "Very Good (VG)",
+        "ships_from": "Germany", "posted": "2026-02-06T08:12:00-08:00",
+        "release": {"id": release, "artist": "Nightcraft", "title": "Glasshouse EP",
+                    "format": "12\"", "label": "Lowtide Tapes", "catalog_number": "LT-012",
+                    "year": 1994, "thumbnail": ""}
+    })
+}
+
+fn send_inventory(i: &mut Intake, criteria: dig::discogs::seller::Criteria) {
+    use dig::discogs::url::{Page, PageKind};
+    i.handle(Command::Send {
+        page: Page::new(PageKind::Inventory {
+            seller: "decks.de".into(),
+            criteria,
+            fresh: false,
+        }),
+        target: CRATE,
+        filters: Filters::default(),
+    });
+}
+
+#[test]
+fn a_seller_brings_every_copy_and_each_record_once() {
+    use dig::discogs::seller::inventory_path;
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let body = serde_json::json!({
+        "pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 3},
+        "listings": [
+            inventory_listing(11, 1001, 9.0),
+            inventory_listing(12, 1002, 7.5),
+            inventory_listing(13, 1001, 18.0),
+        ]
+    });
+    t.route(
+        inventory_path("decks.de", "", 1, 100),
+        200,
+        body.to_string(),
+    );
+    let mut i = intake(&t, true, None);
+    send_inventory(&mut i, Default::default());
+    let ev = run(&mut i, 100);
+    let copies: Vec<(u64, u64)> = ev
+        .iter()
+        .flat_map(|e| match e {
+            Event::Copies(_, c) => c.iter().map(|c| (c.listing, c.release)).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(copies, [(11, 1001), (12, 1002), (13, 1001)], "every copy");
+    assert_eq!(
+        listed(&ev),
+        [Release(1001), Release(1002)],
+        "each record once"
+    );
+    assert_eq!(records(&ev).len(), 2);
+    let named: Vec<String> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::Named(j) => Some(j.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named, ["Seller: decks.de"]);
+}
+
+#[test]
+fn newest_n_stops_reading_at_the_nth_copy() {
+    use dig::discogs::seller::{Criteria, inventory_path};
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let listings: Vec<_> = (0..100)
+        .map(|n| inventory_listing(100 + n, 1001, 9.0))
+        .collect();
+    let page1 = serde_json::json!({
+        "pagination": {"page": 1, "pages": 408, "per_page": 100, "items": 40_728},
+        "listings": listings,
+    });
+    let listings: Vec<_> = (0..100)
+        .map(|n| inventory_listing(200 + n, 1002, 9.0))
+        .collect();
+    let page2 = serde_json::json!({
+        "pagination": {"page": 2, "pages": 408, "per_page": 100, "items": 40_728},
+        "listings": listings,
+    });
+    t.route(
+        inventory_path("decks.de", "", 1, 100),
+        200,
+        page1.to_string(),
+    );
+    t.route(
+        inventory_path("decks.de", "", 2, 100),
+        200,
+        page2.to_string(),
+    );
+    let mut i = intake(&t, true, None);
+    send_inventory(
+        &mut i,
+        Criteria {
+            newest: Some(150),
+            ..Criteria::default()
+        },
+    );
+    let ev = run(&mut i, 100);
+    let n: usize = ev
+        .iter()
+        .map(|e| match e {
+            Event::Copies(_, c) => c.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(n, 150);
+    let inventory_reads = t
+        .paths()
+        .iter()
+        .filter(|p| p.contains("/inventory"))
+        .count();
+    assert_eq!(inventory_reads, 2, "two pages for the newest 150, not 100");
+}
+
+#[test]
+fn a_scan_reads_page_by_page_ahead_of_sends_and_can_be_cancelled() {
+    use dig::discogs::seller::inventory_path;
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    for n in 1..=3u64 {
+        let listings: Vec<_> = (0..100)
+            .map(|k| inventory_listing(n * 1000 + k, 1001, 9.0))
+            .collect();
+        let body = serde_json::json!({
+            "pagination": {"page": n, "pages": 3, "per_page": 100, "items": 300},
+            "listings": listings,
+        });
+        t.route(
+            inventory_path("decks.de", "", n as u32, 100),
+            200,
+            body.to_string(),
+        );
+    }
+    let mut i = intake(&t, true, None);
+    send(&mut i, "https://www.discogs.com/label/12345");
+    i.take_events();
+    i.handle(Command::ScanInventory {
+        seller: "decks.de".into(),
+        query: String::new(),
+        newest: None,
+    });
+    i.step();
+    let ev = i.take_events();
+    assert!(
+        matches!(&ev[..], [Event::Scanned { read: 1, pages: 3, total: 300, done: false, copies, .. }] if copies.len() == 100),
+        "the scan goes before the send: {} events",
+        ev.len()
+    );
+    i.handle(Command::CancelScan);
+    i.step();
+    assert!(
+        !i.take_events()
+            .iter()
+            .any(|e| matches!(e, Event::Scanned { .. })),
+        "cancelled"
+    );
+}
+
+#[test]
+fn a_whole_scan_ends_done() {
+    use dig::discogs::seller::inventory_path;
+    let t = Arc::new(FakeTransport::new());
+    for n in 1..=2u64 {
+        let body = serde_json::json!({
+            "pagination": {"page": n, "pages": 2, "per_page": 100, "items": 2},
+            "listings": [inventory_listing(n, 1001, 9.0)],
+        });
+        t.route(
+            inventory_path("logon", "acid", n as u32, 100),
+            200,
+            body.to_string(),
+        );
+    }
+    let mut i = intake(&t, true, None);
+    i.handle(Command::ScanInventory {
+        seller: "logon".into(),
+        query: "acid".into(),
+        newest: None,
+    });
+    let ev = run(&mut i, 10);
+    let pages: Vec<(u32, bool)> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::Scanned { read, done, .. } => Some((*read, *done)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pages, [(1, false), (2, true)]);
+}
+
+#[test]
+fn the_first_sellers_wait_for_no_send() {
+    use dig::discogs::seller::inventory_path;
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let order =
+        |s: &str| serde_json::json!({"created": "2026-01-01", "seller": {"id": 1, "username": s}});
+    t.route(
+        "/purchases?sort=created&sort_order=desc&page=1&per_page=100",
+        200,
+        serde_json::json!({"items": [order("logon"), order("logon"), order("decks.de")]})
+            .to_string(),
+    );
+    let count = |n: u64| {
+        serde_json::json!({"pagination": {"items": n, "pages": 1}, "listings": []}).to_string()
+    };
+    t.route(inventory_path("logon", "", 1, 1), 200, count(2675));
+    t.route(inventory_path("decks.de", "", 1, 1), 200, count(40_728));
+    let mut i = intake(&t, true, None);
+    i.handle(Command::FirstSellers);
+    let ev = run(&mut i, 20);
+    let list = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::FirstSellers(Ok(l)) => Some(l.clone()),
+            _ => None,
+        })
+        .expect("a first list");
+    let names: Vec<_> = list
+        .iter()
+        .map(|(r, n)| (r.username.as_str(), *n))
+        .collect();
+    assert_eq!(names, [("logon", 2675), ("decks.de", 40_728)]);
+}
+
+#[test]
+fn a_seller_is_looked_up_by_name() {
+    use dig::discogs::seller::inventory_path;
+    let t = Arc::new(FakeTransport::new());
+    t.route("/users/LOGON", 200, r#"{"username": "logon"}"#);
+    t.route(
+        inventory_path("logon", "", 1, 1),
+        200,
+        r#"{"pagination": {"items": 2675}, "listings": []}"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::LookupSeller(" LOGON ".into()));
+    i.handle(Command::LookupSeller("nobody-xyz".into()));
+    let ev = i.take_events();
+    let results: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::SellerLookup { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [Ok(("logon".to_owned(), 2675)), Err(ApiError::NotFound)]
+    );
+}
+
+#[test]
+fn a_cart_add_is_one_request_then_the_cart_is_read() {
+    use dig::discogs::cart::AddResult;
+    let t = Arc::new(FakeTransport::new());
+    t.route_for(
+        Method::Post,
+        "/cart/items",
+        201,
+        r#"{"errors": [{"item_id": 12, "status": 404, "message": "This item is not for sale."}]}"#,
+    );
+    t.route(
+        "/cart",
+        200,
+        r#"[{"seller": {"username": "decks.de"}, "subtotal": {"formatted": "€9.00"},
+            "cart_items": [{"item_id": 11, "price": {"formatted": "€9.00"}, "release": {"id": 1001}}]}]"#,
+    );
+    let mut i = intake(&t, true, None);
+    i.handle(Command::CartAdd(vec![11, 12]));
+    let mut ev = i.take_events();
+    ev.extend(run(&mut i, 5));
+    assert!(ev.iter().any(|e| matches!(e,
+        Event::CartAdded { result: Ok(r), .. } if r == &[(11, AddResult::Added), (12, AddResult::Sold)])));
+    let snap = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::Cart(Ok(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("the cart is read after the add");
+    assert!(snap.has_listing(11));
+    assert_eq!(t.paths(), ["/cart/items", "/cart"]);
+}

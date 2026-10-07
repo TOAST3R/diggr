@@ -21,6 +21,9 @@ var WR = (() => {
     [new RegExp(`^/${LANG}user/[^/]+/wantlist`), "Wantlist"],
     [new RegExp(`^/${LANG}user/[^/]+/collection`), "Collection"],
     [new RegExp(`^/${LANG}(?:shop|sell)/item/\\d+`), "Listing"],
+    // A seller's shop, or a user's page alone: added to Top Sellers, not sent as tracks.
+    [new RegExp(`^/${LANG}seller/[^/]+(?:/profile)?/?$`), "Seller"],
+    [new RegExp(`^/${LANG}user/[^/]+/?$`), "Seller"],
   ];
 
   /** "Label", "Release"… for a supported Discogs page, else null. */
@@ -54,7 +57,7 @@ var WR = (() => {
   }
 
   const SUPPORTED =
-    "a release, master release, artist, label, wantlist, collection, list or marketplace item";
+    "a release, master release, artist, label, wantlist, collection, list, marketplace item or seller";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 

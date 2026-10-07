@@ -133,8 +133,21 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  Discogs collection is pinned at the bottom",
             ),
             (
+                "TOP SELLERS (sidebar): click / double-click a seller",
+                "show its crate / dig it (once a day refreshes it); right-click: Add seller…, \
+                 Refresh, Narrow down, Remove",
+            ),
+            (
+                "Copy (open record, seller crate): double-click / right-click",
+                "open its listing / Add to cart, Remove from cart",
+            ),
+            (
                 "Footer: + / ☰",
                 "add files, a folder or an M3U / select, remove, clear, sort, export",
+            ),
+            (
+                "Footer CART n · subtotal (seller crate)",
+                "show and play only the records with a copy in your cart",
             ),
             (
                 "Footer BPM: drag a handle / × or double-click",

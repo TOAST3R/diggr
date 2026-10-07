@@ -16,6 +16,8 @@ pub const PER_PAGE: u32 = 100;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListingPage {
     pub items: Vec<Listed>,
+    /// A seller's copies on this page, in order (empty for any other page).
+    pub copies: Vec<super::seller::Copy>,
     /// Listing pages in all.
     pub pages: u32,
     /// Records in the whole listing, as Discogs counts them (before filtering).
@@ -47,7 +49,10 @@ pub fn page_name(client: &mut Client, page: &Page, now: u64) -> Result<String, A
             let r = record(client, RecordKey::Master(*id), false, now)?;
             format!("{} – {}", r.artist, r.title)
         }
-        PageKind::Wantlist(user) | PageKind::Collection(user) => user.clone(),
+        PageKind::Wantlist(user)
+        | PageKind::Collection(user)
+        | PageKind::Seller(user)
+        | PageKind::Inventory { seller: user, .. } => user.clone(),
         PageKind::List(id) => list_json(client, *id, now)?["name"]
             .as_str()
             .unwrap_or("")
@@ -71,6 +76,7 @@ pub fn listing(
 ) -> Result<ListingPage, ApiError> {
     let one = |key| ListingPage {
         items: vec![Listed::new(key)],
+        copies: Vec::new(),
         pages: 1,
         total: 1,
     };
@@ -126,10 +132,71 @@ pub fn listing(
             Ok(ListingPage {
                 total: items.len(),
                 items,
+                copies: Vec::new(),
                 pages: 1,
             })
         }
+        // A seller is added to Top Sellers, never sent; a job for one lists nothing.
+        PageKind::Seller(_) => Ok(ListingPage {
+            items: Vec::new(),
+            copies: Vec::new(),
+            pages: 1,
+            total: 0,
+        }),
+        PageKind::Inventory {
+            seller,
+            criteria,
+            fresh,
+        } => inventory_listing(client, seller, criteria, *fresh, n, now),
     }
+}
+
+/// Page `n` of a seller's stock: the copies passing the criteria, and their records.
+pub fn inventory_listing(
+    client: &mut Client,
+    seller_name: &str,
+    criteria: &super::seller::Criteria,
+    fresh: bool,
+    n: u32,
+    now: u64,
+) -> Result<ListingPage, ApiError> {
+    use super::seller;
+    let path = seller::inventory_path(seller_name, &criteria.query, n, seller::PER_PAGE);
+    let v = if fresh {
+        let r = client.call(super::transport::Method::Get, &path)?;
+        let v =
+            serde_json::from_str(&r.body).map_err(|e| ApiError::Other(format!("{path}: {e}")))?;
+        client.cache.put(Kind::Listing, &path, &r.body, now);
+        v
+    } else {
+        listing_json(client, &path, now)?
+    };
+    let mut p = seller::inventory_page(&v, criteria);
+    // "Newest N": the last page stops at the Nth copy listed, before the local criteria.
+    if let Some(newest) = criteria.newest {
+        let room = (newest as usize).saturating_sub(((n - 1) * seller::PER_PAGE) as usize);
+        let first: std::collections::HashSet<u64> = v["listings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(room)
+            .filter_map(|i| i["id"].as_u64())
+            .collect();
+        let (copies, listed) = p
+            .copies
+            .into_iter()
+            .zip(p.listed)
+            .filter(|(c, _)| first.contains(&c.listing))
+            .unzip();
+        p.copies = copies;
+        p.listed = listed;
+    }
+    Ok(ListingPage {
+        items: p.listed,
+        copies: p.copies,
+        pages: p.pages,
+        total: seller::reachable(p.total, criteria),
+    })
 }
 
 fn paged(v: &Value, field: &str, item: fn(&Value) -> Option<Listed>) -> ListingPage {
@@ -140,6 +207,7 @@ fn paged(v: &Value, field: &str, item: fn(&Value) -> Option<Listed>) -> ListingP
         .filter_map(item)
         .collect();
     ListingPage {
+        copies: Vec::new(),
         pages: v["pagination"]["pages"].as_u64().unwrap_or(1).max(1) as u32,
         total: v["pagination"]["items"]
             .as_u64()

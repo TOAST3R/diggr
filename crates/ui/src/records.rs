@@ -1,6 +1,8 @@
 //! The rows the playlist draws. Flat, every shown entry is one row. Grouped by record, each
 //! album of the crate is one record row (two rows high, with its cover) that opens to show its
-//! tracks; an entry of no album stays an ordinary row.
+//! tracks; an entry of no album stays an ordinary row. In a seller crate, an open record
+//! lists its copies for sale (cheapest first, sold last) as copy rows above its tracks: they
+//! hold no audio, so nothing plays them.
 //!
 //! Rows are built from the shown entries only (the BPM filter applies), and rebuilt only when
 //! the crate, the filter or the open records change, never per frame. Scrolling counts rows
@@ -21,6 +23,11 @@ pub enum ListRow {
         track: bool,
     },
     Record(RecordRow),
+    /// A copy for sale (its listing), in the open record whose first shown entry is `first`.
+    Copy {
+        listing: u64,
+        first: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +46,7 @@ impl ListRow {
     /// Height in list rows.
     pub fn units(&self) -> usize {
         match self {
-            ListRow::Entry { .. } => 1,
+            ListRow::Entry { .. } | ListRow::Copy { .. } => 1,
             ListRow::Record(_) => RECORD_UNITS,
         }
     }
@@ -49,6 +56,7 @@ impl ListRow {
         match self {
             ListRow::Entry { idx, .. } => *idx,
             ListRow::Record(r) => r.members[0],
+            ListRow::Copy { first, .. } => *first,
         }
     }
 
@@ -57,6 +65,7 @@ impl ListRow {
         match self {
             ListRow::Entry { idx, .. } => std::slice::from_ref(idx),
             ListRow::Record(r) => &r.members,
+            ListRow::Copy { .. } => &[],
         }
     }
 }
@@ -114,9 +123,15 @@ pub fn build(p: &Playlist, open: &HashSet<AlbumKey>) -> Vec<ListRow> {
             });
             continue;
         };
-        let single = total == 1;
+        // A record with copies for sale opens to show them, even with one track.
+        let copies: Vec<u64> = match key {
+            AlbumKey::Release(r) => p.copies_of(r).iter().map(|c| c.listing).collect(),
+            _ => Vec::new(),
+        };
+        let single = total == 1 && copies.is_empty();
         let is_open = !single && open.contains(&key);
         let tracks: Vec<usize> = if is_open { members.clone() } else { Vec::new() };
+        let first = members[0];
         rows.push(ListRow::Record(RecordRow {
             key,
             members,
@@ -124,6 +139,13 @@ pub fn build(p: &Playlist, open: &HashSet<AlbumKey>) -> Vec<ListRow> {
             single,
             open: is_open,
         }));
+        if is_open {
+            rows.extend(
+                copies
+                    .into_iter()
+                    .map(|listing| ListRow::Copy { listing, first }),
+            );
+        }
         rows.extend(
             tracks
                 .into_iter()
@@ -230,8 +252,48 @@ mod tests {
                 ListRow::Entry { idx, track: true } => format!("  t{idx}"),
                 ListRow::Record(r) if r.single => format!("s{}", r.members[0]),
                 ListRow::Record(r) => format!("r{:?}/{}", r.members, r.total),
+                ListRow::Copy { listing, .. } => format!("  c{listing}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn an_open_record_lists_its_copies_above_its_tracks() {
+        use crate::playlist::SaleCopy;
+        let mut p = crate_of(&[Some(1), Some(1), Some(2)], true);
+        let c = |listing, release, cents, sold| SaleCopy {
+            listing,
+            release,
+            cents,
+            sold,
+            ..SaleCopy::default()
+        };
+        p.add_copies([
+            c(11, 1, 1800, false),
+            c(12, 1, 900, false),
+            c(13, 1, 500, true),
+            c(21, 2, 700, false),
+        ]);
+        let open = HashSet::from([AlbumKey::Release(1), AlbumKey::Release(2)]);
+        let rows = build(&p, &open);
+        assert_eq!(
+            shape(&rows),
+            [
+                "r[0, 1]/2",
+                "  c12",
+                "  c11",
+                "  c13",
+                "  t0",
+                "  t1",
+                "r[2]/1",
+                "  c21",
+                "  t2"
+            ],
+            "cheapest first, sold last; a one-track record with copies opens too"
+        );
+        assert!(rows[1].indices().is_empty(), "a copy selects no entry");
+        assert_eq!(rows[1].first(), 0);
+        assert_eq!(row_of(&rows, 1), 5, "rows of entries skip the copies");
     }
 
     #[test]

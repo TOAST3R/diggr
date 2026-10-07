@@ -415,7 +415,7 @@ pub fn cover(images: &Value) -> String {
 
 /// A thumbnail address, or nothing for an empty or non-https one (Discogs' "spacer" images
 /// for records without a picture are left out too).
-fn thumb(uri: &str) -> String {
+pub(crate) fn thumb(uri: &str) -> String {
     let uri = uri.trim();
     if uri.starts_with("https://") && !uri.contains("spacer.gif") {
         uri.to_owned()
@@ -439,7 +439,7 @@ fn styles(v: &Value) -> Vec<String> {
     if s.is_empty() { names(&v["genres"]) } else { s }
 }
 
-fn year(v: &Value) -> Option<u16> {
+pub(crate) fn year(v: &Value) -> Option<u16> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.get(..4)?.parse().ok()))
         .filter(|&y| y > 0)

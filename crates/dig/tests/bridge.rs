@@ -372,6 +372,7 @@ fn crates_and_status_come_from_the_snapshot() {
             done: 120,
             total: 312,
         }],
+        sellers: Vec::new(),
     }));
     let c = r.call("GET", "/v1/crates", Some(&key), "").json;
     assert_eq!(
@@ -560,4 +561,40 @@ fn a_new_shop_item_is_checking_until_its_release_is_known() {
         0,
     );
     assert_eq!(owned(&r, &key, item)["owned"], "this");
+}
+
+#[test]
+fn a_seller_page_adds_or_refreshes_whatever_the_mode() {
+    let r = rig("seller");
+    let key = r.pair();
+    r.bridge.poll();
+    let seller = "https://www.discogs.com/seller/decks.de/profile";
+    let a = r.send(&key, &send_body(seller, "enqueue"));
+    assert_eq!(a.status, 202);
+    assert_eq!(a.json["message"], "Added seller decks.de");
+    assert_eq!(a.json["added"], true);
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::Send { page, .. }] => {
+            assert_eq!(
+                page.kind,
+                dig::discogs::url::PageKind::Seller("decks.de".into())
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    r.shared.snapshot.store(Arc::new(Snapshot {
+        sellers: vec!["decks.de".into()],
+        ..Snapshot::default()
+    }));
+    let a = r.send(
+        &key,
+        &send_body("https://www.discogs.com/user/DECKS.DE", "play"),
+    );
+    assert_eq!(a.json["message"], "Refreshed seller DECKS.DE");
+    assert_eq!(a.json["added"], false);
+    let status = r.call("GET", "/v1/status", Some(&key), "");
+    assert!(
+        status.json.get("sellers").is_none(),
+        "never part of an answer"
+    );
 }
