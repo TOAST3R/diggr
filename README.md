@@ -432,12 +432,15 @@ the heading to fold or unfold it; right-click it for **Add seller…**.
   what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
   1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
   **Remove seller…** takes it out of the list and deletes its crate.
-- **Your cart:** right-click a copy for **Add to cart** (a track or record row offers the
-  record's copies, one item each). It goes into your real Discogs cart, and a cyan **CART**
-  badge shows at once on the copy, its record, and any entry of that release in any crate,
-  your wantlist and collection included (the tooltip says from whom and for how much). If the
+- **Your cart:** in a seller crate, each copy row has a cart button. Click **+ CART** to put
+  that copy in your real Discogs cart; it then reads **IN CART**, which turns into a red
+  **REMOVE** under the pointer, and a click takes the copy out again. A record with only one
+  copy for sale has the button on its own row, so you don't need to open it; a record with
+  several shows a cyan **CART** badge when one of them is in, and its copy rows have the
+  buttons. Any entry of that release in any other crate, your wantlist and collection
+  included, shows the **CART** badge (the tooltip says from whom and for how much). If the
   copy sold meanwhile it gets SOLD; if the cart can't be reached, the listing opens on
-  discogs.com instead. **Remove from cart** takes one copy out. The cart is read at launch,
+  discogs.com instead. The cart is read at launch,
   after each dig and cart change, and kept in the cache, so badges show at once and follow
   what you change on discogs.com. The app never empties your cart, and you always pay on
   discogs.com.
@@ -448,7 +451,7 @@ the heading to fold or unfold it; right-click it for **Add seller…**.
 
 The cart and purchases calls aren't part of Discogs' published API (they are what discogs.com
 itself uses, checked in October 2026). If Discogs changes them, the first list stays empty
-(add sellers by hand), and Add to cart opens the listing instead.
+(add sellers by hand), and + CART opens the listing instead.
 
 ### From the browser
 
@@ -723,19 +726,6 @@ winamp-native --render-show track.flac -o one.mp4 --look julia_tunnel/solar   # 
 - **Matching the live show:** a render matches the live show of a replay, because a first live
   play can react to sections the analyzer later corrects.
 
-From the player, right-click a playlist entry (on a Mac: Control-click, or click with two
-fingers) and choose **Render show…**. The dialog offers every command-line option:
-
-- **Size:** Full HD, HD, 4K, vertical, square, or a custom size;
-- **Frame rate:** 24–120 fps;
-- **Range:** the whole track, or a From/To range such as `1:00`–`1:30`;
-- **Title card:** the artist/title card at the start;
-- **Look:** automatic (the director), or one of your looks.
-
-**Render…** asks where to save. Size, frame rate and the card setting are remembered. The render
-runs in the background while you keep listening, with its progress in the main window. It waits
-while fullscreen visuals are on, and the same menu then offers **Cancel show render**.
-
 To measure rendering speed without encoding:
 `cargo run -p visuals --example render_speed --release -- track.flac`.
 
@@ -873,7 +863,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 734 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 736 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1013,7 +1003,7 @@ What's covered:
   - the engine end to end (keys, crossfades, re-init);
   - offline show rendering: a kick at 12.500 s hitting frame 750 at 60 fps, identical frames
     across renders, BT.709 YUV conversion, the overlay card, pinned looks, an MP4 end to end
-    through ffmpeg (skipped without it), cancel leaving no file, and background jobs.
+    through ffmpeg (skipped without it), and cancel leaving no file.
 - **`crates/visuals/tests/render_playback.rs`**: real-time playback while a show renders, with
   zero underruns.
 
@@ -1106,7 +1096,7 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 7. `spectrogram-window`: a spectrogram window with whole-track, zoomed and live views, and a
    check for files made from lossy sources ✅ (done and archived)
 8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
-9. `show-render`: render a track's visual show to an MP4, from the command line or the playlist
+9. `show-render`: render a track's visual show to an MP4, from the command line
    ✅ (done and archived)
 10. `crates`: named playlists ("crates") switched from the playlist's title bar, with entries that
     remember the record they came from and can wait for their audio ✅ (done and archived)

@@ -1,8 +1,5 @@
-# discogs-cart Specification
+## MODIFIED Requirements
 
-## Purpose
-Puts copies from seller crates in the user's real Discogs cart and takes them out, marks everything in the cart with CART in every crate, and lets a seller crate show and play only what is in the cart before the user pays on discogs.com.
-## Requirements
 ### Requirement: Add to cart
 In a seller crate, the cart SHALL be reached through a cart pill on the row, drawn where the CART badge would be, with the badges' font, height and corner radius, and a fixed width that fits its widest label:
 - **+ CART** on an unsold copy that is not in the cart: clicking it adds that copy to the user's Discogs cart;
@@ -38,23 +35,6 @@ Every add SHALL be one request. The pill SHALL change within one frame of the cl
 - **WHEN** the user right-clicks a copy row, a track row or a record row in a seller crate
 - **THEN** the menu offers neither Add to cart nor Remove from cart, and the copy row's menu still offers Open on discogs.com
 
-### Requirement: Cart outcomes
-Each copy in an Add to cart SHALL end as one of:
-- added: it shows CART;
-- already in the cart: it shows CART, counted as added;
-- no longer for sale: it shows SOLD, and the main window says so;
-- anything else (an unexpected answer, Discogs unreachable): its listing SHALL open on discogs.com in the default browser, and the main window SHALL say the cart couldn't be reached and the listing was opened instead.
-
-The app SHALL NEVER empty the user's cart or a seller's cart.
-
-#### Scenario: Sold meanwhile
-- **WHEN** the user adds a copy that was sold since the last refresh
-- **THEN** it shows SOLD, no CART badge, and the main window says it is no longer for sale
-
-#### Scenario: Cart unavailable
-- **WHEN** Discogs answers the cart request with an unexpected error
-- **THEN** the copy's listing opens on discogs.com, and the main window says it was opened there instead
-
 ### Requirement: CART badge
 The app SHALL know the user's Discogs cart from a cached snapshot, read with a token at launch (behind other work), after every dig or refresh of a seller crate, and after every cart action. The snapshot SHALL be saved in the cache folder and shown at once at the next launch.
 
@@ -75,15 +55,3 @@ A copy whose listing is in the cart SHALL show it, in a colour distinct from OWN
 #### Scenario: At launch
 - **WHEN** the app starts with a cached cart snapshot holding 3 copies
 - **THEN** those copies show IN CART or CART in the first frame, before any request
-
-### Requirement: Cart filter
-In a seller crate with at least one copy in the cart, the playlist footer SHALL show a CART switch labelled with the number of copies in the cart from that seller and their subtotal in the seller's currency ("CART 3 · €41.20"). While it is on, only records with a copy in the cart SHALL be shown and played, combined with the other filters (see `record-filters`). The ☰ menu SHALL offer Show cart only, which does the same at any width, and Open cart on discogs.com, which opens `https://www.discogs.com/sell/cart` in the default browser. The switch SHALL be remembered per crate across restarts.
-
-#### Scenario: Check the cart
-- **WHEN** "Seller: decks.de" holds 400 records, 3 of them with a copy in the cart, and the user turns CART on
-- **THEN** only those 3 records are shown, only their tracks play, and the title bar shows 3 of 400
-
-#### Scenario: Empty cart
-- **WHEN** no copy of the shown seller crate is in the cart
-- **THEN** no CART switch is shown
-

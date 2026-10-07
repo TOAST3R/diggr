@@ -27,7 +27,7 @@ The choice SHALL be made with the ▤ button in the playlist title bar (lit whil
 A record row SHALL show, from left to right:
 - the record's cover, as a square of the row's height, or an empty frame while it loads, or a record icon when there is none (a local album, no image, or a failed fetch);
 - an open/close mark (⏵ or ⏷);
-- on its first line, artist – album and the OWNED, CART, SOLD, format and ★ marks, and the record's Discogs styles right-aligned and dimmed (its genres when it has no style). The artist SHALL be the record's credited artist when known (see `album-entries`), else its first entry's artist. The format mark (FILE, CD, CASS or OTHER) SHALL be shown only for a record with formats but no vinyl (see `discogs-intake`);
+- on its first line, artist – album and the OWNED, CART, SOLD, format and ★ marks, and the record's Discogs styles right-aligned and dimmed (its genres when it has no style). In a seller crate, a record with exactly one unsold copy SHALL show that copy's cart pill (+ CART or IN CART, see `discogs-cart`) in place of CART. The artist SHALL be the record's credited artist when known (see `album-entries`), else its first entry's artist. The format mark (FILE, CD, CASS or OTHER) SHALL be shown only for a record with formats but no vinyl (see `discogs-intake`);
 - on its second line, dimmed, the catalog number, year, number of tracks and for-sale snapshot, where known. In a seller crate, the for-sale snapshot SHALL be replaced by that seller's unsold copies and their price range ("3 copies €9.00–€18.00", or "1 copy €9.00").
 
 When it holds the playing entry, its second line SHALL name that track with the play or pause sign, and the row SHALL be drawn in the highlight colour. In the column layout, a record row SHALL span the full width, track rows SHALL use the columns, and no column header SHALL be shown while the crate is grouped (its row goes to the list; ☰ › Sort still sorts). The crate sidebar SHALL show a grouped crate's number of records (albums, and entries of no album) instead of its tracks, and its tooltip both. Hovering a record row SHALL show the tooltip of its first entry.
@@ -58,7 +58,11 @@ When it holds the playing entry, its second line SHALL name that track with the 
 
 #### Scenario: In a seller crate
 - **WHEN** a seller crate holds "Glasshouse EP" with copies at €9.00, €12.00 and €18.00, none sold
-- **THEN** its second line reads "LT-012 · 1994 · 3 tracks · 3 copies €9.00–€18.00"
+- **THEN** its second line reads "LT-012 · 1994 · 3 tracks · 3 copies €9.00–€18.00", and its first line shows no cart pill
+
+#### Scenario: One copy in a seller crate
+- **WHEN** a seller crate holds "Glasshouse EP" with one unsold copy at €9.00, not in the cart
+- **THEN** its first line shows + CART and its second line reads "LT-012 · 1994 · 3 tracks · 1 copy €9.00"
 
 ### Requirement: Opening a record
 Clicking a record row's ⏵, or pressing Space while the cursor is on it and the playlist has focus, SHALL open it: its tracks are shown as track rows under it, in crate order (indented past the cover in the single-line layout). Doing so again, or pressing Space on one of its track rows, SHALL close it. Records SHALL start closed, except that the record of a track being played or armed from a track row stays open. Which records are open SHALL be kept for the session, per crate. ← and → SHALL keep seeking.
@@ -145,16 +149,17 @@ Building the rows of a grouped 5,000-entry crate SHALL take less than 5 ms, and 
 - **THEN** playback has zero underruns, and no frame rebuilds the rows unless an entry or the filter changed
 
 ### Requirement: Copy rows
-In a grouped seller crate, an open record SHALL list its copies as copy rows above its tracks, cheapest first and sold ones last. Each copy row SHALL show the CART or SOLD badge when it applies, then the price, the media and sleeve condition, and the country it ships from. A copy row SHALL hold no audio:
+In a grouped seller crate, an open record SHALL list its copies as copy rows above its tracks, cheapest first and sold ones last. Each copy row SHALL show its cart pill (+ CART or IN CART, see `discogs-cart`) when it is unsold, or the SOLD badge when it is sold, then the price, the media and sleeve condition, and the country it ships from. The pill's fixed width SHALL keep the prices of all unsold copy rows aligned. A copy row SHALL hold no audio:
 - it SHALL be skipped by play order, shuffle, the next track, the preview horizon, and Enter or double-click to play;
-- double-clicking it SHALL open its listing on discogs.com in the default browser;
-- its tooltip SHALL give the listing's date and comments.
+- double-clicking it outside the pill SHALL open its listing on discogs.com in the default browser;
+- its tooltip SHALL give the listing's date and comments;
+- its right-click menu SHALL offer Open on discogs.com.
 
 In the flat view, copies SHALL NOT be rows: a track's tooltip SHALL list its record's copies.
 
 #### Scenario: Open record
 - **WHEN** the user opens "Glasshouse EP" in a seller crate with copies at €12.00 (VG+/VG+) and €9.00 (VG+/VG), the €9.00 one in the cart
-- **THEN** the record shows CART and "€9.00 · VG+ / VG · Germany", then "€12.00 · VG+ / VG+ · Germany", then its tracks
+- **THEN** the record shows "IN CART €9.00 · VG+ / VG · Germany", then "+ CART €12.00 · VG+ / VG+ · Germany", both prices starting at the same x, then its tracks
 
 #### Scenario: Skipped by play
 - **WHEN** the last track of a record plays and the next record in the crate is open with two copy rows

@@ -57,8 +57,6 @@ pub struct AppContext {
     pub annotations_dir: Option<PathBuf>,
     /// Native-rate track overviews for the waveform section.
     pub overviews: Option<analysis::overview::OverviewService>,
-    /// Renders a track's visual show to a video (playlist menu "Render show…").
-    pub show_renderer: Option<Box<dyn crate::render_job::ShowRenderer>>,
     /// Digging Discogs pages into crates of previews; `None` turns it off.
     #[cfg(not(target_arch = "wasm32"))]
     pub dig: Option<DigSetup>,
@@ -183,13 +181,6 @@ pub struct WinampApp {
     /// The spectrogram window (`S`) and whether it is open.
     spectro: crate::spectrogram::SpectrogramWindow,
     spectro_open: bool,
-    show_renderer: Option<Box<dyn crate::render_job::ShowRenderer>>,
-    /// The running (or just finished) show render and its output file name.
-    render_job: Option<(Arc<dyn crate::render_job::RenderJob>, String)>,
-    /// The "Render show" options dialog, while open.
-    render_dialog: Option<crate::render_job::RenderDialog>,
-    /// Looks the renderer offers, read when the dialog opens.
-    render_looks: Vec<(String, String)>,
     /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/winamp_frame_stats.log`.
     profile: Option<FrameProfile>,
@@ -378,10 +369,6 @@ impl WinampApp {
             nav: Nav::default(),
             spectro,
             spectro_open: false,
-            show_renderer: ctx.show_renderer,
-            render_job: None,
-            render_dialog: None,
-            render_looks: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             dig,
         }
@@ -1012,78 +999,6 @@ impl WinampApp {
         }
         if play && let Some(id) = first {
             self.play_entry(crate_id, id);
-        }
-    }
-
-    /// Opens the "Render show" dialog for a playlist entry.
-    fn open_render_dialog(&mut self, id: EntryId) {
-        let (Some(renderer), Some(e)) = (&self.show_renderer, self.crates.shown().get(id)) else {
-            return;
-        };
-        self.render_looks = renderer.looks();
-        let s = &self.settings;
-        self.render_dialog = Some(crate::render_job::RenderDialog::new(
-            e.track.clone(),
-            e.display_name(),
-            e.duration,
-            s.render_size,
-            s.render_fps,
-            s.render_overlay,
-        ));
-    }
-
-    /// Shows the dialog; on "Render…" asks where to save and starts the background render.
-    fn render_dialog_ui(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &mut self.render_dialog else {
-            return;
-        };
-        let looks = &self.render_looks;
-        let modal = egui::Modal::new(Id::new("render-dialog")).show(ctx, |ui| {
-            ui.set_max_width(360.0);
-            dialog.ui(ui, looks)
-        });
-        let outcome = if modal.should_close() {
-            crate::render_job::DialogOutcome::Cancel
-        } else {
-            modal.inner
-        };
-        match outcome {
-            crate::render_job::DialogOutcome::Open => {}
-            crate::render_job::DialogOutcome::Cancel => self.render_dialog = None,
-            crate::render_job::DialogOutcome::Render => {
-                let name: String = dialog
-                    .name
-                    .chars()
-                    .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-                    .collect();
-                let Some(out) = rfd::FileDialog::new()
-                    .add_filter("MP4 video", &["mp4"])
-                    .set_file_name(format!("{name}.mp4"))
-                    .save_file()
-                else {
-                    return; // back to the dialog
-                };
-                let request = match dialog.request(out.clone(), looks) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        dialog.error = Some(e);
-                        return;
-                    }
-                };
-                let Some(renderer) = &self.show_renderer else {
-                    return;
-                };
-                let label = out
-                    .file_name()
-                    .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
-                let (size, fps, overlay) = (request.size, request.fps, request.overlay);
-                self.render_job = Some((renderer.start(request), label));
-                self.render_dialog = None;
-                self.settings.render_size = size;
-                self.settings.render_fps = fps;
-                self.settings.render_overlay = overlay;
-                self.mark_settings();
-            }
         }
     }
 
@@ -3149,7 +3064,6 @@ impl WinampApp {
         ui: &mut Ui,
         e: &crate::playlist::Entry,
         record: Option<&[EntryId]>,
-        rendering: bool,
         actions: &mut Vec<Action>,
     ) {
         let shown = self.crates.shown();
@@ -3219,17 +3133,6 @@ impl WinampApp {
                 ui.close();
             }
         });
-        if self.show_renderer.is_some() {
-            let (label, action) = if rendering {
-                ("Cancel show render", Action::CancelRender)
-            } else {
-                ("Render show…", Action::RenderShow(e.id))
-            };
-            if ui.button(label).clicked() {
-                actions.push(action);
-                ui.close();
-            }
-        }
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_entry_menu(ui, e, actions);
     }
@@ -3248,8 +3151,8 @@ impl WinampApp {
         }
     }
 
-    /// A copy for sale under its open record: its marks, price, grades and country. It holds
-    /// no audio; a double-click opens its listing, and its menu offers the cart.
+    /// A copy for sale under its open record: its cart pill (or SOLD), price, grades and
+    /// country. It holds no audio; a double-click opens its listing, and the pill the cart.
     #[allow(clippy::too_many_arguments)]
     fn copy_row(
         &self,
@@ -3273,12 +3176,18 @@ impl WinampApp {
         };
         let row_clip = clip.with_clip_rect(rr);
         let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
+        // An unsold copy carries its cart pill; a sold one only SOLD.
+        let pill = (!c.sold).then(|| Pill {
+            in_cart,
+            pointer: self.pill_pointer(ui, rr),
+        });
         let marks = Badges {
             owned: false,
-            cart: in_cart,
+            cart: false,
             sold: c.sold,
+            pill,
         };
-        let w = entry_badges(&row_clip, at, marks, None, font, colors, scale);
+        let (w, pill_rect) = entry_badges(&row_clip, at, marks, None, font, colors, scale);
         row_clip.text(
             at + vec2(w, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -3308,24 +3217,7 @@ impl WinampApp {
                     listing,
                 ))));
             }
-            let sold = c.sold;
             egui::Popup::context_menu(&resp).show(|ui| {
-                if in_cart {
-                    if ui.button("Remove from cart").clicked() {
-                        actions.push(Action::Dig(DigAction::Seller(SellerAction::CartRemove(
-                            listing,
-                        ))));
-                        ui.close();
-                    }
-                } else if ui
-                    .add_enabled(!sold, egui::Button::new("Add to cart"))
-                    .clicked()
-                {
-                    actions.push(Action::Dig(DigAction::Seller(SellerAction::CartAdd(vec![
-                        listing,
-                    ]))));
-                    ui.close();
-                }
                 if ui.button("Open on discogs.com").clicked() {
                     actions.push(Action::Dig(DigAction::Seller(SellerAction::OpenCopy(
                         listing,
@@ -3333,6 +3225,57 @@ impl WinampApp {
                     ui.close();
                 }
             });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = resp;
+        if let Some(rect) = pill_rect {
+            self.cart_pill_click(ui, rect, rr, c, in_cart, actions);
+        }
+    }
+
+    /// The pointer for a cart pill on the band `rr` of its row, when it is over it and nothing
+    /// covers it.
+    fn pill_pointer(&self, ui: &Ui, rr: Rect) -> Option<Pos2> {
+        ui.rect_contains_pointer(rr)
+            .then(|| ui.ctx().pointer_interact_pos())
+            .flatten()
+    }
+
+    /// A cart pill's click over the band `rr` of its row, registered after the row's so it
+    /// takes its own clicks (the row isn't selected, played or opened): + CART adds the copy,
+    /// IN CART takes it out.
+    fn cart_pill_click(
+        &self,
+        ui: &mut Ui,
+        pill: Rect,
+        rr: Rect,
+        copy: &crate::playlist::SaleCopy,
+        in_cart: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        let hit = Rect::from_x_y_ranges(pill.x_range(), rr.y_range());
+        let what = format!(
+            "{} · {}",
+            format::price(copy.cents, &copy.currency),
+            copy.grades
+        );
+        let tip = if in_cart {
+            format!("Remove {what} from your cart")
+        } else {
+            format!("Add {what} to your cart")
+        };
+        let resp = ui
+            .interact(hit, Id::new(("pl_cart_pill", copy.listing)), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(tip);
+        #[cfg(not(target_arch = "wasm32"))]
+        if resp.clicked() {
+            use crate::app::sellers::SellerAction;
+            actions.push(Action::Dig(DigAction::Seller(if in_cart {
+                SellerAction::CartRemove(copy.listing)
+            } else {
+                SellerAction::CartAdd(vec![copy.listing])
+            })));
         }
         #[cfg(target_arch = "wasm32")]
         let _ = (resp, actions);
@@ -3459,12 +3402,25 @@ impl WinampApp {
             }
         }
         let marks = self.dig_marks(first);
+        // A record with one copy left for sale carries that copy's cart pill; with several,
+        // CART only says one is in the cart (the copy rows have the pills).
+        let mut unsold = copies.iter().filter(|c| !c.sold);
+        // The pill sits on the first line: it takes the clicks of that line's half only.
+        let band = Rect::from_min_max(rr.min, pos2(rr.right(), rr.center().y));
+        let lone = match (unsold.next(), unsold.next()) {
+            (Some(c), None) => Some((*c, self.copy_in_cart(c.listing))),
+            _ => None,
+        };
         let badges = Badges {
             owned: marks.owned.is_some(),
             cart: marks.cart.is_some(),
             sold: all_sold,
+            pill: lone.map(|(_, in_cart)| Pill {
+                in_cart,
+                pointer: self.pill_pointer(ui, band),
+            }),
         };
-        at.x += entry_badges(
+        let (w, pill_rect) = entry_badges(
             &text_clip,
             at,
             badges,
@@ -3473,6 +3429,10 @@ impl WinampApp {
             colors,
             scale,
         );
+        at.x += w;
+        if let (Some(rect), Some((c, in_cart))) = (pill_rect, lone) {
+            self.cart_pill_click(ui, rect, band, c, in_cart, actions);
+        }
         let album = if first.album().is_empty() {
             first.title.as_str()
         } else {
@@ -3583,7 +3543,7 @@ impl WinampApp {
         let record = (!rec.single).then_some(ids.as_slice());
         egui::Popup::context_menu(&resp)
             .open_memory(open)
-            .show(|ui| self.entry_menu(ui, first, record, look.rendering, actions));
+            .show(|ui| self.entry_menu(ui, first, record, actions));
         resp
     }
 
@@ -3731,10 +3691,6 @@ impl WinampApp {
                 })
                 .unwrap_or_default();
             let tint = lerp_color(d.colors.pl_selected_bg, d.colors.pl_bg, 0.65);
-            let rendering = self
-                .render_job
-                .as_ref()
-                .is_some_and(|(j, _)| !j.status().finished());
             let mut y = 0usize;
             // The record rows drawn, for their covers.
             let mut in_view: Vec<usize> = Vec::new();
@@ -3788,7 +3744,6 @@ impl WinampApp {
                             colors: &d.colors,
                             font: &font,
                             mods,
-                            rendering,
                         };
                         let resp =
                             self.record_row(ui, &sk, &clip, rr, rec, cover, &look, &mut actions);
@@ -3861,6 +3816,7 @@ impl WinampApp {
                     owned: owned.is_some(),
                     cart: marks.cart.is_some(),
                     sold: false,
+                    pill: None,
                 };
                 if marks.passed {
                     let [r, g, b, _] = col.to_array();
@@ -3898,7 +3854,7 @@ impl WinampApp {
                                 if badges.any() || e.format_mark().is_some() =>
                             {
                                 let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
-                                let w = entry_badges(
+                                let (w, _) = entry_badges(
                                     &cell_clip,
                                     at,
                                     badges,
@@ -3946,7 +3902,7 @@ impl WinampApp {
                             )
                             .width();
                         let at = at + vec2(num, 0.0);
-                        let w = entry_badges(
+                        let (w, _) = entry_badges(
                             &name_clip,
                             at,
                             badges,
@@ -4011,7 +3967,7 @@ impl WinampApp {
                 };
                 egui::Popup::context_menu(&resp)
                     .open_memory(open)
-                    .show(|ui| self.entry_menu(ui, e, None, rendering, &mut actions));
+                    .show(|ui| self.entry_menu(ui, e, None, &mut actions));
                 if resp.drag_started() {
                     self.pl_drag_from = Some(idx);
                     self.pl_drag_block = None;
@@ -4642,12 +4598,6 @@ impl WinampApp {
                 self.crates.shown_mut().move_block(&ids, before);
                 self.mark_shown();
             }
-            Action::RenderShow(id) => self.open_render_dialog(id),
-            Action::CancelRender => {
-                if let Some((job, _)) = &self.render_job {
-                    job.cancel();
-                }
-            }
             Action::Select(i, m) => {
                 self.side_crate = None;
                 self.crates.shown_mut().click(i, m);
@@ -4869,9 +4819,6 @@ enum Action {
     SavePreset,
     DeletePreset(String),
     PlayEntry(EntryId),
-    /// Render this entry's visual show to a video file.
-    RenderShow(EntryId),
-    CancelRender,
     Select(usize, ClickMods),
     Move(usize, usize),
     AddFiles,
@@ -5006,7 +4953,6 @@ struct RecordLook<'a> {
     colors: &'a crate::skin::Colors,
     font: &'a egui::FontId,
     mods: ClickMods,
-    rendering: bool,
 }
 
 /// What an entry's tooltip shows where its record's cover goes.
@@ -5209,11 +5155,22 @@ struct Badges {
     cart: bool,
     /// No longer for sale (a copy, or a record whose copies all sold).
     sold: bool,
+    /// The cart pill of a seller crate's copy, drawn where CART would be (instead of it).
+    pill: Option<Pill>,
+}
+
+/// A copy's cart pill: + CART, or IN CART that reads REMOVE while hovered.
+#[derive(Debug, Clone, Copy)]
+struct Pill {
+    in_cart: bool,
+    /// The pointer, when it is over the pill's row (and nothing covers it): the pill takes
+    /// the row's full height, so only its x matters.
+    pointer: Option<Pos2>,
 }
 
 impl Badges {
     fn any(self) -> bool {
-        self.owned || self.cart || self.sold
+        self.owned || self.cart || self.sold || self.pill.is_some()
     }
 }
 
@@ -5221,6 +5178,29 @@ impl Badges {
 const CART_FILL: [u8; 3] = [64, 196, 232];
 const SOLD_FILL: [u8; 3] = [196, 84, 84];
 
+/// The pill's labels; it is as wide as the widest, so hovering never moves the row's text.
+const PILL_LABELS: [&str; 3] = ["+ CART", "IN CART", "REMOVE"];
+
+/// The badges' font, from the row's.
+fn badge_font(font: &egui::FontId) -> egui::FontId {
+    egui::FontId::proportional(font.size * 0.78)
+}
+
+/// The width of a cart pill's label area: its widest label.
+fn pill_text_width(painter: &egui::Painter, font: &egui::FontId) -> f32 {
+    PILL_LABELS
+        .iter()
+        .map(|l| {
+            painter
+                .layout_no_wrap((*l).into(), badge_font(font), Color32::WHITE)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Draws the badges; returns their width with the gap after them (0 for none), and where the
+/// cart pill went, for its click.
 fn entry_badges(
     painter: &egui::Painter,
     at: Pos2,
@@ -5229,27 +5209,119 @@ fn entry_badges(
     font: &egui::FontId,
     colors: &crate::skin::Colors,
     scale: f32,
-) -> f32 {
-    let small = egui::FontId::proportional(font.size * 0.78);
+) -> (f32, Option<Rect>) {
+    let small = badge_font(font);
     let pad = vec2(2.5 * scale, 0.5 * scale);
+    let bg = color(colors.pl_bg);
     let mut x = at.x;
-    let badges = [
-        marks.owned.then(|| ("OWNED", color(colors.pl_owned))),
-        marks.cart.then(|| ("CART", color(CART_FILL))),
-        marks.sold.then(|| ("SOLD", color(SOLD_FILL))),
-        format.map(|f| (f, lerp_color(colors.pl_text, colors.pl_bg, 0.55))),
-    ];
-    for (label, fill) in badges.into_iter().flatten() {
-        let galley = painter.layout_no_wrap(label.into(), small.clone(), color(colors.pl_bg));
-        let rect = Rect::from_min_size(
-            pos2(x, at.y - galley.size().y / 2.0 - pad.y),
-            galley.size() + pad * 2.0,
+    let mut pill_rect = None;
+    if marks.owned {
+        x += badge(
+            painter,
+            x,
+            at.y,
+            "OWNED",
+            color(colors.pl_owned),
+            &small,
+            bg,
+            scale,
         );
-        painter.rect_filled(rect, 2.0 * scale, fill);
-        painter.galley(rect.min + pad, galley, color(colors.pl_bg));
-        x += rect.width() + 3.0 * scale;
     }
-    x - at.x
+    match marks.pill {
+        Some(p) => {
+            let galley_h = painter
+                .layout_no_wrap("C".into(), small.clone(), bg)
+                .size()
+                .y;
+            let rect = Rect::from_min_size(
+                pos2(x, at.y - galley_h / 2.0 - pad.y),
+                vec2(pill_text_width(painter, font), galley_h) + pad * 2.0,
+            );
+            let cart = color(CART_FILL);
+            let r = 2.0 * scale;
+            let hovered = p.pointer.is_some_and(|q| rect.x_range().contains(q.x));
+            let (label, text) = match (p.in_cart, hovered) {
+                (true, true) => {
+                    painter.rect_filled(rect, r, color(SOLD_FILL));
+                    ("REMOVE", bg)
+                }
+                (true, false) => {
+                    painter.rect_filled(rect, r, cart);
+                    ("IN CART", bg)
+                }
+                (false, hovered) => {
+                    if hovered {
+                        painter.rect_filled(rect, r, cart.gamma_multiply(0.3));
+                    }
+                    let stroke = egui::Stroke::new(scale, cart);
+                    painter.rect_stroke(rect, r, stroke, egui::StrokeKind::Inside);
+                    ("+ CART", cart)
+                }
+            };
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                small.clone(),
+                text,
+            );
+            pill_rect = Some(rect);
+            x += rect.width() + 3.0 * scale;
+        }
+        None if marks.cart => {
+            x += badge(
+                painter,
+                x,
+                at.y,
+                "CART",
+                color(CART_FILL),
+                &small,
+                bg,
+                scale,
+            );
+        }
+        None => {}
+    }
+    if marks.sold {
+        x += badge(
+            painter,
+            x,
+            at.y,
+            "SOLD",
+            color(SOLD_FILL),
+            &small,
+            bg,
+            scale,
+        );
+    }
+    if let Some(f) = format {
+        let fill = lerp_color(colors.pl_text, colors.pl_bg, 0.55);
+        x += badge(painter, x, at.y, f, fill, &small, bg, scale);
+    }
+    (x - at.x, pill_rect)
+}
+
+/// One filled badge at `x`, centred on `y`; returns its width with the gap after it.
+#[allow(clippy::too_many_arguments)]
+fn badge(
+    painter: &egui::Painter,
+    x: f32,
+    y: f32,
+    label: &str,
+    fill: Color32,
+    font: &egui::FontId,
+    text: Color32,
+    scale: f32,
+) -> f32 {
+    let pad = vec2(2.5 * scale, 0.5 * scale);
+    let galley = painter.layout_no_wrap(label.into(), font.clone(), text);
+    let rect = Rect::from_min_size(
+        pos2(x, y - galley.size().y / 2.0 - pad.y),
+        galley.size() + pad * 2.0,
+    );
+    painter.rect_filled(rect, 2.0 * scale, fill);
+    painter.galley(rect.min + pad, galley, text);
+    rect.width() + 3.0 * scale
 }
 
 /// A momentary skin button at any rectangle (the strip's buttons have no layout entry).
@@ -5468,18 +5540,6 @@ impl WinampApp {
             self.auto_fullscreen = false;
             self.toggle_fullscreen(ctx);
         }
-        // A background show render: progress in the main window; it waits while fullscreen
-        // visuals use the GPU.
-        if let Some((job, name)) = &self.render_job {
-            job.set_paused(self.fullscreen.is_some());
-            let status = job.status();
-            self.message = Some((crate::render_job::status_line(name, &status), now));
-            if status.finished() {
-                self.render_job = None;
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(250));
-            }
-        }
         if self.auto_quit.is_some_and(|t| now >= t) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
@@ -5650,7 +5710,6 @@ impl WinampApp {
             }
             self.name_dialog(&ctx);
             self.delete_dialog(&ctx);
-            self.render_dialog_ui(&ctx);
             #[cfg(not(target_arch = "wasm32"))]
             self.dig_dialog_ui(&ctx);
             #[cfg(not(target_arch = "wasm32"))]
@@ -6269,7 +6328,6 @@ mod headless_tests {
                     analysis: None,
                     annotations_dir: None,
                     overviews: None,
-                    show_renderer: None,
                     dig: dig(&dir),
                 },
             );
@@ -8440,6 +8498,19 @@ mod headless_tests {
         rig.click_with(rig.row(4), PointerButton::Secondary);
         rig.frame(Vec::new());
         assert!(rig.app.pl_tint.is_empty());
+    }
+
+    #[test]
+    fn no_entry_menu_offers_render_show() {
+        let mut rig = Rig::new("menu-no-render", Vec::new(), |_| {});
+        album_crate(&mut rig);
+        let out = rig.click_with(rig.row(3), PointerButton::Secondary);
+        assert!(shows(&out, "Send to crate"), "the menu is open");
+        assert!(
+            !text_list(&out).iter().any(|t| t.contains("Render show")),
+            "{:?}",
+            text_list(&out)
+        );
     }
 
     #[test]
