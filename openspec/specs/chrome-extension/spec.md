@@ -10,6 +10,8 @@ On Discogs release, master release, artist, label, wantlist, collection, list an
 - Send to crate, listing the app's crates and New crate…;
 - the "skip passed" switch, which SHALL be remembered. There SHALL be no "vinyl only" switch: every send keeps records in every format.
 
+On a seller's page (`/seller/‹name›/profile`, `/seller/‹name›`, or `/user/‹name›` with no further path), the button SHALL be shown the same way, and its menu SHALL offer only Add seller to ‹App›. Choosing it SHALL send the page to the app, which adds or refreshes that seller (see `seller-crates`).
+
 New crate… SHALL open a field in the menu holding a suggested name, taken from the page's title, as editable text; Enter or Create SHALL send:
 - for a release, master release or listing, "Artist - Title";
 - for an artist, label or list, its name;
@@ -39,6 +41,10 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 #### Scenario: Collection page
 - **WHEN** the user opens `https://www.discogs.com/user/digger/collection` and chooses New crate…
 - **THEN** the field holds "Collection: digger", and Enter creates that crate in the app with the collection's tracks, on screen
+
+#### Scenario: Seller page
+- **WHEN** the user opens `https://www.discogs.com/seller/decks.de/profile` while the app is running and paired
+- **THEN** the button's menu offers only Add seller to ‹App›, and choosing it adds decks.de to the app's TOP SELLERS and shows its crate
 
 #### Scenario: Not a supported page
 - **WHEN** the user opens a Discogs forum thread
