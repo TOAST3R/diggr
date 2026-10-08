@@ -52,6 +52,8 @@ pub enum UnavailableKind {
     ClipFailed,
     /// A track of a record with no clip, for which a search found no usable video.
     NotFound,
+    /// A track whose search found a video another entry of the crate already has.
+    AlreadyInCrate,
     Other(String),
 }
 
@@ -74,6 +76,7 @@ impl std::fmt::Display for UnavailableKind {
             UnavailableKind::NoClip => f.write_str("no clip"),
             UnavailableKind::ClipFailed => f.write_str("clip failed"),
             UnavailableKind::NotFound => f.write_str("not found by search"),
+            UnavailableKind::AlreadyInCrate => f.write_str("already in crate"),
             UnavailableKind::Other(t) => f.write_str(t),
         }
     }
@@ -109,6 +112,7 @@ impl From<&str> for UnavailableKind {
             "no clip" => UnavailableKind::NoClip,
             "clip failed" => UnavailableKind::ClipFailed,
             "not found by search" => UnavailableKind::NotFound,
+            "already in crate" => UnavailableKind::AlreadyInCrate,
             _ => UnavailableKind::Other(t.to_owned()),
         }
     }
@@ -176,13 +180,20 @@ pub struct Origin {
     /// The record's formats, vinyl first ("Vinyl", "File", "Vinyl, CD"); empty when unknown.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub formats: String,
-    /// A track of a record with no clip: what its search result is remembered by
-    /// (`release/<id>/<position>`).
+    /// A track no clip of its record matches: what its search result is found by (the
+    /// track key, or `release/<id>/<position>` when saved before track keys).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub search_key: String,
     /// The title of the video a search found for it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub found: String,
+    /// The record's full-album upload, held back while its tracks are searched for: added
+    /// after the record's entries once one of them is not found.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub album_clip: String,
+    /// That upload's title, for its entry.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub album_clip_title: String,
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -912,6 +923,29 @@ impl Playlist {
             self.anchor = first;
         }
         ids
+    }
+
+    /// Adds a waiting entry right after `after` (at the end when it is gone). Returns its id.
+    pub fn insert_after(&mut self, after: EntryId, n: NewEntry) -> EntryId {
+        let at = self.index_of(after).map_or(self.entries.len(), |i| i + 1);
+        let id = self.alloc_id();
+        self.entries.insert(
+            at,
+            Entry {
+                id,
+                track: TrackRef::new(""),
+                source: n.source,
+                origin: n.origin,
+                title: n.title,
+                artist: n.artist,
+                album: String::new(),
+                duration: n.duration,
+                bpm: None,
+                status: EntryStatus::Waiting(n.status),
+            },
+        );
+        self.changed();
+        id
     }
 
     /// Removes one entry (the current one may be it).
@@ -1948,6 +1982,7 @@ mod tests {
             (path: "", title: "C", status: Waiting("needs yt-dlp")),
             (path: "", title: "D", status: Unavailable("no clip")),
             (path: "", title: "E", status: Unavailable("failed: 502")),
+            (path: "", title: "F", status: Unavailable("already in crate")),
         ], current: None)"#;
         let (p, _) = Playlist::from_saved(ron::from_str(text).unwrap());
         let got: Vec<_> = p.entries().iter().map(|e| e.status.clone()).collect();
@@ -1959,12 +1994,76 @@ mod tests {
                 EntryStatus::Waiting(WaitKind::NeedsYtDlp),
                 EntryStatus::Unavailable(UnavailableKind::NoClip),
                 EntryStatus::Unavailable(UnavailableKind::Other("failed: 502".into())),
+                EntryStatus::Unavailable(UnavailableKind::AlreadyInCrate),
             ]
         );
         // And they are written back in the same words.
         assert_eq!(
             ron::to_string(&p.to_saved()).unwrap(),
             ron::to_string(&ron::from_str::<SavedPlaylist>(text).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_held_back_album_clip_is_saved_and_old_crates_load_without_it() {
+        let mut p = Playlist::default();
+        let held = Origin {
+            search_key: "track/nightcraft/glasshouse".into(),
+            album_clip: "fullalbum01".into(),
+            album_clip_title: "Glasshouse EP (Full Album)".into(),
+            release: Some(1),
+            position: "A1".into(),
+            ..Origin::default()
+        };
+        let id = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(held.clone()),
+            "to search",
+        );
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(restored.get(id).unwrap().origin.as_ref(), Some(&held));
+
+        let old = r#"(entries: [(path: "", title: "A", status: Waiting("to search"),
+            origin: Some((release: Some(1), position: "A1", search_key: "release/1/A1")))],
+            current: None)"#;
+        let (p, _) = Playlist::from_saved(ron::from_str(old).unwrap());
+        let o = p.entries()[0].origin.as_ref().unwrap();
+        assert_eq!(
+            (o.search_key.as_str(), o.album_clip.as_str()),
+            ("release/1/A1", "")
+        );
+        assert!(
+            !ron::to_string(&p.to_saved())
+                .unwrap()
+                .contains("album_clip")
+        );
+    }
+
+    #[test]
+    fn an_entry_goes_in_right_after_another() {
+        let mut p = Playlist::default();
+        let a = p.add_waiting("N", "A", None, None, "queued");
+        let _b = p.add_waiting("N", "B", None, None, "queued");
+        let new = |t: &str| NewEntry {
+            artist: "N".into(),
+            title: t.into(),
+            source: None,
+            origin: None,
+            duration: None,
+            status: WaitKind::Queued,
+        };
+        let x = p.insert_after(a, new("X"));
+        assert_eq!(sorted_titles(&p), ["A", "X", "B"]);
+        assert_eq!(p.index_of(x), Some(1));
+        p.remove(a);
+        p.insert_after(a, new("Y"));
+        assert_eq!(
+            sorted_titles(&p),
+            ["X", "B", "Y"],
+            "after a gone entry: at the end"
         );
     }
 

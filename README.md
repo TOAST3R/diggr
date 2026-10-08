@@ -219,7 +219,8 @@ and Home/End jump), and Enter plays the entry under it.
     screen).
   - Entries can wait for their audio or be unavailable. Both are dimmed, with an icon where the
     duration goes: a hollow dot (listed), a clock (queued), a bar that fills as it downloads, a
-    warning sign (needs yt-dlp), or a barred circle (no clip, or the clip failed). Both are
+    warning sign (needs yt-dlp), or a barred circle (no clip, the clip failed, not found by
+    search, or already in crate). Both are
     skipped by next, previous and shuffle. Double-clicking a waiting entry arms it: the current
     track plays on, the main window says it is waiting, and the entry starts as soon as its
     audio arrives. Only files that can't be opened are drawn in red.
@@ -306,20 +307,28 @@ ahead of what plays. Other pasted text is ignored.
   place (a playing one keeps playing), and the twin's other tracks leave. A record with no
   vinyl release stays, with a dim **FILE**, **CD**, **CASS** or **OTHER** mark before its
   title. Your wantlist and collection crates keep whatever releases they hold.
-- **Records with no clip on Discogs:** a record whose release has no video but has a
-  tracklist (often a new one) comes in as its tracks, "Artist - Title" with their sides and
-  lengths, each "to search". When one gets near the playhead (the armed entry, the playing one
-  and the next 3), your yt-dlp lists a few YouTube results for "artist title" (nothing is
-  downloaded for that), one search at a time. A result is used only when its title holds the
-  track's title, the artist is in its title or channel, and its length is within 10 s (or
-  5 %) of the tracklist's; otherwise the track says "not found by search". A found video then
-  downloads and plays like any clip, and the tooltip names it ("Preview: found by search
-  (…)"). Results are remembered in the cache's `searches.ron` (a track not found is tried
-  again after a week), so a record is searched once. A record with neither clips nor a
-  tracklist is still one "no clip" entry.
+- **Every track of a record:** a record comes in as one entry per track of its tracklist,
+  "Artist - Title" with its side and length: the track's video when Discogs has one, else "to
+  search". So *Mezzanine* (eleven tracks, one video of "Teardrop") brings eleven entries, not
+  one. A video Discogs lists twice counts once, and videos that match no track (a whole side, a
+  mix) come after the tracks. For a remix credit, only the remix tracks come in, searched for
+  when Discogs has no video of them. When one gets near the playhead (the armed entry, the
+  playing one and the next 3), your yt-dlp lists a few YouTube results for "artist title"
+  (nothing is downloaded for that), one search at a time. A result is used only when its title
+  holds the track's title, the artist is in its title or channel, and its length is within
+  10 s (or 5 %) of the tracklist's; otherwise the track says "not found by search". A found
+  video then downloads and plays like any clip, and the tooltip names it ("Preview: found by
+  search (…)"); a video the crate has already (one track listed twice) says "already in
+  crate". Results are remembered by the track in the cache's `searches.ron` (a track not found
+  is tried again after a week), so a track is searched once, whichever release, page or crate
+  it comes from. A full-album upload (its title says "full album", or it is the record's only
+  video and matches no track) is held back while the tracks are searched, and comes in after
+  them if one is not found. A grouped record's tooltip counts what it holds ("11 tracks · 1
+  clip · 10 to search"). Sending a record again adds nothing twice. A record with neither
+  clips nor a tracklist is still one "no clip" entry.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
   (records near the selected or playing entry are fetched first). It then becomes one entry per
-  clip, matched to its tracklist, or "no clip". A send that's still going when you quit resumes
+  track (its clip, or to search) and its other clips, or "no clip". A send that's still going when you quit resumes
   when you next show or play its crate. The main window shows the progress
   ("12 of 250 releases").
 - **Previews:** the playing entry and the next 3 download two at a time, with progress where
@@ -863,7 +872,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 738 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 751 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -940,6 +949,9 @@ What's covered:
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
   - a pasted release filling the crate with playable previews;
+  - a record with one video for eleven tracks (*Mezzanine*): every track, in order, and nothing
+    twice when sent again; one video found for two tracks; the full-album fallback, after a
+    reload too; the vinyl release taking over a track found for its digital twin;
   - Play mode naming its crate and playing;
   - a missing page taking its crate away again;
   - `Y`, `N` and `I` with and without a token;

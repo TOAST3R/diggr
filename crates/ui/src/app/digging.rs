@@ -27,7 +27,7 @@ use dig::cover::{CoverHandle, Covers, ImageSource, UreqImages};
 use dig::discogs::cache::DiskCache;
 use dig::discogs::cart::CartSnapshot;
 use dig::discogs::client::{ApiError, Client, Identity};
-use dig::discogs::matching::ClipEntry;
+use dig::discogs::matching::{ClipEntry, Planned, TrackEntry};
 use dig::discogs::model::{Format, RecordKey};
 use dig::discogs::transport::{Transport, UreqTransport};
 use dig::discogs::url::{self, Page, Refused};
@@ -39,7 +39,7 @@ use dig::preview::fetcher::{clip_url, preview_path};
 use dig::preview::scheduler::{
     self, Finder, PreviewCommand, PreviewEvent, PreviewHandle, system_finder,
 };
-use dig::preview::search::SearchRequest;
+use dig::preview::search::{SearchRequest, lengths_agree};
 use dig::preview::store;
 use dig::sellers::SellerList;
 use platform::{FileSource, Spawner, TrackRef};
@@ -944,6 +944,8 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         formats: formats_text(&info.formats),
         search_key: String::new(),
         found: String::new(),
+        album_clip: String::new(),
+        album_clip_title: String::new(),
     }
 }
 
@@ -1506,8 +1508,11 @@ impl DiggrApp {
             .filter(|o| has_vinyl(&o.formats) && twin_of(o))
             .map(|o| o.clip.is_some())
             .collect();
-        // No clip of its own (a "no clip" record, or tracks still to search for).
-        let silent = matches!(outcome, Outcome::Unavailable(_) | Outcome::Tracks(_));
+        // No clip of its own (a "no clip" record, or only tracks to search for).
+        let silent = match &outcome {
+            Outcome::Unavailable(_) => true,
+            Outcome::Entries(plan) => !plan.has_clip(),
+        };
         if twins
             && not_vinyl(&base)
             && !vinyl_twins.is_empty()
@@ -1517,6 +1522,19 @@ impl DiggrApp {
             self.mark_crate(j.target);
             return;
         }
+        // The tracks the vinyl release will search for: its twins' entries of those tracks are
+        // taken over below, not dropped.
+        let searched_here: HashSet<&str> = match &outcome {
+            Outcome::Entries(plan) => plan
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Planned::Search(t) => Some(t.search_key.as_str()),
+                    Planned::Clip(_) => None,
+                })
+                .collect(),
+            Outcome::Unavailable(_) => HashSet::new(),
+        };
         // A vinyl release: its twins in other formats that came back with no tunes leave (those
         // still waiting for their details are decided when those arrive).
         if twins && has_vinyl(&base.formats) {
@@ -1525,16 +1543,19 @@ impl DiggrApp {
                 .iter()
                 .filter(|e| e.id != placeholder && listed_key(e).is_none())
                 .filter(|e| {
-                    e.origin
-                        .as_ref()
-                        .is_some_and(|o| o.clip.is_none() && not_vinyl(o) && twin_of(o))
+                    e.origin.as_ref().is_some_and(|o| {
+                        o.clip.is_none()
+                            && not_vinyl(o)
+                            && twin_of(o)
+                            && !searched_here.contains(o.search_key.as_str())
+                    })
                 })
                 .map(|e| e.id)
                 .collect();
             p.remove_ids(&silent_twins);
         }
         let mut leftovers = Vec::new();
-        let new: Vec<NewEntry> = match outcome {
+        let plan = match outcome {
             Outcome::Unavailable(reason) => {
                 if let Some(e) = p.entries_mut().find(|e| e.id == placeholder) {
                     e.origin = Some(base);
@@ -1550,70 +1571,115 @@ impl DiggrApp {
                 self.mark_crate(j.target);
                 return;
             }
-            Outcome::Tracks(tracks) => tracks
-                .into_iter()
-                .map(|t| NewEntry {
-                    source: None,
-                    origin: Some(Origin {
-                        position: t.position,
-                        search_key: t.search_key,
-                        ..base.clone()
-                    }),
-                    artist: t.artist,
-                    title: t.title,
-                    duration: t.duration,
-                    status: WaitKind::Search,
+            Outcome::Entries(plan) => plan,
+        };
+        let (album_clip, album_clip_title) = plan
+            .full_album
+            .as_ref()
+            .map(|c| (c.clip.clone(), c.title.clone()))
+            .unwrap_or_default();
+        let track_origin = |t: &TrackEntry| Origin {
+            position: t.position.clone(),
+            search_key: t.search_key.clone(),
+            album_clip: album_clip.clone(),
+            album_clip_title: album_clip_title.clone(),
+            ..base.clone()
+        };
+        // The tracks a twin's entry became, in place: not added again.
+        let mut taken: HashSet<String> = HashSet::new();
+        // The vinyl release takes over the tracks its non-vinyl twins brought, in place (by
+        // clip, or by track for those searched for); their other tracks (and their waiting
+        // placeholders) leave.
+        if twins && has_vinyl(&base.formats) {
+            let has_clip = plan.has_clip();
+            let by_clip: HashMap<&str, &ClipEntry> = plan
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Planned::Clip(c) => Some((c.clip.as_str(), c)),
+                    Planned::Search(_) => None,
                 })
-                .collect(),
-            Outcome::Clips(entries) => {
-                // The vinyl release takes over the tracks its non-vinyl twins brought, in
-                // place; their other tracks (and their waiting placeholders) leave.
-                if twins && has_vinyl(&base.formats) {
-                    let by_clip: HashMap<&str, &ClipEntry> =
-                        entries.iter().map(|c| (c.clip.as_str(), c)).collect();
-                    let twin_ids: Vec<EntryId> = p
-                        .entries()
-                        .iter()
-                        .filter(|e| e.id != placeholder)
-                        .filter(|e| {
-                            e.origin
-                                .as_ref()
-                                .is_some_and(|o| not_vinyl(o) && twin_of(o))
-                        })
-                        .map(|e| e.id)
-                        .collect();
-                    let mut gone = Vec::new();
-                    for id in twin_ids {
-                        let Some(e) = p.entries_mut().find(|e| e.id == id) else {
-                            continue;
-                        };
-                        let clip = e.origin.as_ref().and_then(|o| o.clip.clone());
-                        match clip.as_deref().and_then(|c| by_clip.get(c)) {
-                            Some(c) => {
-                                e.origin = Some(Origin {
-                                    position: c.position.clone(),
-                                    clip: Some(c.clip.clone()),
-                                    ..base.clone()
-                                });
-                                e.artist = c.artist.clone();
-                                e.title = c.title.clone();
-                            }
-                            None if playing == Some(id) => leftovers.push((j.target, id)),
-                            None => gone.push(id),
-                        }
+                .collect();
+            let by_track: HashMap<&str, &TrackEntry> = plan
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Planned::Search(t) => Some((t.search_key.as_str(), t)),
+                    Planned::Clip(_) => None,
+                })
+                .collect();
+            let twin_ids: Vec<EntryId> = p
+                .entries()
+                .iter()
+                .filter(|e| e.id != placeholder)
+                .filter(|e| {
+                    e.origin
+                        .as_ref()
+                        .is_some_and(|o| not_vinyl(o) && twin_of(o))
+                })
+                .map(|e| e.id)
+                .collect();
+            let mut gone = Vec::new();
+            for id in twin_ids {
+                let Some(e) = p.entries_mut().find(|e| e.id == id) else {
+                    continue;
+                };
+                let Some(o) = e.origin.as_ref() else { continue };
+                let clip = o.clip.clone();
+                let track = (!o.search_key.is_empty())
+                    .then(|| by_track.get(o.search_key.as_str()))
+                    .flatten();
+                match (clip.as_deref().and_then(|c| by_clip.get(c)), track) {
+                    (Some(c), _) => {
+                        e.origin = Some(Origin {
+                            position: c.position.clone(),
+                            clip: Some(c.clip.clone()),
+                            ..base.clone()
+                        });
+                        e.artist = c.artist.clone();
+                        e.title = c.title.clone();
                     }
-                    p.remove_ids(&gone);
+                    // Searched for already: it keeps what its search found.
+                    (None, Some(t)) if taken.insert(t.search_key.clone()) => {
+                        e.origin = Some(Origin {
+                            clip,
+                            found: o.found.clone(),
+                            ..track_origin(t)
+                        });
+                        e.artist = t.artist.clone();
+                        e.title = t.title.clone();
+                    }
+                    // Tunes the vinyl release has no clip for at all: they stay.
+                    (None, None) if !has_clip && clip.is_some() && o.search_key.is_empty() => {}
+                    _ if playing == Some(id) => leftovers.push((j.target, id)),
+                    _ => gone.push(id),
                 }
-                let mut have: HashSet<String> = p
-                    .entries()
-                    .iter()
-                    .filter_map(|e| e.origin.as_ref()?.clip.clone())
-                    .collect();
-                entries
-                    .into_iter()
-                    .filter(|c| !(j.filters.skip_passed && d.memory.is_passed(&c.clip)))
-                    .filter(|c| have.insert(c.clip.clone()))
-                    .map(|c| NewEntry {
+            }
+            p.remove_ids(&gone);
+        }
+        let mut have: HashSet<String> = p
+            .entries()
+            .iter()
+            .filter_map(|e| e.origin.as_ref()?.clip.clone())
+            .collect();
+        // Tracks to search the crate holds already (sent before): by record, side and title.
+        let mut places: HashSet<(Option<RecordKey>, String, String)> = p
+            .entries()
+            .iter()
+            .filter_map(|e| {
+                let o = e.origin.as_ref()?;
+                (!o.search_key.is_empty())
+                    .then(|| (record_key(o), o.position.clone(), e.title.clone()))
+            })
+            .collect();
+        let new: Vec<NewEntry> = plan
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                Planned::Clip(c) => {
+                    let keep = !(j.filters.skip_passed && d.memory.is_passed(&c.clip))
+                        && have.insert(c.clip.clone());
+                    keep.then(|| NewEntry {
                         source: Some(clip_url(&c.clip)),
                         origin: Some(Origin {
                             position: c.position,
@@ -1625,9 +1691,22 @@ impl DiggrApp {
                         duration: c.duration,
                         status: WaitKind::Queued,
                     })
-                    .collect()
-            }
-        };
+                }
+                Planned::Search(t) => {
+                    let origin = track_origin(&t);
+                    let place = (record_key(&origin), t.position.clone(), t.title.clone());
+                    let keep = !taken.contains(&t.search_key) && places.insert(place);
+                    keep.then_some(NewEntry {
+                        source: None,
+                        origin: Some(origin),
+                        artist: t.artist,
+                        title: t.title,
+                        duration: t.duration,
+                        status: WaitKind::Search,
+                    })
+                }
+            })
+            .collect();
         let ids = p.replace(placeholder, new);
         if let Some(d) = &mut self.dig {
             d.twin_leftovers.extend(leftovers);
@@ -1655,21 +1734,38 @@ impl DiggrApp {
         }
     }
 
-    /// Every loaded crate's entries still waiting to be searched for under `key`, changed by
-    /// `f`; returns them.
+    /// Every loaded crate's entries still waiting to be searched for under `key` whose length
+    /// agrees with `duration`, in crate order, changed by `f` (given the entry and whether the
+    /// clip `f` would give it is already another entry's in that crate); returns them.
     fn dig_each_searched(
         &mut self,
         key: &str,
-        mut f: impl FnMut(&mut Entry),
+        duration: Option<f64>,
+        clip: Option<&str>,
+        mut f: impl FnMut(&mut Entry, bool),
     ) -> Vec<(CrateId, EntryId)> {
+        let agrees = |e: &Entry| match (e.duration, duration) {
+            (Some(want), Some(got)) => lengths_agree(want, got),
+            _ => true,
+        };
         let mut hits = Vec::new();
         for c in self.crates.loaded_ids() {
             let before = hits.len();
             if let Some(p) = self.crates.get_mut(c) {
+                let mut held = clip.is_some_and(|clip| {
+                    p.entries().iter().any(|e| {
+                        e.status != EntryStatus::Waiting(WaitKind::Search)
+                            && clip_of(e) == Some(clip)
+                    })
+                });
                 for e in p.entries_mut() {
                     let waiting = e.status == EntryStatus::Waiting(WaitKind::Search);
-                    if waiting && e.origin.as_ref().is_some_and(|o| o.search_key == key) {
-                        f(e);
+                    if waiting
+                        && e.origin.as_ref().is_some_and(|o| o.search_key == key)
+                        && agrees(e)
+                    {
+                        f(e, held);
+                        held = clip.is_some();
                         hits.push((c, e.id));
                     }
                 }
@@ -1681,10 +1777,84 @@ impl DiggrApp {
         hits
     }
 
+    /// A track of `id`'s record was not found by search: the record's held-back full-album
+    /// upload goes in after its last entry, once, unless the crate has it already.
+    fn dig_album_fallback(&mut self, c: CrateId, id: EntryId) {
+        let Some(p) = self.crates.get_mut(c) else {
+            return;
+        };
+        let Some(e) = p.get(id) else { return };
+        let Some(o) = e.origin.clone().filter(|o| !o.album_clip.is_empty()) else {
+            return;
+        };
+        let track_artist = e.artist.clone();
+        let record = record_key(&o);
+        let clip = o.album_clip.clone();
+        let mut last = id;
+        let mut have = false;
+        for e in p.entries_mut() {
+            let Some(eo) = e.origin.as_mut() else {
+                continue;
+            };
+            have |= eo.clip.as_deref() == Some(clip.as_str());
+            if record_key(eo) == record {
+                last = e.id;
+                if eo.album_clip == clip {
+                    eo.album_clip.clear();
+                    eo.album_clip_title.clear();
+                }
+            }
+        }
+        if !have {
+            let artist = if o.artist.is_empty() {
+                track_artist
+            } else {
+                o.artist.clone()
+            };
+            let new = p.insert_after(
+                last,
+                NewEntry {
+                    source: Some(clip_url(&clip)),
+                    title: o.album_clip_title.clone(),
+                    origin: Some(Origin {
+                        position: String::new(),
+                        clip: Some(clip.clone()),
+                        search_key: String::new(),
+                        found: String::new(),
+                        album_clip: String::new(),
+                        album_clip_title: String::new(),
+                        ..o
+                    }),
+                    artist,
+                    duration: None,
+                    status: WaitKind::Queued,
+                },
+            );
+            // A preview downloaded already plays at once.
+            if let Some(d) = &self.dig {
+                let path = preview_path(&d.previews_dir(), &clip);
+                if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                    self.set_audio(c, new, TrackRef::new(path.to_string_lossy()));
+                }
+            }
+        }
+        self.mark_crate(c);
+    }
+
     fn dig_preview_event(&mut self, e: PreviewEvent) {
         match e {
-            PreviewEvent::Found { key, clip, title } => {
-                let found = self.dig_each_searched(&key, |e| {
+            PreviewEvent::Found {
+                key,
+                clip,
+                title,
+                duration,
+            } => {
+                let found = self.dig_each_searched(&key, duration, Some(&clip), |e, held| {
+                    if held {
+                        // The crate has this video already: not a second time.
+                        e.status = EntryStatus::Unavailable(UnavailableKind::AlreadyInCrate);
+                        return;
+                    }
                     let o = e.origin.as_mut().expect("searched entries have an origin");
                     o.clip = Some(clip.clone());
                     o.found = title.clone();
@@ -1697,14 +1867,24 @@ impl DiggrApp {
                 if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
                     let track = TrackRef::new(path.to_string_lossy());
                     for (c, id) in found {
-                        self.set_audio(c, id, track.clone());
+                        let queued = self
+                            .crates
+                            .get(c)
+                            .and_then(|p| p.get(id))
+                            .is_some_and(|e| clip_of(e) == Some(clip.as_str()));
+                        if queued {
+                            self.set_audio(c, id, track.clone());
+                        }
                     }
                 }
             }
-            PreviewEvent::NotFound(key) => {
-                let _ = self.dig_each_searched(&key, |e| {
+            PreviewEvent::NotFound { key, duration } => {
+                let gone = self.dig_each_searched(&key, duration, None, |e, _| {
                     e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
                 });
+                for (c, id) in gone {
+                    self.dig_album_fallback(c, id);
+                }
             }
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {

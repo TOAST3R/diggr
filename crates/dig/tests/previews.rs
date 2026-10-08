@@ -277,7 +277,12 @@ fn upload(id: &str, title: &str, secs: f64) -> SearchResult {
 
 fn answers(ev: &[PreviewEvent]) -> usize {
     ev.iter()
-        .filter(|e| matches!(e, PreviewEvent::Found { .. } | PreviewEvent::NotFound(_)))
+        .filter(|e| {
+            matches!(
+                e,
+                PreviewEvent::Found { .. } | PreviewEvent::NotFound { .. }
+            )
+        })
         .count()
 }
 
@@ -304,10 +309,18 @@ fn tracks_are_searched_one_at_a_time_and_remembered() {
         key: "release/1/A1".into(),
         clip: "paperwings1".into(),
         title: "The 89th Passenger - Paper Wings".into(),
+        duration: Some(292.0),
     }));
-    assert!(ev.contains(&PreviewEvent::NotFound("release/1/A2".into())));
+    assert!(ev.contains(&PreviewEvent::NotFound {
+        key: "release/1/A2".into(),
+        duration: Some(299.0),
+    }));
     assert_eq!(fake.searched().len(), 2, "one search each");
-    assert_eq!(Searches::load(&d).results.len(), 2, "both remembered");
+    assert_eq!(
+        Searches::load(&d).tracks.len(),
+        2,
+        "both remembered, by track"
+    );
 
     // Asked again (another crate, a restart): answered without searching.
     h.send(PreviewCommand::Search(vec![track(
@@ -317,6 +330,24 @@ fn tracks_are_searched_one_at_a_time_and_remembered() {
     )]));
     until(&h, |ev| answers(ev) == 1);
     assert_eq!(fake.searched().len(), 2);
+
+    // The same track on another release (another position, so another entry key): no search.
+    h.send(PreviewCommand::Search(vec![track(
+        "track/the 89th passenger/paper wings",
+        "Paper Wings",
+        290.0,
+    )]));
+    let ev = until(&h, |ev| answers(ev) == 1);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Found { key, clip, .. }
+        if key == "track/the 89th passenger/paper wings" && clip == "paperwings1"))
+    );
+    assert_eq!(
+        fake.searched().len(),
+        2,
+        "answered from the first release's search"
+    );
 }
 
 #[test]

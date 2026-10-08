@@ -84,14 +84,19 @@ pub enum PreviewEvent {
     NeedsYtDlp,
     /// yt-dlp was found, with its version.
     YtDlp(String),
-    /// A search found a track's preview: `clip` is the video, `title` its title.
+    /// A search found a track's preview: `clip` is the video, `title` its title, `duration`
+    /// its length (it answers the entries under `key` whose length agrees).
     Found {
         key: String,
         clip: String,
         title: String,
+        duration: Option<f64>,
     },
-    /// A search found nothing usable for a track.
-    NotFound(String),
+    /// A search found nothing usable for the entries under `key` of length `duration`.
+    NotFound {
+        key: String,
+        duration: Option<f64>,
+    },
 }
 
 pub struct Config {
@@ -214,15 +219,21 @@ impl Scheduler {
         let todo = std::mem::take(&mut self.to_search);
         let mut left = Vec::new();
         for req in todo {
-            match self.remembered.get(&req.key, now) {
-                Some(Remembered::Found { clip, title }) => self.events.push(PreviewEvent::Found {
+            match self.remembered.get(&req, now) {
+                Some(Remembered::Found {
+                    clip,
+                    title,
+                    duration,
+                }) => self.events.push(PreviewEvent::Found {
                     key: req.key.clone(),
                     clip: clip.clone(),
                     title: title.clone(),
+                    duration: *duration,
                 }),
-                Some(Remembered::NotFound { .. }) => {
-                    self.events.push(PreviewEvent::NotFound(req.key.clone()))
-                }
+                Some(Remembered::NotFound { .. }) => self.events.push(PreviewEvent::NotFound {
+                    key: req.key.clone(),
+                    duration: req.duration,
+                }),
                 None => left.push(req),
             }
         }
@@ -265,7 +276,7 @@ impl Scheduler {
     fn searched(&mut self, req: SearchRequest, result: Result<Vec<SearchResult>, FetchError>) {
         self.searching = None;
         let found = match result {
-            Ok(results) => search::best(&req, &results).map(|r| (r.id.clone(), r.title.clone())),
+            Ok(results) => search::best(&req, &results).cloned(),
             Err(FetchError::NoProgram) => {
                 self.fetcher = None;
                 self.said_missing = false;
@@ -279,22 +290,31 @@ impl Scheduler {
         };
         self.search_failed.remove(&req.key);
         let remembered = match found {
-            Some((clip, title)) => {
+            Some(r) => {
                 self.events.push(PreviewEvent::Found {
                     key: req.key.clone(),
-                    clip: clip.clone(),
-                    title: title.clone(),
+                    clip: r.id.clone(),
+                    title: r.title.clone(),
+                    duration: r.duration,
                 });
-                Remembered::Found { clip, title }
+                Remembered::Found {
+                    clip: r.id,
+                    title: r.title,
+                    duration: r.duration,
+                }
             }
             None => {
-                self.events.push(PreviewEvent::NotFound(req.key.clone()));
+                self.events.push(PreviewEvent::NotFound {
+                    key: req.key.clone(),
+                    duration: req.duration,
+                });
                 Remembered::NotFound {
                     at: crate::now_secs(),
+                    duration: req.duration,
                 }
             }
         };
-        self.remembered.put(&req.key, remembered);
+        self.remembered.put(&req, remembered);
         if let Some(dir) = &self.cfg.searches {
             let _ = self.remembered.save(dir);
         }

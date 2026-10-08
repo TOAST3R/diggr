@@ -191,7 +191,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Entry status icons",
                 "hollow dot: listed · clock: queued or to search · bar: downloading · warning \
-                 sign: needs yt-dlp · barred circle: no clip, clip failed or not found by search",
+                 sign: needs yt-dlp · barred circle: no clip, clip failed, not found by search or already \
+                 in crate",
             ),
             ("Waveform: click / drag", "seek"),
             ("Waveform: scroll wheel", "zoom 1–64 bars"),
