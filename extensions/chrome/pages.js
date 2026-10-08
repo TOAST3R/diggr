@@ -6,7 +6,7 @@
 
 /* exported WR */
 var WR = (() => {
-  const PLACEHOLDER = "winamp_rust"; // until the player has answered once
+  const PLACEHOLDER = "Diggr"; // until the player has answered once
   const DEFAULT_PORT = 47800;
 
   const LANG = "(?:[a-z]{2}/)?";

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::ring::CHANNELS;
 
 pub const BAND_COUNT: usize = 10;
-/// Classic Winamp band centers.
+/// Classic 10-band graphic EQ centers.
 pub const BAND_HZ: [f32; BAND_COUNT] = [
     60.0, 170.0, 310.0, 600.0, 1_000.0, 3_000.0, 6_000.0, 12_000.0, 14_000.0, 16_000.0,
 ];
@@ -239,7 +239,7 @@ impl EqPreset {
     }
 }
 
-/// Built-in presets in the spirit of Winamp's defaults.
+/// Built-in presets in the spirit of classic players' defaults.
 pub fn builtin_presets() -> Vec<EqPreset> {
     let p = |name: &str, bands_db: [f32; BAND_COUNT]| EqPreset {
         name: name.into(),

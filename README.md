@@ -1,13 +1,14 @@
-# winamp_rust
+# Diggr
 
-A Winamp 2.x–inspired music player in Rust, built for **speed and zero perceived latency**,
-with a fullscreen fractal visualizer that follows the rhythm and structure of the music.
+Diggr is a music player in Rust with the look of a classic 2000s desktop player, built for
+**speed and zero perceived latency**, with a fullscreen fractal visualizer that follows the
+rhythm and structure of the music.
 
 Progress:
 
  **audio-core** ✅ → **classic-ui** ✅ → **music-analysis** ✅ → **visual-engine** ✅ → web-target
 
-Implemented so far: the audio engine (`audio-core`), the classic Winamp-style player window
+Implemented so far: the audio engine (`audio-core`), the classic skinned player window
 (`classic-ui`), music analysis ahead of the playhead (`music-analysis`), and the fullscreen
 visual engine (`visual-engine`), which holds a steady 60 fps on an M2 MacBook. All four are
 archived in `openspec/changes/archive/`. `web-target` is planned and not started yet.
@@ -22,21 +23,21 @@ Starting from nothing on macOS, run these from the project folder:
 xcode-select --install                                           # 1. once: the C linker (skip if already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # 2. once: install Rust
 source "$HOME/.cargo/env"                                        # 3. put cargo on PATH in this terminal
-cargo run --release -p winamp-native                             # 4. build (a few minutes the first time) and launch
+cargo run --release -p diggr                             # 4. build (a few minutes the first time) and launch
 ```
 
 The player window opens. Drag music files or folders onto it, or start with the bundled
 test tones:
 
 ```sh
-cargo run --release -p winamp-native -- crates/audio/tests/fixtures/tone.*
-cargo run --release -p winamp-native -- ~/Music/album/*.flac    # your own files
+cargo run --release -p diggr -- crates/audio/tests/fixtures/tone.*
+cargo run --release -p diggr -- ~/Music/album/*.flac    # your own files
 ```
 
 After the first build you can also start the program directly, without `cargo`:
 
 ```sh
-./target/release/winamp-native
+./target/release/diggr
 ```
 
 Press `F` for fullscreen visuals, `Esc` to leave, and Cmd+Q to quit. Your playlist and settings
@@ -93,14 +94,14 @@ builds are incremental. Dependencies are compiled with optimizations even in deb
 ### The player
 
 ```sh
-cargo run --release -p winamp-native                          # opens with the crate you last had open
-cargo run --release -p winamp-native -- ~/Music/album/*.flac  # replaces the Playlist crate and plays
+cargo run --release -p diggr                          # opens with the crate you last had open
+cargo run --release -p diggr -- ~/Music/album/*.flac  # replaces the Playlist crate and plays
 ```
 
 No music handy? The repo includes short test tones:
-`cargo run --release -p winamp-native -- crates/audio/tests/fixtures/tone.*`
+`cargo run --release -p diggr -- crates/audio/tests/fixtures/tone.*`
 
-The window has the classic Winamp parts, side by side: the player column on the left (main
+The window has the classic player's parts, side by side: the player column on the left (main
 player, then the waveform and the equalizer when they show) and the playlist on its right, at
 least as tall as the player column. It's drawn from an original pixel-art skin, at double size
 by default (switch in **Options**: the gear ⚙ in the playlist's footer, or right-click the main
@@ -187,7 +188,7 @@ and Home/End jump), and Enter plays the entry under it.
     resize a column, and right-click the header to show or hide columns (#, Title and Time
     always show); both are remembered. Click a column's name to **sort** the crate by it, and
     click again for the other way (**≡ ▸ Sort** in the footer does the same at any width). A sort reorders
-    the crate itself, as in Winamp: the playing track plays on, and next, saving and export
+    the crate itself, as in classic players: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
   - **⇔** in the playlist's title bar (or `Shift+P`) maximizes the playlist: the window fills
@@ -260,7 +261,7 @@ and Home/End jump), and Enter plays the entry under it.
   - **PRESETS** loads the built-in presets, and can save or delete your own.
 - **Move the window** by dragging any title bar. Your crates, settings and presets are saved
   in the config folder (see [Where files are kept](#where-files-are-kept)). Set
-  `WINAMP_CONFIG_DIR=/some/dir` to use another folder, for example for testing.
+  `DIGGR_CONFIG_DIR=/some/dir` to use another folder, for example for testing.
 
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
@@ -455,8 +456,8 @@ itself uses, checked in October 2026). If Discogs changes them, the first list s
 
 ### From the browser
 
-A Chrome extension (in `extensions/chrome/`) adds a button to Discogs pages: Play in ‹App›,
-Enqueue in ‹App› and Send to crate. It talks to the player through a small **browser bridge**
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs pages: Play in Diggr,
+Enqueue in Diggr and Send to crate. It talks to the player through a small **browser bridge**
 that the player starts once its window is up.
 
 - **Local only:** the bridge listens on `127.0.0.1`, port 47800 by default. Other computers
@@ -484,11 +485,11 @@ that the player starts once its window is up.
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
 3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
-   ‹App›**, which adds the seller to Top Sellers (or refreshes it) and asks the player to
+   Diggr**, which adds the seller to Top Sellers (or refreshes it) and asks the player to
    come to the front (macOS may only bounce its Dock icon).
    On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
-   button after the title (or in the bottom-right corner) offers **Play in ‹App›**, **Enqueue
-   in ‹App›** and **Send to crate** (the player's crates, or New crate…, which suggests a name
+   button after the title (or in the bottom-right corner) offers **Play in Diggr**, **Enqueue
+   in Diggr** and **Send to crate** (the player's crates, or New crate…, which suggests a name
    from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the skip-passed
    switch, which it remembers. On a release, master or marketplace item page
    of a record you own, a line under the button says "✓ In your collection" (or "✓ Another
@@ -496,17 +497,16 @@ that the player starts once its window is up.
    from its cached collection: no Discogs request for a release or master, and one lookup the
    first time a marketplace item is seen. Without a token in the player, a dimmed line says to
    add one. A crate created from the browser (New crate…) comes on screen in the player, with
-   the playlist opened if it was hidden. A confirmation shows for 3 s ("Sent to ‹App›: Label: Lowtide
+   the playlist opened if it was hidden. A confirmation shows for 3 s ("Sent to Diggr: Label: Lowtide
    Tapes → Playlist").
-4. On any site, right-click a Discogs link for Play in ‹App› or Enqueue in ‹App›; the toolbar
+4. On any site, right-click a Discogs link for Play in Diggr or Enqueue in Diggr; the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
    and paired, what's playing, and sends in progress.
 
-‹App› is the name the player reports (`dig::APP_NAME`, a placeholder, "winamp_rust", until the
-rebrand), so renaming the player renames every label. The manifest's name is a placeholder too,
-and must change before any store publishing. The extension is plain JavaScript with no build
-step and no dependencies: `manifest.json`, `background.js` (the only code that calls the
-player, with the key), `content.js` (the button), `pages.js` (which pages are supported),
+The labels use the name the player reports (`dig::APP_NAME`, Diggr), so they follow it if it ever
+changes. The extension is plain JavaScript with no build step and no dependencies:
+`manifest.json`, `background.js` (the only code that calls the player, with the key),
+`content.js` (the button), `pages.js` (which pages are supported),
 `options.*`, `popup.*` and `icons/`. `pages.js` is plain enough to check with Node:
 `suggestName(title, kind, address)` is a pure function.
 
@@ -519,12 +519,12 @@ player, with the key), `content.js` (the button), `pages.js` (which pages are su
 - [ ] Release, master, artist, label, wantlist, list and marketplace item pages each show the
       button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
       shows no button.
-- [ ] A seller's page shows the button with only Add seller to ‹App›; it adds the seller in the
+- [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
       artist or label, and "Wantlist: user" on a wantlist, within 40 characters.
 - [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
-- [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in ‹App› adds
+- [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in Diggr adds
       it and the toolbar shows ✓.
 - [ ] With the player closed, an action says that it isn't running, and nothing else happens.
 - [ ] After Forget browsers, an action opens the pairing screen.
@@ -652,7 +652,7 @@ its own RETURN, and double-click it to hand it back to automation now. Speed sna
 and 4×.
 
 **Make it yours:** on first use the scenes are copied to `visuals/` in the config folder
-(`~/Library/Application Support/winamp_rust/visuals/` on macOS), and any file you save there is picked up
+(`~/Library/Application Support/Diggr/visuals/` on macOS), and any file you save there is picked up
 while the music plays:
 
 ```
@@ -696,9 +696,9 @@ Resolution adapts to hold the frame rate. You can measure the scenes on your GPU
 
 ```sh
 cargo run -p visuals --example visual_bench --release        # offscreen, native Retina size
-WINAMP_VISUAL_BENCH=1 cargo run -p winamp-native --release   # in the app: press F; 15 s with no visuals,
+DIGGR_VISUAL_BENCH=1 cargo run -p diggr --release   # in the app: press F; 15 s with no visuals,
                                                              # then 15 s per scene; results in .../visuals/bench.txt
-WINAMP_FRAME_STATS=1 cargo run -p winamp-native --release    # per-second frame timings (app, visuals, present)
+DIGGR_FRAME_STATS=1 cargo run -p diggr --release    # per-second frame timings (app, visuals, present)
 cargo run -p ui --example fullscreen_probe --release         # what a blank eframe window can present
 ```
 
@@ -709,13 +709,13 @@ is deterministic, so the file matches what you'd see in fullscreen with your han
 deck. Rendering needs ffmpeg (`brew install ffmpeg`).
 
 ```sh
-winamp-native --render-show track.flac -o show.mp4                 # 1920×1080, 60 fps, the whole track
-winamp-native --render-show track.flac -o clip.mp4 --from 1:00 --to 1:30 --size 1280x720 --fps 30
-winamp-native --render-show track.flac -o card.mp4 --overlay       # with the artist/title card at the start
-winamp-native --render-show track.flac -o one.mp4 --look julia_tunnel/solar   # one look, director off
+diggr --render-show track.flac -o show.mp4                 # 1920×1080, 60 fps, the whole track
+diggr --render-show track.flac -o clip.mp4 --from 1:00 --to 1:30 --size 1280x720 --fps 30
+diggr --render-show track.flac -o card.mp4 --overlay       # with the artist/title card at the start
+diggr --render-show track.flac -o one.mp4 --look julia_tunnel/solar   # one look, director off
 ```
 
-(With cargo: `cargo run --release -p winamp-native -- --render-show …`.)
+(With cargo: `cargo run --release -p diggr -- --render-show …`.)
 
 - **Frame timing:** frame n shows the music at exactly `start + n/fps`, so every kick lands on
   its frame.
@@ -734,7 +734,7 @@ To measure rendering speed without encoding:
 While a track plays, the app analyzes it about 2 minutes ahead of what you hear: tempo, the beat
 grid, bars, and sections (intro, build, drop, breakdown, groove, outro), with a countdown to the
 next drop. The first 32 bars are ready about half a second after you press play, and results are
-cached in the cache folder (`~/Library/Caches/winamp_rust/` on macOS), so a second play is instant. Set `WINAMP_CACHE_DIR`
+cached in the cache folder (`~/Library/Caches/Diggr/` on macOS), so a second play is instant. Set `DIGGR_CACHE_DIR`
 to use another folder. It runs at low priority and never delays playback.
 
 In fullscreen:
@@ -768,7 +768,7 @@ cargo run --release -p analysis --bin analysis-eval -- /tmp/eval/annotations
 The earlier terminal harness is still available:
 
 ```sh
-cargo run --release -p winamp-native -- --tui ~/Music/*.mp3
+cargo run --release -p diggr -- --tui ~/Music/*.mp3
 ```
 
 Run it in a real terminal (Terminal, iTerm, or the VS Code terminal): it reads keys directly,
@@ -792,8 +792,8 @@ Supported formats: MP3, FLAC, WAV, OGG Vorbis, AAC/M4A (pure-Rust decoding via s
 ### Measure latency on your machine
 
 ```sh
-cargo run --release -p winamp-native -- --bench --volume 0 file1.mp3 file2.flac …
-cargo run --release -p winamp-native -- --bench crates/audio/tests/fixtures/tone.*   # quick check
+cargo run --release -p diggr -- --bench --volume 0 file1.mp3 file2.flac …
+cargo run --release -p diggr -- --bench crates/audio/tests/fixtures/tone.*   # quick check
 ```
 
 For each file this measures press-play → first audio at the device and three seeks. It then
@@ -810,7 +810,7 @@ start 7.9–20.8 ms, seek 12.1–20.0 ms.
 ### Check A/V clock accuracy acoustically
 
 ```sh
-cargo run --release -p winamp-native -- --click-test
+cargo run --release -p diggr -- --click-test
 ```
 
 Plays 16 clicks and records them with the default microphone. It reports how far the heard
@@ -821,10 +821,10 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
-| config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/winamp_rust/` | `~/.config/winamp_rust/` | `%APPDATA%\winamp_rust\` | `WINAMP_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`) | `~/Library/Caches/winamp_rust/` | `~/.cache/winamp_rust/` | `%LOCALAPPDATA%\winamp_rust\` | `WINAMP_CACHE_DIR` |
+| config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
-\* `WINAMP_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
+\* `DIGGR_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
 
 Crates are kept in `crates/`: `index.ron` lists them (with whether each is grouped by record) and each crate is `<id>.ron`. A crate file
@@ -853,17 +853,17 @@ Other environment variables, mostly for unattended runs and measurements:
 
 | Variable | Effect |
 |---|---|
-| `WINAMP_AUTO_FULLSCREEN=1` | enter fullscreen as soon as playback starts |
-| `WINAMP_AUTO_QUIT_SECS=n` | close the app after `n` seconds |
-| `WINAMP_VISUAL_BENCH=1` | benchmark every scene on the first fullscreen (see [Visuals](#visuals)) |
-| `WINAMP_FRAME_STATS=1` | print per-second frame timings |
+| `DIGGR_AUTO_FULLSCREEN=1` | enter fullscreen as soon as playback starts |
+| `DIGGR_AUTO_QUIT_SECS=n` | close the app after `n` seconds |
+| `DIGGR_VISUAL_BENCH=1` | benchmark every scene on the first fullscreen (see [Visuals](#visuals)) |
+| `DIGGR_FRAME_STATS=1` | print per-second frame timings |
 
-`winamp-native --help` prints all command-line modes.
+`diggr --help` prints all command-line modes.
 
 ## Tests
 
 ```sh
-cargo test --workspace            # 736 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 738 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -872,7 +872,7 @@ cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays 
 Run a single test file or test with `cargo test -p audio --test engine` or
 `cargo test -p audio gapless`.
 
-Tests write their files under `<temp>/winamp_rust-tests/` and delete them when they finish.
+Tests write their files under `<temp>/diggr-tests/` and delete them when they finish.
 Anything a background worker writes late, or a killed run leaves, is deleted by a later run
 once it's an hour old.
 
@@ -957,7 +957,7 @@ What's covered:
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real
-  inventory, purchases and cart reads by hand (`--ignored`, with `WINAMP_DISCOGS_TOKEN`).
+  inventory, purchases and cart reads by hand (`--ignored`, with `DIGGR_DISCOGS_TOKEN`).
 - **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
   downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared
   preview starts as fast as a local file.
@@ -1006,11 +1006,13 @@ What's covered:
     through ffmpeg (skipped without it), and cancel leaving no file.
 - **`crates/visuals/tests/render_playback.rs`**: real-time playback while a show renders, with
   zero underruns.
+- **`apps/native/tests/no_old_name.rs`**: no tracked file names the player that inspired Diggr's
+  look, in any letter case (skipped outside a git checkout).
 
 Measure the player's launch time (the target is under 300 ms):
 
 ```sh
-cargo run --release -p winamp-native -- --startup-time
+cargo run --release -p diggr -- --startup-time
 ```
 
 On an M-series Mac it takes 142–171 ms, including with a 500-entry saved playlist, and
@@ -1075,7 +1077,7 @@ AGENTS.md         conventions and checks for anyone (human or AI) changing the c
 - **Top Sellers rely on undocumented Discogs calls** (`/purchases`, `/cart`): see
   [Top Sellers](#top-sellers) for what happens if they change. Bringing the player to the front
   from the browser asks the system; macOS often only bounces the Dock icon. A
-  `winamp-rust://` link that macOS would honour needs the app bundle (`macos-release`).
+  `diggr://` link that macOS would honour needs the app bundle (`macos-release`).
 
 ## Roadmap (OpenSpec)
 
@@ -1083,7 +1085,7 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 `openspec/changes/`:
 
 1. `audio-core`: the audio engine ✅ (done and archived, apart from the two checks above)
-2. `classic-ui`: the Winamp-style skinned player, EQ and playlist (egui/wgpu), and the
+2. `classic-ui`: the classic skinned player, EQ and playlist (egui/wgpu), and the
    fullscreen key ✅ (done and archived)
 3. `music-analysis`: beat grid, phrases, build/drop/breakdown detection that analyzes ahead of
    the playhead ✅ (done and archived)

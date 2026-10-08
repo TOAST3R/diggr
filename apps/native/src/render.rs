@@ -10,7 +10,7 @@ use platform::TrackRef;
 use platform::native::NativeFileSource;
 use visuals::render::{Options, RenderError, render_show};
 
-pub const USAGE: &str = "winamp-native --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from TIME] [--to TIME] [--overlay] [--look SCENE/VARIANT]";
+pub const USAGE: &str = "diggr --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from TIME] [--to TIME] [--overlay] [--look SCENE/VARIANT]";
 
 /// `90`, `1:30` or `1:02:03` → seconds.
 pub fn parse_time(s: &str) -> Option<f64> {

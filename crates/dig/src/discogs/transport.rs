@@ -7,9 +7,9 @@ use std::time::Duration;
 
 pub const API: &str = "https://api.discogs.com";
 pub const USER_AGENT: &str = concat!(
-    "winamp_rust/",
+    "Diggr/",
     env!("CARGO_PKG_VERSION"),
-    " +https://github.com/toast3r/winamp_rust"
+    " +https://github.com/TOAST3R/diggr"
 );
 pub const ACCEPT: &str = "application/vnd.discogs.v2.discogs+json";
 
@@ -332,7 +332,10 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
         let ua = header(0, "User-Agent").unwrap();
-        assert!(ua.starts_with("winamp_rust/0.1.0 +https://"), "{ua}");
+        assert!(
+            ua.starts_with("Diggr/0.1.0 +https://github.com/TOAST3R/diggr"),
+            "{ua}"
+        );
         assert_eq!(header(0, "Accept").unwrap(), ACCEPT);
         assert_eq!(
             header(0, "Authorization").as_deref(),

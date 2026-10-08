@@ -70,11 +70,11 @@ impl std::fmt::Display for LoadError {
     }
 }
 
-/// `<config>/winamp_rust/visuals`, or a temp folder when there is no config dir.
+/// `<config>/Diggr/visuals`, or a temp folder when there is no config dir.
 pub fn default_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("winamp_rust")
+        .join(platform::APP_DIR)
         .join("visuals")
 }
 

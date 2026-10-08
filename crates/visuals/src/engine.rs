@@ -110,7 +110,7 @@ impl MacroAuto {
     }
 }
 
-/// Benchmark mode (`WINAMP_VISUAL_BENCH=1`): 15 s with no visuals (the host's own frame
+/// Benchmark mode (`DIGGR_VISUAL_BENCH=1`): 15 s with no visuals (the host's own frame
 /// rate), then each scene for 15 s, with frame times, CPU time spent in the engine, GPU time,
 /// and render scale.
 struct Bench {
@@ -203,7 +203,7 @@ impl Default for VisualEngine {
 }
 
 impl VisualEngine {
-    /// Uses `<config>/winamp_rust/visuals`. Cheap: assets are installed, loaded and validated
+    /// Uses `<config>/Diggr/visuals`. Cheap: assets are installed, loaded and validated
     /// on the first `init` (entering fullscreen), not at app startup.
     pub fn new() -> Self {
         Self::with_dir(&library::default_dir())
@@ -1462,7 +1462,7 @@ impl VisualScene for VisualEngine {
     fn entered(&mut self) {
         let now = self.now();
         self.fade.poke(now);
-        if std::env::var_os("WINAMP_VISUAL_BENCH").is_some() && self.bench.is_none() {
+        if std::env::var_os("DIGGR_VISUAL_BENCH").is_some() && self.bench.is_none() {
             let scenes: Vec<String> = std::iter::once(HOST_ONLY.to_string())
                 .chain(
                     self.scenes

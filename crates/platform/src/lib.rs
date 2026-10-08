@@ -9,6 +9,14 @@ use std::io::{Read, Seek};
 pub mod native;
 pub mod testing;
 
+/// The app's folder name inside the platform's config and cache directories: capitalised
+/// where apps show their names there (macOS, Windows), lowercase elsewhere (XDG).
+pub const APP_DIR: &str = if cfg!(any(target_os = "macos", target_os = "windows")) {
+    "Diggr"
+} else {
+    "diggr"
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("i/o error: {0}")]
@@ -153,5 +161,12 @@ mod tests {
         let hidden = TrackRef::new("dir/.hidden");
         assert_eq!(hidden.stem(), ".hidden");
         assert_eq!(hidden.extension(), None);
+    }
+
+    #[test]
+    fn app_dir_is_diggr() {
+        assert_eq!(APP_DIR.to_lowercase(), "diggr");
+        #[cfg(target_os = "macos")]
+        assert_eq!(APP_DIR, "Diggr");
     }
 }

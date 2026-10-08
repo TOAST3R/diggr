@@ -45,7 +45,7 @@ use dig::sellers::SellerList;
 use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
-use super::{Action, WinampApp, records_label};
+use super::{Action, DiggrApp, records_label};
 use crate::crates::{CrateId, MAX_NAME, PLAYLIST};
 use crate::playlist::{
     Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, UnavailableKind, WaitKind,
@@ -453,7 +453,9 @@ impl Dig {
     fn previews_dir(&self) -> PathBuf {
         match &self.setup.cache_root {
             Some(root) => store::dir(root),
-            None => std::env::temp_dir().join("winamp_rust").join(store::DIR),
+            None => std::env::temp_dir()
+                .join(platform::APP_DIR)
+                .join(store::DIR),
         }
     }
 
@@ -958,7 +960,7 @@ fn now_secs() -> u64 {
     dig::now_secs()
 }
 
-impl WinampApp {
+impl DiggrApp {
     pub(super) fn dig_notify(&mut self, text: Option<String>) {
         if let Some(t) = text {
             self.notify(t);
@@ -2992,7 +2994,7 @@ impl WinampApp {
 
     /// Before entries of the shown crate are removed. Without a token, the wantlist crate is
     /// the user's own: a record that leaves it entirely is no longer wanted. (Connected, it
-    /// takes no hand removals: see [`WinampApp::refuse_discogs_edit`].)
+    /// takes no hand removals: see [`DiggrApp::refuse_discogs_edit`].)
     pub(super) fn dig_before_remove(&mut self, ids: &[EntryId]) {
         let c = self.crates.shown_id();
         let Some(d) = &self.dig else { return };

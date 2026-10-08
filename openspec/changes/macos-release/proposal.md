@@ -4,14 +4,14 @@ Today the player runs only for people who can install Rust and type `cargo run`.
 
 ## What Changes
 
-- **A real macOS app:** `‹App›.app` with its name, an original icon and an `Info.plist`, holding one universal binary that runs natively on Apple Silicon and Intel Macs (macOS 11 or later). The skin, scenes and rules are already compiled into the binary, so nothing else is needed.
-- **A drag-to-install DMG:** a window with the app and an Applications shortcut, about 19 MB, named `‹App›-‹version›.dmg`.
+- **A real macOS app:** `Diggr.app` with its name, an original icon and an `Info.plist`, holding one universal binary that runs natively on Apple Silicon and Intel Macs (macOS 11 or later). The skin, scenes and rules are already compiled into the binary, so nothing else is needed.
+- **A drag-to-install DMG:** a window with the app and an Applications shortcut, about 19 MB, named `Diggr-‹version›.dmg`.
 - **Trusted first launch:** releases are signed with a Developer ID, use the hardened runtime, and are notarized and stapled by Apple. The user sees only the standard "downloaded from the internet" confirmation. Until an Apple Developer account exists, the same script makes unsigned builds for testing, clearly labelled, and refuses to publish them.
 - **One command:** `scripts/make-dmg.sh` builds both architectures, merges them, bundles, signs, notarizes and makes the DMG in `dist/`. `scripts/release.sh` tags the version and uploads the DMG to a GitHub Release.
 - **Published on GitHub Releases, never in git:** the README gets a "Download for Mac" link to `releases/latest`, and `dist/` is ignored.
 - **yt-dlp on first need (BREAKING for the `preview-fetch` spec, which forbids downloading it):** when previews are needed and no yt-dlp is found, the app offers to download it (37 MB), verifies its checksum, keeps it in its cache folder and keeps it up to date. A yt-dlp the user installed is still used first. This applies on macOS; other platforms keep "install it yourself".
 
-Not in this change: Windows and Linux packages, auto-updating the app itself (users download the new DMG), CI builds (the scripts are written to move there later), the Chrome Web Store, and choosing the rebrand name (the placeholder "winamp_rust" is used until then).
+Not in this change: Windows and Linux packages, auto-updating the app itself (users download the new DMG), CI builds (the scripts are written to move there later), and the Chrome Web Store.
 
 ## Capabilities
 

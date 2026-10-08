@@ -1,4 +1,4 @@
-//! The classic Winamp-style user interface: skin, main player, equalizer, playlist, and the
+//! The classic skinned user interface: skin, main player, equalizer, playlist, and the
 //! fullscreen host for the visual engine.
 
 pub mod app;
@@ -22,6 +22,6 @@ pub mod timeline;
 pub mod waveform;
 pub mod widgets;
 
-pub use app::{AppContext, Startup, WinampApp};
+pub use app::{AppContext, DiggrApp, Startup};
 #[cfg(not(target_arch = "wasm32"))]
 pub use app::{BridgeSetup, DigAction, DigSetup, SendMode};

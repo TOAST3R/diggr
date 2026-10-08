@@ -32,7 +32,7 @@ Showing the logo SHALL NOT delay the first frame: launch SHALL stay within 300 m
 - **THEN** the Finder, the Dock and the app switcher show the record-crate logo
 
 #### Scenario: Development build
-- **WHEN** the player is started with `cargo run -p winamp-native`
+- **WHEN** the player is started with `cargo run -p diggr`
 - **THEN** its window and Dock icon show the record-crate logo, and the first frame still shows within 300 ms
 
 #### Scenario: Browser extension
@@ -40,7 +40,7 @@ Showing the logo SHALL NOT delay the first frame: launch SHALL stay within 300 m
 - **THEN** its toolbar button and its card in `chrome://extensions` show the record-crate logo
 
 ### Requirement: Drag to install
-The app SHALL be delivered as one disk image named `‹App›-‹version›.dmg`, of at most 25 MB. Opening it SHALL show a window with the app and a shortcut to Applications, so installing is dragging one onto the other. The installed app SHALL work after the disk image is ejected and deleted.
+The app SHALL be delivered as one disk image named `Diggr-‹version›.dmg`, of at most 25 MB. Opening it SHALL show a window with the app and a shortcut to Applications, so installing is dragging one onto the other. The installed app SHALL work after the disk image is ejected and deleted.
 
 #### Scenario: Install
 - **WHEN** a user opens the disk image and drags the app onto the Applications shortcut
@@ -66,7 +66,7 @@ A script SHALL build the disk image from a clean checkout in one command, into `
 
 #### Scenario: Unsigned test build
 - **WHEN** the build script runs on a Mac without a Developer ID certificate
-- **THEN** it produces `dist/‹App›-‹version›-unsigned.dmg` and warns that the build is for testing only
+- **THEN** it produces `dist/Diggr-‹version›-unsigned.dmg` and warns that the build is for testing only
 
 #### Scenario: Publishing an unsigned build
 - **WHEN** the release script is given an unsigned disk image without the explicit unsigned option
@@ -77,7 +77,7 @@ Each release SHALL be a git tag `v‹version›` matching the app's version, wit
 
 #### Scenario: A new version
 - **WHEN** version 0.2.0 is released
-- **THEN** tag `v0.2.0` exists, its GitHub Release has `‹App›-0.2.0.dmg` and its SHA-256, and the README's download link leads to it
+- **THEN** tag `v0.2.0` exists, its GitHub Release has `Diggr-0.2.0.dmg` and its SHA-256, and the README's download link leads to it
 
 #### Scenario: Nothing binary in git
 - **WHEN** a disk image is built

@@ -54,11 +54,11 @@ impl ScoreCache {
         Self { dir: dir.into() }
     }
 
-    /// `WINAMP_CACHE_DIR`, else the platform cache directory (`~/Library/Caches/winamp_rust`).
+    /// `DIGGR_CACHE_DIR`, else the platform cache directory (`~/Library/Caches/Diggr`).
     pub fn platform_default() -> Option<Self> {
-        std::env::var_os("WINAMP_CACHE_DIR")
+        std::env::var_os("DIGGR_CACHE_DIR")
             .map(PathBuf::from)
-            .or_else(|| dirs::cache_dir().map(|d| d.join("winamp_rust")))
+            .or_else(|| dirs::cache_dir().map(|d| d.join(platform::APP_DIR)))
             .map(Self::new)
     }
 

@@ -1,5 +1,5 @@
 //! The real Discogs API for sellers and the cart, read only: run by hand with a token,
-//! `WINAMP_DISCOGS_TOKEN=… cargo test -p dig --test seller_api -- --ignored --nocapture`.
+//! `DIGGR_DISCOGS_TOKEN=… cargo test -p dig --test seller_api -- --ignored --nocapture`.
 //! Nothing here adds to or removes from the cart.
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use dig::discogs::seller::{self, Criteria};
 use dig::discogs::{cart, transport::UreqTransport};
 
 fn client() -> Client {
-    let token = std::env::var("WINAMP_DISCOGS_TOKEN").expect("WINAMP_DISCOGS_TOKEN set");
+    let token = std::env::var("DIGGR_DISCOGS_TOKEN").expect("DIGGR_DISCOGS_TOKEN set");
     Client::new(
         Arc::new(UreqTransport::default()),
         Arc::new(dig::clock::RealClock::default()),

@@ -1,5 +1,5 @@
 //! Draws the bundled default skin: original pixel art in the spirit of the classic layout
-//! (bluish metal panels, green LCD, gold sliders). No Winamp artwork is used.
+//! (bluish metal panels, green LCD, gold sliders). No third-party artwork is used.
 //!
 //! `cargo run -p ui --bin skin-gen` writes `assets/skin/default/{atlas.png,skin.ron}`; a test
 //! keeps the committed files in sync with this code.
@@ -534,7 +534,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     // ---- section backgrounds --------------------------------------------------------------
     b.sprite("main_bg", 275, 116, |c, x, y| {
         panel(c, x, y, 275, 116);
-        titlebar(c, x, y, 275, 14, "WINAMP");
+        titlebar(c, x, y, 275, 14, "DIGGR");
         c.inset(x + 9, y + 15, 93, 46, LCD_BG);
         c.inset(x + 109, y + 22, 157, 13, LCD_BG);
         c.inset(x + 109, y + 38, 20, 11, LCD_BG);
@@ -544,7 +544,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
     b.sprite("eq_bg", 275, 116, |c, x, y| {
         panel(c, x, y, 275, 116);
-        titlebar(c, x, y, 275, 14, "WINAMP EQUALIZER");
+        titlebar(c, x, y, 275, 14, "DIGGR EQUALIZER");
         c.inset(x + 86, y + 17, 113, 19, LCD_BG);
         c.fill(x + 87, y + 26, 111, 1, LCD_DIM);
         // Scale marks line up with the slider thumb centers at +12, 0 and −12 dB.

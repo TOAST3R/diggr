@@ -742,14 +742,14 @@ fn a_stale_release_is_refreshed() {
 }
 
 /// Against the live API, by hand: `cargo test -p dig --test intake -- --ignored`, with
-/// `WINAMP_DISCOGS_TOKEN` set to use a token.
+/// `DIGGR_DISCOGS_TOKEN` set to use a token.
 #[test]
 #[ignore]
 fn a_real_release_expands() {
     let client = Client::new(
         Arc::new(dig::discogs::transport::UreqTransport::default()),
         Arc::new(dig::clock::RealClock::default()),
-        std::env::var("WINAMP_DISCOGS_TOKEN").ok(),
+        std::env::var("DIGGR_DISCOGS_TOKEN").ok(),
         DiskCache::default(),
     );
     let mut i = Intake::new(client, None);
