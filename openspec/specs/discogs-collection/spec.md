@@ -39,7 +39,7 @@ The first sync SHALL use at most one request per 100 records. Later syncs SHALL 
 - **THEN** the cached collection stays in use, and the dialog says the refresh failed
 
 ### Requirement: Owned mark
-An entry SHALL be marked owned when its release is in the user's collection, or when another release of the same master release is. An owned entry SHALL show a clearly visible "OWNED" badge at the start of its title, in the single-line format and in columns, without changing the row's colour. Its tooltip SHALL say whether this pressing or another pressing is owned, naming the owned pressing's catalog number and year. The mark SHALL follow the latest cached collection, in every crate, without re-saving crates.
+An entry SHALL be marked owned when its release is in the user's collection, or when another release of the same master release is. An owned entry SHALL show a clearly visible "OWNED" badge at the start of its title, in the single-line format and in columns, without changing the row's colour. The badge's colour SHALL differ from the skin's playlist text and LCD colours (off-white in the default skin). Its tooltip SHALL say whether this pressing or another pressing is owned, naming the owned pressing's catalog number and year. The mark SHALL follow the latest cached collection, in every crate, without re-saving crates.
 
 #### Scenario: This pressing
 - **WHEN** an entry from release 123456 is shown and release 123456 is in the collection
@@ -52,6 +52,10 @@ An entry SHALL be marked owned when its release is in the user's collection, or 
 #### Scenario: Not owned
 - **WHEN** an entry's release and master are not in the collection
 - **THEN** no badge is shown
+
+#### Scenario: Badge stands out
+- **WHEN** an owned entry is shown in the default skin
+- **THEN** its OWNED badge is off-white, not the amber of the playlist text
 
 ### Requirement: Collection crate
 When a Discogs token is saved and no crate named "Collection: ‹username›" exists, the app SHALL send the user's collection into a new crate of that name and show it, with the playlist opened. The collection SHALL also be sendable like any page, from its address (`/user/‹name›/collection`) or the browser extension. In a crate made from a collection, entries SHALL NOT show the OWNED badge. Like any send, its records' details SHALL be fetched nearest the playhead first, behind other work, and cached.

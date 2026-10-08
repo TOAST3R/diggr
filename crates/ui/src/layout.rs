@@ -5,16 +5,22 @@
 use crate::settings::Settings;
 use crate::skin::SkinDef;
 
-/// The player column's height: main, then the waveform and the EQ when they show.
+/// The player column's height: main, then the waveform (under its title bar) and the EQ when
+/// they show.
 pub fn player_height(settings: &Settings, d: &SkinDef) -> u16 {
     let mut h = d.main_size.1;
     if settings.show_waveform {
-        h += crate::waveform::HEIGHT as u16;
+        h += wave_title_h(d) + crate::waveform::HEIGHT as u16;
     }
     if settings.show_eq {
         h += d.eq_size.1;
     }
     h
+}
+
+/// The waveform's title bar in the player column; 0 for a skin without one.
+pub fn wave_title_h(d: &SkinDef) -> u16 {
+    d.sprite("wave_title").h
 }
 
 /// Rows the playlist shows: the chosen number, or more, so it is never shorter than the player
@@ -113,19 +119,19 @@ mod tests {
     #[test]
     fn the_window_is_the_player_column_plus_the_playlist() {
         let d = LoadedSkin::default_skin().def;
-        // Player column: 116, +58 waveform, +116 EQ.
+        // Player column: 116, +14 title and 58 waveform, +116 EQ.
         assert_eq!(window_size(&settings(false, false, false), &d), (275, 116));
         assert_eq!(window_size(&settings(true, false, false), &d), (275, 232));
-        assert_eq!(window_size(&settings(true, true, false), &d), (275, 290));
+        assert_eq!(window_size(&settings(true, true, false), &d), (275, 304));
         // 10 rows are 188 tall: taller than the main window alone.
         assert_eq!(
             window_size(&settings(false, false, true), &d),
             (675, 20 + 130 + 38)
         );
-        // Shorter than main + EQ + waveform (290): the playlist grows whole rows to match.
+        // Shorter than main + EQ + waveform (304): the playlist grows whole rows to match.
         let s = settings(true, true, true);
-        assert_eq!(playlist_rows(&s, &d), 18);
-        assert_eq!(window_size(&s, &d), (675, 20 + 18 * 13 + 38));
+        assert_eq!(playlist_rows(&s, &d), 19);
+        assert_eq!(window_size(&s, &d), (675, 20 + 19 * 13 + 38));
         // More rows than that are kept.
         let tall = Settings {
             playlist_rows: 30,

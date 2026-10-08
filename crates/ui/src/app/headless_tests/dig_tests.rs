@@ -112,6 +112,11 @@ fn message(rig: &Rig) -> String {
         .unwrap_or_default()
 }
 
+/// What the title line flashes after a verdict, if anything.
+fn flash(rig: &Rig) -> Option<String> {
+    rig.app.flash.as_ref().map(|(text, _)| text.clone())
+}
+
 fn memory(rig: &Rig) -> &DigMemory {
     &rig.app.dig.as_ref().unwrap().memory
 }
@@ -253,6 +258,7 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
     let mut rig = rig("dig-want", &fakes, with_token);
     let c = play_release(&mut rig);
     key(&mut rig, Key::Y);
+    assert_eq!(flash(&rig).as_deref(), Some("WANTED"));
     let wl = wantlist(&rig).expect("the wantlist crate");
     rig.app.crates.load(wl);
     // The whole record, at once.
@@ -281,6 +287,7 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
     assert!(fakes.changes().contains(&put), "{:?}", fakes.changes());
 
     key(&mut rig, Key::Y);
+    assert_eq!(flash(&rig).as_deref(), Some("UNWANTED"));
     assert!(!memory(&rig).is_wanted(1001));
     assert!(clips_of(&rig, wl, 1001).is_empty());
     assert_eq!(clips(&rig, c).len(), 3, "the dug crate keeps it");
@@ -386,6 +393,7 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
     let c = play_release(&mut rig);
     key(&mut rig, Key::N);
     assert!(memory(&rig).is_passed(CLIPS[0]));
+    assert_eq!(flash(&rig).as_deref(), Some("PASS"));
     rig.until(
         |r| playing_clip(r).as_deref() == Some(CLIPS[1]),
         "the next preview plays",
@@ -401,7 +409,8 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
             .unwrap()
     };
     let (passed, other) = (col("1. "), col("3. "));
-    assert!(passed.r() + passed.g() + passed.b() < other.r() + other.g() + other.b());
+    let sum = |c: egui::Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+    assert!(sum(passed) < sum(other));
 
     // A later send of the same page leaves it out; undoing the pass brings it back next time.
     rig.app.dig_send(
@@ -424,8 +433,10 @@ fn a_wanted_record_cannot_be_passed() {
     play_release(&mut rig);
     key(&mut rig, Key::Y);
     rig.app.dig.as_mut().unwrap().connect = None;
+    rig.app.flash = None;
     key(&mut rig, Key::N);
     assert!(!memory(&rig).is_passed(CLIPS[0]));
+    assert_eq!(flash(&rig), None, "nothing changed: no flash");
     assert!(
         message(&rig).contains("is on your wantlist"),
         "{}",
@@ -973,6 +984,7 @@ fn owned_records_are_marked_and_cannot_be_wanted() {
     // Owned: Y wants nothing, and says so; the menu shows it's in the collection.
     key(&mut rig, Key::Y);
     assert!(!memory(&rig).is_wanted(1001));
+    assert_eq!(flash(&rig), None, "nothing wanted: no flash");
     assert!(
         message(&rig).contains("is already in your collection (this pressing)"),
         "{}",
@@ -1404,6 +1416,7 @@ fn adding_to_the_collection_owns_it_at_once_and_takes_it_off_the_wantlist() {
     );
     // Within the frame of the answer: OWNED, out of the wantlist crate, in the collection's.
     assert!(shows(&rig.frame(Vec::new()), "OWNED"));
+    assert_eq!(flash(&rig).as_deref(), Some("OWNED"));
     assert!(clips_of(&rig, wl, 1001).is_empty());
     rig.app.crates.load(coll);
     assert_eq!(clips_of(&rig, coll, 1001), CLIPS);

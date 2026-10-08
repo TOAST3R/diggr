@@ -191,6 +191,8 @@ pub struct DiggrApp {
     settings_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
     message: Option<(String, Instant)>,
+    /// A verdict just landed: the title line shows it for [`FLASH_SECS`] (WANTED, PASS, …).
+    flash: Option<(String, Instant)>,
     analysis: Option<analysis::AnalysisService>,
     files: Arc<dyn FileSource>,
     /// Engine track instances → files, from `TrackLoaded` events.
@@ -355,6 +357,7 @@ impl DiggrApp {
             settings_dirty: None,
             last_size: None,
             message,
+            flash: None,
             analysis: ctx.analysis,
             files: ctx.files.clone(),
             track_refs: std::collections::HashMap::new(),
@@ -462,6 +465,13 @@ impl DiggrApp {
 
     fn notify(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), Instant::now()));
+    }
+
+    /// Shows `verdict` on the title line for a moment, for `count` records.
+    fn flash(&mut self, verdict: Verdict, count: usize) {
+        if count > 0 {
+            self.flash = Some((flash_text(verdict, count), Instant::now()));
+        }
     }
 
     // ---- engine glue ---------------------------------------------------------------------
@@ -1686,13 +1696,26 @@ impl DiggrApp {
 
             // Title, kbps, kHz, mono/stereo.
             let tt = sk.def.at("title_text");
-            let title = self
-                .now_playing_line()
-                .unwrap_or_else(|| engine_status(&self.engine));
-            let width = (tt.w / sk.def.font.advance) as usize;
-            let shown = format::scroll(&title, width, self.title_offset);
-            let lcd = color([0, 236, 0]);
-            sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
+            let lcd = color(sk.def.colors.lcd);
+            let left = self
+                .flash
+                .as_ref()
+                .and_then(|(_, at)| FLASH_SECS.checked_sub(at.elapsed()))
+                .filter(|d| !d.is_zero());
+            if let (Some(left), Some((text, _))) = (left, &self.flash) {
+                // Centred and still; the track line comes back by itself.
+                let x = tt.x as f32 + ((tt.w as f32 - sk.text_width(text)) / 2.0).round();
+                sk.text(x, tt.y as f32, text, lcd);
+                ui.ctx().request_repaint_after(left);
+            } else {
+                self.flash = None;
+                let title = self
+                    .now_playing_line()
+                    .unwrap_or_else(|| engine_status(&self.engine));
+                let width = (tt.w / sk.def.font.advance) as usize;
+                let shown = format::scroll(&title, width, self.title_offset);
+                sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
+            }
             if let Some(i) = &info {
                 let k = sk.def.at("kbps");
                 if let Some(kbps) = i.bitrate_kbps {
@@ -1906,6 +1929,19 @@ impl DiggrApp {
         }
     }
 
+    /// The waveform's title bar in the player column: drags the window like the others, and
+    /// its close button hides the waveform.
+    fn wave_title(&mut self, ui: &mut Ui, origin: Pos2) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        sk.sprite("wave_title", 0.0, 0.0);
+        dim_title(&sk, "wave_titlebar", self.focus == Focus::Player);
+        Self::titlebar_drag(ui, &sk, "wave_title", "wave_titlebar");
+        if widgets::button(ui, &sk, "wave_close", "wave_close", "btn_close").clicked() {
+            self.apply(Action::ToggleWaveform, ui.ctx());
+        }
+    }
+
     fn eq_section(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut eq = self.settings.eq;
         let mut lp = self.lp_knob;
@@ -1943,7 +1979,7 @@ impl DiggrApp {
                 egui::Stroke::new(
                     1.5 * sk.scale,
                     if on {
-                        Color32::from_rgb(0, 236, 0)
+                        color(sk.def.colors.lcd)
                     } else {
                         Color32::from_rgb(26, 26, 38)
                     },
@@ -2529,7 +2565,7 @@ impl DiggrApp {
         let filter = shown.bpm_filter();
         let (a, b) = filter.unwrap_or((lo, hi));
         let colors = &sk.def.colors;
-        let lcd = color([0, 236, 0]);
+        let lcd = color(colors.lcd);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
 
         // A short slider of a fixed width, then the range and ×: "BPM" goes in front when
@@ -2692,8 +2728,8 @@ impl DiggrApp {
         }
         let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
         let shown = self.crates.shown();
-        let lcd = color([0, 236, 0]);
-        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let lcd = color(sk.def.colors.lcd);
+        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
         let x = x + STYLE_GAP;
         let room = x_end - x;
@@ -2838,8 +2874,8 @@ impl DiggrApp {
         if x + w > x_end {
             return;
         }
-        let lcd = color([0, 236, 0]);
-        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let lcd = color(sk.def.colors.lcd);
+        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
         sk.text(x, ty, &label, if on { lcd } else { dim });
         let r = ui
@@ -3673,6 +3709,18 @@ impl DiggrApp {
                     "× after the BPM range, or ☰ › Show all tempos, shows every track"
                 });
             }
+            // An empty crate says how to fill it (not the Discogs crates: a paste can't).
+            if shown.is_empty() && !self.crates.is_discogs(self.crates.shown_id()) {
+                let lines = empty_crate_hint(PASTE_MODIFIER);
+                let line_h = sk.def.font.glyph_h as f32 + 4.0;
+                let body = list_h - (rows_top - top);
+                let mut y = rows_top + ((body - line_h * lines.len() as f32) / 2.0).round();
+                for line in lines {
+                    let x = l.x as f32 + ((l.w as f32 - sk.text_width(&line)) / 2.0).round();
+                    sk.text(x, y, &line, color(d.colors.pl_text));
+                    y += line_h;
+                }
+            }
             // While an entry's menu is open, the rest of its album is tinted.
             self.pl_tint = list_rows
                 .iter()
@@ -4193,7 +4241,7 @@ impl DiggrApp {
                 info
             };
             let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
-            bsk.text(info_x, pi.y as f32, &info, color([0, 236, 0]));
+            bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
 
             // The BPM filter, between the buttons and the time.
             let pb = d.at("pl_bpm");
@@ -5469,6 +5517,51 @@ fn engine_status(slot: &EngineSlot) -> String {
     }
 }
 
+/// How long a verdict stays on the title line.
+const FLASH_SECS: Duration = Duration::from_millis(1500);
+
+/// A verdict the title line flashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Wanted,
+    Unwanted,
+    Pass,
+    Owned,
+}
+
+/// "WANTED", or "WANTED 3" when it took several records.
+fn flash_text(verdict: Verdict, count: usize) -> String {
+    let word = match verdict {
+        Verdict::Wanted => "WANTED",
+        Verdict::Unwanted => "UNWANTED",
+        Verdict::Pass => "PASS",
+        Verdict::Owned => "OWNED",
+    };
+    if count > 1 {
+        format!("{word} {count}")
+    } else {
+        word.into()
+    }
+}
+
+/// The paste key's modifier on this platform, as the hints spell it.
+const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "CMD"
+} else {
+    "CTRL"
+};
+
+/// What an empty crate shows in its list: how to fill it, and where the help is. An empty
+/// line is a gap.
+fn empty_crate_hint(modifier: &str) -> [String; 4] {
+    [
+        format!("PASTE A DISCOGS LINK · {modifier}+V"),
+        "OR DROP FILES".into(),
+        String::new(),
+        "PRESS H FOR HELP".into(),
+    ]
+}
+
 /// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;
 /// A crate's values for a filter, each with its number of records, the most first.
@@ -5743,6 +5836,11 @@ impl DiggrApp {
         self.main_section(ui, origin);
         let mut y = d.main_size.1 as f32;
         if self.settings.show_waveform {
+            let title_h = crate::layout::wave_title_h(&d) as f32;
+            if title_h > 0.0 {
+                self.wave_title(ui, origin + vec2(0.0, y * scale));
+                y += title_h;
+            }
             let rect = Rect::from_min_size(
                 origin + vec2(0.0, y * scale),
                 vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
@@ -6142,6 +6240,43 @@ mod tests {
             None,
             "no repaints while minimized/occluded"
         );
+    }
+
+    #[test]
+    fn a_verdict_flashes_its_word_and_count() {
+        assert_eq!(flash_text(Verdict::Wanted, 1), "WANTED");
+        assert_eq!(flash_text(Verdict::Wanted, 3), "WANTED 3");
+        assert_eq!(flash_text(Verdict::Unwanted, 1), "UNWANTED");
+        assert_eq!(flash_text(Verdict::Pass, 1), "PASS");
+        assert_eq!(flash_text(Verdict::Owned, 2), "OWNED 2");
+        // Every flash fits the title line.
+        let def = LoadedSkin::default_skin().def;
+        let w = flash_text(Verdict::Unwanted, 999).chars().count() as u16 * def.font.advance;
+        assert!(w <= def.at("title_text").w);
+    }
+
+    #[test]
+    fn an_empty_crate_says_how_to_fill_it() {
+        assert_eq!(
+            empty_crate_hint("CMD"),
+            [
+                "PASTE A DISCOGS LINK · CMD+V",
+                "OR DROP FILES",
+                "",
+                "PRESS H FOR HELP"
+            ]
+        );
+        assert_eq!(empty_crate_hint("CTRL")[0], "PASTE A DISCOGS LINK · CTRL+V");
+        // Every character is in the skin font, and the longer line fits the narrowest list.
+        let def = LoadedSkin::default_skin().def;
+        for line in empty_crate_hint("CTRL")
+            .into_iter()
+            .filter(|l| !l.is_empty())
+        {
+            assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
+            let w = line.chars().count() as u16 * def.font.advance - 1;
+            assert!(w <= def.at("pl_list").w, "{line}: {w}");
+        }
     }
 
     #[test]
