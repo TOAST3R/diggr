@@ -66,9 +66,9 @@ A `wave_title` sprite (275 × 14, `titlebar(…, "DIGGR WAVEFORM")`) and `wave_t
 
 ### 6. Verdict flash
 
-The app keeps `flash: Option<(String, Instant)>`. `dig_want`, `dig_unwant`, `dig_pass` and `dig_collect` set it after they have changed local state (records added, removed, passed or marked owned), with the count when it is above 1; the paths that only notify (owned, already wanted, not from Discogs) don't set it. The title-line drawing checks the flash first: while it is younger than 1.5 s, the text is centred in `title_text` without scrolling; then it is cleared. A pure `flash_text(verdict, count) -> String` holds the wording and is unit-tested; headless dig tests check that the flash is set or not set per action.
+The app keeps `flash: Option<(String, Instant)>`. `dig_want`, `dig_unwant` and `dig_pass` set it after they have changed local state (records added, removed or passed), with the count when it is above 1; the paths that only notify (owned, already wanted, not from Discogs) don't set it. A collection add has no local change until Discogs answers, so OWNED flashes in `dig_collected` when the add succeeds, one record per answer. The title-line drawing checks the flash first: while it is younger than 1.5 s, the text is centred in `title_text` without scrolling, and a repaint is asked for when it ends so a paused player doesn't keep it; then it is cleared. A pure `flash_text(verdict, count) -> String` holds the wording and is unit-tested; headless dig tests check that the flash is set or not set per action.
 
-The flash and the 4-second tooltip are separate: the tooltip still explains ("added to your wantlist", errors), and the flash is the at-a-glance confirmation on the LCD. Discogs writes are asynchronous; the flash confirms the local change, and a failed write still reports through the tooltip as today.
+The flash and the 4-second tooltip are separate: the tooltip still explains ("added to your wantlist", errors), and the flash is the at-a-glance confirmation on the LCD. Wantlist writes are asynchronous; the flash confirms the local change, and a failed write still reports through the tooltip as today.
 
 *Alternative:* blink the flash. Rejected for now: a steady 1.5 s is enough, and blinking adds timing state for little gain.
 

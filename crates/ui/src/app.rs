@@ -191,6 +191,8 @@ pub struct DiggrApp {
     settings_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
     message: Option<(String, Instant)>,
+    /// A verdict just landed: the title line shows it for [`FLASH_SECS`] (WANTED, PASS, …).
+    flash: Option<(String, Instant)>,
     analysis: Option<analysis::AnalysisService>,
     files: Arc<dyn FileSource>,
     /// Engine track instances → files, from `TrackLoaded` events.
@@ -355,6 +357,7 @@ impl DiggrApp {
             settings_dirty: None,
             last_size: None,
             message,
+            flash: None,
             analysis: ctx.analysis,
             files: ctx.files.clone(),
             track_refs: std::collections::HashMap::new(),
@@ -462,6 +465,13 @@ impl DiggrApp {
 
     fn notify(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), Instant::now()));
+    }
+
+    /// Shows `verdict` on the title line for a moment, for `count` records.
+    fn flash(&mut self, verdict: Verdict, count: usize) {
+        if count > 0 {
+            self.flash = Some((flash_text(verdict, count), Instant::now()));
+        }
     }
 
     // ---- engine glue ---------------------------------------------------------------------
@@ -1686,13 +1696,26 @@ impl DiggrApp {
 
             // Title, kbps, kHz, mono/stereo.
             let tt = sk.def.at("title_text");
-            let title = self
-                .now_playing_line()
-                .unwrap_or_else(|| engine_status(&self.engine));
-            let width = (tt.w / sk.def.font.advance) as usize;
-            let shown = format::scroll(&title, width, self.title_offset);
             let lcd = color(sk.def.colors.lcd);
-            sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
+            let left = self
+                .flash
+                .as_ref()
+                .and_then(|(_, at)| FLASH_SECS.checked_sub(at.elapsed()))
+                .filter(|d| !d.is_zero());
+            if let (Some(left), Some((text, _))) = (left, &self.flash) {
+                // Centred and still; the track line comes back by itself.
+                let x = tt.x as f32 + ((tt.w as f32 - sk.text_width(text)) / 2.0).round();
+                sk.text(x, tt.y as f32, text, lcd);
+                ui.ctx().request_repaint_after(left);
+            } else {
+                self.flash = None;
+                let title = self
+                    .now_playing_line()
+                    .unwrap_or_else(|| engine_status(&self.engine));
+                let width = (tt.w / sk.def.font.advance) as usize;
+                let shown = format::scroll(&title, width, self.title_offset);
+                sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
+            }
             if let Some(i) = &info {
                 let k = sk.def.at("kbps");
                 if let Some(kbps) = i.bitrate_kbps {
@@ -5494,6 +5517,33 @@ fn engine_status(slot: &EngineSlot) -> String {
     }
 }
 
+/// How long a verdict stays on the title line.
+const FLASH_SECS: Duration = Duration::from_millis(1500);
+
+/// A verdict the title line flashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Wanted,
+    Unwanted,
+    Pass,
+    Owned,
+}
+
+/// "WANTED", or "WANTED 3" when it took several records.
+fn flash_text(verdict: Verdict, count: usize) -> String {
+    let word = match verdict {
+        Verdict::Wanted => "WANTED",
+        Verdict::Unwanted => "UNWANTED",
+        Verdict::Pass => "PASS",
+        Verdict::Owned => "OWNED",
+    };
+    if count > 1 {
+        format!("{word} {count}")
+    } else {
+        word.into()
+    }
+}
+
 /// The paste key's modifier on this platform, as the hints spell it.
 const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
     "CMD"
@@ -6187,6 +6237,19 @@ mod tests {
             None,
             "no repaints while minimized/occluded"
         );
+    }
+
+    #[test]
+    fn a_verdict_flashes_its_word_and_count() {
+        assert_eq!(flash_text(Verdict::Wanted, 1), "WANTED");
+        assert_eq!(flash_text(Verdict::Wanted, 3), "WANTED 3");
+        assert_eq!(flash_text(Verdict::Unwanted, 1), "UNWANTED");
+        assert_eq!(flash_text(Verdict::Pass, 1), "PASS");
+        assert_eq!(flash_text(Verdict::Owned, 2), "OWNED 2");
+        // Every flash fits the title line.
+        let def = LoadedSkin::default_skin().def;
+        let w = flash_text(Verdict::Unwanted, 999).chars().count() as u16 * def.font.advance;
+        assert!(w <= def.at("title_text").w);
     }
 
     #[test]

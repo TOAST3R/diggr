@@ -45,7 +45,7 @@ use dig::sellers::SellerList;
 use platform::{FileSource, Spawner, TrackRef};
 
 use super::covers::CoverCache;
-use super::{Action, DiggrApp, records_label};
+use super::{Action, DiggrApp, Verdict, records_label};
 use crate::crates::{CrateId, MAX_NAME, PLAYLIST};
 use crate::playlist::{
     Entry, EntryId, EntryStatus, ForSale, NewEntry, Origin, Playlist, UnavailableKind, WaitKind,
@@ -2613,6 +2613,7 @@ impl DiggrApp {
             let err = d.save_memory();
             self.dig_notify(err);
             self.dig_retry_wantlist();
+            self.flash(Verdict::Wanted, added.len());
         }
         let Some(d) = &mut self.dig else { return };
         let anon = d.token.is_none();
@@ -2673,6 +2674,7 @@ impl DiggrApp {
         let set: HashSet<u64> = gone.iter().map(|(r, _)| *r).collect();
         self.leave_wantlist_crate(&set);
         self.dig_forget_wanted(&set);
+        self.flash(Verdict::Unwanted, gone.len());
         self.notify(match gone.as_slice() {
             [(_, e)] => format!("Removed {} from your wantlist", record_name(e)),
             _ => format!("Removed {} from your wantlist", records_label(gone.len())),
@@ -2813,6 +2815,7 @@ impl DiggrApp {
         }
         self.leave_wantlist_crate(&set);
         self.dig_forget_wanted(&set);
+        self.flash(Verdict::Owned, 1);
         self.notify(format!("Added {name} to your collection"));
     }
 
@@ -2942,6 +2945,7 @@ impl DiggrApp {
         d.memory.passed.insert(key, now_secs());
         let err = d.save_memory();
         self.dig_notify(err);
+        self.flash(Verdict::Pass, 1);
         let playing = self.position.state != PlayState::Stopped
             && c == self.crates.playing_id()
             && self.crates.playing().current() == Some(id);

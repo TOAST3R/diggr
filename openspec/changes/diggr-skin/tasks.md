@@ -16,8 +16,8 @@
 
 ## 4. Verdict flash
 
-- [ ] 4.1 `flash_text(verdict, count)` (WANTED, UNWANTED, PASS, OWNED; count appended above 1) with unit tests; `flash: Option<(String, Instant)>` on the app; the title line shows it centred, unscrolled, for 1.5 s, then the normal line
-- [ ] 4.2 `dig_want`, `dig_unwant`, `dig_pass`, `dig_collect` set the flash only when they changed something; headless dig tests: Y on a new record → "WANTED"; N on a wanted record → no flash; want 3 selected → "WANTED 3"; N while playing → "PASS" and the next track starts
+- [x] 4.1 `flash_text(verdict, count)` (WANTED, UNWANTED, PASS, OWNED; count appended above 1) with unit tests; `flash: Option<(String, Instant)>` on the app; the title line shows it centred, unscrolled, for 1.5 s, then the normal line
+- [x] 4.2 `dig_want`, `dig_unwant` and `dig_pass` set the flash only when they changed something, and `dig_collected` on a successful add; headless dig tests: Y → "WANTED", Y again → "UNWANTED"; N while playing → "PASS" and the next track starts; N on a wanted record and Y on an owned one → no flash; Add to collection → "OWNED" (the count is covered by the `flash_text` unit test)
 
 ## 5. Tune and document
 
