@@ -1,11 +1,11 @@
 ## Why
 
-The player needs the instantly recognizable, compact Winamp 2.x interface — main player, equalizer, and playlist stacked in one window — rendered with the same low-overhead sprite approach that made the original fast. It is also the launch point for the fullscreen visual mode.
+The player needs the instantly recognizable, compact classic desktop player interface — main player, equalizer, and playlist stacked in one window — rendered with the same low-overhead sprite approach that made the original fast. It is also the launch point for the fullscreen visual mode.
 
 ## What Changes
 
 - New `crates/ui` built on egui/eframe (wgpu backend), wired to the `audio-core` Engine.
-- A sprite-based classic skin renderer: all widgets are drawn from an original skin atlas (not OS widgets, not Winamp's copyrighted bitmaps).
+- A sprite-based classic skin renderer: all widgets are drawn from an original skin atlas (not OS widgets, not third-party copyrighted bitmaps).
 - Main player section: LCD time display (elapsed/remaining toggle), scrolling track title, kbps/kHz, mono/stereo, mini spectrum analyzer, seek bar, volume, balance, transport buttons, shuffle/repeat, EQ/PL toggles.
 - Equalizer section: on/off, preamp, 10 band sliders, response curve preview, presets menu.
 - Playlist section: track list with durations, current track highlight, add files/folders, drag-and-drop, remove, reorder, select, total duration, M3U load/save, persisted playlist.

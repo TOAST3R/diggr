@@ -5,8 +5,8 @@ is in [`README.md`](README.md). The authoritative product context is in `openspe
 
 ## What this is
 
-A Winamp 2.x–style music player in Rust, with a fullscreen fractal visualizer driven by
-analysis of the music's beats and sections. **Zero perceived latency is the top priority**, and
+Diggr, a music player in Rust with the look of a classic 2000s desktop player and a fullscreen
+fractal visualizer driven by analysis of the music's beats and sections. **Zero perceived latency is the top priority**, and
 nothing on the playback path may ever wait for the UI, the analysis or the visuals.
 
 Milestones (OpenSpec changes): `audio-core`, `classic-ui`, `music-analysis` and `visual-engine`
@@ -23,7 +23,7 @@ Cargo workspace, edition 2024, **Rust ≥ 1.95** (egui 0.36); built and tested w
 | `crates/analysis` | `analysis` | streaming analyzer: onsets, tempo/beat grid, sections, tension → immutable `SongScore` snapshots; cache; eval tools; track overview (waveform + spectral + cutoff) and spectrogram detail worker | audio, platform |
 | `crates/ui` | `ui` | egui/eframe (wgpu) player: skin, main/EQ/playlist, waveform, spectrogram window, settings, fullscreen host | audio, analysis, platform |
 | `crates/visuals` | `visuals` | signal bus, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, fader deck | audio, analysis, ui |
-| `apps/native` | `winamp-native` | desktop binary: GUI (default), `--tui`, `--bench [--analysis]`, `--click-test`, `--startup-time` | all |
+| `apps/native` | `diggr` | desktop binary: GUI (default), `--tui`, `--bench [--analysis]`, `--click-test`, `--startup-time` | all |
 
 Data files: the skin is in `assets/skin/default/`. It is generated, so don't hand-edit it; run
 `cargo run -p ui --bin skin-gen`, which a test checks. Bundled scenes, variants, prelude and
@@ -63,7 +63,7 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
    bars) from the playback clock, never off wall-clock frame counts.
 5. **Latency targets are tested, so don't regress them.** Start < 30 ms, seek < 50 ms, 0
    underruns, A/V offset < 1 frame, launch < 300 ms. The measurements are
-   `winamp-native --bench`, `--click-test` and `--startup-time` (see README).
+   `diggr --bench`, `--click-test` and `--startup-time` (see README).
 6. **Tests stay hardware-free.** Use `platform::testing::ManualSink` (fake time) for engine
    tests, and the synthesized tracks in `analysis::synth` for analysis ground truth. Fixtures are
    in `crates/audio/tests/fixtures/`.
@@ -72,9 +72,9 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
 
 - Match the surrounding style: short `//!` module docs that explain *why*, and focused unit tests
   in the same file (`#[cfg(test)] mod tests`). Integration tests go in `crates/*/tests/`.
-- Data files are RON (serde). User-editable visuals live in `<config>/winamp_rust/visuals/`, are
+- Data files are RON (serde). User-editable visuals live in `<config>/Diggr/visuals/`, are
   hot-reloaded with `notify`, and must fail soft: keep the last good version and show the error.
-- Paths come from `dirs` (config/cache), overridable by `WINAMP_CONFIG_DIR` / `WINAMP_CACHE_DIR`.
+- Paths come from `dirs` (config/cache), overridable by `DIGGR_CONFIG_DIR` / `DIGGR_CACHE_DIR`.
   Tests must use temp dirs, never the user's real folders: take one from
   `platform::testing::TestDir`, which deletes its folder when the test ends (even on failure).
 - eframe/egui are used with `default-features = false`. On Linux, `crates/ui/Cargo.toml` enables

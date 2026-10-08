@@ -127,7 +127,7 @@ impl AudioSink for ManualSink {
     }
 }
 
-/// A test's own folder, `<temp>/winamp_rust-tests/<name>-<pid>`, emptied when created and
+/// A test's own folder, `<temp>/diggr-tests/<name>-<pid>`, emptied when created and
 /// deleted when dropped, also when the test fails. Test runs used to leave gigabytes of
 /// synthesized audio behind. The process id keeps two runs at the same time (say debug and
 /// release) apart.
@@ -141,7 +141,7 @@ pub struct TestDir {
 
 impl TestDir {
     pub fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join("winamp_rust-tests");
+        let root = std::env::temp_dir().join("diggr-tests");
         static SWEEP: std::sync::Once = std::sync::Once::new();
         SWEEP.call_once(|| sweep(&root, std::time::Duration::from_secs(3600)));
         let path = root.join(format!("{name}-{}", std::process::id()));

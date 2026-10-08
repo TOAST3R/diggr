@@ -1,4 +1,4 @@
-//! Terminal player: classic Winamp keys and a live status line.
+//! Terminal player: the classic player keys and a live status line.
 
 use std::io::Write;
 use std::time::Duration;

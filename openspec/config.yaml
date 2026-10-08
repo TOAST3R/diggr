@@ -1,7 +1,8 @@
 schema: spec-driven
 
 context: |
-  Product: a Winamp 2.x-inspired music player written in Rust, plus a fullscreen,
+  Product: Diggr, a music player written in Rust with the look of a classic 2000s desktop
+  player, plus a fullscreen,
   music-synchronized fractal visualizer ("MilkDrop that understands song structure").
   Primary music genre: electronica (steady 4/4 grid, 8/16/32-bar phrases, builds/drops).
 

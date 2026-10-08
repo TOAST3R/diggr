@@ -18,7 +18,7 @@ const THRESHOLD: f32 = 0.2;
 pub fn run() -> Result<(), String> {
     let mut engine = crate::open_engine()?;
     let rate = engine.stats().format.sample_rate;
-    let path = std::env::temp_dir().join("winamp-click-test.wav");
+    let path = std::env::temp_dir().join("diggr-click-test.wav");
     let click_frames = write_clicks(&path, rate)?;
 
     // Microphone capture, timestamped in the same monotonic base as the playback clock.

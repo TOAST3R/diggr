@@ -15,7 +15,7 @@ use dig::discogs::url::{Page, PageKind};
 use dig::intake::Command;
 use dig::sellers::{DoubleClick, Seller, Source};
 
-use super::WinampApp;
+use super::DiggrApp;
 use crate::crates::{CrateId, MAX_NAME};
 use crate::playlist::SaleCopy;
 
@@ -315,7 +315,7 @@ pub struct SellerRow {
     pub refreshing: bool,
 }
 
-impl WinampApp {
+impl DiggrApp {
     /// The seller crates in Top Sellers order, and whether TOP SELLERS is folded.
     pub(super) fn seller_rows(&self) -> (Vec<SellerRow>, bool) {
         let Some(d) = &self.dig else {

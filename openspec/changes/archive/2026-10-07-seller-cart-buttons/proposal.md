@@ -12,7 +12,7 @@ In a seller crate the cart is what you are there for, but adding a copy takes a 
   - sold copies keep SOLD and get no pill. Without a token, the pill opens Connect to Discogs.
 - **CART badge elsewhere is unchanged.** Wantlist, collection, digging crates and the flat view of a seller crate keep the plain badge and its tooltip.
 - **BREAKING (UI): no cart items in the right-click menus.** The copy row's menu loses Add to cart / Remove from cart (Open on discogs.com stays). Track and record rows lose Add to cart (‹price›), the Add to cart ▸ submenu, and Remove from cart.
-- **BREAKING (UI): Render show… is removed from the player.** The playlist menu item, its options dialog, the background render with its progress line and Cancel show render, and the remembered size, frame rate and title card settings all go, in every crate. `winamp-native --render-show` and the offline renderer are kept as they are.
+- **BREAKING (UI): Render show… is removed from the player.** The playlist menu item, its options dialog, the background render with its progress line and Cancel show render, and the remembered size, frame rate and title card settings all go, in every crate. `diggr --render-show` and the offline renderer are kept as they are.
 
 ## Capabilities
 

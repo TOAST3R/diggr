@@ -7,7 +7,7 @@ The playlist is squeezed under the player at a fixed 275-point width, so long di
 - **Side-by-side layout:** the playlist moves to the right of a fixed left column (main, waveform, EQ), in the same borderless window. Hiding the playlist shrinks the window back to the left column.
 - **Two-way resize:** the playlist's corner handle resizes it freely in width (no steps, from the skin's 275-point minimum) and in whole rows in height. The height is at least the left column's. Width and rows are remembered.
 - **BREAKING: balance removed.** The balance slider is removed. A saved non-zero balance is reset to centre on first launch, so nobody is left stuck off-centre. Its place holds a **waveform toggle button**, lit when the waveform section shows (the same as `W`).
-- **Section focus:** the player (main, waveform, EQ) and the playlist each take keyboard focus when clicked. The focused side's title bar is drawn lit and the other's dimmed, as Winamp 2 did with its windows. `Tab` switches focus. The app starts with the player focused.
+- **Section focus:** the player (main, waveform, EQ) and the playlist each take keyboard focus when clicked. The focused side's title bar is drawn lit and the other's dimmed, as classic players did with their windows. `Tab` switches focus. The app starts with the player focused.
 - **Arrow keys follow focus:** with the player focused, ↑ and ↓ change the volume (as today). With the playlist focused, they move a keyboard cursor.
 - **Keyboard cursor in the playlist:**
   - ↑ / ↓ move by one entry;

@@ -12,7 +12,7 @@ With the playlist able to grow wide (`player-layout`), cramming catalog number, 
   - Right-clicking the header shows or hides columns (`#`, Title and Time can't be hidden).
   - Column widths and visibility are remembered.
 - **Sort by any column:** clicking a header sorts the shown crate by that column. Clicking it again sorts the other way.
-  - The sort **reorders the crate** (a one-off sort, as in Winamp): play order, saving and export follow the new order.
+  - The sort **reorders the crate** (a one-off sort, as in classic players): play order, saving and export follow the new order.
   - Entries without a value (no BPM yet, no catalog number) go last in both directions.
   - The sort is stable, so ties keep their current order.
   - The header shows an arrow on the last-sorted column until the order is changed by hand.

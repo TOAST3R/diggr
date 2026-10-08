@@ -32,7 +32,7 @@
 Any leftover space under the left column is filled with the skin's panel background. Rejected alternative: a second viewport (as the spectrogram uses). It means a second surface, window snapping, and Wayland's inability to place windows; the user chose side by side.
 
 **2. Stretchable playlist chrome.**
-`skin-gen` splits the playlist's top and bottom bars into a left cap, a tileable middle and a right cap, which is how Winamp 2 did it. The row area simply widens. The minimum width is `pl_width` (275). Horizontal resize is in whole points (free), vertical in whole rows. Drags accumulate as today (`pl_resize_acc`).
+`skin-gen` splits the playlist's top and bottom bars into a left cap, a tileable middle and a right cap, which is how classic players did it. The row area simply widens. The minimum width is `pl_width` (275). Horizontal resize is in whole points (free), vertical in whole rows. Drags accumulate as today (`pl_resize_acc`).
 
 **3. Focus is a small enum on `App`: `Focus::Player | Focus::Playlist`.**
 - A primary click anywhere in a section sets it; `Tab` toggles.

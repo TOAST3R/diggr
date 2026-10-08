@@ -83,7 +83,7 @@ struct Fullscreen {
     pointer_at: Option<Pos2>,
 }
 
-pub struct WinampApp {
+pub struct DiggrApp {
     skin: LoadedSkin,
     def: Arc<crate::skin::SkinDef>,
     tex: Option<TextureHandle>,
@@ -181,12 +181,12 @@ pub struct WinampApp {
     /// The spectrogram window (`S`) and whether it is open.
     spectro: crate::spectrogram::SpectrogramWindow,
     spectro_open: bool,
-    /// `WINAMP_FRAME_STATS=1`: per-second frame phase timings on stderr and in
-    /// `$TMPDIR/winamp_frame_stats.log`.
+    /// `DIGGR_FRAME_STATS=1`: per-second frame phase timings on stderr and in
+    /// `$TMPDIR/diggr_frame_stats.log`.
     profile: Option<FrameProfile>,
-    /// `WINAMP_AUTO_FULLSCREEN=1`: enter fullscreen once playback starts (for unattended runs).
+    /// `DIGGR_AUTO_FULLSCREEN=1`: enter fullscreen once playback starts (for unattended runs).
     auto_fullscreen: bool,
-    /// `WINAMP_AUTO_QUIT_SECS=n`: close the app after n seconds.
+    /// `DIGGR_AUTO_QUIT_SECS=n`: close the app after n seconds.
     auto_quit: Option<Instant>,
     settings_dirty: Option<Instant>,
     last_size: Option<egui::Vec2>,
@@ -207,7 +207,7 @@ pub struct WinampApp {
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
-impl WinampApp {
+impl DiggrApp {
     pub fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> Self {
         Self::build(cc.egui_ctx.clone(), cc.wgpu_render_state.clone(), ctx)
     }
@@ -346,9 +346,9 @@ impl WinampApp {
             last_frame: Instant::now(),
             startup: ctx.startup,
             first_frame_done: false,
-            profile: std::env::var_os("WINAMP_FRAME_STATS").map(|_| FrameProfile::new()),
-            auto_fullscreen: std::env::var_os("WINAMP_AUTO_FULLSCREEN").is_some(),
-            auto_quit: std::env::var("WINAMP_AUTO_QUIT_SECS")
+            profile: std::env::var_os("DIGGR_FRAME_STATS").map(|_| FrameProfile::new()),
+            auto_fullscreen: std::env::var_os("DIGGR_AUTO_FULLSCREEN").is_some(),
+            auto_quit: std::env::var("DIGGR_AUTO_QUIT_SECS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|s| Instant::now() + Duration::from_secs(s)),
@@ -1742,7 +1742,7 @@ impl WinampApp {
             {
                 actions.push(Action::Volume(v));
             }
-            // Where Winamp had balance: the waveform section, as with `W`.
+            // Where the classic player had balance: the waveform section, as with `W`.
             if widgets::toggle(
                 ui,
                 &sk,
@@ -4166,7 +4166,7 @@ impl WinampApp {
             egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
             opts.on_hover_text("Options");
 
-            // "selected/total" time, Winamp style, right-aligned beside the grip.
+            // "selected/total" time, classic style, right-aligned beside the grip.
             let (total, t_unknown) = self.crates.shown().total_duration();
             let (seltime, s_unknown) = self.crates.shown().selected_duration();
             let info = format!(
@@ -5352,7 +5352,7 @@ impl Focus {
     }
 }
 
-/// Title bars of the side without the keyboard are drawn dimmed, as Winamp 2 did with its
+/// Title bars of the side without the keyboard are drawn dimmed, as classic players did with their
 /// inactive windows. Drawn over the bar, before its buttons.
 fn dim_title(sk: &Skinned, layout: &str, lit: bool) {
     if !lit {
@@ -5459,7 +5459,7 @@ pub fn repaint_after(a: Activity) -> Option<Duration> {
 fn engine_status(slot: &EngineSlot) -> String {
     match slot {
         EngineSlot::Starting(_) => "OPENING AUDIO DEVICE...".into(),
-        EngineSlot::Ready(_) => "WINAMP RUST - DROP FILES HERE".into(),
+        EngineSlot::Ready(_) => "DIGGR - DROP FILES HERE".into(),
         EngineSlot::Failed(e) => format!("AUDIO ERROR: {e}"),
     }
 }
@@ -5509,7 +5509,7 @@ fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
     Color32::from_rgb(l(a[0], b[0]), l(a[1], b[1]), l(a[2], b[2]))
 }
 
-impl eframe::App for WinampApp {
+impl eframe::App for DiggrApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.logic_inner(ctx);
     }
@@ -5527,7 +5527,7 @@ impl eframe::App for WinampApp {
     }
 }
 
-impl WinampApp {
+impl DiggrApp {
     fn logic_inner(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         if let Some(p) = &mut self.profile {
@@ -5568,7 +5568,7 @@ impl WinampApp {
             self.add_paths(dropped, Open::Add);
         }
 
-        // Scroll the title while playing (Winamp scrolls ~5 characters per second).
+        // Scroll the title while playing (classic players scroll ~5 characters per second).
         if self.position.state == PlayState::Playing {
             self.title_tick += dt as f64;
             while self.title_tick > 0.2 {
@@ -5957,7 +5957,7 @@ struct FrameProfile {
 
 impl FrameProfile {
     fn new() -> Self {
-        let path = std::env::temp_dir().join("winamp_frame_stats.log");
+        let path = std::env::temp_dir().join("diggr_frame_stats.log");
         eprintln!("frame stats → {}", path.display());
         Self {
             window: Instant::now(),
@@ -6211,7 +6211,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            WinampApp::window_size(&s, &skin),
+            DiggrApp::window_size(&s, &skin),
             vec2(575.0, 20.0 + 260.0 + 38.0) * 2.0
         );
     }
@@ -6248,7 +6248,7 @@ mod headless_tests {
     }
 
     struct Rig {
-        app: WinampApp,
+        app: DiggrApp,
         ctx: egui::Context,
         sink: ManualSink,
         now_ns: u64,
@@ -6302,7 +6302,7 @@ mod headless_tests {
             let sink = ManualSink::new(48_000, 2);
             let engine_sink = sink.clone();
             let ctx = egui::Context::default();
-            let app = WinampApp::build(
+            let app = DiggrApp::build(
                 ctx.clone(),
                 None,
                 AppContext {
@@ -7235,7 +7235,7 @@ mod headless_tests {
         let ids = rig.ids(PLAYLIST);
         rig.key(Key::P, Modifiers::SHIFT);
         let out = rig.frame(Vec::new());
-        assert!(!shows(&out, "WINAMP EQUALIZER"));
+        assert!(!shows(&out, "DIGGR EQUALIZER"));
         // Next is the third button, 52 + 2 × 20 skin pixels down the strip.
         rig.click(pos2(13.0, 92.0 + 9.0));
         rig.until(
@@ -7290,7 +7290,7 @@ mod headless_tests {
         rig.click(at);
         assert!(rig.app.settings.show_waveform);
         // Main + waveform (174) still fits beside the playlist's 10 rows (188).
-        let size = WinampApp::window_size(&rig.app.settings, &rig.app.skin);
+        let size = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
         assert_eq!(size, vec2(550.0, 188.0));
         rig.click(at);
         assert!(!rig.app.settings.show_waveform);

@@ -1,6 +1,6 @@
 ## Why
 
-Everything in this product — the classic UI, the music analysis, and the fractal visualizer — depends on an audio engine that starts instantly, never glitches, and publishes an exact "what is at the speaker right now" clock. Winamp 2.x earned its reputation on streaming, chunked playback; we need the same foundation in Rust before anything else can be built or synced.
+Everything in this product — the classic UI, the music analysis, and the fractal visualizer — depends on an audio engine that starts instantly, never glitches, and publishes an exact "what is at the speaker right now" clock. Classic 2000s desktop players earned their reputation on streaming, chunked playback; we need the same foundation in Rust before anything else can be built or synced.
 
 ## What Changes
 

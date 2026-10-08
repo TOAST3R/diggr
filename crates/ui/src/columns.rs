@@ -1,5 +1,5 @@
 //! Playlist columns and sorting a crate by one of them. A sort is a one-off reorder, as in
-//! Winamp: the crate's order changes, and play order, saving and export follow it. Entries
+//! classic players: the crate's order changes, and play order, saving and export follow it. Entries
 //! without a value go last whichever the direction, so a fresh dig crate sorted by BPM shows
 //! the known tempos first.
 

@@ -1,6 +1,6 @@
 ## Context
 
-- **The binary is already self-contained.** The skin (`include_bytes!` in `crates/ui/src/skin`), the scenes, prelude and director rules (`include_str!` in `crates/visuals`) are compiled in. User data lives in the platform folders from `dirs` (`~/Library/Application Support/winamp_rust/`, `~/Library/Caches/winamp_rust/`). An app bundle only has to wrap one executable.
+- **The binary is already self-contained.** The skin (`include_bytes!` in `crates/ui/src/skin`), the scenes, prelude and director rules (`include_str!` in `crates/visuals`) are compiled in. User data lives in the platform folders from `dirs` (`~/Library/Application Support/Diggr/`, `~/Library/Caches/Diggr/`). An app bundle only has to wrap one executable.
 - **Size today:** the Apple Silicon release binary is 25.3 MB, 20.1 MB stripped, about 9 MB compressed. yt-dlp's macOS build (`yt-dlp_macos`, universal) is 37.1 MB and barely compresses.
 - **The build Mac:** only the `aarch64-apple-darwin` target is installed, there is no signing identity yet, and `gh` is set up for this public repository, which has no releases yet.
 - **yt-dlp today:** `dig::preview::fetcher::find` tries the configured path, `yt-dlp` on the PATH, then `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `~/.local/bin`. That list already exists because an app opened from the Finder doesn't get the shell's PATH. The `preview-fetch` spec forbids downloading it, and this change reverses that on macOS.
@@ -17,42 +17,41 @@
 - Windows or Linux packages.
 - Auto-updating the app (Sparkle); users download the next DMG.
 - CI release builds.
-- The rebrand name. "winamp_rust" stays a placeholder, and renaming moves the config folders (a later migration).
 - File associations or opening files dropped on the Dock icon.
 - A styled DMG window with a background picture.
 
 ## Decisions
 
 ### D1. The bundle is assembled by the script, not by `cargo-bundle`
-The script builds `winamp-native` twice (`--target aarch64-apple-darwin` and `--target x86_64-apple-darwin`, with `MACOSX_DEPLOYMENT_TARGET=11.0` and `CARGO_PROFILE_RELEASE_STRIP=symbols`), joins them with `lipo -create`, and writes the bundle:
+The script builds `diggr` twice (`--target aarch64-apple-darwin` and `--target x86_64-apple-darwin`, with `MACOSX_DEPLOYMENT_TARGET=11.0` and `CARGO_PROFILE_RELEASE_STRIP=symbols`), joins them with `lipo -create`, and writes the bundle:
 
 ```
-dist/‹App›.app/Contents/
+dist/Diggr.app/Contents/
   Info.plist          from packaging/macos/Info.plist.in (name, id, version filled in)
-  MacOS/winamp-native universal, stripped
+  MacOS/diggr universal, stripped
   Resources/AppIcon.icns
 ```
-- **`Info.plist` keys:** `CFBundleName` / `CFBundleDisplayName` (‹App›), `CFBundleIdentifier` (`io.github.toast3r.winamp-rust` until the rebrand), `CFBundleShortVersionString` and `CFBundleVersion` (from `apps/native/Cargo.toml`), `CFBundleExecutable`, `CFBundleIconFile`, `LSMinimumSystemVersion` 11.0, `NSHighResolutionCapable`, `LSApplicationCategoryType` (`public.app-category.music`).
+- **`Info.plist` keys:** `CFBundleName` / `CFBundleDisplayName` (Diggr), `CFBundleIdentifier` (`io.github.toast3r.diggr`), `CFBundleShortVersionString` and `CFBundleVersion` (from `apps/native/Cargo.toml`), `CFBundleExecutable`, `CFBundleIconFile`, `LSMinimumSystemVersion` 11.0, `NSHighResolutionCapable`, `LSApplicationCategoryType` (`public.app-category.music`).
 - **No usage descriptions:** the player opens no input stream and needs no protected resource.
 - **Why not `cargo-bundle`:** it builds one target at a time, and making a universal bundle means post-processing its output anyway. A 20-line template is easier to read and review than tool configuration, and it's one tool fewer to install.
 
 ### D2. The DMG is made with `hdiutil`
-The script copies the app into a staging folder next to a symlink to `/Applications`, then runs `hdiutil create -format UDZO -volname ‹App›`. Opening the image shows both icons.
+The script copies the app into a staging folder next to a symlink to `/Applications`, then runs `hdiutil create -format UDZO -volname Diggr`. Opening the image shows both icons.
 - **Why not `create-dmg`:** it adds a styled window with a background and icon positions, but it's an extra Homebrew dependency. That's worth adding later, not needed for "drag one onto the other".
 
 ### D3. Signing and notarization when credentials exist
 - **Credentials:** two environment variables. `DEVELOPER_ID` holds the certificate name ("Developer ID Application: … (TEAMID)"), and `NOTARY_PROFILE` names a keychain profile created once with `xcrun notarytool store-credentials`. No secret is ever written in the repository.
 - **Signed build:** `codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID"` on the binary, then on the app. Then `ditto -c -k` of the app → `notarytool submit --wait` → `stapler staple` of the app. Then the DMG is built, signed, submitted and stapled. Last, `spctl --assess` checks the app and the DMG, and the build fails if either is rejected.
-- **Unsigned build:** the app is signed ad hoc (`codesign --sign -`, which Apple Silicon requires to run at all). The DMG is named `‹App›-‹version›-unsigned.dmg`, and the script prints how testers can open it (System Settings ▸ Privacy & Security ▸ Open Anyway).
+- **Unsigned build:** the app is signed ad hoc (`codesign --sign -`, which Apple Silicon requires to run at all). The DMG is named `Diggr-‹version›-unsigned.dmg`, and the script prints how testers can open it (System Settings ▸ Privacy & Security ▸ Open Anyway).
 - **Entitlements:** none. The hardened runtime with no exceptions suffices: no JIT, no unsigned libraries loaded into the process (yt-dlp runs as a separate process).
 
 ### D4. Releasing
 `scripts/release.sh` checks, in order:
 - the working tree is clean;
 - the version in `apps/native/Cargo.toml` has no tag yet;
-- `dist/‹App›-‹version›.dmg` exists and passes `spctl` (unless `--unsigned` is given).
+- `dist/Diggr-‹version›.dmg` exists and passes `spctl` (unless `--unsigned` is given).
 
-Then it writes the SHA-256 file, creates and pushes tag `v‹version›`, and runs `gh release create` with the DMG, its checksum and the notes (`--notes-file`, or an editor). The README's download link is `https://github.com/TOAST3R/winamp_rust/releases/latest`.
+Then it writes the SHA-256 file, creates and pushes tag `v‹version›`, and runs `gh release create` with the DMG, its checksum and the notes (`--notes-file`, or an editor). The README's download link is `https://github.com/TOAST3R/diggr/releases/latest`.
 
 ### D5. The app's own yt-dlp (`dig::tools`)
 ```
@@ -98,7 +97,6 @@ need previews ─▶ user's yt-dlp found? ── yes ─▶ use it (never update
 - **[No Apple Developer account yet]** → Unsigned builds for testing only; `release.sh` refuses to publish them without `--unsigned`. Testers get the Open Anyway steps.
 - **[x86_64 build problems]** (a C dependency that doesn't cross-compile) → All C dependencies are built by `cc` with Apple's clang, which targets both architectures. The first build task proves it early.
 - **[Launch time inside a bundle]** → The first open after installing includes Gatekeeper's check (seconds, once). The 300 ms target applies from the second open, and is measured with the bundle's own binary (`--startup-time`).
-- **[The placeholder name ships to users]** → Renaming later changes the config folder and the bundle identifier. It's documented as a later migration, and publishing to strangers waits for the name.
 - **[Size]** → About 19 MB for the DMG (two architectures of a 20 MB stripped binary, compressed). The spec allows 25 MB.
 
 ## Migration Plan
@@ -108,7 +106,6 @@ need previews ─▶ user's yt-dlp found? ── yes ─▶ use it (never update
 
 ## Open Questions
 
-- **The rebrand name.** It sets the app, DMG and volume names and the bundle identifier. Everything reads it from one place in the script, so it's a one-line change until the first public release.
 - **The Apple Developer account** ($99/year): when?
 - **yt-dlp GPG signature check:** worth adding before public releases, or is SHA-256 over HTTPS enough?
 - **Styled DMG window** (background art, icon positions) with `create-dmg`: later?

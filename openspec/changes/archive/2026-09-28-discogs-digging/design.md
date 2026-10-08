@@ -66,7 +66,7 @@
   - The real transport is a `ureq::Agent` with rustls, a 10 s connect timeout and a 30 s read timeout.
   - The test transport serves recorded JSON from `crates/dig/tests/fixtures/discogs/`, keyed by path, and can inject 429s, delays and network errors.
 - **Headers:**
-  - `User-Agent: winamp_rust/<version> +https://github.com/toast3r/winamp_rust`;
+  - `User-Agent: Diggr/<version> +https://github.com/TOAST3R/diggr`;
   - `Authorization: Discogs token=<token>` when a token is set;
   - `Accept: application/vnd.discogs.v2.discogs+json`.
 - **Requests** (listings use `per_page=100`):
@@ -191,7 +191,7 @@
 ### D13. Settings and token
 - **`<config>/dig/settings.ron`:** vinyl only, skip passed, the cache size in GB (2 by default), the yt-dlp path and the Keepers crate id.
 - **`<config>/dig/token`:** only the token. It is written atomically with mode 0600 on Unix; the config folder is per-user on Windows. The dialog shows only its last 4 characters. On save it is checked with `/oauth/identity`, and the username and currency are fetched.
-- **Folder overrides:** everything above sits under the config `Store` folder, so `WINAMP_CONFIG_DIR` covers it, and `WINAMP_CACHE_DIR` covers `discogs/` and `previews/`.
+- **Folder overrides:** everything above sits under the config `Store` folder, so `DIGGR_CONFIG_DIR` covers it, and `DIGGR_CACHE_DIR` covers `discogs/` and `previews/`.
 
 ### D14. Offline tests
 - **`crates/dig` unit tests:** addresses, matching, vinyl detection, the rate limiter on a fake clock (800 requests, never more than 60 in any 60 s window), cache freshness, clip id validation, the horizon, eviction and memory.
@@ -204,7 +204,7 @@
 
   The scheduler is tested with `FakeFetcher`: the horizon, 2 slots, cancelling, retrying, and a hanging fetch for the timeout.
 - **`crates/ui/tests/dig_playback.rs`:** like `large_add.rs`, an 800-release fake label expands while the engine plays, and its previews come from `FakeFetcher` and get prepared.
-- **Manual checks:** `#[ignore]` tests call real Discogs (`crates/dig/tests/intake.rs`, using `WINAMP_DISCOGS_TOKEN` if set) and a real yt-dlp (`preview::fetcher`), when run by hand.
+- **Manual checks:** `#[ignore]` tests call real Discogs (`crates/dig/tests/intake.rs`, using `DIGGR_DISCOGS_TOKEN` if set) and a real yt-dlp (`preview::fetcher`), when run by hand.
 
 ## Risks / Trade-offs
 

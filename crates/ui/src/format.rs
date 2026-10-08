@@ -84,7 +84,7 @@ pub fn lp_label(knob: f32) -> String {
     }
 }
 
-/// Winamp's title line: `N. name (m:ss)`, with the name from [`entry_name`].
+/// The classic title line: `N. name (m:ss)`, with the name from [`entry_name`].
 pub fn title_line(number: usize, name: &str, duration: Option<f64>) -> String {
     match duration {
         Some(d) => format!("{number}. {name} ({})", clock(d)),

@@ -4,7 +4,7 @@ The visual show is deterministic: the same track, the same looks and the same di
 
 ## What Changes
 
-- **Render command:** `winamp-native --render-show <track> -o show.mp4` renders the hands-off show for a track to an H.264/AAC MP4. Options:
+- **Render command:** `diggr --render-show <track> -o show.mp4` renders the hands-off show for a track to an H.264/AAC MP4. Options:
   - `--size WxH` (default 1920×1080) and `--fps` (default 60);
   - `--from`/`--to` for a time range;
   - `--overlay` for the artist/title card at the start;

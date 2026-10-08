@@ -1,7 +1,7 @@
 //! Skins: an atlas image plus a RON map of sprite rectangles, widget layout, font and colors.
 //!
 //! Every widget is drawn by copying atlas sub-rectangles (nearest filtering, integer scale),
-//! Winamp 2.x style. Replacing `atlas.png` with a recolored image that keeps the same sprite
+//! as classic skinned players did. Replacing `atlas.png` with a recolored image that keeps the same sprite
 //! map reskins the player without code changes.
 
 pub mod generate;

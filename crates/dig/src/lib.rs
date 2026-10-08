@@ -26,7 +26,7 @@ pub mod sellers;
 
 /// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder
 /// until the rebrand.
-pub const APP_NAME: &str = "winamp_rust";
+pub const APP_NAME: &str = "Diggr";
 
 /// Seconds since the Unix epoch (the timestamps stored in files).
 pub fn now_secs() -> u64 {

@@ -140,10 +140,10 @@ impl Store {
         Self { dir: dir.into() }
     }
 
-    /// `~/Library/Application Support/winamp_rust` on macOS, the XDG/AppData equivalents
+    /// `~/Library/Application Support/Diggr` on macOS, the XDG/AppData equivalents
     /// elsewhere.
     pub fn platform_default() -> Option<Self> {
-        dirs::config_dir().map(|d| Self::new(d.join("winamp_rust")))
+        dirs::config_dir().map(|d| Self::new(d.join(platform::APP_DIR)))
     }
 
     pub fn dir(&self) -> &Path {

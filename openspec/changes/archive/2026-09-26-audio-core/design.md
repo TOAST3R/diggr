@@ -1,6 +1,6 @@
 ## Context
 
-Greenfield Rust project. The reference is Winamp 2.x (streaming chunked decode, input → DSP → output plugin pipeline, visualizer never blocking playback). The product's defining goal is zero perceived latency: instant start, gapless transitions, and visuals locked to what the listener hears. Native (macOS first) is the primary target; web (Chrome, AudioWorklet) must remain possible through narrow seams.
+Greenfield Rust project. The reference is the classic 2000s desktop player (streaming chunked decode, input → DSP → output plugin pipeline, visualizer never blocking playback). The product's defining goal is zero perceived latency: instant start, gapless transitions, and visuals locked to what the listener hears. Native (macOS first) is the primary target; web (Chrome, AudioWorklet) must remain possible through narrow seams.
 
 ## Goals / Non-Goals
 
@@ -70,7 +70,7 @@ Published by the callback once per buffer as a seqlock over plain atomics (`Cloc
 Alternative (atomic "position" only) rejected: doesn't let readers interpolate between callbacks at 60–240 Hz.
 
 ### D7. Equalizer
-10 peaking biquads (RBJ cookbook, Q≈1.41) + preamp, per channel, in Direct Form II Transposed, f32. Band centers: 60, 170, 310, 600, 1k, 3k, 6k, 12k, 14k, 16k Hz (classic Winamp), ±12 dB. The control thread computes `EqCoefs` (a `Copy` struct) and sends them via SPSC.
+10 peaking biquads (RBJ cookbook, Q≈1.41) + preamp, per channel, in Direct Form II Transposed, f32. Band centers: 60, 170, 310, 600, 1k, 3k, 6k, 12k, 14k, 16k Hz (the classic 10-band layout), ±12 dB. The control thread computes `EqCoefs` (a `Copy` struct) and sends them via SPSC.
 - The callback interpolates coefficients and preamp per sample over 5 ms. A new change mid-ramp starts from the current interpolated point, so fast slider sweeps don't click.
 - Switching EQ on/off (or a band-layout change after a rate change) jumps immediately with cleared filter state. With EQ off, samples are untouched (bit-identical).
 - Bands at or above 0.45 · sample rate are bypassed.
@@ -130,8 +130,8 @@ trait MediaSource: Read + Seek + Send + Sync { fn byte_len(&self) -> Option<u64>
   - seek 12.1–20.0 ms (target < 50);
   - device open 448 ms, paid once at launch.
 - Dropped from this change's tasks at archive time (not performed; the tooling exists):
-  - former 9.2: a 1-hour, underrun-free run on the real device. The 5-minute run's single underrun was the accounting bug above, and it hasn't been re-run since the fix. Use `winamp-native --bench`.
-  - former 6.4: the acoustic clock check (`winamp-native --click-test`, needs a speaker → mic path).
+  - former 9.2: a 1-hour, underrun-free run on the real device. The 5-minute run's single underrun was the accounting bug above, and it hasn't been re-run since the fix. Use `diggr --bench`.
+  - former 6.4: the acoustic clock check (`diggr --click-test`, needs a speaker → mic path).
 
 ## Open Questions
 

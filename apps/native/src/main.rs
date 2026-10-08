@@ -1,14 +1,14 @@
-//! Winamp-style player for the desktop.
+//! Diggr, the classic skinned player, for the desktop.
 //!
 //! ```text
-//! winamp-native [FILE...]                    the player window (files replace the playlist)
-//! winamp-native --tui FILE...                terminal player
-//! winamp-native --bench [--volume V] [--analysis] FILE...
+//! diggr [FILE...]                    the player window (files replace the playlist)
+//! diggr --tui FILE...                terminal player
+//! diggr --bench [--volume V] [--analysis] FILE...
 //!                                            measure start/seek latency and underruns
 //!                                            (optionally with music analysis running)
-//! winamp-native --click-test                 clock vs. microphone (needs speaker → mic path)
-//! winamp-native --startup-time               print time to first frame and quit
-//! winamp-native --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T]
+//! diggr --click-test                 clock vs. microphone (needs speaker → mic path)
+//! diggr --startup-time               print time to first frame and quit
+//! diggr --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T]
 //!               [--overlay] [--look SCENE/VARIANT]
 //!                                            render the track's visual show to a video
 //! ```
@@ -27,7 +27,7 @@ use audio::{Engine, EngineConfig};
 use platform::TrackRef;
 use platform::native::{CpalSink, NativeFileSource, NativeSpawner};
 use ui::settings::Store;
-use ui::{AppContext, Startup, WinampApp};
+use ui::{AppContext, DiggrApp, Startup};
 
 // Debug builds count any allocation made inside the audio callback (shown in the status/bench).
 #[cfg(debug_assertions)]
@@ -44,7 +44,7 @@ pub fn open_engine() -> Result<Engine, String> {
     .map_err(|e| e.to_string())
 }
 
-const USAGE: &str = "usage: winamp-native [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time | --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T] [--overlay] [--look SCENE/VARIANT]";
+const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time | --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T] [--overlay] [--look SCENE/VARIANT]";
 
 fn main() -> ExitCode {
     let process_start = Instant::now();
@@ -101,14 +101,14 @@ fn main() -> ExitCode {
 }
 
 fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result<(), String> {
-    // WINAMP_CONFIG_DIR overrides where settings and the playlist are kept (handy for testing).
-    let store = std::env::var_os("WINAMP_CONFIG_DIR")
+    // DIGGR_CONFIG_DIR overrides where settings and the playlist are kept (handy for testing).
+    let store = std::env::var_os("DIGGR_CONFIG_DIR")
         .map(Store::new)
         .or_else(Store::platform_default);
     let settings = store.as_ref().map(Store::load_settings).unwrap_or_default();
-    let size = WinampApp::window_size(&settings, &ui::skin::LoadedSkin::default_skin());
+    let size = DiggrApp::window_size(&settings, &ui::skin::LoadedSkin::default_skin());
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_title("Winamp")
+        .with_title("Diggr")
         .with_inner_size(size)
         .with_decorations(false)
         .with_resizable(false);
@@ -119,7 +119,7 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
     if settings.playlist_maximized {
         viewport = viewport.with_maximized(true);
     }
-    // Scores and annotations: ~/Library/Caches/winamp_rust (WINAMP_CACHE_DIR overrides).
+    // Scores and annotations: ~/Library/Caches/Diggr (DIGGR_CACHE_DIR overrides).
     let cache = analysis::cache::ScoreCache::platform_default();
     let options = eframe::NativeOptions {
         viewport,
@@ -131,7 +131,7 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
         ..Default::default()
     };
     eframe::run_native(
-        "winamp_rust",
+        "diggr",
         options,
         Box::new(move |cc| {
             let ctx = AppContext {
@@ -161,7 +161,7 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                     exit_after_first_frame: startup_time,
                 },
             };
-            Ok(Box::new(WinampApp::new(cc, ctx)))
+            Ok(Box::new(DiggrApp::new(cc, ctx)))
         }),
     )
     .map_err(|e| e.to_string())

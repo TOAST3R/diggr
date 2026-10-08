@@ -36,12 +36,12 @@
 
 ## 6. Cache
 
-- [x] 6.1 Sampled xxh3 content hash; `ScoreCache` in `dirs::cache_dir()/winamp_rust/scores` (`WINAMP_CACHE_DIR` override), postcard, algorithm version
+- [x] 6.1 Sampled xxh3 content hash; `ScoreCache` in `dirs::cache_dir()/Diggr/scores` (`DIGGR_CACHE_DIR` override), postcard, algorithm version
 - [x] 6.2 Save partial coverage when a worker stops and every 30 s; load before starting a worker (test: second play is instant)
 
 ## 7. Player integration (crates/ui)
 
-- [x] 7.1 `WinampApp` owns an `AnalysisService`; map `TrackId` → `TrackRef` from `TrackLoaded`; call `playhead` each frame and `prewarm` on `PreWarm`
+- [x] 7.1 `DiggrApp` owns an `AnalysisService`; map `TrackId` → `TrackRef` from `TrackLoaded`; call `playhead` each frame and `prewarm` on `PreWarm`
 - [x] 7.2 Extend `SceneFrame` with `score`; `BeatFlash` flashes on analyzed beats when a score exists
 - [x] 7.3 Host keys in fullscreen: `T` timeline strip, `A` annotation mode (`Space`, `1`–`6` while annotating); not forwarded to the scene
 - [x] 7.4 Timeline strip: beats, downbeats, section spans by kind with labels (provisional faint), tension, coverage, playhead, "analyzing…" state

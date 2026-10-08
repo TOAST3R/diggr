@@ -97,7 +97,7 @@ Workers publish a new `Arc<SongScore>` roughly every few seconds of analyzed aud
 
 ### D9. Cache
 - Key: file size + xxh3 of the first, middle and last 256 KB (full hashing is too slow for multi-GB mixes).
-- Location: `dirs::cache_dir()/winamp_rust/scores/<hash>.postcard`; `WINAMP_CACHE_DIR` overrides.
+- Location: `dirs::cache_dir()/Diggr/scores/<hash>.postcard`; `DIGGR_CACHE_DIR` overrides.
 - Stamped with an algorithm version (bump → ignored and regenerated). Partial coverage is cached too, and written when a worker stops or every 30 s.
 
 ### D10. Fullscreen integration (modifies `fullscreen-mode`)
@@ -134,12 +134,12 @@ What was built (crate `analysis`), and what changed from the plan above.
 - **Streaming without copying:** a region keeps one growing result and each update truncates only its provisional tail. The first version cloned all final data every 8 s, which made memory grow with length (122 MB after an hour); now it is flat (~29 MB).
 - **Cache ordering:** a complete score is written to disk *before* it is published, so anyone who sees `complete` (e.g. the next app start) finds it cached. The reverse order was a race that made a test hang about 1 in 8 runs.
 - **Player integration (crates/ui):**
-  - `WinampApp` owns the service, maps `TrackId` → `TrackRef` from `TrackLoaded`, calls `playhead` every frame, and calls `prewarm` on `PreWarm`.
+  - `DiggrApp` owns the service, maps `TrackId` → `TrackRef` from `TrackLoaded`, calls `playhead` every frame, and calls `prewarm` on `PreWarm`.
   - `SceneFrame.score` carries the score, and `BeatFlash` flashes on analyzed beats.
   - Host keys are a pure function (`host_action`).
   - The strip is `ui::timeline`.
   - Annotations use the clock's audible position and are saved on every mark.
-- **Where things are stored:** scores in `~/Library/Caches/winamp_rust/scores/`, annotations in `…/annotations/` (`WINAMP_CACHE_DIR` overrides).
+- **Where things are stored:** scores in `~/Library/Caches/Diggr/scores/`, annotations in `…/annotations/` (`DIGGR_CACHE_DIR` overrides).
 
 ## Verification
 

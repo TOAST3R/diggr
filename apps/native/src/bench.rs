@@ -63,7 +63,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
     engine.set_volume(volume);
     engine.set_queue(files.clone());
     // A fresh cache, so everything really gets analyzed during the run; deleted afterwards.
-    let cache = with_analysis.then(|| platform::testing::TestDir::new("winamp-bench-cache"));
+    let cache = with_analysis.then(|| platform::testing::TestDir::new("diggr-bench-cache"));
     let load = Load {
         svc: cache.as_ref().map(|dir| {
             AnalysisService::new(

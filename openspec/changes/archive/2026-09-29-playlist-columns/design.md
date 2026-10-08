@@ -6,7 +6,7 @@ Rows are drawn by `playlist_section` as one string (`display_name`) plus a right
 
 **Goals:**
 - Use the width for aligned, scannable columns.
-- One-click sorting that behaves like Winamp's: it changes the crate's real order.
+- One-click sorting that behaves like the classic players': it changes the crate's real order.
 
 **Non-Goals:**
 - A live, auto-resorting view.

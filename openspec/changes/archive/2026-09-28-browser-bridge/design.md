@@ -75,7 +75,7 @@ extensions/chrome/
 - **Name:** labels use the app's name from `/v1/hello`, cached in storage, with the placeholder until the app has answered once.
 
 ### D6. The app's name
-`dig::APP_NAME` is one constant, with the placeholder "winamp_rust" until the rebrand. `/v1/hello` returns it. The manifest's `name` is a placeholder too, to be renamed before any publishing. Publishing with "Winamp" in the name would not pass Chrome Web Store review, because it is a trademark.
+`dig::APP_NAME` is one constant, Diggr. `/v1/hello` returns it. The manifest's `name` is Diggr too. Publishing under another product's trademarked name would not pass Chrome Web Store review.
 
 ### D7. Tests
 - **`crates/dig/tests/bridge.rs`:** runs the server on an ephemeral port, with `ureq` as the client, a fake UI side (the channel) and a slow fake Discogs transport. It covers:
