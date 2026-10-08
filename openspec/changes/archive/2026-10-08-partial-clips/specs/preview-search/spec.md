@@ -1,8 +1,5 @@
-# preview-search Specification
+## MODIFIED Requirements
 
-## Purpose
-Finds a clip for each track of a record that has a tracklist but no videos on Discogs, by asking the user's yt-dlp to search near the playhead, trusting a result only when its title, artist and duration agree with the tracklist, and remembering what was found.
-## Requirements
 ### Requirement: Tracks waiting to be searched
 An entry made from a track that no clip of its record matches (see `discogs-intake`), whether its record has no clip or some clips, SHALL be titled "Artist - Title" from the tracklist (the track's own artist when credited, else the record's), carry its side and its duration, and wait with the status "to search". It SHALL be in the crate's play order like any waiting entry, and SHALL be shown, selected, sorted, filtered and grouped like any other entry.
 
@@ -13,17 +10,6 @@ An entry made from a track that no clip of its record matches (see `discogs-inta
 #### Scenario: A record with one clip
 - **WHEN** "Mezzanine" (11 tracks, one video of A3 "Teardrop") is expanded into a crate
 - **THEN** A1 "Massive Attack - Angel" (6:18), A2 "Massive Attack - Risingson" (4:58) and the 8 tracks after A3 are "to search", and A3 is not
-
-### Requirement: Search near the playhead
-An entry waiting to be searched SHALL be searched only when it is in the download-ahead window (the armed entry, the playing entry and the next 3 in play order, see `preview-fetch`). At most one search SHALL run at a time, before the window's downloads. A search SHALL ask the user's yt-dlp to list up to 5 results for the track's artist and title, without downloading anything, and SHALL time out after 30 s. A search not yet started SHALL be dropped when its entry leaves the window. Searching SHALL NOT delay playback, SHALL cause zero underruns, and SHALL NOT make any Discogs request.
-
-#### Scenario: Only what is about to play
-- **WHEN** a crate holds 60 entries to search and entry 10 is playing
-- **THEN** only entries 11 to 13 (and the playing one, when it is to search) are searched, one at a time
-
-#### Scenario: Armed first
-- **WHEN** the user double-clicks an entry to search far down the crate
-- **THEN** it is searched before the other entries of the window, and plays once its preview is downloaded
 
 ### Requirement: Trusting a result
 A result SHALL be used only when all of the following hold, compared without regard to case, accents or punctuation, and ignoring suffixes such as "Original Mix":
@@ -71,11 +57,3 @@ Each search result SHALL be kept in the cache folder by the track: its artist an
 #### Scenario: Offline
 - **WHEN** a search fails because YouTube can't be reached
 - **THEN** the entry stays "to search", nothing is remembered, and it is searched again when it is next in the window
-
-### Requirement: A found track says so
-The tooltip of an entry from a searched track SHALL say "Preview: to search", "Preview: found by search (‹video title›)" or "Preview: not found by search". The found video's title SHALL be saved with the crate.
-
-#### Scenario: Hover a found track
-- **WHEN** the pointer rests on "The 89th Passenger - Paper Wings" after its search found a video
-- **THEN** the tooltip says "Preview: found by search (The 89th Passenger – Paper Wings [AF069])"
-
