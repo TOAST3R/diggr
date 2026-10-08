@@ -3755,8 +3755,13 @@ impl DiggrApp {
                             });
                         }
                         if resp.hovered() && self.pl_drag_from.is_none() {
-                            let details =
+                            let mut details =
                                 format::entry_details(first, self.dig_marks(first), unix_now());
+                            if let Some(counts) = format::record_counts(
+                                rec.members.iter().map(|&i| &shown.entries()[i]),
+                            ) {
+                                details.insert(1, ("Record", counts));
+                            }
                             #[cfg(not(target_arch = "wasm32"))]
                             let hover = self
                                 .dig
@@ -5057,7 +5062,7 @@ fn row_look(
         EntryStatus::Unavailable(u) => (
             dim,
             RowEnd::Icon(match u {
-                U::NoClip | U::ClipFailed | U::NotFound => "st_unavailable",
+                U::NoClip | U::ClipFailed | U::NotFound | U::AlreadyInCrate => "st_unavailable",
                 U::Other(_) => "st_other",
             }),
         ),

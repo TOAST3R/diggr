@@ -6,6 +6,7 @@ use std::sync::Arc;
 use dig::clock::FakeClock;
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client};
+use dig::discogs::matching::{Planned, TrackEntry};
 use dig::discogs::model::RecordKey::{self, Master, Release};
 use dig::discogs::transport::{FakeTransport, Fault, Method};
 use dig::discogs::url::parse;
@@ -75,7 +76,28 @@ fn listed(events: &[Event]) -> Vec<RecordKey> {
 
 fn clips(o: &Outcome) -> Vec<String> {
     match o {
-        Outcome::Clips(e) => e.iter().map(|e| e.clip.clone()).collect(),
+        Outcome::Entries(p) => p
+            .items
+            .iter()
+            .filter_map(|p| match p {
+                Planned::Clip(c) => Some(c.clip.clone()),
+                Planned::Search(_) => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn searches(o: &Outcome) -> Vec<TrackEntry> {
+    match o {
+        Outcome::Entries(p) => p
+            .items
+            .iter()
+            .filter_map(|p| match p {
+                Planned::Search(t) => Some(t.clone()),
+                Planned::Clip(_) => None,
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -131,21 +153,18 @@ fn a_label_lists_every_record_before_any_details_then_expands_them() {
         ["GLASShouse1", "LUMENremix1", "LASTlight01"]
     );
     // No clip, but a tracklist: its tracks, to be searched for.
-    match &r[2].1 {
-        Outcome::Tracks(t) => {
-            assert_eq!(t.len(), 1);
-            assert_eq!(
-                (
-                    t[0].artist.as_str(),
-                    t[0].title.as_str(),
-                    t[0].position.as_str()
-                ),
-                ("Nightcraft", "Silent Tide", "A1")
-            );
-            assert_eq!(t[0].search_key, "release/1003/A1");
-        }
-        other => panic!("{other:?}"),
-    }
+    let t = searches(&r[2].1);
+    assert!(clips(&r[2].1).is_empty());
+    assert_eq!(t.len(), 1);
+    assert_eq!(
+        (
+            t[0].artist.as_str(),
+            t[0].title.as_str(),
+            t[0].position.as_str()
+        ),
+        ("Nightcraft", "Silent Tide", "A1")
+    );
+    assert_eq!(t[0].search_key, "track/nightcraft/silent tide");
     // The CD releases bring their clips too.
     assert_eq!(clips(&r[1].1), ["CDglasshou1"]);
     assert_eq!(clips(&r[4].1), ["UNKNOWNfmt1"]);

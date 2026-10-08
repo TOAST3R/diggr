@@ -10,6 +10,7 @@ use audio::{Engine, EngineConfig, PlayState, RepeatMode};
 use dig::clock::FakeClock;
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::Client;
+use dig::discogs::matching::Planned;
 use dig::discogs::transport::FakeTransport;
 use dig::discogs::url;
 use dig::intake::{Command, Event, Intake, IntakeHandle, Outcome};
@@ -173,10 +174,13 @@ fn an_800_release_label_is_dug_while_playback_runs_without_underruns() {
         device.pump(512);
         for e in intake.poll() {
             match e {
-                Event::Record(_, _, Outcome::Clips(c)) => {
+                Event::Record(_, _, Outcome::Entries(plan)) => {
                     records += 1;
                     let before = clips.len();
-                    clips.extend(c.into_iter().map(|c| c.clip));
+                    clips.extend(plan.items.into_iter().filter_map(|i| match i {
+                        Planned::Clip(c) => Some(c.clip),
+                        Planned::Search(_) => None,
+                    }));
                     if before < PREVIEWS && clips.len() >= PREVIEWS {
                         let wanted = clips[..PREVIEWS].to_vec();
                         previews.send(PreviewCommand::Want {

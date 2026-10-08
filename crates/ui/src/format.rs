@@ -228,6 +228,44 @@ pub struct DigMarks {
     pub copies: Option<String>,
 }
 
+/// For a Discogs record with tracks searched for: how many entries it has, how many have a
+/// clip from Discogs and how many are still to search ("11 tracks · 1 clip · 10 to search");
+/// counts of zero are left out. `None` for a record with no track searched for.
+pub fn record_counts<'a>(
+    entries: impl IntoIterator<Item = &'a crate::playlist::Entry>,
+) -> Option<String> {
+    use crate::playlist::{EntryStatus, WaitKind};
+    let (mut tracks, mut clips, mut to_search, mut searched) = (0, 0, 0, false);
+    for e in entries {
+        tracks += 1;
+        let Some(o) = &e.origin else { continue };
+        searched |= !o.search_key.is_empty();
+        if o.clip.is_some() && o.search_key.is_empty() {
+            clips += 1;
+        }
+        if e.status == EntryStatus::Waiting(WaitKind::Search) {
+            to_search += 1;
+        }
+    }
+    if !searched {
+        return None;
+    }
+    let count = |n: usize, one: &str, many: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        n => Some(format!("{n} {many}")),
+    };
+    let parts: Vec<String> = [
+        count(tracks, "track", "tracks"),
+        count(clips, "clip", "clips"),
+        count(to_search, "to search", "to search"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Some(parts.join(" · "))
+}
+
 /// Everything known about an entry, for its tooltip, as (label, value) lines. Nothing unknown
 /// is listed. `now` is seconds since the Unix epoch (for the for-sale snapshot's age).
 pub fn entry_details(
@@ -257,9 +295,12 @@ pub fn entry_details(
     add("Status", &e.status.note().unwrap_or_default());
     // A track of a record with no clip: how its preview was found.
     if let Some(o) = e.origin.as_ref().filter(|o| !o.search_key.is_empty()) {
+        use crate::playlist::{EntryStatus, UnavailableKind};
         let preview = if !o.found.is_empty() {
             format!("found by search ({})", o.found)
-        } else if matches!(&e.status, crate::playlist::EntryStatus::Unavailable(_)) {
+        } else if e.status == EntryStatus::Unavailable(UnavailableKind::AlreadyInCrate) {
+            "already in crate".to_owned()
+        } else if matches!(&e.status, EntryStatus::Unavailable(_)) {
             "not found by search".to_owned()
         } else {
             "to search".to_owned()
@@ -544,6 +585,55 @@ mod tests {
         gone.status =
             crate::playlist::EntryStatus::Unavailable(crate::playlist::UnavailableKind::NotFound);
         assert_eq!(preview(gone).as_deref(), Some("not found by search"));
+        let mut twice = add("", "to search");
+        twice.status = crate::playlist::EntryStatus::Unavailable(
+            crate::playlist::UnavailableKind::AlreadyInCrate,
+        );
+        assert_eq!(preview(twice).as_deref(), Some("already in crate"));
+    }
+
+    #[test]
+    fn a_record_counts_its_tracks_clips_and_tracks_to_search() {
+        use crate::playlist::{Origin, Playlist};
+        let mut p = Playlist::default();
+        let teardrop = Origin {
+            clip: Some("u7K72X4eo_s".into()),
+            ..Default::default()
+        };
+        p.add_waiting(
+            "Massive Attack",
+            "Teardrop",
+            None,
+            Some(teardrop.clone()),
+            "queued",
+        );
+        for t in ["Angel", "Risingson"] {
+            let o = Origin {
+                search_key: format!("track/massive attack/{t}"),
+                ..Default::default()
+            };
+            p.add_waiting("Massive Attack", t, None, Some(o), "to search");
+        }
+        assert_eq!(
+            record_counts(p.entries()).as_deref(),
+            Some("3 tracks · 1 clip · 2 to search")
+        );
+        // Found by search: not a Discogs clip, and no longer to search.
+        let found = Origin {
+            clip: Some("angel000001".into()),
+            search_key: "track/massive attack/angel".into(),
+            ..Default::default()
+        };
+        p.entries_mut().nth(1).unwrap().origin = Some(found);
+        p.set_status(p.entries()[1].id, "queued");
+        assert_eq!(
+            record_counts(p.entries()).as_deref(),
+            Some("3 tracks · 1 clip · 1 to search")
+        );
+        // Every track with its clip from Discogs: nothing to say.
+        let mut all = Playlist::default();
+        all.add_waiting("N", "Glasshouse", None, Some(teardrop), "queued");
+        assert_eq!(record_counts(all.entries()), None);
     }
 
     #[test]

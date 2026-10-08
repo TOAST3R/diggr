@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use super::model::{Clip, Record, RecordKey, Role};
+use super::model::{Clip, Record, Role};
 
 /// Minimum word overlap (Jaccard) for a clip to be a track.
 const MIN_SCORE: f64 = 0.5;
@@ -23,8 +23,8 @@ pub struct ClipEntry {
     pub duration: Option<f64>,
 }
 
-/// One entry for a track of a record with no clip: its preview is searched for when it is
-/// about to play.
+/// One entry for a track that no clip of its record matches: its preview is searched for when
+/// it is about to play.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackEntry {
     pub artist: String,
@@ -33,40 +33,77 @@ pub struct TrackEntry {
     pub position: String,
     /// From the tracklist, when it gives one.
     pub duration: Option<f64>,
-    /// What its search result is remembered by: `release/<id>/<position>` (or `master/…`).
+    /// What its search result is remembered by (see [`track_key`]).
     pub search_key: String,
 }
 
-/// The tracks of a record that has no clip, one entry each (none without a tracklist).
-pub fn track_entries(record: &Record) -> Vec<TrackEntry> {
-    let owner = match record.key {
-        RecordKey::Release(id) => format!("release/{id}"),
-        RecordKey::Master(id) => format!("master/{id}"),
+/// What a record becomes in a crate: one item per track of its tracklist, in order (its clip
+/// when one matches, else a track to search), then the clips that match no track.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordPlan {
+    pub items: Vec<Planned>,
+    /// A full-album upload held back while the record's tracks are searched for: added only
+    /// when one of them is not found.
+    pub full_album: Option<ClipEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Planned {
+    Clip(ClipEntry),
+    Search(TrackEntry),
+}
+
+impl RecordPlan {
+    pub fn clips(clips: Vec<ClipEntry>) -> Self {
+        Self {
+            items: clips.into_iter().map(Planned::Clip).collect(),
+            full_album: None,
+        }
+    }
+
+    pub fn tracks(tracks: Vec<TrackEntry>) -> Self {
+        Self {
+            items: tracks.into_iter().map(Planned::Search).collect(),
+            full_album: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Whether any item has a clip of its own (not counting a held-back full album).
+    pub fn has_clip(&self) -> bool {
+        self.items.iter().any(|p| matches!(p, Planned::Clip(_)))
+    }
+
+    pub fn has_search(&self) -> bool {
+        self.items.iter().any(|p| matches!(p, Planned::Search(_)))
+    }
+}
+
+/// What a track's search result is remembered by: its artist and title, folded, so every
+/// release of the same track (vinyl A1, CD 1, a compilation) shares one search.
+pub fn track_key(artist: &str, title: &str) -> String {
+    let words = |s: &str| fold(s).split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("track/{}/{}", words(artist), words(title))
+}
+
+fn track_entry(record: &Record, i: usize) -> TrackEntry {
+    let t = &record.tracks[i];
+    let artist = if t.artist.is_empty() {
+        record.artist.clone()
+    } else {
+        t.artist.clone()
     };
-    record
-        .tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| !t.title.trim().is_empty())
-        .map(|(i, t)| {
-            let place = if t.position.trim().is_empty() {
-                (i + 1).to_string()
-            } else {
-                t.position.trim().to_owned()
-            };
-            TrackEntry {
-                artist: if t.artist.is_empty() {
-                    record.artist.clone()
-                } else {
-                    t.artist.clone()
-                },
-                title: t.title.trim().to_owned(),
-                position: t.position.trim().to_owned(),
-                duration: t.duration,
-                search_key: format!("{owner}/{place}"),
-            }
-        })
-        .collect()
+    let title = t.title.trim().to_owned();
+    TrackEntry {
+        search_key: track_key(&artist, &title),
+        artist,
+        title,
+        position: t.position.trim().to_owned(),
+        duration: t.duration,
+    }
 }
 
 /// Words that say nothing about which track a clip is.
@@ -202,13 +239,27 @@ pub fn names_artist(clip_title: &str, artist: &str) -> bool {
     !a.is_empty() && format!(" {t} ").contains(&format!(" {a} "))
 }
 
-/// The entries for a record's clips: matched clips in tracklist order, titled after their
-/// track, then unmatched clips (whole sides, mixes, mislabelled uploads) titled after
-/// themselves. With a remix credit for `artist`, only clips naming the artist are kept.
-pub fn entries(record: &Record, role: Role, artist: &str) -> Vec<ClipEntry> {
+/// Whether a clip's title says it is the whole record.
+fn says_full_album(title: &str) -> bool {
+    format!(
+        " {} ",
+        fold(title).split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+    .contains(" full album ")
+}
+
+/// A record's plan: each track once, with its clip when one matches it, else to be searched
+/// for; then the clips that match no track, titled after themselves (whole sides, mixes,
+/// mislabelled uploads). A video listed twice counts once. With a remix credit for `artist`,
+/// only the clips and the tracks naming the artist are kept (a clip naming the artist still
+/// takes the track it matches). A full-album upload (its title says so, or it is the record's
+/// only clip and matches no track) is held back while there are tracks to search.
+pub fn plan(record: &Record, role: Role, artist: &str) -> RecordPlan {
+    let mut seen = HashSet::new();
     let clips: Vec<&Clip> = record
         .clips
         .iter()
+        .filter(|c| seen.insert(c.id.as_str()))
         .filter(|c| role == Role::Main || names_artist(&c.title, artist))
         .collect();
     let clip_words: Vec<Vec<String>> = clips
@@ -247,22 +298,30 @@ pub fn entries(record: &Record, role: Role, artist: &str) -> Vec<ClipEntry> {
         }
     }
 
-    let mut out = Vec::new();
+    let mut out = RecordPlan::default();
     for (ti, ci) in clip_of_track.iter().enumerate() {
-        let Some(ci) = *ci else { continue };
         let t = &record.tracks[ti];
-        out.push(ClipEntry {
-            clip: clips[ci].id.clone(),
-            artist: if t.artist.is_empty() {
-                record.artist.clone()
-            } else {
-                t.artist.clone()
-            },
-            title: t.title.clone(),
-            position: t.position.clone(),
-            duration: clips[ci].duration,
-        });
+        match *ci {
+            Some(ci) => out.items.push(Planned::Clip(ClipEntry {
+                clip: clips[ci].id.clone(),
+                artist: if t.artist.is_empty() {
+                    record.artist.clone()
+                } else {
+                    t.artist.clone()
+                },
+                title: t.title.clone(),
+                position: t.position.clone(),
+                duration: clips[ci].duration,
+            })),
+            None if t.title.trim().is_empty() => {}
+            None if role == Role::Main || names_artist(&t.title, artist) => {
+                out.items.push(Planned::Search(track_entry(record, ti)));
+            }
+            None => {}
+        }
     }
+    let only_clip = clips.len() == 1;
+    let mut extras = Vec::new();
     for (ci, c) in clips.iter().enumerate() {
         if used[ci] {
             continue;
@@ -272,7 +331,7 @@ pub fn entries(record: &Record, role: Role, artist: &str) -> Vec<ClipEntry> {
             .split_once(" - ")
             .map_or(c.title.as_str(), |(_, t)| t)
             .trim();
-        out.push(ClipEntry {
+        let entry = ClipEntry {
             clip: c.id.clone(),
             artist: record.artist.clone(),
             title: if title.is_empty() {
@@ -282,8 +341,15 @@ pub fn entries(record: &Record, role: Role, artist: &str) -> Vec<ClipEntry> {
             },
             position: String::new(),
             duration: c.duration,
-        });
+        };
+        let full_album = only_clip || says_full_album(&c.title);
+        if full_album && out.full_album.is_none() && out.has_search() {
+            out.full_album = Some(entry);
+        } else {
+            extras.push(entry);
+        }
     }
+    out.items.extend(extras.into_iter().map(Planned::Clip));
     out
 }
 
@@ -327,6 +393,29 @@ mod tests {
             styles: Vec::new(),
             cover: String::new(),
         }
+    }
+
+    /// The plan's clip entries, in order.
+    fn entries(r: &Record, role: Role, artist: &str) -> Vec<ClipEntry> {
+        plan(r, role, artist)
+            .items
+            .into_iter()
+            .filter_map(|p| match p {
+                Planned::Clip(c) => Some(c),
+                Planned::Search(_) => None,
+            })
+            .collect()
+    }
+
+    /// (clip id's first letter, or "?" to search; position; title) per item.
+    fn shape(p: &RecordPlan) -> Vec<(String, String, String)> {
+        p.items
+            .iter()
+            .map(|p| match p {
+                Planned::Clip(c) => (c.clip[..1].to_owned(), c.position.clone(), c.title.clone()),
+                Planned::Search(t) => ("?".into(), t.position.clone(), t.title.clone()),
+            })
+            .collect()
     }
 
     fn summary(e: &[ClipEntry]) -> Vec<(String, String, String)> {
@@ -374,12 +463,14 @@ mod tests {
             ],
         );
         assert_eq!(
-            summary(&entries(&r, Role::Main, "")),
+            shape(&plan(&r, Role::Main, "")),
             [
                 ("a".into(), "A1".into(), "Glasshouse".into()),
+                ("?".into(), "A2".into(), "Tidal Pull".into()),
                 ("b".into(), "B1".into(), "Glasshouse (Lumen Remix)".into()),
                 ("c".into(), "B2".into(), "Last Light".into()),
-            ]
+            ],
+            "every track once, the one without a clip to search"
         );
         let e = entries(&r, Role::Main, "");
         assert!(e.iter().all(|e| e.artist == "Nightcraft"));
@@ -447,8 +538,193 @@ mod tests {
     }
 
     #[test]
-    fn no_clips_no_entries() {
-        let r = record(vec![track("A1", "Glasshouse", None)], vec![]);
-        assert!(entries(&r, Role::Main, "").is_empty());
+    fn no_clips_every_track_to_search() {
+        let r = record(
+            vec![
+                track("A1", "Glasshouse", Some(372.0)),
+                track("", "", None),
+                track("", "Tidal", None),
+            ],
+            vec![],
+        );
+        let p = plan(&r, Role::Main, "");
+        assert_eq!(
+            shape(&p),
+            [
+                ("?".into(), "A1".into(), "Glasshouse".into()),
+                ("?".into(), "".into(), "Tidal".into()),
+            ],
+            "untitled tracks are skipped"
+        );
+        let Planned::Search(t) = &p.items[0] else {
+            unreachable!()
+        };
+        assert_eq!(t.artist, "Nightcraft");
+        assert_eq!(t.duration, Some(372.0));
+        assert_eq!(t.search_key, "track/nightcraft/glasshouse");
+    }
+
+    /// Massive Attack, Mezzanine (release 5077187): eleven tracks, one video listed twice.
+    #[test]
+    fn one_video_for_eleven_tracks() {
+        let titles = [
+            ("A1", "Angel"),
+            ("A2", "Risingson"),
+            ("A3", "Teardrop"),
+            ("B1", "Inertia Creeps"),
+            ("B2", "Exchange"),
+            ("B3", "Dissolved Girl"),
+            ("C1", "Man Next Door"),
+            ("C2", "Black Milk"),
+            ("C3", "Mezzanine"),
+            ("D1", "Group Four"),
+            ("D2", "(Exchange)"),
+        ];
+        let mut r = record(
+            titles.iter().map(|(p, t)| track(p, t, None)).collect(),
+            vec![
+                clip(
+                    "t",
+                    "Massive Attack - Teardrop (Official Video)",
+                    Some(285.0),
+                ),
+                clip(
+                    "t",
+                    "Massive Attack - Teardrop (Official Video)",
+                    Some(285.0),
+                ),
+            ],
+        );
+        r.artist = "Massive Attack".into();
+        r.artist_names = vec!["Massive Attack".into()];
+        r.title = "Mezzanine".into();
+        let p = plan(&r, Role::Main, "");
+        assert_eq!(
+            p.items.len(),
+            11,
+            "one entry per track, the repeat counted once"
+        );
+        assert_eq!(p.full_album, None, "the only clip matches a track");
+        for (item, (pos, title)) in p.items.iter().zip(titles) {
+            match item {
+                Planned::Clip(c) => assert_eq!((pos, title), ("A3", "Teardrop"), "{c:?}"),
+                Planned::Search(t) => {
+                    assert_eq!((t.position.as_str(), t.title.as_str()), (pos, title))
+                }
+            }
+        }
+        let keys: Vec<&str> = p
+            .items
+            .iter()
+            .filter_map(|p| match p {
+                Planned::Search(t) => Some(t.search_key.as_str()),
+                Planned::Clip(_) => None,
+            })
+            .collect();
+        assert_eq!(keys[3], "track/massive attack/exchange");
+        assert_eq!(
+            keys[3], keys[9],
+            "Exchange and (Exchange) are the same track"
+        );
+    }
+
+    #[test]
+    fn a_full_album_upload_is_held_back() {
+        let tracks = vec![
+            track("A1", "Glasshouse", None),
+            track("A2", "Tidal", None),
+            track("B1", "Last Light", None),
+        ];
+        // Said in its title, among other clips.
+        let r = record(
+            tracks.clone(),
+            vec![
+                clip("a", "Nightcraft - Glasshouse", None),
+                clip(
+                    "f",
+                    "Nightcraft – Glasshouse EP [FULL ALBUM]",
+                    Some(1_500.0),
+                ),
+                clip("s", "Nightcraft - Glasshouse EP (Side B)", Some(700.0)),
+            ],
+        );
+        let p = plan(&r, Role::Main, "");
+        assert_eq!(
+            shape(&p),
+            [
+                ("a".into(), "A1".into(), "Glasshouse".into()),
+                ("?".into(), "A2".into(), "Tidal".into()),
+                ("?".into(), "B1".into(), "Last Light".into()),
+                ("s".into(), "".into(), "Glasshouse EP (Side B)".into()),
+            ],
+            "a side rip among other clips stays an extra"
+        );
+        assert_eq!(p.full_album.as_ref().map(|c| &c.clip[..1]), Some("f"));
+
+        // The record's only clip, matching no track.
+        let r = record(
+            tracks.clone(),
+            vec![clip(
+                "o",
+                "Nightcraft - The Lowtide Sessions",
+                Some(1_500.0),
+            )],
+        );
+        let p = plan(&r, Role::Main, "");
+        assert_eq!(p.items.len(), 3);
+        assert!(!p.has_clip());
+        assert_eq!(p.full_album.as_ref().map(|c| &c.clip[..1]), Some("o"));
+
+        // Nothing to search: it is an ordinary clip.
+        let r = record(
+            vec![],
+            vec![clip("o", "Nightcraft - Glasshouse EP (Full Album)", None)],
+        );
+        let p = plan(&r, Role::Main, "");
+        assert_eq!(p.full_album, None);
+        assert_eq!(
+            shape(&p),
+            [("o".into(), "".into(), "Glasshouse EP (Full Album)".into())]
+        );
+        assert!(
+            !says_full_album("Nightcraft - Full Albumen"),
+            "whole words only"
+        );
+    }
+
+    #[test]
+    fn a_remix_credit_searches_its_track_without_a_clip() {
+        let r = record(
+            vec![
+                track("A1", "Glasshouse", None),
+                track("A2", "Glasshouse (Lumen Remix)", Some(400.0)),
+                track("B1", "Tidal", None),
+                track("B2", "Last Light", None),
+            ],
+            vec![
+                clip("a", "Nightcraft - Glasshouse", None),
+                clip("c", "Nightcraft - Tidal", None),
+                clip("d", "Nightcraft - Last Light", None),
+                clip("e", "Nightcraft - Glasshouse (Dub)", None),
+            ],
+        );
+        let p = plan(&r, Role::Remix, "Lumen");
+        assert_eq!(
+            shape(&p),
+            [("?".into(), "A2".into(), "Glasshouse (Lumen Remix)".into())]
+        );
+        assert_eq!(p.full_album, None);
+    }
+
+    #[test]
+    fn the_track_key_ignores_case_accents_and_punctuation() {
+        assert_eq!(
+            track_key("Nightcraft", "Café Noir!"),
+            track_key("NIGHTCRAFT", "  cafe   noir ")
+        );
+        assert_ne!(
+            track_key("Nightcraft", "Glasshouse"),
+            track_key("Lumen", "Glasshouse")
+        );
     }
 }

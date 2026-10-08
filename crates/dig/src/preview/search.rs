@@ -5,13 +5,17 @@
 //!
 //! The query comes from Discogs' tracklist text, so it is cleaned and passed as one argument
 //! after `--`, never through a shell; only an 11-character video id from the results is kept.
+//!
+//! Results are remembered by the track (artist and title, folded), not by the release, so the
+//! vinyl and CD releases of a record, a resend or another crate never search the same track
+//! twice. A track key holds one result per length: a 3:50 edit is not the 6:20 album track.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::discogs::matching::{fold, names_artist, normalize};
+use crate::discogs::matching::{fold, names_artist, normalize, track_key};
 use crate::discogs::model::valid_clip_id;
 
 /// Results asked for per search.
@@ -26,7 +30,8 @@ pub const RETRY_NOT_FOUND_SECS: u64 = 7 * 24 * 3600;
 /// One track to find, as the tracklist knows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchRequest {
-    /// What the result is remembered by (`release/<id>/<position>`).
+    /// What the entries asking for it are found by: the track key (see
+    /// [`track_key`]), or `release/<id>/<position>` for an entry saved before track keys.
     pub key: String,
     /// The track's artist (its own credit, else the record's).
     pub artist: String,
@@ -99,6 +104,21 @@ fn contains_words(words: &[String], part: &[String]) -> bool {
     !part.is_empty() && words.windows(part.len()).any(|w| w == part)
 }
 
+/// Whether two lengths are the same track's: within 10 seconds or 5 % of the first, whichever
+/// is larger.
+pub fn lengths_agree(want: f64, got: f64) -> bool {
+    (want - got).abs() <= (want * 0.05).max(10.0)
+}
+
+/// Whether a result remembered with length `known` answers a track of length `want`; an
+/// unknown length on either side does.
+fn same_length(want: Option<f64>, known: Option<f64>) -> bool {
+    match (want, known) {
+        (Some(w), Some(k)) => lengths_agree(w, k),
+        _ => true,
+    }
+}
+
 /// The result to use for `req`, if any passes the rule (see the module doc): the one closest
 /// in length, or the first when the tracklist gives no length.
 pub fn best<'a>(req: &SearchRequest, results: &'a [SearchResult]) -> Option<&'a SearchResult> {
@@ -125,7 +145,7 @@ pub fn best<'a>(req: &SearchRequest, results: &'a [SearchResult]) -> Option<&'a 
             .iter()
             .any(|a| names_artist(&r.title, a) || names_artist(&r.channel, a));
         let length = match (req.duration, r.duration) {
-            (Some(want), Some(got)) => (want - got).abs() <= (want * 0.05).max(10.0),
+            (Some(want), Some(got)) => lengths_agree(want, got),
             (Some(_), None) => false,
             (None, _) => true,
         };
@@ -142,23 +162,47 @@ pub fn best<'a>(req: &SearchRequest, results: &'a [SearchResult]) -> Option<&'a 
 }
 
 /// What a search found for a track.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Remembered {
     Found {
         clip: String,
         title: String,
+        /// The video's length, when yt-dlp gave it.
+        #[serde(default)]
+        duration: Option<f64>,
     },
-    /// Nothing usable, at this time (seconds since the epoch).
+    /// Nothing usable, at this time (seconds since the epoch), for a track of `duration`.
     NotFound {
         at: u64,
+        #[serde(default)]
+        duration: Option<f64>,
     },
 }
 
+impl Remembered {
+    fn duration(&self) -> Option<f64> {
+        match self {
+            Remembered::Found { duration, .. } | Remembered::NotFound { duration, .. } => *duration,
+        }
+    }
+
+    /// Still good at `now`: found, or not found less than 7 days ago.
+    fn fresh(&self, now: u64) -> bool {
+        match self {
+            Remembered::Found { .. } => true,
+            Remembered::NotFound { at, .. } => now.saturating_sub(*at) < RETRY_NOT_FOUND_SECS,
+        }
+    }
+}
+
 /// Search results kept in the cache folder (`searches.ron`), so a track is searched once.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Searches {
+    /// Results remembered by release and position, before track keys: read, never written.
     pub results: BTreeMap<String, Remembered>,
+    /// Results by track key, one per length.
+    pub tracks: BTreeMap<String, Vec<Remembered>>,
 }
 
 pub const FILE: &str = "searches.ron";
@@ -181,16 +225,25 @@ impl Searches {
         crate::config::write_atomic(&Self::path(cache), text.as_bytes(), false)
     }
 
-    /// A result still good at `now`: found, or not found less than 7 days ago.
-    pub fn get(&self, key: &str, now: u64) -> Option<&Remembered> {
-        self.results.get(key).filter(|r| match r {
-            Remembered::Found { .. } => true,
-            Remembered::NotFound { at } => now.saturating_sub(*at) < RETRY_NOT_FOUND_SECS,
-        })
+    /// A result for `req` still good at `now`: by its track and length, or by its old key.
+    pub fn get(&self, req: &SearchRequest, now: u64) -> Option<&Remembered> {
+        self.tracks
+            .get(&track_key(&req.artist, &req.title))
+            .and_then(|v| {
+                v.iter()
+                    .find(|r| same_length(req.duration, r.duration()) && r.fresh(now))
+            })
+            .or_else(|| self.results.get(&req.key).filter(|r| r.fresh(now)))
     }
 
-    pub fn put(&mut self, key: &str, r: Remembered) {
-        self.results.insert(key.to_owned(), r);
+    /// Remembers `r` for `req`'s track, replacing what was known for the same length.
+    pub fn put(&mut self, req: &SearchRequest, r: Remembered) {
+        let v = self
+            .tracks
+            .entry(track_key(&req.artist, &req.title))
+            .or_default();
+        v.retain(|old| !same_length(req.duration, old.duration()));
+        v.push(r);
     }
 }
 
@@ -332,23 +385,105 @@ mod tests {
     fn results_are_remembered_and_not_found_ages_out() {
         let d = crate::test_dir("searches");
         let mut s = Searches::load(&d);
+        let a1 = paper_wings(Some(291.0));
+        let mut a2 = paper_wings(Some(299.0));
+        a2.title = "Hidden Soul".into();
         s.put(
-            "release/1/A1",
+            &a1,
             Remembered::Found {
                 clip: "right000001".into(),
                 title: "T".into(),
+                duration: Some(292.0),
             },
         );
-        s.put("release/1/A2", Remembered::NotFound { at: 1_000 });
+        s.put(
+            &a2,
+            Remembered::NotFound {
+                at: 1_000,
+                duration: Some(299.0),
+            },
+        );
         s.save(&d).unwrap();
         let s = Searches::load(&d);
-        assert!(s.get("release/1/A1", u64::MAX).is_some(), "found stays");
-        assert!(s.get("release/1/A2", 1_000 + 3600).is_some());
+        assert!(s.get(&a1, u64::MAX).is_some(), "found stays");
+        assert!(s.get(&a2, 1_000 + 3600).is_some());
         assert!(
-            s.get("release/1/A2", 1_000 + RETRY_NOT_FOUND_SECS)
-                .is_none(),
+            s.get(&a2, 1_000 + RETRY_NOT_FOUND_SECS).is_none(),
             "retried"
         );
-        assert!(s.get("release/1/B1", 0).is_none());
+        let mut other = a1.clone();
+        other.title = "Analog Serenade".into();
+        assert!(s.get(&other, 0).is_none());
+    }
+
+    #[test]
+    fn a_result_serves_the_same_track_from_any_release() {
+        let mut s = Searches::default();
+        let cd = SearchRequest {
+            key: "track/massive attack/angel".into(),
+            artist: "Massive Attack".into(),
+            record_artist: "Massive Attack".into(),
+            title: "Angel".into(),
+            duration: Some(378.0),
+        };
+        s.put(
+            &cd,
+            Remembered::Found {
+                clip: "angel000001".into(),
+                title: "Massive Attack - Angel".into(),
+                duration: Some(380.0),
+            },
+        );
+        // The vinyl release: another position, another case, same length.
+        let vinyl = SearchRequest {
+            title: "ANGEL".into(),
+            ..cd.clone()
+        };
+        assert!(
+            matches!(s.get(&vinyl, 0), Some(Remembered::Found { clip, .. }) if clip == "angel000001")
+        );
+        // No length on the tracklist: still the same track.
+        let unknown = SearchRequest {
+            duration: None,
+            ..cd.clone()
+        };
+        assert!(s.get(&unknown, 0).is_some());
+        // A 3:50 edit is searched for itself, and both are kept.
+        let edit = SearchRequest {
+            duration: Some(230.0),
+            ..cd.clone()
+        };
+        assert!(s.get(&edit, 0).is_none());
+        s.put(
+            &edit,
+            Remembered::NotFound {
+                at: 0,
+                duration: Some(230.0),
+            },
+        );
+        assert!(
+            s.get(&cd, 0)
+                .is_some_and(|r| matches!(r, Remembered::Found { .. }))
+        );
+        assert!(
+            s.get(&edit, 0)
+                .is_some_and(|r| matches!(r, Remembered::NotFound { .. }))
+        );
+    }
+
+    #[test]
+    fn results_remembered_by_release_are_still_read() {
+        let old = r#"(results: {"release/1/A1": Found(clip: "right000001", title: "T")})"#;
+        let s: Searches = ron::from_str(old).unwrap();
+        let mut req = paper_wings(Some(291.0));
+        req.key = "release/1/A1".into();
+        assert!(
+            matches!(s.get(&req, 0), Some(Remembered::Found { clip, .. }) if clip == "right000001")
+        );
+        req.key = "track/the 89th passenger/paper wings".into();
+        assert!(
+            s.get(&req, 0).is_none(),
+            "an old key answers only its own entry"
+        );
     }
 }

@@ -1,0 +1,117 @@
+{
+ "id": 5077187,
+ "title": "Mezzanine",
+ "year": 2013,
+ "artists": [
+  {
+   "name": "Massive Attack",
+   "anv": "",
+   "join": "",
+   "id": 2091
+  }
+ ],
+ "labels": [
+  {
+   "name": "Virgin",
+   "catno": "WBRX2",
+   "id": 750
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "2",
+   "descriptions": [
+    "LP",
+    "Album",
+    "Reissue"
+   ],
+   "text": "180 Gram"
+  }
+ ],
+ "master_id": 0,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Angel",
+   "duration": "6:18"
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "Risingson",
+   "duration": "4:58"
+  },
+  {
+   "position": "A3",
+   "type_": "track",
+   "title": "Teardrop",
+   "duration": "5:29"
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Inertia Creeps",
+   "duration": "5:56"
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "Exchange",
+   "duration": "4:11"
+  },
+  {
+   "position": "B3",
+   "type_": "track",
+   "title": "Dissolved Girl",
+   "duration": "6:07"
+  },
+  {
+   "position": "C1",
+   "type_": "track",
+   "title": "Man Next Door",
+   "duration": "5:55"
+  },
+  {
+   "position": "C2",
+   "type_": "track",
+   "title": "Black Milk",
+   "duration": "6:20"
+  },
+  {
+   "position": "C3",
+   "type_": "track",
+   "title": "Mezzanine",
+   "duration": "5:54"
+  },
+  {
+   "position": "D1",
+   "type_": "track",
+   "title": "Group Four",
+   "duration": "8:13"
+  },
+  {
+   "position": "D2",
+   "type_": "track",
+   "title": "(Exchange)",
+   "duration": "4:08"
+  }
+ ],
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=u7K72X4eo_s",
+   "title": "Massive Attack - Teardrop (Official Video)",
+   "duration": 285,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=u7K72X4eo_s",
+   "title": "Massive Attack - Teardrop (Official Video)",
+   "duration": 285,
+   "embed": true
+  }
+ ],
+ "num_for_sale": 0,
+ "lowest_price": null
+}

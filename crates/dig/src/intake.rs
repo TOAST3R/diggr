@@ -19,7 +19,7 @@ use crate::collection::{self, Collection, Pressing};
 use crate::discogs::cart::{self, AddResult, CartSnapshot};
 use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
-use crate::discogs::matching::{self, ClipEntry, TrackEntry};
+use crate::discogs::matching::{self, RecordPlan};
 use crate::discogs::model::{ForSale, Format, Listed, Record, RecordKey, Role};
 use crate::discogs::seller::{self, Copy, Criteria, Ranked};
 use crate::discogs::transport::Method;
@@ -122,10 +122,9 @@ pub enum Command {
 /// What became of a listed record.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// One entry per usable clip (possibly none left after a remix-credit filter).
-    Clips(Vec<ClipEntry>),
-    /// No clip, but a tracklist: one entry per track, its preview to be searched for.
-    Tracks(Vec<TrackEntry>),
+    /// One entry per track (its clip, or to be searched for), then the clips matching no
+    /// track; possibly none left after a remix-credit filter.
+    Entries(RecordPlan),
     /// Unavailable, with the reason: "no clip", "not found".
     Unavailable(String),
 }
@@ -865,20 +864,13 @@ impl Intake {
                 } else {
                     ""
                 };
-                let entries = matching::entries(&rec, listed.role, artist);
-                let tracks = if entries.is_empty() && listed.role == Role::Main {
-                    matching::track_entries(&rec)
-                } else {
-                    Vec::new()
-                };
-                let outcome = if !tracks.is_empty() {
-                    Outcome::Tracks(tracks)
-                } else if entries.is_empty() && (rec.clips.is_empty() || listed.role == Role::Main)
-                {
-                    Outcome::Unavailable("no clip".into())
-                } else {
-                    Outcome::Clips(entries)
-                };
+                let plan = matching::plan(&rec, listed.role, artist);
+                let outcome =
+                    if plan.is_empty() && (rec.clips.is_empty() || listed.role == Role::Main) {
+                        Outcome::Unavailable("no clip".into())
+                    } else {
+                        Outcome::Entries(plan)
+                    };
                 (info, outcome)
             }
             Err(ApiError::NotFound) => (

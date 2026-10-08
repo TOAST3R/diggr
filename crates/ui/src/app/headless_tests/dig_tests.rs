@@ -2172,7 +2172,7 @@ fn without_a_token_there_is_nothing_to_refresh() {
 
 // ---- every format, vinyl first ------------------------------------------------------------
 
-use ::dig::discogs::matching::ClipEntry;
+use ::dig::discogs::matching::{ClipEntry, RecordPlan};
 use ::dig::discogs::model::{Format, Listed};
 use ::dig::intake::{Event as Intake, JobRef, Outcome, RecordInfo};
 
@@ -2215,7 +2215,7 @@ fn af_info(release: u64, format: Format) -> RecordInfo {
 }
 
 fn af_clips(clips: &[&str]) -> Outcome {
-    Outcome::Clips(
+    Outcome::Entries(RecordPlan::clips(
         clips
             .iter()
             .enumerate()
@@ -2227,7 +2227,7 @@ fn af_clips(clips: &[&str]) -> Outcome {
                 duration: Some(250.0),
             })
             .collect(),
-    )
+    ))
 }
 
 const VINYL: u64 = 33988281;
@@ -2450,11 +2450,11 @@ fn a_digital_twin_with_tunes_stays_when_the_vinyl_has_none() {
 
 // ---- records without clips: tracks to search -----------------------------------------------
 
-use ::dig::discogs::matching::TrackEntry;
+use ::dig::discogs::matching::{TrackEntry, track_key};
 
-fn af_tracks(release: u64) -> Outcome {
+fn af_tracks() -> Outcome {
     let names = [("A1", "Paper Wings", 291.0), ("A2", "Hidden Soul", 299.0)];
-    Outcome::Tracks(
+    Outcome::Entries(RecordPlan::tracks(
         names
             .iter()
             .map(|(pos, title, secs)| TrackEntry {
@@ -2462,10 +2462,10 @@ fn af_tracks(release: u64) -> Outcome {
                 title: (*title).into(),
                 position: (*pos).into(),
                 duration: Some(*secs),
-                search_key: format!("release/{release}/{pos}"),
+                search_key: track_key("The 89th Passenger", title),
             })
             .collect(),
-    )
+    ))
 }
 
 #[test]
@@ -2481,7 +2481,7 @@ fn a_record_without_clips_brings_its_tracks_to_search() {
     rig.app.dig_intake_event(Intake::Record(
         j,
         af_info(VINYL, Format::Vinyl),
-        af_tracks(VINYL),
+        af_tracks(),
     ));
     let p = rig.app.crates.get(c).unwrap();
     let rows: Vec<(String, String, String)> = p
@@ -2518,7 +2518,7 @@ fn a_record_without_clips_brings_its_tracks_to_search() {
     assert_eq!(e.status.note().as_deref(), Some("to search"));
     assert_eq!(
         e.origin.as_ref().unwrap().search_key,
-        format!("release/{VINYL}/A2")
+        "track/the 89th passenger/hidden soul"
     );
 }
 
@@ -2537,8 +2537,8 @@ fn only_the_vinyl_release_of_a_record_without_clips_is_searched() {
             ],
         ));
         let mut arrivals = [
-            (af_info(VINYL, Format::Vinyl), af_tracks(VINYL)),
-            (af_info(FLAC, Format::File), af_tracks(FLAC)),
+            (af_info(VINYL, Format::Vinyl), af_tracks()),
+            (af_info(FLAC, Format::File), af_tracks()),
         ];
         if !vinyl_first {
             arrivals.reverse();
@@ -2575,7 +2575,7 @@ fn six_tracks(rig: &mut Rig, name: &str) -> CrateId {
     rig.app.dig_intake_event(Intake::Record(
         j,
         af_info(VINYL, Format::Vinyl),
-        Outcome::Tracks(tracks),
+        Outcome::Entries(RecordPlan::tracks(tracks)),
     ));
     rig.app.show_crate(c);
     c
@@ -2667,4 +2667,351 @@ fn an_armed_track_is_searched_first() {
     rig.app.armed = Some((c, last));
     rig.until(|_| !fakes.fetcher.searched().is_empty(), "a search");
     assert_eq!(fakes.fetcher.searched()[0], "The 89th Passenger T6");
+}
+
+// ---- records with fewer clips than tracks ---------------------------------------------------
+
+use ::dig::discogs::matching::plan;
+use ::dig::discogs::model::{Clip, Record, Role, Track};
+
+const MEZZANINE: &str = "https://www.discogs.com/release/5077187-Massive-Attack-Mezzanine";
+const MEZZANINE_TRACKS: [(&str, &str, f64); 11] = [
+    ("A1", "Angel", 378.0),
+    ("A2", "Risingson", 298.0),
+    ("A3", "Teardrop", 329.0),
+    ("B1", "Inertia Creeps", 356.0),
+    ("B2", "Exchange", 251.0),
+    ("B3", "Dissolved Girl", 367.0),
+    ("C1", "Man Next Door", 355.0),
+    ("C2", "Black Milk", 380.0),
+    ("C3", "Mezzanine", 354.0),
+    ("D1", "Group Four", 493.0),
+    ("D2", "(Exchange)", 248.0),
+];
+const TEARDROP: &str = "u7K72X4eo_s";
+
+/// Massive Attack's Mezzanine as the fixture gives it: eleven tracks, one video listed twice.
+fn mezzanine() -> Record {
+    let teardrop = Clip {
+        id: TEARDROP.into(),
+        title: "Massive Attack - Teardrop (Official Video)".into(),
+        duration: Some(285.0),
+    };
+    Record {
+        key: RecordKey::Release(5077187),
+        release: Some(5077187),
+        master: None,
+        artist: "Massive Attack".into(),
+        artist_names: vec!["Massive Attack".into()],
+        title: "Mezzanine".into(),
+        label: "Virgin".into(),
+        catno: "WBRX2".into(),
+        year: Some(2013),
+        formats: vec![Format::Vinyl],
+        tracks: MEZZANINE_TRACKS
+            .iter()
+            .map(|(p, t, d)| Track {
+                position: (*p).into(),
+                title: (*t).into(),
+                artist: String::new(),
+                duration: Some(*d),
+            })
+            .collect(),
+        clips: vec![teardrop.clone(), teardrop],
+        for_sale: None,
+        cover: String::new(),
+        styles: Vec::new(),
+    }
+}
+
+fn record_info(r: &Record) -> RecordInfo {
+    RecordInfo {
+        key: r.key,
+        release: r.release,
+        master: r.master,
+        artist: r.artist.clone(),
+        title: r.title.clone(),
+        label: r.label.clone(),
+        catno: r.catno.clone(),
+        year: r.year,
+        for_sale: None,
+        cover: String::new(),
+        styles: String::new(),
+        formats: r.formats.clone(),
+    }
+}
+
+/// Sends `r` to crate `c` as the intake worker would: listed, then expanded.
+fn send_record(rig: &mut Rig, c: CrateId, r: &Record) {
+    let j = JobRef {
+        id: 9,
+        target: c,
+        page: MEZZANINE.into(),
+        name: "Release: Mezzanine".into(),
+        filters: Filters::default(),
+    };
+    let listed = Listed {
+        artist: r.artist.clone(),
+        title: r.title.clone(),
+        catno: r.catno.clone(),
+        formats: r.formats.clone(),
+        ..Listed::new(r.key)
+    };
+    rig.app
+        .dig_intake_event(Intake::Listed(j.clone(), vec![listed]));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        record_info(r),
+        Outcome::Entries(plan(r, Role::Main, "")),
+    ));
+}
+
+/// Crate `c`'s entries as (side, clip, status).
+fn sides(rig: &Rig, c: CrateId) -> Vec<(String, Option<String>, String)> {
+    rig.app
+        .crates
+        .get(c)
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|e| {
+            let o = e.origin.as_ref().unwrap();
+            (
+                o.position.clone(),
+                o.clip.clone(),
+                e.status.note().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+fn found(id: &str, title: &str, secs: f64) -> Vec<::dig::preview::search::SearchResult> {
+    vec![::dig::preview::search::SearchResult {
+        id: id.into(),
+        duration: Some(secs),
+        channel: "Massive Attack".into(),
+        title: title.into(),
+    }]
+}
+
+#[test]
+fn a_record_with_one_video_brings_every_track() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-partial", &fakes, |_| {});
+    rig.frame(vec![Event::Paste(MEZZANINE.into())]);
+    rig.until(
+        |r| {
+            r.app.crates.get(PLAYLIST).is_some_and(|p| {
+                p.len() == 11
+                    && p.entries()
+                        .iter()
+                        .all(|e| e.status.note().as_deref() != Some("listed"))
+            })
+        },
+        "eleven tracks",
+    );
+    let rows = sides(&rig, PLAYLIST);
+    let positions: Vec<&str> = rows.iter().map(|(p, ..)| p.as_str()).collect();
+    let want: Vec<&str> = MEZZANINE_TRACKS.iter().map(|(p, ..)| *p).collect();
+    assert_eq!(positions, want, "in tracklist order");
+    let with_clip: Vec<&str> = rows
+        .iter()
+        .filter_map(|(p, c, _)| c.as_ref().map(|_| p.as_str()))
+        .collect();
+    assert_eq!(with_clip, ["A3"], "the video, once");
+    let p = rig.app.crates.get(PLAYLIST).unwrap();
+    assert_eq!(
+        p.entries()[2].display_name(),
+        "(WBRX2) Massive Attack: Teardrop"
+    );
+    assert!(
+        p.entries()
+            .iter()
+            .filter(|e| e.origin.as_ref().unwrap().clip.is_none())
+            .all(|e| !e.origin.as_ref().unwrap().search_key.is_empty()),
+        "the other ten are searched for"
+    );
+
+    // Sent again: nothing twice.
+    send_record(&mut rig, PLAYLIST, &mezzanine());
+    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 11);
+}
+
+#[test]
+fn the_same_video_found_for_two_tracks_is_in_the_crate_once() {
+    let fakes = Fakes::new();
+    // Exchange (B2) and (Exchange) (D2) are one track to search: one upload of it.
+    fakes.fetcher.answer(
+        "Massive Attack Exchange",
+        found("exchange001", "Massive Attack - Exchange", 250.0),
+    );
+    let mut rig = rig("dig-exchange", &fakes, |_| {});
+    let c = rig.app.crates.create("Mezzanine").unwrap();
+    let mut r = mezzanine();
+    r.tracks.retain(|t| t.title.contains("Exchange"));
+    r.clips.clear();
+    send_record(&mut rig, c, &r);
+    rig.app.show_crate(c);
+    rig.until(
+        |r| sides(r, c)[1].2 == "already in crate",
+        "the second is already in the crate",
+    );
+    rig.until(
+        |r| sides(r, c)[0].1.as_deref() == Some("exchange001"),
+        "B2 found",
+    );
+    assert_eq!(sides(&rig, c)[1].1, None);
+    assert_eq!(
+        fakes.fetcher.searched(),
+        ["Massive Attack Exchange"],
+        "searched once"
+    );
+    let e = &rig.app.crates.get(c).unwrap().entries()[1];
+    let tip = crate::format::entry_details(e, crate::format::DigMarks::default(), 0);
+    assert!(
+        tip.contains(&("Preview", "already in crate".to_owned())),
+        "{tip:?}"
+    );
+}
+
+/// A record whose tracks have no clip, and whose only video is the whole record.
+fn full_album_record() -> Record {
+    let mut r = mezzanine();
+    r.tracks.truncate(2);
+    r.clips = vec![Clip {
+        id: "fullalbum01".into(),
+        title: "Massive Attack - Mezzanine [Full Album]".into(),
+        duration: Some(3_800.0),
+    }];
+    r
+}
+
+#[test]
+fn a_full_album_upload_comes_in_when_a_track_is_not_found() {
+    for restart in [false, true] {
+        let fakes = Fakes::new();
+        fakes.fetcher.answer(
+            "Massive Attack Angel",
+            found("angel000001", "Massive Attack - Angel", 380.0),
+        );
+        let mut rig = rig("dig-full-album", &fakes, |_| {});
+        let c = rig.app.crates.create("Mezzanine").unwrap();
+        send_record(&mut rig, c, &full_album_record());
+        assert_eq!(rig.app.crates.get(c).unwrap().len(), 2, "held back");
+        if restart {
+            let saved = rig.app.crates.get(c).unwrap().to_saved();
+            *rig.app.crates.get_mut(c).unwrap() = crate::playlist::Playlist::from_saved(saved).0;
+        }
+        rig.app.show_crate(c);
+        rig.until(
+            |r| r.app.crates.get(c).unwrap().len() == 3,
+            "the full album after Risingson is not found",
+        );
+        let rows = sides(&rig, c);
+        assert_eq!(rows[1].2, "not found by search", "restart: {restart}");
+        assert_eq!(rows[2].1.as_deref(), Some("fullalbum01"));
+        let p = rig.app.crates.get(c).unwrap();
+        assert_eq!(p.entries()[2].title, "Mezzanine [Full Album]");
+        assert!(
+            p.entries()
+                .iter()
+                .all(|e| e.origin.as_ref().unwrap().album_clip.is_empty()),
+            "added once"
+        );
+        rig.until(|r| sides(r, c)[0].1.is_some(), "Angel found");
+        for _ in 0..10 {
+            rig.pump();
+        }
+        assert_eq!(rig.app.crates.get(c).unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn the_vinyl_release_takes_over_a_track_found_for_its_twin() {
+    let fakes = Fakes::new();
+    fakes.fetcher.answer(
+        "James Shinra Paper Wings",
+        vec![::dig::preview::search::SearchResult {
+            id: "paperwings1".into(),
+            duration: Some(292.0),
+            channel: "Analogical Force".into(),
+            title: "James Shinra - Paper Wings".into(),
+        }],
+    );
+    let mut rig = rig("dig-twin-search", &fakes, |_| {});
+    let c = rig.app.crates.create("Analogical Force").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![
+            af_listed(FLAC, Format::File),
+            af_listed(VINYL, Format::Vinyl),
+        ],
+    ));
+    let twin_plan = |release: u64| {
+        let mut r = mezzanine();
+        r.key = RecordKey::Release(release);
+        r.release = Some(release);
+        r.artist = "James Shinra".into();
+        r.artist_names = vec!["James Shinra".into()];
+        r.tracks = vec![
+            Track {
+                position: if release == VINYL { "A1" } else { "1" }.into(),
+                title: "Glasshouse".into(),
+                artist: String::new(),
+                duration: Some(250.0),
+            },
+            Track {
+                position: if release == VINYL { "A2" } else { "2" }.into(),
+                title: "Paper Wings".into(),
+                artist: String::new(),
+                duration: Some(291.0),
+            },
+        ];
+        r.clips = vec![Clip {
+            id: "GLASShouse1".into(),
+            title: "James Shinra - Glasshouse".into(),
+            duration: Some(250.0),
+        }];
+        Outcome::Entries(plan(&r, Role::Main, ""))
+    };
+    rig.app.dig_intake_event(Intake::Record(
+        j.clone(),
+        af_info(FLAC, Format::File),
+        twin_plan(FLAC),
+    ));
+    rig.app.show_crate(c);
+    rig.until(
+        |r| {
+            sides(r, c)
+                .get(1)
+                .is_some_and(|s| s.1.as_deref() == Some("paperwings1"))
+        },
+        "the digital release's track is found",
+    );
+    let ids: Vec<EntryId> = rig.app.crates.get(c).unwrap().entries()[..2]
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        twin_plan(VINYL),
+    ));
+    for _ in 0..10 {
+        rig.pump();
+    }
+    let p = rig.app.crates.get(c).unwrap();
+    let now: Vec<EntryId> = p.entries().iter().map(|e| e.id).collect();
+    assert_eq!(now, ids, "the same two entries, in place");
+    assert_eq!(releases_in(&rig, c), [Some(VINYL), Some(VINYL)]);
+    let rows = sides(&rig, c);
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.0.as_str(), r.1.as_deref()))
+            .collect::<Vec<_>>(),
+        [("A1", Some("GLASShouse1")), ("A2", Some("paperwings1"))]
+    );
+    assert!(rows.iter().all(|r| r.2 != "already in crate"));
+    assert_eq!(fakes.fetcher.searched().len(), 1, "no second search");
 }
