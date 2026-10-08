@@ -6,7 +6,7 @@ The rebrand changed the name but not the look: blue metal panels, a green LCD an
 
 - **Amber LCD on warm graphite.** The default skin's panels become warm graphite and every LCD element (time digits, title line, kbps/kHz, mini visualizer, playlist text, EQ curve, the playlist footer's controls) turns amber on black. LCD text is drawn from a new skin colour instead of the green hard-coded in the app, so a skin decides it.
 - **Groove title bars.** The gold double stripes either side of the caption become fine groove lines, like the edge of a record. The caption stays as DIGGR / DIGGR EQUALIZER in the skin font, now in amber; a drawn wordmark waits for the logo (`macos-release`).
-- **An empty crate says how to fill it.** Its list shows "PASTE A DISCOGS LINK · CMD+V / OR DROP FILES" (CTRL+V off macOS), centred, in the normal and maximized layouts.
+- **An empty crate says how to fill it.** Its list shows "PASTE A DISCOGS LINK · CMD+V / OR DROP FILES" (CTRL+V off macOS) and "PRESS H FOR HELP", centred, in the normal and maximized layouts.
 - **Waveform title bar.** The waveform in the player column gets a "DIGGR WAVEFORM" title bar like the equalizer's, with groove lines and a close button.
 - **Verdict flash.** After a verdict lands, the title line shows WANTED, UNWANTED, PASS or OWNED for 1.5 s, then the track line comes back.
 - **OWNED badge in off-white.** With amber everywhere, the badge moves to off-white so it still stands out.
@@ -26,6 +26,7 @@ None.
 - `playlist`: a new requirement for the empty crate hint.
 - `waveform-view`: "Waveform section" gains its title bar in the player column.
 - `discogs-collection`: "Owned mark" says the badge's colour differs from the playlist text colour.
+- `crates`: "Crate sidebar" draws the Discogs crates in the OWNED badge's colour, no longer named as amber.
 
 ## Impact
 

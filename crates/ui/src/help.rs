@@ -39,7 +39,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Tab",
                 "switch the keyboard between the player and the playlist",
             ),
-            ("W", "show / hide the waveform (also the WAVE button)"),
+            (
+                "W",
+                "show / hide the waveform (also the WAVE button, or × on its title bar)",
+            ),
             (
                 "S",
                 "spectrogram window (also in Options: right-click the main window)",

@@ -56,7 +56,7 @@ EQ slider knobs lose the gold and become silver with an amber tick, so amber mea
 
 ### 4. Empty crate hint
 
-An empty crate (not the wantlist or collection crate, which a paste can't fill) shows "PASTE A DISCOGS LINK · CMD+V" over "OR DROP FILES" centred in its list, in the skin font and `pl_text`, like the existing "NO TRACKS MATCH" line. `empty_crate_hint(modifier)` holds the wording; `PASTE_MODIFIER` is CMD on macOS, CTRL elsewhere. It is drawn with the list, so it costs nothing when idle and shows in the maximized layout too.
+An empty crate (not the wantlist or collection crate, which a paste can't fill) shows "PASTE A DISCOGS LINK · CMD+V" over "OR DROP FILES", then after a gap "PRESS H FOR HELP" (H opens the help panel), centred in its list, in the skin font and `pl_text`, like the existing "NO TRACKS MATCH" line. `empty_crate_hint(modifier)` holds the wording; `PASTE_MODIFIER` is CMD on macOS, CTRL elsewhere. It is drawn with the list, so it costs nothing when idle and shows in the maximized layout too.
 
 *Tried first:* the hint on the main window's title LCD whenever no track was loaded. It rarely showed (another crate's track usually stays loaded, and the maximized layout has no title LCD), and scrolling its 44 characters on a 25-character LCD would have broken "Low idle cost".
 

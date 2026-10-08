@@ -103,7 +103,8 @@ No music handy? The repo includes short test tones:
 
 The window has the classic player's parts, side by side: the player column on the left (main
 player, then the waveform and the equalizer when they show) and the playlist on its right, at
-least as tall as the player column. It's drawn from an original pixel-art skin, at double size
+least as tall as the player column. It's drawn from an original pixel-art skin dressed like a
+DJ's gear (warm graphite panels, an amber LCD, title bars with groove lines), at double size
 by default (switch in **Options**: the gear ⚙ in the playlist's footer, or right-click the main
 window anywhere that isn't a control, or the player strip while the playlist is maximized;
 Options also has the spectrogram, Discogs… and Browser…).
@@ -115,6 +116,8 @@ and Home/End jump), and Enter plays the entry under it.
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
   playlists are expanded), use **+** in the playlist's footer, or press Cmd+O. These add to the crate on screen.
+  An empty crate says so in its list: *Paste a Discogs link · Cmd+V, or drop files*, and *Press H
+  for help*.
   **Eject** (and files given on the command line) replace the Playlist crate and play it.
 - **Crates:** the playlist window shows one of several named playlists, and its title bar shows
   that crate's name.
@@ -341,7 +344,9 @@ ahead of what plays. Other pasted text is ignored.
   Discogs, whoever put it there. Without a token the record is wanted here, and a dialog says
   once how connecting your Discogs account keeps your wantlist and collection up to date from
   the player (**Don't show this again** turns it into a one-line message). `N` passes it: it's
-  dimmed, the next track starts, and later sends leave it out.
+  dimmed, the next track starts, and later sends leave it out. Each verdict flashes on the main
+  window's title line for a moment (`WANTED`, `UNWANTED`, `PASS`, and `OWNED` once Discogs takes
+  a collection add; `WANTED 3` for several records). Nothing flashes when nothing changed.
   `I` opens the release's for-sale page in your browser. A Discogs entry's title line shows its
   catalog number and BPM, then its side, year and what's for sale (`(LT-012) Nightcraft:
   Glasshouse (124 BPM) (6:12) · A1 · 1994 · 6 for sale from €9.00`). The entry menu (right-click) has the same, and **Add to collection**.
@@ -553,7 +558,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 
 ### Waveform and structure navigation
 
-Under the main window, the **waveform** (`W`) has two rows:
+Under the main window, the **waveform** (`W`) has a title bar like the equalizer's (drag it to
+move the window, × to hide the waveform) and two rows:
 
 - **Overview** of the whole track: coloured by frequency, with section bands, red markers where
   the energy jumps (the drops), and the playhead. Click or drag to seek.
@@ -872,7 +878,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 751 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 754 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -915,7 +921,9 @@ What's covered:
     300-entry `playlist.ron`, and Send to crate without duplicates;
   - spectrum bars following the *audible* frame;
   - EQ curve;
-  - skin validation, and that the committed skin matches its generator;
+  - skin validation, that the committed skin matches its generator, and that a skin without
+    an LCD colour keeps green;
+  - the empty crate hint and the verdict flash wording (and, headless, which verdicts flash);
   - repaint policy;
   - headless egui click/drag tests of the skinned widgets;
   - the whole player driven headlessly against `ManualSink`: switching crates leaves playback

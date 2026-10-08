@@ -5551,11 +5551,14 @@ const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
     "CTRL"
 };
 
-/// What an empty crate shows in its list: how to fill it.
-fn empty_crate_hint(modifier: &str) -> [String; 2] {
+/// What an empty crate shows in its list: how to fill it, and where the help is. An empty
+/// line is a gap.
+fn empty_crate_hint(modifier: &str) -> [String; 4] {
     [
         format!("PASTE A DISCOGS LINK · {modifier}+V"),
         "OR DROP FILES".into(),
+        String::new(),
+        "PRESS H FOR HELP".into(),
     ]
 }
 
@@ -6256,12 +6259,20 @@ mod tests {
     fn an_empty_crate_says_how_to_fill_it() {
         assert_eq!(
             empty_crate_hint("CMD"),
-            ["PASTE A DISCOGS LINK · CMD+V", "OR DROP FILES"]
+            [
+                "PASTE A DISCOGS LINK · CMD+V",
+                "OR DROP FILES",
+                "",
+                "PRESS H FOR HELP"
+            ]
         );
         assert_eq!(empty_crate_hint("CTRL")[0], "PASTE A DISCOGS LINK · CTRL+V");
         // Every character is in the skin font, and the longer line fits the narrowest list.
         let def = LoadedSkin::default_skin().def;
-        for line in empty_crate_hint("CTRL") {
+        for line in empty_crate_hint("CTRL")
+            .into_iter()
+            .filter(|l| !l.is_empty())
+        {
             assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
             let w = line.chars().count() as u16 * def.font.advance - 1;
             assert!(w <= def.at("pl_list").w, "{line}: {w}");

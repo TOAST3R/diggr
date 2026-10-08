@@ -21,5 +21,5 @@
 
 ## 5. Tune and document
 
-- [ ] 5.1 Run the app and check the main, EQ and playlist windows at 1× and 2×: amber legibility in the playlist, the OWNED badge next to the current track, groove lines and the crate name on a stretched playlist; adjust the palette values in `generate.rs` and regenerate; save before/after screenshots for the PR
-- [ ] 5.2 README (the player's look, empty crate hint, waveform title bar, verdict flash, test count) and the help panel if it describes the look; run `cargo test --workspace`, clippy, fmt and the wasm check
+- [x] 5.1 Run the app and check the main, EQ and playlist windows at 1× and 2×: amber legibility in the playlist, the OWNED badge next to the current track, groove lines and the crate name on a stretched playlist; adjust the palette values in `generate.rs` and regenerate; save before/after screenshots for the PR
+- [x] 5.2 README (the player's look, empty crate hint, waveform title bar, verdict flash, test count) and the help panel if it describes the look; run `cargo test --workspace`, clippy, fmt and the wasm check
