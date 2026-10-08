@@ -33,5 +33,5 @@
 
 ## 5. Docs and checks
 
-- [x] 5.1 README (Top Sellers, double-click, Narrow down, copies, SOLD, CART and the switch, the extension, `sellers.ron` and `cart.ron` in the config/cache tables, the undocumented endpoints, the test count) and help panel; note the `winamp-rust://` URL scheme as a follow-up in `macos-release`
+- [x] 5.1 README (Top Sellers, double-click, Narrow down, copies, SOLD, CART and the switch, the extension, `sellers.ron` and `cart.ron` in the config/cache tables, the undocumented endpoints, the test count) and help panel; note the `diggr://` URL scheme as a follow-up in `macos-release`
 - [x] 5.2 fmt, clippy, the workspace tests (`--no-fail-fast`), the wasm check, `--bench`; the `#[ignore]` real-API tests; by hand: first list from purchases, dig a small seller, narrow down a big one, add and remove a copy in the cart and check it on discogs.com, add a seller from the extension

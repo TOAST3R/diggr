@@ -4,7 +4,7 @@
 - **Queue:** the app builds the engine queue from the playlist in play order (`sync_queue`, `play_order`). `Engine::set_queue` keeps the playing track when the queue changes. A track the engine can't open is skipped seamlessly and reported as `TrackFailed`, which today marks the entry Failed.
 - **Metadata:** `MetaWorker` reads tags and durations on a low-priority thread, and `set_info` overwrites the entry's title and artist.
 - **Title line:** the main window's scrolling title takes artist and title from the engine's `TrackInfo` (the file's tags) when it has them.
-- **Skin:** the playlist title bar is a generated sprite (`pl_top`) with the caption "WINAMP PLAYLIST" baked in, plus a drag region (`pl_titlebar`). Skin text is a 5×7 uppercase pixel font; `fold` maps accented letters to plain ones. Playlist rows use egui's proportional font.
+- **Skin:** the playlist title bar is a generated sprite (`pl_top`) with a fixed "… PLAYLIST" caption baked in, plus a drag region (`pl_titlebar`). Skin text is a 5×7 uppercase pixel font; `fold` maps accented letters to plain ones. Playlist rows use egui's proportional font.
 
 ## Goals / Non-Goals
 

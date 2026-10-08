@@ -28,5 +28,5 @@
 
 ## 5. Integration checks
 
-- [ ] 5.1 Measure `winamp-native --startup-time` with 50 crates of 500 entries and confirm it stays under 300 ms; record the numbers in the README's launch note
+- [ ] 5.1 Measure `diggr --startup-time` with 50 crates of 500 entries and confirm it stays under 300 ms; record the numbers in the README's launch note
 - [x] 5.2 Run `cargo test --workspace`, clippy with `-D warnings`, `cargo fmt --all --check` and the wasm check of `audio` and `platform`; confirm the README's test count matches

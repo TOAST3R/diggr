@@ -1,6 +1,6 @@
 ## Context
 
-Winamp 2.x drew its UI by blitting regions of a few bitmaps (`main.bmp`, `eqmain.bmp`, `pledit.bmp`). We keep that model for speed and for the look (see user screenshot: three stacked sections, green LCD text, yellow EQ sliders). egui/eframe is chosen because it runs on native and web with wgpu, which the visual engine also needs.
+Classic 2000s desktop players drew their UI by blitting regions of a few bitmaps (`main.bmp`, `eqmain.bmp`, `pledit.bmp`). We keep that model for speed and for the look (see user screenshot: three stacked sections, green LCD text, yellow EQ sliders). egui/eframe is chosen because it runs on native and web with wgpu, which the visual engine also needs.
 
 ## Goals / Non-Goals
 
@@ -19,7 +19,7 @@ Winamp 2.x drew its UI by blitting regions of a few bitmaps (`main.bmp`, `eqmain
 ## Decisions
 
 ### D1. Single window, three stacked sections
-One eframe window with Main (always), EQ (toggle), Playlist (toggle), in the classic order and 275 px base width. Alternative (three OS windows with snapping like Winamp) rejected for MVP: complex across platforms and irrelevant on web.
+One eframe window with Main (always), EQ (toggle), Playlist (toggle), in the classic order and 275 px base width. Alternative (three OS windows with snapping, as classic players had) rejected for MVP: complex across platforms and irrelevant on web.
 
 ### D2. Skin = atlas PNG + RON sprite map
 ```
@@ -27,10 +27,10 @@ assets/skin/default/
   atlas.png          all sprites (buttons in normal/pressed states, digits, sliders, frames)
   skin.ron           sprite rects, widget layout rects, text colors, font glyph map
 ```
-Widgets are custom egui widgets that paint atlas sub-rects via `egui::Image` UVs with nearest filtering. Layout coordinates are in skin pixels, multiplied by an integer scale (1× or 2×; auto 2× on HiDPI). This mirrors Winamp's approach and keeps a door open for a `.wsz` importer that converts to the same format.
+Widgets are custom egui widgets that paint atlas sub-rects via `egui::Image` UVs with nearest filtering. Layout coordinates are in skin pixels, multiplied by an integer scale (1× or 2×; auto 2× on HiDPI). This mirrors the classic players' approach and keeps a door open for a `.wsz` importer that converts to the same format.
 
 ### D3. Original art
-We draw our own skin inspired by the classic layout and palette (dark panels, green LCD, gold sliders). Winamp's bitmaps are copyrighted and are not bundled.
+We draw our own skin inspired by the classic layout and palette (dark panels, green LCD, gold sliders). Third-party skin bitmaps are copyrighted and are not bundled.
 
 ### D4. Reactive repaint
 egui repaints only on input or explicit requests. While playing, the UI requests repaint at 30 Hz for the time display / mini spectrum only when the main section is visible and the window is not occluded/minimized. Fullscreen visual mode drives its own frame loop (vsync).
@@ -70,11 +70,11 @@ What was built, and where it differs from the plan above.
 - **Menus:** the ADD/REM/SEL/MISC/OPT buttons and PRESETS open egui popup menus (standard text, not skinned). OPT holds "Classic size (1×) / Double size (2×)". The default is 2×, because 275 pt is tiny on modern screens.
 - **Fullscreen host (D8):** `VisualScene { init(render_state), paint(rect, frame) -> PaintCallback, ui(ui, frame), key(key, mods) }`. The placeholder `BeatFlash` is a real wgpu pipeline (a full-screen triangle with a uniform color), flashing on a 120 BPM grid of the *audible* time so audio/visual offset is visible by eye.
 - **Native app:**
-  - `winamp-native` opens the GUI;
+  - `diggr` opens the GUI;
   - the previous terminal player moved to `--tui`;
   - `--startup-time` prints the time to first frame and exits;
-  - `WINAMP_CONFIG_DIR` overrides the settings location;
-  - settings live in `~/Library/Application Support/winamp_rust/` (`settings.ron`, `playlist.ron`, `eq_presets.ron`).
+  - `DIGGR_CONFIG_DIR` overrides the settings location;
+  - settings live in `~/Library/Application Support/Diggr/` (`settings.ron`, `playlist.ron`, `eq_presets.ron`).
 
 ## Verification
 

@@ -51,7 +51,7 @@ On the engine's `EngineEvent::PreWarm` (about 30 s before a track ends), the pla
 - **THEN** the new track's first 32 bars are already covered
 
 ### Requirement: Cache
-Scores (including partial coverage) SHALL be cached on disk by content hash and algorithm version in the platform cache directory (`WINAMP_CACHE_DIR` overrides), and a cached score SHALL be available immediately on play.
+Scores (including partial coverage) SHALL be cached on disk by content hash and algorithm version in the platform cache directory (`DIGGR_CACHE_DIR` overrides), and a cached score SHALL be available immediately on play.
 
 #### Scenario: Second play
 - **WHEN** a previously fully analyzed track is played again

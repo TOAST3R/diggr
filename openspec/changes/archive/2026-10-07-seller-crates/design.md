@@ -143,7 +143,7 @@ Sending a seller page (paste, or the bridge) never adds tracks: a new seller is 
 
 The bridge accepts a seller address with any mode and ignores the mode. It answers "Added seller ‹name›" or "Refreshed seller ‹name›", from the seller names in its snapshot (a field never serialized into any answer). The extension's `pages.js` recognises seller pages, and the page button there offers only "Add seller to ‹App›".
 
-**Bringing the app forward:** after a bridge add-seller, the app sends `ViewportCommand::Focus`, falling back to `RequestUserAttention`. macOS may refuse to let a background app take focus (the Dock icon bounces instead). A `winamp-rust://` URL scheme, which macOS honours, needs the app bundle and is left to `macos-release`.
+**Bringing the app forward:** after a bridge add-seller, the app sends `ViewportCommand::Focus`, falling back to `RequestUserAttention`. macOS may refuse to let a background app take focus (the Dock icon bounces instead). A `diggr://` URL scheme, which macOS honours, needs the app bundle and is left to `macos-release`.
 
 ## Risks / Trade-offs
 

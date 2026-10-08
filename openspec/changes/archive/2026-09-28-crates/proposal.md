@@ -4,7 +4,7 @@ The player has exactly one playlist (`playlist.ron`). Digging needs several at o
 
 ## What Changes
 
-- **Crates:** any number of named playlists. The playlist window shows one crate at a time, and its title bar shows that crate's name instead of "WINAMP PLAYLIST".
+- **Crates:** any number of named playlists. The playlist window shows one crate at a time, and its title bar shows that crate's name instead of a fixed "… PLAYLIST" caption.
 - **Crate menu:** clicking the title bar opens a menu to switch crate, create one, or rename or delete one. Dragging the title bar still moves the window.
 - **Playback follows its crate:** switching crates never interrupts playback. The playing track continues, and next and previous follow the crate it came from, until you start a track in another crate.
 - **The Playlist crate:** your current playlist becomes a crate named "Playlist" on first launch. It stays the classic scratch list: files opened with Eject or on the command line replace its contents, as they replace the playlist today. No other crate is ever replaced implicitly. It can be cleared, but not renamed or deleted.

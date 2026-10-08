@@ -29,5 +29,5 @@ The player (`audio-core`, `classic-ui`) is now built, so this change targets its
 
 - New crate `crates/analysis` (depends on `audio` for `TrackDecoder`, `platform` seams, realfft, rubato, serde/postcard, xxhash-rust); new binary `analysis-eval`.
 - `crates/ui`: owns an `AnalysisService`; feeds it engine events and the clock position; extends `SceneFrame`; draws the timeline strip and handles annotation keys in fullscreen.
-- New on-disk cache: `~/Library/Caches/winamp_rust/` (platform cache dir; `WINAMP_CACHE_DIR` overrides) holding scores and annotations. The web target later swaps this for IndexedDB.
+- New on-disk cache: `~/Library/Caches/Diggr/` (platform cache dir; `DIGGR_CACHE_DIR` overrides) holding scores and annotations. The web target later swaps this for IndexedDB.
 - No change to the playback path: analysis never shares threads, decoders or locks with it.

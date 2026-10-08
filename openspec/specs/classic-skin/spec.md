@@ -15,7 +15,7 @@ All player, equalizer, and playlist widgets SHALL be drawn from a skin atlas ima
 - **THEN** the skin renders at 2× integer scale with crisp pixels
 
 ### Requirement: Original default skin
-The system SHALL bundle an original default skin that follows the classic layout (dark panels, green LCD text, gold EQ sliders) and SHALL NOT include Winamp's copyrighted bitmaps.
+The system SHALL bundle an original default skin that follows the classic layout (dark panels, green LCD text, gold EQ sliders) and SHALL NOT include any third-party player's copyrighted bitmaps.
 
 #### Scenario: Bundled assets
 - **WHEN** the release bundle is inspected

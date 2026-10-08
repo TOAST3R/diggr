@@ -36,7 +36,7 @@
 ## 5. Verify and document
 
 - [x] 5.1 Performance: `polar_life` holds render scale ≥ 0.75 in the visual benchmark (15 s fullscreen), with step passes < 0.2 ms at 128×64
-- [x] 5.2 Visual check: `cargo run -p winamp-native`, fullscreen, force `polar_life` from the deck; check the smooth glide at 144 fps, the reaction to kicks, the speed-up in drops (and its escalation on a strong drop), seek and hot reload
+- [x] 5.2 Visual check: `cargo run -p diggr`, fullscreen, force `polar_life` from the deck; check the smooth glide at 144 fps, the reaction to kicks, the speed-up in drops (and its escalation on a strong drop), seek and hot reload
 - [x] 5.3 README: the automaton scene kind and helpers, the bundled scene list, the test count
 - [x] 5.4 `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, and the wasm check for audio/platform, all clean
 

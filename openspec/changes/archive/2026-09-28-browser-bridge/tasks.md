@@ -18,5 +18,5 @@
 
 ## 4. Integration checks
 
-- [x] 4.1 Confirm `winamp-native --startup-time` stays under 300 ms with the bridge enabled
+- [x] 4.1 Confirm `diggr --startup-time` stays under 300 ms with the bridge enabled
 - [x] 4.2 Run `cargo test --workspace`, clippy with `-D warnings`, `cargo fmt --all --check` and the wasm check; confirm the README's test count matches
