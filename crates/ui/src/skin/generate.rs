@@ -572,6 +572,10 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny_centered(x + 78 + 18 * i as i32 + 7, y + 105, l, LABEL);
         }
     });
+    // The waveform's title bar, over the waveform in the player column.
+    b.sprite("wave_title", 275, 14, |c, x, y| {
+        titlebar(c, x, y, 275, 14, "DIGGR WAVEFORM");
+    });
     // The playlist stretches sideways: its title and bottom bars are a left cap, a column
     // the app tiles to the width, and a right cap. The title bar names the shown crate: the
     // app draws it on `pl_title_fill`.
@@ -1126,6 +1130,9 @@ fn layout() -> BTreeMap<String, R> {
         ("eject", R::new(136, 89, 22, 16)),
         ("shuffle", R::new(164, 89, 47, 15)),
         ("repeat", R::new(212, 89, 28, 15)),
+        // waveform title bar (relative to the waveform section)
+        ("wave_titlebar", R::new(0, 0, 275, 14)),
+        ("wave_close", R::new(262, 3, 9, 9)),
         // equalizer (relative to the EQ section)
         ("eq_titlebar", R::new(0, 0, 275, 14)),
         ("eq_close", R::new(262, 3, 9, 9)),

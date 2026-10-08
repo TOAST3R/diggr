@@ -1,16 +1,5 @@
 ## ADDED Requirements
 
-### Requirement: Idle line
-When the audio device is ready and no track is loaded, the title line SHALL scroll "PASTE A DISCOGS LINK · CMD+V · OR DROP FILES" on macOS and "PASTE A DISCOGS LINK · CTRL+V · OR DROP FILES" elsewhere. While the device is opening or has failed, the title line SHALL keep showing that state.
-
-#### Scenario: First launch
-- **WHEN** the player starts on macOS with an empty crate
-- **THEN** the title line scrolls "PASTE A DISCOGS LINK · CMD+V · OR DROP FILES"
-
-#### Scenario: Device error wins
-- **WHEN** the audio device failed to open
-- **THEN** the title line shows the audio error, not the idle line
-
 ### Requirement: Verdict flash
 When a verdict changes at least one record, the title line SHALL show, for 1.5 s and without scrolling, centred: "WANTED" after adding to the wantlist, "UNWANTED" after removing from it, "PASS" after a pass and "OWNED" after adding to the collection. When more than one record changed, the count SHALL follow ("WANTED 3"). A verdict that changes nothing (Y on an owned record, N on a wanted one, a key while stopped) SHALL show no flash. A newer flash SHALL replace an older one, and when the flash ends the normal title line SHALL come back.
 

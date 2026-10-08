@@ -1906,6 +1906,19 @@ impl DiggrApp {
         }
     }
 
+    /// The waveform's title bar in the player column: drags the window like the others, and
+    /// its close button hides the waveform.
+    fn wave_title(&mut self, ui: &mut Ui, origin: Pos2) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        sk.sprite("wave_title", 0.0, 0.0);
+        dim_title(&sk, "wave_titlebar", self.focus == Focus::Player);
+        Self::titlebar_drag(ui, &sk, "wave_title", "wave_titlebar");
+        if widgets::button(ui, &sk, "wave_close", "wave_close", "btn_close").clicked() {
+            self.apply(Action::ToggleWaveform, ui.ctx());
+        }
+    }
+
     fn eq_section(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut eq = self.settings.eq;
         let mut lp = self.lp_knob;
@@ -3672,6 +3685,18 @@ impl DiggrApp {
                 } else {
                     "× after the BPM range, or ☰ › Show all tempos, shows every track"
                 });
+            }
+            // An empty crate says how to fill it (not the Discogs crates: a paste can't).
+            if shown.is_empty() && !self.crates.is_discogs(self.crates.shown_id()) {
+                let lines = empty_crate_hint(PASTE_MODIFIER);
+                let line_h = sk.def.font.glyph_h as f32 + 4.0;
+                let body = list_h - (rows_top - top);
+                let mut y = rows_top + ((body - line_h * lines.len() as f32) / 2.0).round();
+                for line in lines {
+                    let x = l.x as f32 + ((l.w as f32 - sk.text_width(&line)) / 2.0).round();
+                    sk.text(x, y, &line, color(d.colors.pl_text));
+                    y += line_h;
+                }
             }
             // While an entry's menu is open, the rest of its album is tinted.
             self.pl_tint = list_rows
@@ -5469,6 +5494,21 @@ fn engine_status(slot: &EngineSlot) -> String {
     }
 }
 
+/// The paste key's modifier on this platform, as the hints spell it.
+const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "CMD"
+} else {
+    "CTRL"
+};
+
+/// What an empty crate shows in its list: how to fill it.
+fn empty_crate_hint(modifier: &str) -> [String; 2] {
+    [
+        format!("PASTE A DISCOGS LINK · {modifier}+V"),
+        "OR DROP FILES".into(),
+    ]
+}
+
 /// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;
 /// A crate's values for a filter, each with its number of records, the most first.
@@ -5743,6 +5783,11 @@ impl DiggrApp {
         self.main_section(ui, origin);
         let mut y = d.main_size.1 as f32;
         if self.settings.show_waveform {
+            let title_h = crate::layout::wave_title_h(&d) as f32;
+            if title_h > 0.0 {
+                self.wave_title(ui, origin + vec2(0.0, y * scale));
+                y += title_h;
+            }
             let rect = Rect::from_min_size(
                 origin + vec2(0.0, y * scale),
                 vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
@@ -6142,6 +6187,22 @@ mod tests {
             None,
             "no repaints while minimized/occluded"
         );
+    }
+
+    #[test]
+    fn an_empty_crate_says_how_to_fill_it() {
+        assert_eq!(
+            empty_crate_hint("CMD"),
+            ["PASTE A DISCOGS LINK · CMD+V", "OR DROP FILES"]
+        );
+        assert_eq!(empty_crate_hint("CTRL")[0], "PASTE A DISCOGS LINK · CTRL+V");
+        // Every character is in the skin font, and the longer line fits the narrowest list.
+        let def = LoadedSkin::default_skin().def;
+        for line in empty_crate_hint("CTRL") {
+            assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
+            let w = line.chars().count() as u16 * def.font.advance - 1;
+            assert!(w <= def.at("pl_list").w, "{line}: {w}");
+        }
     }
 
     #[test]

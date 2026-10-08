@@ -23,14 +23,3 @@ Every LCD text the app draws (the title line, kbps and kHz, and the playlist foo
 #### Scenario: Older skin file
 - **WHEN** a skin file without an LCD colour is loaded
 - **THEN** its LCD text is drawn in green (0, 236, 0)
-
-### Requirement: Crate label
-The playlist title bar SHALL show the shown crate's name, and its count when it has one, on a label drawn from the skin (a cream label with cut corners and dark ink in the default skin), centred on the groove lines. A name too long for the bar SHALL be cut as before, and the label SHALL fit the cut text.
-
-#### Scenario: Crate name on a label
-- **WHEN** the crate "Deep House" is shown
-- **THEN** its name is drawn in dark ink on a cream label in the middle of the playlist title bar, with groove lines either side
-
-#### Scenario: Narrow playlist
-- **WHEN** the playlist is at its 275-pixel minimum and the crate name is too long
-- **THEN** the name is cut and the label is only as wide as the cut text plus its padding
