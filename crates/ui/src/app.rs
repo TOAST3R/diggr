@@ -1691,7 +1691,7 @@ impl DiggrApp {
                 .unwrap_or_else(|| engine_status(&self.engine));
             let width = (tt.w / sk.def.font.advance) as usize;
             let shown = format::scroll(&title, width, self.title_offset);
-            let lcd = color([0, 236, 0]);
+            let lcd = color(sk.def.colors.lcd);
             sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
             if let Some(i) = &info {
                 let k = sk.def.at("kbps");
@@ -1943,7 +1943,7 @@ impl DiggrApp {
                 egui::Stroke::new(
                     1.5 * sk.scale,
                     if on {
-                        Color32::from_rgb(0, 236, 0)
+                        color(sk.def.colors.lcd)
                     } else {
                         Color32::from_rgb(26, 26, 38)
                     },
@@ -2529,7 +2529,7 @@ impl DiggrApp {
         let filter = shown.bpm_filter();
         let (a, b) = filter.unwrap_or((lo, hi));
         let colors = &sk.def.colors;
-        let lcd = color([0, 236, 0]);
+        let lcd = color(colors.lcd);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
 
         // A short slider of a fixed width, then the range and ×: "BPM" goes in front when
@@ -2692,8 +2692,8 @@ impl DiggrApp {
         }
         let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
         let shown = self.crates.shown();
-        let lcd = color([0, 236, 0]);
-        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let lcd = color(sk.def.colors.lcd);
+        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
         let x = x + STYLE_GAP;
         let room = x_end - x;
@@ -2838,8 +2838,8 @@ impl DiggrApp {
         if x + w > x_end {
             return;
         }
-        let lcd = color([0, 236, 0]);
-        let dim = lerp_color([0, 236, 0], sk.def.colors.pl_bg, 0.6);
+        let lcd = color(sk.def.colors.lcd);
+        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
         sk.text(x, ty, &label, if on { lcd } else { dim });
         let r = ui
@@ -4193,7 +4193,7 @@ impl DiggrApp {
                 info
             };
             let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
-            bsk.text(info_x, pi.y as f32, &info, color([0, 236, 0]));
+            bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
 
             // The BPM filter, between the buttons and the time.
             let pb = d.at("pl_bpm");

@@ -401,7 +401,8 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
             .unwrap()
     };
     let (passed, other) = (col("1. "), col("3. "));
-    assert!(passed.r() + passed.g() + passed.b() < other.r() + other.g() + other.b());
+    let sum = |c: egui::Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+    assert!(sum(passed) < sum(other));
 
     // A later send of the same page leaves it out; undoing the pass brings it back next time.
     rig.app.dig_send(

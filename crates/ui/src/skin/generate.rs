@@ -1,5 +1,6 @@
-//! Draws the bundled default skin: original pixel art in the spirit of the classic layout
-//! (bluish metal panels, green LCD, gold sliders). No third-party artwork is used.
+//! Draws the bundled default skin: original pixel art in the spirit of the classic layout,
+//! dressed like a DJ's gear (warm graphite panels, an amber LCD, groove-lined title bars).
+//! No third-party artwork is used.
 //!
 //! `cargo run -p ui --bin skin-gen` writes `assets/skin/default/{atlas.png,skin.ron}`; a test
 //! keeps the committed files in sync with this code.
@@ -16,23 +17,28 @@ const fn rgb(r: u8, g: u8, b: u8) -> C {
     [r, g, b, 255]
 }
 
-const PANEL_TOP: C = rgb(62, 66, 96);
-const PANEL_BOT: C = rgb(34, 36, 56);
-const HI: C = rgb(120, 126, 166);
-const LO: C = rgb(14, 14, 24);
-const TITLE_BG: C = rgb(26, 27, 42);
-const GOLD: C = rgb(236, 204, 90);
-const GOLD_DIM: C = rgb(150, 126, 52);
+const PANEL_TOP: C = rgb(52, 46, 40);
+const PANEL_BOT: C = rgb(28, 25, 22);
+const HI: C = rgb(104, 94, 82);
+const LO: C = rgb(10, 9, 8);
+const TITLE_BG: C = rgb(20, 18, 16);
+/// The title bars' groove lines, in two tones like a record's edge catching the light.
+const GROOVE_A: C = rgb(48, 44, 39);
+const GROOVE_B: C = rgb(70, 64, 56);
+/// The one accent: captions, slider marks, lit LEDs. The same amber as the LCD.
+const ACCENT: C = rgb(255, 176, 40);
+const ACCENT_DIM: C = rgb(150, 100, 24);
 const LCD_BG: C = rgb(0, 0, 0);
-const LCD_ON: C = rgb(0, 236, 0);
-const LCD_DIM: C = rgb(0, 44, 0);
-const BTN_TOP: C = rgb(168, 172, 196);
-const BTN_BOT: C = rgb(102, 106, 132);
-const BTN_HI: C = rgb(218, 222, 240);
-const BTN_LO: C = rgb(40, 42, 58);
-const ICON: C = rgb(26, 26, 38);
-const LABEL: C = rgb(170, 176, 204);
-const GROOVE: C = rgb(18, 18, 28);
+const LCD_ON: C = rgb(255, 176, 40);
+const LCD_DIM: C = rgb(64, 40, 8);
+const BTN_TOP: C = rgb(186, 180, 170);
+const BTN_BOT: C = rgb(110, 104, 96);
+const BTN_HI: C = rgb(230, 226, 218);
+const BTN_LO: C = rgb(40, 37, 33);
+const ICON: C = rgb(28, 25, 22);
+const LABEL: C = rgb(176, 166, 150);
+const GROOVE: C = rgb(16, 14, 12);
+const OFF_WHITE: C = rgb(240, 236, 226);
 
 const ATLAS_W: u16 = 512;
 const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/'!?&+#%*\"=<>@·€£$¥";
@@ -433,26 +439,30 @@ fn panel(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
     c.bevel(x, y, w, h, HI, LO);
 }
 
-/// Title strip with gold stripes either side of the caption (buttons sit on the right). With
-/// no caption the stripes run across the whole bar, and the app draws its own text on a
-/// `pl_title_fill` strip.
+/// Title strip with groove lines either side of the caption (buttons sit on the right).
 fn titlebar(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, caption: &str) {
     c.grad_v(x, y, w, h, TITLE_BG, TITLE_BG);
     c.bevel(x, y, w, h, HI, LO);
     let ty = y + (h - 7) / 2;
-    if caption.is_empty() {
-        for sy in (ty..ty + 7).step_by(2) {
-            c.fill(x + 6, sy, w - 40, 1, GOLD_DIM);
-        }
-        return;
-    }
     let tw = text_w(caption);
     let tx = x + (w - tw) / 2;
-    for sy in (ty..ty + 7).step_by(2) {
-        c.fill(x + 6, sy, tx - 5 - (x + 6), 1, GOLD_DIM);
-        c.fill(tx + tw + 5, sy, x + w - 34 - (tx + tw + 5), 1, GOLD_DIM);
+    grooves(c, x + 6, tx - 5, ty);
+    grooves(c, tx + tw + 5, x + w - 34, ty);
+    c.text(tx, ty, caption, ACCENT);
+}
+
+/// Groove lines from `x0` to `x1` (exclusive) on every other row of a caption's 7-pixel band.
+/// They are the same in every column, so a 1-pixel slice tiles seamlessly.
+fn grooves(c: &mut Canvas, x0: i32, x1: i32, ty: i32) {
+    for (i, sy) in (ty..ty + 7).step_by(2).enumerate() {
+        c.fill(
+            x0,
+            sy,
+            x1 - x0,
+            1,
+            if i % 2 == 0 { GROOVE_A } else { GROOVE_B },
+        );
     }
-    c.text(tx, ty, caption, GOLD);
 }
 
 /// Part of a raised bar: a vertical gradient with the top and bottom bevel, and the left
@@ -579,9 +589,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
     b.sprite("pl_top_fill", 1, 20, |c, x, y| {
         bar_piece(c, x, y, 1, 20, TITLE_BG, TITLE_BG, (false, false));
-        for sy in (6..13).step_by(2) {
-            c.px(x, y + sy, GOLD_DIM);
-        }
+        grooves(c, x, x + 1, y + 6);
     });
     b.sprite("pl_top_r", PL_TOP_R, 20, |c, x, y| {
         bar_piece(
@@ -729,7 +737,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         |b: &mut Builder, name: &str, w: u16, h: u16, label: &str, lit: bool, pressed: bool| {
             b.sprite(name, w, h, |c, x, y| {
                 button_face(c, x, y, w as i32, h as i32, pressed);
-                let col = if lit { rgb(0, 150, 0) } else { ICON };
+                let col = if lit { rgb(170, 100, 0) } else { ICON };
                 let o = pressed as i32;
                 c.text_centered(x + w as i32 / 2 + o, y + (h as i32 - 7) / 2 + o, label, col);
             });
@@ -787,19 +795,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         for (state, lit) in [("off", false), ("on", true)] {
             b.sprite(&format!("{name}_{state}"), w, 12, |c, x, y| {
                 button_face(c, x, y, w as i32, 12, lit);
-                c.fill(
-                    x + 3,
-                    y + 4,
-                    3,
-                    3,
-                    if lit { rgb(0, 255, 0) } else { rgb(0, 60, 0) },
-                );
-                c.text(
-                    x + 8,
-                    y + 3,
-                    label,
-                    if lit { rgb(230, 240, 230) } else { ICON },
-                );
+                c.fill(x + 3, y + 4, 3, 3, if lit { ACCENT } else { LCD_DIM });
+                c.text(x + 8, y + 3, label, if lit { OFF_WHITE } else { ICON });
             });
         }
     }
@@ -889,7 +886,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         c.fill(x + 2, y + 2, 5, 5, LCD_ON);
     });
     for (name, w, label) in [("mono", 25, "MONO"), ("stereo", 36, "STEREO")] {
-        for (state, col) in [("off", rgb(40, 60, 40)), ("on", LCD_ON)] {
+        for (state, col) in [("off", rgb(70, 52, 22)), ("on", LCD_ON)] {
             b.sprite(&format!("{name}_{state}"), w, 12, |c, x, y| {
                 c.inset(x, y, w as i32, 12, LCD_BG);
                 c.text_centered(x + w as i32 / 2, y + 3, label, col);
@@ -903,29 +900,15 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
     for (name, pressed) in [("seek_thumb", false), ("seek_thumb_p", true)] {
         b.sprite(name, 29, 10, |c, x, y| {
-            let (top, bot) = if pressed {
-                (rgb(255, 232, 140), GOLD)
-            } else {
-                (GOLD, GOLD_DIM)
-            };
-            c.grad_v(x, y, 29, 10, top, bot);
-            c.bevel(x, y, 29, 10, rgb(255, 244, 200), rgb(90, 70, 20));
-            for gx in [12, 14, 16] {
-                c.fill(x + gx, y + 3, 1, 4, rgb(110, 86, 24));
-            }
+            button_face(c, x, y, 29, 10, pressed);
+            c.fill(x + 14, y + 2, 1, 6, ACCENT);
         });
     }
     b.sprite("volume_track", 68, 13, |c, x, y| {
         c.inset(x, y + 3, 68, 7, GROOVE)
     });
     b.sprite("volume_fill", 68, 13, |c, x, y| {
-        c.grad_h(
-            x + 1,
-            y + 4,
-            66,
-            5,
-            &[rgb(0, 190, 0), rgb(220, 220, 0), rgb(230, 70, 0)],
-        );
+        c.grad_h(x + 1, y + 4, 66, 5, &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)]);
     });
     for name in ["volume_thumb"] {
         for pressed in [false, true] {
@@ -942,13 +925,13 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     b.sprite("eq_track", 14, 63, |c, x, y| {
         c.inset(x + 3, y, 8, 63, GROOVE);
-        c.grad_v(x + 5, y + 1, 4, 61, rgb(255, 236, 120), GOLD_DIM);
+        c.grad_v(x + 5, y + 1, 4, 61, rgb(255, 210, 120), ACCENT_DIM);
     });
     // A handle of the playlist's BPM range slider.
     b.sprite("bpm_handle", 5, 9, |c, x, y| {
-        c.fill(x, y, 5, 9, GOLD_DIM);
-        c.fill(x + 1, y + 1, 3, 7, GOLD);
-        c.fill(x + 2, y + 2, 1, 5, GOLD_DIM);
+        c.fill(x, y, 5, 9, ACCENT_DIM);
+        c.fill(x + 1, y + 1, 3, 7, ACCENT);
+        c.fill(x + 2, y + 2, 1, 5, ACCENT_DIM);
     });
     // The LP knob's face; the app draws its pointer at the knob's angle.
     b.sprite("eq_lp_knob", 14, 14, |c, x, y| {
@@ -973,7 +956,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     for (name, pressed) in [("eq_thumb", false), ("eq_thumb_p", true)] {
         b.sprite(name, 11, 11, |c, x, y| {
             button_face(c, x, y, 11, 11, pressed);
-            c.fill(x + 2, y + 5, 7, 1, ICON);
+            c.fill(x + 2, y + 5, 7, 1, ACCENT);
         });
     }
     b.sprite("pl_scroll_thumb", 10, 18, |c, x, y| {
@@ -1100,16 +1083,17 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         },
         colors: Colors {
             pl_bg: [0, 0, 0],
-            pl_text: [0, 220, 0],
+            pl_text: [240, 164, 40],
             pl_current: [255, 255, 255],
-            pl_selected_bg: [0, 0, 150],
-            vis_bar_low: [0, 170, 0],
-            vis_bar_high: [230, 210, 0],
-            vis_peak: [190, 190, 200],
-            vis_scope: [0, 230, 0],
-            eq_curve: [0, 230, 0],
-            pl_title: [GOLD[0], GOLD[1], GOLD[2]],
-            pl_owned: [255, 176, 32],
+            pl_selected_bg: [70, 46, 12],
+            vis_bar_low: [150, 96, 20],
+            vis_bar_high: [255, 196, 64],
+            vis_peak: [OFF_WHITE[0], OFF_WHITE[1], OFF_WHITE[2]],
+            vis_scope: [LCD_ON[0], LCD_ON[1], LCD_ON[2]],
+            eq_curve: [LCD_ON[0], LCD_ON[1], LCD_ON[2]],
+            pl_title: [ACCENT[0], ACCENT[1], ACCENT[2]],
+            pl_owned: [OFF_WHITE[0], OFF_WHITE[1], OFF_WHITE[2]],
+            lcd: [LCD_ON[0], LCD_ON[1], LCD_ON[2]],
         },
     };
     (img, def)

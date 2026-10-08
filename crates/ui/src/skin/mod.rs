@@ -57,6 +57,14 @@ pub struct Colors {
     /// The OWNED badge on records already in the user's collection.
     #[serde(default = "owned_amber")]
     pub pl_owned: [u8; 3],
+    /// LCD text the app draws (title line, kbps/kHz, the playlist footer's controls). Skins
+    /// written before it existed keep their green.
+    #[serde(default = "lcd_green")]
+    pub lcd: [u8; 3],
+}
+
+fn lcd_green() -> [u8; 3] {
+    [0, 236, 0]
 }
 
 fn owned_amber() -> [u8; 3] {
@@ -394,6 +402,17 @@ mod tests {
         assert!(def.glyph('€').is_some(), "for-sale prices");
         assert!(def.glyph('·').is_some());
         assert!(def.glyph('₩').is_none());
+    }
+
+    #[test]
+    fn a_skin_without_an_lcd_colour_keeps_green() {
+        let old: Colors = ron::from_str(
+            "(pl_bg: (0, 0, 0), pl_text: (0, 220, 0), pl_current: (255, 255, 255), \
+             pl_selected_bg: (0, 0, 150), vis_bar_low: (0, 170, 0), vis_bar_high: (230, 210, 0), \
+             vis_peak: (190, 190, 200), vis_scope: (0, 230, 0), eq_curve: (0, 230, 0))",
+        )
+        .unwrap();
+        assert_eq!(old.lcd, [0, 236, 0]);
     }
 
     #[test]
