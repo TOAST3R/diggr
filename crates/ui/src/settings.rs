@@ -78,6 +78,8 @@ pub struct Settings {
     pub av_offset_ms: i64,
     /// The spectrogram window's mode, channel, dB range and size.
     pub spectrogram: crate::spectrogram::SpectroSettings,
+    /// LABELS is folded in the crate sidebar.
+    pub labels_folded: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +103,7 @@ impl Default for Settings {
             vis: VisMode::Spectrum,
             av_offset_ms: 0,
             spectrogram: Default::default(),
+            labels_folded: false,
         }
     }
 }

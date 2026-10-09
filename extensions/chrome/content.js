@@ -128,7 +128,9 @@
       title:
         kind === "Seller"
           ? `Add this seller to ${appName}'s Top Sellers`
-          : `Send this ${kind.toLowerCase()} to ${appName}`,
+          : kind === "Label"
+            ? `Follow this label in ${appName}: it goes under LABELS`
+            : `Send this ${kind.toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
@@ -189,6 +191,12 @@
     // A seller's page only adds the seller (or refreshes it): no tracks, no crate to pick.
     if (WR.pageKind(location.href) === "Seller") {
       menu.append(item(`Add seller to ${appName}`, () => sendPage("enqueue")));
+      wrap.append(menu);
+      return;
+    }
+    // A label's page follows the label under LABELS (or refreshes it): nothing else to pick.
+    if (WR.pageKind(location.href) === "Label") {
+      menu.append(item(`${appName}: Send label`, () => sendPage("enqueue")));
       wrap.append(menu);
       return;
     }

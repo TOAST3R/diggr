@@ -130,6 +130,13 @@ async function buildMenus() {
       targetUrlPatterns: WR.LINK_PATTERNS,
     });
   }
+  // A label link only follows the label (the player decides that from the address).
+  chrome.contextMenus.create({
+    id: "label",
+    title: `${appName}: Send label`,
+    contexts: ["link"],
+    targetUrlPatterns: WR.LABEL_LINK_PATTERNS,
+  });
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -156,12 +163,14 @@ async function badge(ok) {
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
   if (!info.linkUrl) return;
-  const r = await send(info.linkUrl, info.menuItemId);
+  // The label item sends like Enqueue: the player follows the label from the address.
+  const mode = info.menuItemId === "label" ? "enqueue" : info.menuItemId;
+  const r = await send(info.linkUrl, mode);
   badge(r.ok);
   // The popup shows what happened to the last link sent.
   const { appName } = await settings();
   const text = r.ok
-    ? `Sent to ${appName}: ${r.json.page} → ${r.json.crate}`
+    ? r.json.message ?? `Sent to ${appName}: ${r.json.page} → ${r.json.crate}`
     : WR.problem(r.error, appName);
   await chrome.storage.session.set({ lastLink: { ok: r.ok, text } });
   if (r.error === "not-paired") chrome.runtime.openOptionsPage();

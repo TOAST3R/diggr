@@ -132,6 +132,8 @@ pub enum DigAction {
     RefreshCollection,
     /// Make the wantlist crate match the Discogs wantlist.
     RefreshWantlist,
+    /// Send a label crate's label page into it again: only what's new comes in.
+    RefreshLabel(CrateId),
     Pass(EntryId),
     UndoPass(EntryId),
     OpenForSale(EntryId),
@@ -263,6 +265,8 @@ pub(super) struct Dig {
     /// Refresh collection / Refresh wantlist asked: the crate follows when the answer comes.
     refreshing_collection: bool,
     refreshing_wantlist: bool,
+    /// Label crates being refreshed, with the records they held before, for the summary.
+    label_refresh: HashMap<CrateId, HashSet<u64>>,
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
@@ -375,6 +379,7 @@ impl Dig {
             identify_asked: false,
             refreshing_collection: false,
             refreshing_wantlist: false,
+            label_refresh: HashMap::new(),
             quiet: HashSet::new(),
             fail_streak: 0,
             play_when_ready: None,
@@ -988,6 +993,27 @@ impl DiggrApp {
         self.dig_send(page, mode, filters);
     }
 
+    /// The label a crate can move under LABELS as: every entry was sent from that label's
+    /// page, the crate is a normal one (loaded, not empty), and the label isn't followed yet.
+    pub(super) fn label_to_move(&self, c: CrateId) -> Option<u64> {
+        if c == PLAYLIST || self.crates.is_locked(c) || self.crates.seller_of(c).is_some() {
+            return None;
+        }
+        let entries = self.crates.get(c)?.entries();
+        let mut label = None;
+        for e in entries {
+            let page = url::parse(&e.origin.as_ref()?.page).ok()?;
+            let url::PageKind::Label(id) = page.kind else {
+                return None;
+            };
+            if label.is_some_and(|l| l != id) {
+                return None;
+            }
+            label = Some(id);
+        }
+        label.filter(|&l| self.crates.find_label(l).is_none())
+    }
+
     /// Cmd+V / Ctrl+V: a Discogs address goes to the shown crate; other text is ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
         match url::parse(text) {
@@ -995,6 +1021,87 @@ impl DiggrApp {
             Err(Refused::Unsupported) => self.notify(url::SUPPORTED),
             Err(Refused::NotDiscogs) => {}
         }
+    }
+
+    /// Follows label `id` from its `page`: its crate under LABELS is made (named after the
+    /// page, then after the label once its name is known) or found, and the page is sent into
+    /// it with skip passed, so only what the crate doesn't hold, and wasn't passed, comes in.
+    /// The shown crate and playback are left alone.
+    pub(super) fn dig_follow_label(&mut self, page: Page, id: u64) {
+        let Some(d) = &self.dig else { return };
+        if !d.started() {
+            return self.notify("Discogs isn't ready yet");
+        }
+        let (target, created) = match self.crates.find_label(id) {
+            Some(c) => (c, false),
+            None => {
+                let base: String = page.provisional_name().chars().take(MAX_NAME).collect();
+                let name = (1..)
+                    .map(|n| {
+                        if n == 1 {
+                            base.clone()
+                        } else {
+                            format!("{base} ({n})")
+                        }
+                    })
+                    .find(|n| self.crates.find(n).is_none())
+                    .unwrap_or(base);
+                match self.crates.create(&name) {
+                    Ok(c) => {
+                        self.crates.set_label(c, id);
+                        (c, true)
+                    }
+                    Err(e) => return self.notify(e),
+                }
+            }
+        };
+        if !self.crates.load(target) {
+            let name = self.crates.name(target).to_owned();
+            return self.notify(format!("Crate \"{name}\" can't be read"));
+        }
+        let Some(d) = &mut self.dig else { return };
+        if created {
+            d.created.insert(target);
+        }
+        d.active.insert(target);
+        d.send(Command::Send {
+            page,
+            target,
+            filters: Filters { skip_passed: true },
+        });
+    }
+
+    /// Refresh label: the label's page into its crate again, with the records it holds now
+    /// remembered for the summary ("4 new records" / "up to date").
+    pub(super) fn dig_refresh_label(&mut self, c: CrateId) {
+        let Some(label) = self.crates.label_of(c) else {
+            return;
+        };
+        if self.label_refreshing(c) || !self.crates.load(c) {
+            return;
+        }
+        let before = self.crate_releases(c);
+        if let Some(d) = &mut self.dig
+            && d.started()
+        {
+            d.label_refresh.insert(c, before);
+        }
+        self.dig_follow_label(Page::new(url::PageKind::Label(label)), label);
+    }
+
+    /// Whether Refresh label is running for crate `c`.
+    pub(super) fn label_refreshing(&self, c: CrateId) -> bool {
+        self.dig
+            .as_ref()
+            .is_some_and(|d| d.label_refresh.contains_key(&c))
+    }
+
+    /// The releases crate `c` holds.
+    fn crate_releases(&self, c: CrateId) -> HashSet<u64> {
+        self.crates
+            .get(c)
+            .map(|p| p.entries().iter().filter_map(release_of).collect())
+            .unwrap_or_default()
     }
 
     /// A page's tracks into the crate `target` (a seller's), announced like any send.
@@ -1181,6 +1288,14 @@ impl DiggrApp {
                     Mode::Enqueue => SendMode::Enqueue,
                     Mode::Crate(name) => SendMode::Crate(name),
                 };
+                // A label from the browser follows the label (or refreshes it), in the background.
+                if let url::PageKind::Label(id) = page.kind {
+                    match self.crates.find_label(id) {
+                        Some(c) => self.dig_refresh_label(c),
+                        None => self.dig_follow_label(page, id),
+                    }
+                    return;
+                }
                 let seller = matches!(page.kind, url::PageKind::Seller(_));
                 self.dig_send_asked(page, mode, Some(filters));
                 // A seller added from the browser: the app asks to come forward (the system
@@ -1257,11 +1372,13 @@ impl DiggrApp {
             .iter()
             .map(|s| s.username.clone())
             .collect();
+        let labels = self.crates.labels().filter_map(|c| c.label).collect();
         let snap = Snapshot {
             crates,
             playing,
             sends,
             sellers,
+            labels,
         };
         if snap != d.snapshot {
             shared.snapshot.store(Arc::new(snap.clone()));
@@ -1368,8 +1485,16 @@ impl DiggrApp {
                 }
             }
             Event::Finished(j) => {
-                if let Some(d) = &mut self.dig {
-                    d.jobs.remove(&j.id);
+                let Some(d) = &mut self.dig else { return };
+                d.jobs.remove(&j.id);
+                if let Some(before) = d.label_refresh.remove(&j.target) {
+                    let new = self.crate_releases(j.target).difference(&before).count();
+                    let name = self.crates.name(j.target);
+                    self.notify(match new {
+                        0 => format!("{name}: up to date"),
+                        1 => format!("{name}: 1 new record"),
+                        n => format!("{name}: {n} new records"),
+                    });
                 }
                 self.seller_job_ended(j.target, true);
             }
@@ -1383,7 +1508,16 @@ impl DiggrApp {
                 if d.created.remove(&j.target) && self.crates.entry_count(j.target) == 0 {
                     self.delete_crate(j.target);
                 }
-                self.notify(format!("{}: {}", j.name, err.message()));
+                let refreshed = self
+                    .dig
+                    .as_mut()
+                    .is_some_and(|d| d.label_refresh.remove(&j.target).is_some());
+                if refreshed {
+                    let name = self.crates.name(j.target);
+                    self.notify(format!("{name}: refresh failed: {}", err.message()));
+                } else {
+                    self.notify(format!("{}: {}", j.name, err.message()));
+                }
                 self.seller_job_ended(j.target, false);
             }
             Event::Offline(off) => {
@@ -2338,6 +2472,7 @@ impl DiggrApp {
                 // A sync already on its way does: the crate follows its answer.
                 d.sync_collection();
             }
+            DigAction::RefreshLabel(c) => self.dig_refresh_label(c),
             DigAction::RefreshWantlist => {
                 let Some(d) = &mut self.dig else { return };
                 if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {
