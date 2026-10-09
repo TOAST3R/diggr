@@ -29,6 +29,34 @@ pub enum FetchError {
     Cancelled,
     /// yt-dlp failed, or produced no file; the text is its last error line.
     Failed(String),
+    /// YouTube is limiting requests (too many, or a bot check): nothing is wrong with the
+    /// clip, so it isn't a failed try. The text is the line that said so.
+    Limited(String),
+}
+
+/// The line of yt-dlp's error output saying that YouTube is limiting requests, if one does:
+/// HTTP 429, "Too Many Requests", "confirm you're not a bot", "rate-limit".
+pub fn limited(errors: &str) -> Option<&str> {
+    errors.lines().map(str::trim).find(|l| {
+        let l = l.to_lowercase().replace('’', "'");
+        [
+            "http error 429",
+            "too many requests",
+            "confirm you're not a bot",
+            "rate-limit",
+        ]
+        .iter()
+        .any(|p| l.contains(p))
+    })
+}
+
+/// A failed yt-dlp run as an error: limited when its output says so, else its last line.
+fn failure(errors: &str, otherwise: &str) -> FetchError {
+    if let Some(line) = limited(errors) {
+        return FetchError::Limited(line.to_owned());
+    }
+    let last = errors.lines().rev().find(|l| !l.trim().is_empty());
+    FetchError::Failed(last.unwrap_or(otherwise).trim().to_owned())
 }
 
 pub trait Fetcher: Send + Sync {
@@ -189,10 +217,7 @@ impl Fetcher for YtDlp {
             Ok(dest)
         } else {
             remove_partial(dir, clip);
-            let last = errors.lines().rev().find(|l| !l.trim().is_empty());
-            Err(FetchError::Failed(
-                last.unwrap_or("yt-dlp failed").trim().to_owned(),
-            ))
+            Err(failure(&errors, "yt-dlp failed"))
         }
     }
 
@@ -259,10 +284,7 @@ impl Fetcher for YtDlp {
         let out = reader.join().unwrap_or_default();
         let errors = err_reader.join().unwrap_or_default();
         if !status.success() {
-            let last = errors.lines().rev().find(|l| !l.trim().is_empty());
-            return Err(FetchError::Failed(
-                last.unwrap_or("yt-dlp search failed").trim().to_owned(),
-            ));
+            return Err(failure(&errors, "yt-dlp search failed"));
         }
         Ok(search::parse(&out))
     }
@@ -298,6 +320,8 @@ pub struct FakeFetcher {
     pub searched: std::sync::Mutex<Vec<String>>,
     /// Searches fail (as offline) while this is set.
     pub search_fails: AtomicBool,
+    /// YouTube limits every download and search while this is set.
+    pub limited: AtomicBool,
 }
 
 impl FakeFetcher {
@@ -312,6 +336,7 @@ impl FakeFetcher {
             results: Default::default(),
             searched: Default::default(),
             search_fails: AtomicBool::new(false),
+            limited: AtomicBool::new(false),
         }
     }
 
@@ -355,6 +380,11 @@ impl Fetcher for FakeFetcher {
             return Err(FetchError::NoProgram);
         }
         self.started.lock().unwrap().push(clip.to_owned());
+        if self.limited.load(Ordering::SeqCst) {
+            return Err(FetchError::Limited(
+                "ERROR: HTTP Error 429: Too Many Requests".into(),
+            ));
+        }
         std::fs::create_dir_all(dir).map_err(|e| FetchError::Failed(e.to_string()))?;
         let part = dir.join(format!("{clip}.{EXT}.part"));
         let _ = std::fs::write(&part, b"partial");
@@ -397,6 +427,11 @@ impl Fetcher for FakeFetcher {
             return Err(FetchError::NoProgram);
         }
         self.searched.lock().unwrap().push(query.to_owned());
+        if self.limited.load(Ordering::SeqCst) {
+            return Err(FetchError::Limited(
+                "ERROR: Sign in to confirm you're not a bot".into(),
+            ));
+        }
         if self.search_fails.load(Ordering::SeqCst) {
             return Err(FetchError::Failed("offline".into()));
         }
@@ -413,6 +448,36 @@ impl Fetcher for FakeFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn youtube_limiting_is_told_apart_from_a_broken_video() {
+        for errors in [
+            "WARNING: x\nERROR: [youtube] dQw4w9WgXcQ: HTTP Error 429: Too Many Requests",
+            "ERROR: [youtube] abc: Sign in to confirm you\u{2019}re not a bot. Use --cookies",
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+            "ERROR: unable to download: Too Many Requests\nERROR: last line",
+            "WARNING: [youtube] rate-limited by YouTube; retrying",
+        ] {
+            assert!(
+                matches!(failure(errors, "x"), FetchError::Limited(_)),
+                "{errors}"
+            );
+        }
+        for errors in [
+            "ERROR: [youtube] abc: Video unavailable",
+            "ERROR: [youtube] abc: Private video. Sign in if you've been granted access",
+            "",
+        ] {
+            assert!(
+                matches!(failure(errors, "x"), FetchError::Failed(_)),
+                "{errors}"
+            );
+        }
+        assert_eq!(
+            failure("a\nERROR: [youtube] abc: Video unavailable\n", "x"),
+            FetchError::Failed("ERROR: [youtube] abc: Video unavailable".into())
+        );
+    }
 
     #[test]
     fn the_argument_list_is_fixed_and_confined() {

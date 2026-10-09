@@ -137,8 +137,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "LABELS (sidebar): right-click a label",
-                "Delete label…, Export to crate, Refresh label, Download all tracks; a label \
-                 crate fills only from its label (N passes a track)",
+                "Delete label…, Export to crate, Refresh label, Download all tracks, Retry failed \
+                 tracks; a label crate fills only from its label (N passes a track)",
             ),
             (
                 "TOP SELLERS (sidebar): click / double-click a seller",

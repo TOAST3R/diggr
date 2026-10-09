@@ -140,6 +140,10 @@ pub enum DigAction {
     StopDownload,
     /// Show Download all tracks' window again.
     ShowDownload,
+    /// Retry failed tracks: a label crate's "clip failed" and "not found" tracks, again.
+    RetryFailed(CrateId),
+    /// While YouTube limits requests: try again now.
+    TryNow,
     Pass(EntryId),
     UndoPass(EntryId),
     OpenForSale(EntryId),
@@ -275,6 +279,8 @@ pub(super) struct Dig {
     label_refresh: HashMap<CrateId, HashSet<u64>>,
     /// Download all tracks, while it runs.
     pub(super) downloading: Option<LabelDownload>,
+    /// YouTube limits requests until then (Unix seconds): nothing downloads or searches.
+    pub(super) limited_until: Option<u64>,
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
@@ -389,6 +395,7 @@ impl Dig {
             refreshing_wantlist: false,
             label_refresh: HashMap::new(),
             downloading: None,
+            limited_until: None,
             quiet: HashSet::new(),
             fail_streak: 0,
             play_when_ready: None,
@@ -857,6 +864,14 @@ fn download_counts(p: &crate::playlist::Playlist) -> (DownloadCounts, usize) {
     (n, total)
 }
 
+/// "in 9 min", "in 1 min", "now".
+fn in_minutes(secs: u64) -> String {
+    match secs {
+        0 => "now".into(),
+        s => format!("in {} min", s.div_ceil(60)),
+    }
+}
+
 /// "2 GB", "500 MB".
 fn gb_label(gb: f32) -> String {
     if gb >= 1.0 {
@@ -1238,7 +1253,10 @@ impl DiggrApp {
             .count();
         let name = self.crates.name(c).to_owned();
         let done = counts.ready + counts.skipped;
+        let limited = self.dig.as_ref().and_then(|d| d.limited_until);
+        let retry = self.retryable(c).0.len();
         let (mut open, mut raise, mut stop, mut options) = (true, false, false, false);
+        let (mut try_now, mut retry_clicked) = (false, false);
         egui::Window::new("Download all tracks")
             .id(egui::Id::new("label-download"))
             .open(&mut open)
@@ -1253,7 +1271,15 @@ impl DiggrApp {
                     done as f32 / total as f32
                 };
                 ui.add(egui::ProgressBar::new(part).text(format!("{done} of {total} tracks")));
-                if full {
+                if let Some(until) = limited {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 170, 60),
+                        format!(
+                            "Paused: YouTube is limiting requests. Trying again {}.",
+                            in_minutes(until.saturating_sub(now_secs()))
+                        ),
+                    );
+                } else if full {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
                         format!(
@@ -1275,6 +1301,12 @@ impl DiggrApp {
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
+                    if limited.is_some() {
+                        try_now = ui.button("Try now").clicked();
+                    }
+                    if retry > 0 {
+                        retry_clicked = ui.button(format!("Retry failed ({retry})")).clicked();
+                    }
                     if full {
                         raise = ui
                             .button(format!("Raise cache to {}", gb_label(gb * 2.0)))
@@ -1286,6 +1318,14 @@ impl DiggrApp {
                     }
                 });
             });
+        if try_now {
+            self.dig_act(c, DigAction::TryNow);
+            return;
+        }
+        if retry_clicked {
+            self.dig_retry_failed(c);
+            return;
+        }
         let Some(d) = &mut self.dig else { return };
         if raise {
             d.settings.cache_gb = (gb * 2.0).min(1000.0);
@@ -1305,6 +1345,84 @@ impl DiggrApp {
             self.dig_open_dialog();
         } else if !open && let Some(dl) = &mut d.downloading {
             dl.shown = false;
+        }
+    }
+
+    /// Whether YouTube is limiting requests now.
+    pub(super) fn youtube_limited(&self) -> bool {
+        self.dig.as_ref().is_some_and(|d| d.limited_until.is_some())
+    }
+
+    /// A label crate's tracks Retry failed would try again ("clip failed", "not found"), with
+    /// the clips to download and the searches to run again.
+    pub(super) fn retryable(&self, c: CrateId) -> (Vec<EntryId>, Vec<String>, Vec<SearchRequest>) {
+        let (mut ids, mut clips, mut searches) = (Vec::new(), Vec::new(), Vec::new());
+        let Some(p) = self
+            .crates
+            .get(c)
+            .filter(|_| self.crates.label_of(c).is_some())
+        else {
+            return (ids, clips, searches);
+        };
+        for e in p.entries() {
+            match &e.status {
+                EntryStatus::Unavailable(UnavailableKind::ClipFailed) => {
+                    if let Some(clip) = clip_of(e) {
+                        ids.push(e.id);
+                        clips.push(clip.to_owned());
+                    }
+                }
+                EntryStatus::Unavailable(UnavailableKind::NotFound) => {
+                    if let Some(o) = e.origin.as_ref().filter(|o| !o.search_key.is_empty()) {
+                        ids.push(e.id);
+                        searches.push(SearchRequest {
+                            key: o.search_key.clone(),
+                            artist: e.artist.clone(),
+                            record_artist: o.artist.clone(),
+                            title: e.title.clone(),
+                            duration: e.duration,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        (ids, clips, searches)
+    }
+
+    /// Retry failed tracks: back to waiting, forgotten as failed by the preview worker, and
+    /// run as part of Download all tracks (started when it isn't running).
+    pub(super) fn dig_retry_failed(&mut self, c: CrateId) {
+        let (ids, clips, searches) = self.retryable(c);
+        if ids.is_empty() {
+            return;
+        }
+        let Some(p) = self.crates.get_mut(c) else {
+            return;
+        };
+        for &id in &ids {
+            let search = p
+                .get(id)
+                .is_some_and(|e| e.status == EntryStatus::Unavailable(UnavailableKind::NotFound));
+            p.set_waiting(
+                id,
+                if search {
+                    WaitKind::Search
+                } else {
+                    WaitKind::Queued
+                },
+            );
+        }
+        self.crates.touch(c);
+        let Some(d) = &mut self.dig else { return };
+        d.preview(PreviewCommand::Retry { clips, searches });
+        match &mut d.downloading {
+            Some(dl) if dl.crate_id == c => {
+                dl.shown = true;
+                // Sent again with the retried clips at the next frame.
+                dl.sent.clear();
+            }
+            _ => self.dig_act(c, DigAction::DownloadLabel(c)),
         }
     }
 
@@ -2291,6 +2409,25 @@ impl DiggrApp {
                     }
                 });
             }
+            PreviewEvent::Limited { until } => {
+                let Some(d) = &mut self.dig else { return };
+                let first = d.limited_until.is_none();
+                d.limited_until = Some(until);
+                if let Some(dl) = &mut d.downloading {
+                    dl.shown = true;
+                }
+                if first {
+                    self.notify(format!(
+                        "YouTube is limiting requests: trying again {}",
+                        in_minutes(until.saturating_sub(now_secs()))
+                    ));
+                }
+            }
+            PreviewEvent::Unlimited => {
+                if let Some(d) = &mut self.dig {
+                    d.limited_until = None;
+                }
+            }
             PreviewEvent::CacheFull => {
                 let Some(d) = &mut self.dig else { return };
                 let gb = d.settings.cache_gb;
@@ -2732,6 +2869,12 @@ impl DiggrApp {
             }
             DigAction::StopDownload => self.dig_stop_download(),
             DigAction::ShowDownload => self.dig_show_download(),
+            DigAction::RetryFailed(c) => self.dig_retry_failed(c),
+            DigAction::TryNow => {
+                if let Some(d) = &self.dig {
+                    d.preview(PreviewCommand::TryNow);
+                }
+            }
             DigAction::RefreshWantlist => {
                 let Some(d) = &mut self.dig else { return };
                 if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {

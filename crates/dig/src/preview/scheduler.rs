@@ -32,6 +32,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(120);
 pub const RECHECK: Duration = Duration::from_secs(30);
 /// Tries per clip: the first and one retry.
 const ATTEMPTS: u32 = 2;
+/// The first wait when YouTube limits requests; each limited try after it doubles the wait,
+/// up to [`MAX_LIMITED_WAITS`] times this.
+pub const LIMITED_WAIT: Duration = Duration::from_secs(10 * 60);
+const MAX_LIMITED_WAITS: u32 = 6;
 /// A search that failed (offline, yt-dlp error) is tried again after this long.
 const SEARCH_RETRY: Duration = Duration::from_secs(60);
 
@@ -78,6 +82,13 @@ pub enum PreviewCommand {
     /// Clips to download after the horizon, in order (replacing the previous list; empty
     /// stops it). They never cause an eviction: the list pauses when the cache is full.
     Background(Vec<String>),
+    /// While YouTube limits requests: try again now instead of at the end of the wait.
+    TryNow,
+    /// Try these again: clips given up on, and searches remembered as not found (or failed).
+    Retry {
+        clips: Vec<String>,
+        searches: Vec<SearchRequest>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +113,12 @@ pub enum PreviewEvent {
     },
     /// The background list paused: the cache is at its limit. A new limit resumes it.
     CacheFull,
+    /// YouTube is limiting requests: nothing starts until `until` (Unix seconds).
+    Limited {
+        until: u64,
+    },
+    /// YouTube answers normally again.
+    Unlimited,
     /// A search found nothing usable for the entries under `key` of length `duration`.
     NotFound {
         key: String,
@@ -117,6 +134,8 @@ pub struct Config {
     pub program: Option<String>,
     pub timeout: Duration,
     pub recheck: Duration,
+    /// The first wait when YouTube limits requests.
+    pub limited_wait: Duration,
 }
 
 impl Config {
@@ -128,6 +147,7 @@ impl Config {
             program,
             timeout: TIMEOUT,
             recheck: RECHECK,
+            limited_wait: LIMITED_WAIT,
         }
     }
 }
@@ -173,6 +193,10 @@ struct Scheduler {
     background: Vec<String>,
     /// The background list waits for a larger cache.
     paused: bool,
+    /// YouTube limits requests: nothing starts before this; past it, the next start is a try.
+    limited_until: Option<Instant>,
+    /// The wait after the next limited answer.
+    backoff: Duration,
 }
 
 impl Scheduler {
@@ -215,6 +239,26 @@ impl Scheduler {
                 self.paused = false;
                 self.evict();
             }
+            PreviewCommand::TryNow => {
+                if self.limited_until.is_some() {
+                    self.limited_until = Some(Instant::now());
+                }
+            }
+            PreviewCommand::Retry { clips, searches } => {
+                for c in &clips {
+                    self.given_up.remove(c);
+                    self.failures.remove(c);
+                }
+                for req in &searches {
+                    self.remembered.forget(req);
+                    self.search_failed.remove(&req.key);
+                }
+                if let Some(dir) = &self.cfg.searches
+                    && !searches.is_empty()
+                {
+                    let _ = self.remembered.save(dir);
+                }
+            }
             PreviewCommand::Background(clips) => {
                 for (clip, r) in &self.running {
                     if !clips.contains(clip) && !self.wanted.contains(clip) {
@@ -233,6 +277,37 @@ impl Scheduler {
             PreviewCommand::CheckProgram => self.look(),
             PreviewCommand::Played(path) => store::touch(&path),
             PreviewCommand::Search(list) => self.to_search = list,
+        }
+    }
+
+    /// Whether YouTube's wait is still on: nothing starts.
+    fn waiting_for_youtube(&self) -> bool {
+        self.limited_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// A limited answer: wait, longer each time a try after a wait is limited too. Answers
+    /// for requests already under way when the wait began change nothing.
+    fn limited(&mut self) {
+        if self.waiting_for_youtube() {
+            return;
+        }
+        let base = self.cfg.limited_wait;
+        self.backoff = if self.limited_until.is_some() {
+            (self.backoff * 2).min(base * MAX_LIMITED_WAITS)
+        } else {
+            base
+        };
+        self.limited_until = Some(Instant::now() + self.backoff);
+        self.events.push(PreviewEvent::Limited {
+            until: crate::now_secs() + self.backoff.as_secs(),
+        });
+    }
+
+    /// A download or search went through: YouTube answers normally.
+    fn answered(&mut self) {
+        if self.limited_until.take().is_some() {
+            self.backoff = self.cfg.limited_wait;
+            self.events.push(PreviewEvent::Unlimited);
         }
     }
 
@@ -262,7 +337,7 @@ impl Scheduler {
             }
         }
         self.to_search = left;
-        if self.searching.is_some() {
+        if self.searching.is_some() || self.waiting_for_youtube() {
             return;
         }
         let Some(i) = self.to_search.iter().position(|r| {
@@ -300,7 +375,17 @@ impl Scheduler {
     fn searched(&mut self, req: SearchRequest, result: Result<Vec<SearchResult>, FetchError>) {
         self.searching = None;
         let found = match result {
-            Ok(results) => search::best(&req, &results).cloned(),
+            Ok(results) => {
+                self.answered();
+                search::best(&req, &results).cloned()
+            }
+            Err(FetchError::Limited(_)) => {
+                // Not the track's fault: it is searched again once the wait is over.
+                if !self.to_search.iter().any(|r| r.key == req.key) {
+                    self.to_search.insert(0, req);
+                }
+                return self.limited();
+            }
             Err(FetchError::NoProgram) => {
                 self.fetcher = None;
                 self.said_missing = false;
@@ -350,6 +435,7 @@ impl Scheduler {
         };
         match result {
             Ok(path) => {
+                self.answered();
                 self.failures.remove(&clip);
                 self.delivered.insert(clip.clone());
                 let background = !self.protected.contains(&clip);
@@ -370,6 +456,8 @@ impl Scheduler {
                 self.look();
             }
             Err(FetchError::InvalidId) => self.give_up(clip),
+            // Not the clip's fault: it stays wanted, and starts again once the wait is over.
+            Err(FetchError::Limited(_)) => self.limited(),
             Err(_) => {
                 let n = self.failures.entry(clip.clone()).or_default();
                 *n += 1;
@@ -410,6 +498,9 @@ impl Scheduler {
 
     /// Starts downloads for the wanted clips, best first, while slots are free.
     fn fill(&mut self) {
+        if self.waiting_for_youtube() {
+            return;
+        }
         let todo: Vec<String> = self
             .wanted
             .iter()
@@ -450,7 +541,7 @@ impl Scheduler {
     /// Starts background downloads in the slots the horizon leaves free, while the cache is
     /// under its limit; clips already in the cache are reported done at once.
     fn fill_background(&mut self) {
-        if self.paused {
+        if self.paused || self.waiting_for_youtube() {
             return;
         }
         let todo: Vec<String> = self
@@ -561,6 +652,8 @@ impl PreviewHandle {
             search_failed: HashMap::new(),
             background: Vec::new(),
             paused: false,
+            limited_until: None,
+            backoff: Duration::ZERO,
         };
         spawner.spawn(
             "dig-previews",
@@ -570,11 +663,13 @@ impl PreviewHandle {
                     s.remembered = Searches::load(dir);
                 }
                 loop {
-                    let tick = if s.running.is_empty() && s.fetcher.is_some() {
-                        Duration::from_secs(5)
-                    } else {
-                        Duration::from_millis(100).min(s.cfg.recheck)
-                    };
+                    let tick =
+                        if s.running.is_empty() && s.fetcher.is_some() && s.limited_until.is_none()
+                        {
+                            Duration::from_secs(5)
+                        } else {
+                            Duration::from_millis(100).min(s.cfg.recheck)
+                        };
                     match rx.recv_timeout(tick) {
                         Ok(Msg::Cmd(c)) => s.handle(c),
                         Ok(Msg::Progress(clip, p)) => {
@@ -630,6 +725,65 @@ impl PreviewHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scheduler(wait: Duration) -> Scheduler {
+        let mut cfg = Config::new(std::env::temp_dir().join("diggr-tests-unused"), 1, None);
+        cfg.limited_wait = wait;
+        let (tx, _rx) = channel();
+        Scheduler {
+            cfg,
+            finder: Arc::new(|_| None),
+            spawner: Arc::new(platform::native::NativeSpawner),
+            inbox: tx,
+            fetcher: None,
+            looked: None,
+            said_missing: false,
+            wanted: Vec::new(),
+            protected: HashSet::new(),
+            running: HashMap::new(),
+            failures: HashMap::new(),
+            given_up: HashSet::new(),
+            delivered: HashSet::new(),
+            events: Vec::new(),
+            remembered: Searches::default(),
+            to_search: Vec::new(),
+            searching: None,
+            search_failed: HashMap::new(),
+            background: Vec::new(),
+            paused: false,
+            limited_until: None,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn limited_waits_double_up_to_six_times_and_reset_on_an_answer() {
+        let base = Duration::from_secs(600);
+        let mut s = scheduler(base);
+        let mut waits = Vec::new();
+        for _ in 0..5 {
+            s.limited();
+            waits.push(s.backoff);
+            // A second limited answer within the wait (the other slot) changes nothing.
+            s.limited();
+            assert_eq!(s.backoff, *waits.last().unwrap());
+            // The wait is over: the next answer is the try.
+            s.limited_until = Some(Instant::now() - Duration::from_secs(1));
+        }
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(waits, [min(10), min(20), min(40), min(60), min(60)]);
+        let limited = s
+            .events
+            .iter()
+            .filter(|e| matches!(e, PreviewEvent::Limited { .. }))
+            .count();
+        assert_eq!(limited, 5, "one event per wait");
+        s.answered();
+        assert_eq!(s.limited_until, None);
+        assert_eq!(s.events.last(), Some(&PreviewEvent::Unlimited));
+        s.limited();
+        assert_eq!(s.backoff, min(10), "starts again at 10 minutes");
+    }
 
     #[test]
     fn the_horizon_is_armed_then_playing_and_three_ahead() {

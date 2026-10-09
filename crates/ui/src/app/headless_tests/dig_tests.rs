@@ -1867,8 +1867,16 @@ fn pasted_label_crate(rig: &mut Rig, name: &str) -> CrateId {
     let c = rig.app.crates.create(name).unwrap();
     rig.app.show_crate(c);
     rig.app.dig_paste(LOWTIDE);
+    // Every record expanded: none still only listed.
     rig.until(
-        |r| r.app.crates.get(c).is_some_and(|p| !p.is_empty()),
+        |r| {
+            r.app.crates.get(c).is_some_and(|p| {
+                !p.is_empty()
+                    && !p.entries().iter().any(|e| {
+                        e.status == EntryStatus::Waiting(crate::playlist::WaitKind::Listed)
+                    })
+            })
+        },
         "the label's records arrive",
     );
     for _ in 0..50 {
@@ -2060,15 +2068,15 @@ fn download_all_tracks_fills_the_cache_behind_what_plays() {
 
 #[test]
 fn a_window_shows_the_progress_and_stops_it_at_any_moment() {
-    let mut fakes = Fakes::new();
-    // Slow downloads: there is time to look and to stop.
-    fakes.fetcher = Arc::new({
-        let mut f = FakeFetcher::new(fixture("tone.m4a"));
-        f.delay = Duration::from_millis(300);
-        f
-    });
+    let fakes = Fakes::new();
     let mut rig = rig("dig-label-window", &fakes, |_| {});
     let c = followed_label(&mut rig);
+    // Nothing downloads from here on: there is time to look and to stop, and the window keeps
+    // still under the click.
+    fakes
+        .fetcher
+        .available
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let ctx = rig.ctx.clone();
     rig.app
         .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
@@ -2100,6 +2108,12 @@ fn a_full_cache_pauses_and_the_window_asks_to_raise_it() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-label-full", &fakes, |_| {});
     let c = followed_label(&mut rig);
+    // Nothing downloads from here on: the window keeps still (no rows coming and going under
+    // the click), and the label can't finish before it.
+    fakes
+        .fetcher
+        .available
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let ctx = rig.ctx.clone();
     rig.app.dig.as_mut().unwrap().settings.cache_gb = 2.0;
     rig.app
@@ -2187,6 +2201,108 @@ fn a_label_crates_menu_offers_download_then_stop() {
             .unwrap()
             .shown
     );
+}
+
+#[test]
+fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
+    use ::dig::preview::scheduler::PreviewEvent;
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-limited", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let ctx = rig.ctx.clone();
+    rig.app
+        .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
+    rig.app
+        .dig
+        .as_mut()
+        .unwrap()
+        .downloading
+        .as_mut()
+        .unwrap()
+        .shown = false;
+    let until = ::dig::now_secs() + 600;
+    rig.app.dig_preview_event(PreviewEvent::Limited { until });
+    assert!(
+        message(&rig).starts_with("YouTube is limiting requests: trying again in 10 min"),
+        "{}",
+        message(&rig)
+    );
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out)
+            .iter()
+            .any(|t| t == "Paused: YouTube is limiting requests. Trying again in 10 min."),
+        "the window comes back: {:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Try now"));
+    // A second limited answer says nothing new.
+    rig.app.notify("");
+    rig.app.dig_preview_event(PreviewEvent::Limited {
+        until: until + 1200,
+    });
+    assert_eq!(message(&rig), "");
+    rig.click_text("Try now");
+    assert!(rig.app.youtube_limited(), "until YouTube answers");
+    rig.app.dig_preview_event(PreviewEvent::Unlimited);
+    assert!(!rig.app.youtube_limited());
+    let out = rig.frame(Vec::new());
+    assert!(!text_list(&out).iter().any(|t| t.starts_with("Paused")));
+}
+
+#[test]
+fn retry_failed_tries_clip_failed_and_not_found_again_and_nothing_else() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-retry", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let ids: Vec<EntryId> = {
+        let p = rig.app.crates.get_mut(c).unwrap();
+        let ids: Vec<EntryId> = p.entries().iter().map(|e| e.id).take(4).collect();
+        // A track to search: no clip, a search key.
+        for e in p.entries_mut().filter(|e| e.id == ids[1]) {
+            let o = e.origin.as_mut().unwrap();
+            o.clip = None;
+            o.search_key = "track/nightcraft/glasshouse".into();
+        }
+        p.set_unavailable(ids[0], "clip failed");
+        p.set_unavailable(ids[1], "not found by search");
+        p.set_unavailable(ids[2], "no clip");
+        p.set_unavailable(ids[3], "already in crate");
+        ids
+    };
+    assert_eq!(
+        rig.app.retryable(c).0,
+        ids[..2],
+        "clip failed and not found only"
+    );
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::RetryFailed(c)), &ctx);
+    let status = |rig: &Rig, i: usize| {
+        rig.app
+            .crates
+            .get(c)
+            .unwrap()
+            .get(ids[i])
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert_eq!(
+        status(&rig, 0),
+        EntryStatus::Waiting(crate::playlist::WaitKind::Queued)
+    );
+    assert_eq!(
+        status(&rig, 1),
+        EntryStatus::Waiting(crate::playlist::WaitKind::Search)
+    );
+    assert!(matches!(status(&rig, 2), EntryStatus::Unavailable(_)));
+    assert!(matches!(status(&rig, 3), EntryStatus::Unavailable(_)));
+    assert!(
+        rig.app.label_download().is_some_and(|(d, _, _)| d == c),
+        "runs as Download all tracks"
+    );
+    assert!(rig.app.retryable(c).0.is_empty());
 }
 
 #[test]
