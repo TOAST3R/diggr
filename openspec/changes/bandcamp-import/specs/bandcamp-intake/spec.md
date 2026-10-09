@@ -16,11 +16,15 @@ The app SHALL accept Bandcamp addresses of a label or artist (`https://‹name�
 - **THEN** it is refused, and yt-dlp is not run
 
 ### Requirement: Reading a Bandcamp page
-An album or track page SHALL be read with one yt-dlp request that downloads nothing. It SHALL give each track's artist, title, length, album, Bandcamp track id and cover. A label page SHALL list its albums with one request, then read them one at a time, at least 1 s apart. Progress SHALL be shown as for Discogs sends ("Analogical Force: 40 of 78 albums"). The catalogue number SHALL be taken from a leading bracket in the album title ("[AF070] The Ooze EP" → catalogue AF070, album "The Ooze EP"). A track that Bandcamp doesn't stream (a pre-order, for example) SHALL be added unavailable with "no clip (not streamable)". Reading SHALL run off the UI thread and the audio path.
+An album or track page SHALL be read with one yt-dlp request that downloads nothing. It SHALL give each track's artist, title, length, album, Bandcamp track id and cover. A label page SHALL list its albums with one request, then read them one at a time, at least 1 s apart. Progress SHALL be shown as for Discogs sends ("Analogical Force: 40 of 78 albums"). The catalogue number SHALL be taken from a bracket holding a digit at the start or end of the album title ("[AF070] The Ooze EP" → catalogue AF070, album "The Ooze EP"; "Advance [TOBAS 006]" → TOBAS 006), and a trailing bracket that only names a format ("[Vinyl]") SHALL be dropped. When yt-dlp credits the tracks to the account itself (a label's account), an album titled "Artist - Album" SHALL credit its tracks to that artist, and a track titled "Artist - Track" to its own artist. A track that Bandcamp doesn't stream (a pre-order, for example) SHALL be added unavailable with "no clip (not streamable)". Reading SHALL run off the UI thread and the audio path.
 
 #### Scenario: An album
 - **WHEN** `https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep` is pasted into an empty crate
 - **THEN** two entries "Patricia - The Ooze" and "Patricia - Swamp" are added with album "The Ooze EP", catalogue number AF070, label Analogical Force and their lengths, and each plays from Bandcamp
+
+#### Scenario: A label's own account
+- **WHEN** an album of diffusereality.bandcamp.com is titled "Gioele Menoni - Mental Roots" and yt-dlp credits each track to "Diffuse Reality Records"
+- **THEN** its entries read "Gioele Menoni - Intro", "Gioele Menoni - Mental Roots"…, on the album "Mental Roots"
 
 #### Scenario: Not streamable
 - **WHEN** an album page lists a pre-order track with no stream

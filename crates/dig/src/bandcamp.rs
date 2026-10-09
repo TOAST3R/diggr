@@ -129,18 +129,43 @@ pub fn label_name(title: Option<&str>, page: &BandcampPage) -> String {
         .unwrap_or_else(|| page.name.clone())
 }
 
-/// A leading catalogue number in brackets: "[AF070] The Ooze EP" → ("AF070", "The Ooze EP").
-/// Without one, no catalogue number and the whole title.
+/// Bracketed words that only say the format: "[Vinyl]", "(EP)".
+const FORMAT_WORDS: [&str; 8] = [
+    "vinyl", "ep", "lp", "12\"", "digital", "cd", "cassette", "single",
+];
+
+/// A catalogue number in brackets, leading or trailing: "[AF070] The Ooze EP" → ("AF070",
+/// "The Ooze EP"), "Advance [TOBAS 006]" → ("TOBAS 006", "Advance"). A bracket counts when it
+/// holds a digit; one that only says the format ("[Vinyl]") is dropped. Without one, no
+/// catalogue number and the whole title.
 pub fn catno_and_album(title: &str) -> (String, String) {
-    let t = title.trim();
+    let is_catno = |c: &str| {
+        let c = c.trim();
+        !c.is_empty() && c.len() <= 30 && c.chars().any(|ch| ch.is_ascii_digit())
+    };
+    let is_format = |c: &str| FORMAT_WORDS.contains(&c.trim().to_lowercase().as_str());
+    let mut t = title.trim().to_owned();
+    let mut catno = String::new();
     if let Some(rest) = t.strip_prefix('[')
-        && let Some((catno, album)) = rest.split_once(']')
-        && !catno.trim().is_empty()
-        && catno.len() <= 30
+        && let Some((c, album)) = rest.split_once(']')
+        && is_catno(c)
     {
-        return (catno.trim().to_owned(), album.trim().to_owned());
+        catno = c.trim().to_owned();
+        t = album.trim().to_owned();
     }
-    (String::new(), t.to_owned())
+    // Trailing brackets: a catalogue number (when none led), or format words.
+    while let Some(open) = t.rfind(['[', '('])
+        && (t.ends_with(']') || t.ends_with(')'))
+    {
+        let inner = &t[open + 1..t.len() - 1];
+        if catno.is_empty() && t.ends_with(']') && is_catno(inner) {
+            catno = inner.trim().to_owned();
+        } else if !is_format(inner) {
+            break;
+        }
+        t = t[..open].trim_end().to_owned();
+    }
+    (catno, t)
 }
 
 /// One track as Bandcamp lists it.
@@ -245,8 +270,12 @@ pub fn parse_listing(page: &BandcampPage, json: &str) -> Result<Listing, String>
         }
         return Ok(Listing::Albums(urls));
     }
+    if !v.is_object() {
+        return Err("yt-dlp gave nothing for this page".into());
+    }
     let entries: Vec<&Value> = match v["entries"].as_array() {
-        Some(list) => list.iter().collect(),
+        // An entry yt-dlp couldn't read is `null`.
+        Some(list) => list.iter().filter(|e| e.is_object()).collect(),
         None => vec![&v],
     };
     let first = entries.first().copied().unwrap_or(&v);
@@ -255,10 +284,49 @@ pub fn parse_listing(page: &BandcampPage, json: &str) -> Result<Listing, String>
         _ => text(first, "album"),
     };
     let (catno, title) = catno_and_album(&album_title);
+    // The account's own name: what yt-dlp credits every track to when the account (a label's)
+    // doesn't name each release's artist.
+    let account = [text(first, "uploader"), text(first, "album_artist")]
+        .into_iter()
+        .find(|a| !a.is_empty())
+        .unwrap_or_default();
     let mut artist = text(first, "album_artist");
     if artist.is_empty() {
         artist = text(first, "artist");
     }
+    // A label's account names the artist in the album's title: "Gioele Menoni - Mental Roots".
+    // yt-dlp can't tell a label's account from an artist's, so a title credited to the account
+    // itself is read that way whenever it has a dash.
+    let (title, named) = match title.split_once(" - ") {
+        Some((a, t)) if artist == account && !a.trim().is_empty() && !t.trim().is_empty() => {
+            (t.trim().to_owned(), Some(a.trim().to_owned()))
+        }
+        _ => (title, None),
+    };
+    if let Some(a) = &named {
+        artist = a.clone();
+    }
+    let tracks = entries
+        .into_iter()
+        .filter_map(track)
+        .map(|mut t| {
+            if t.artist.is_empty() || t.artist == account {
+                // A compilation: "Artist - Track"; else the album's artist.
+                match t.title.split_once(" - ") {
+                    Some((a, rest)) if named.is_some() || t.artist.is_empty() => {
+                        t.artist = a.trim().to_owned();
+                        t.title = rest.trim().to_owned();
+                    }
+                    _ => {
+                        if let Some(a) = &named {
+                            t.artist = a.clone();
+                        }
+                    }
+                }
+            }
+            t
+        })
+        .collect();
     Ok(Listing::Album(BandcampAlbum {
         url: page.url(),
         title,
@@ -268,7 +336,7 @@ pub fn parse_listing(page: &BandcampPage, json: &str) -> Result<Listing, String>
         year: first["release_year"]
             .as_u64()
             .and_then(|y| u16::try_from(y).ok()),
-        tracks: entries.into_iter().filter_map(track).collect(),
+        tracks,
     }))
 }
 
@@ -462,6 +530,22 @@ mod tests {
             ("".into(), "The Ooze EP".into())
         );
         assert_eq!(catno_and_album("[] Ooze"), ("".into(), "[] Ooze".into()));
+        assert_eq!(
+            catno_and_album("Flits - Advance [TOBAS 006]"),
+            ("TOBAS 006".into(), "Flits - Advance".into())
+        );
+        assert_eq!(
+            catno_and_album("Hashashin - BASTION [Vinyl]"),
+            ("".into(), "Hashashin - BASTION".into())
+        );
+        assert_eq!(
+            catno_and_album("RVDMNTL - La Fuerza (Incl. remixes by Tensal)"),
+            (
+                "".into(),
+                "RVDMNTL - La Fuerza (Incl. remixes by Tensal)".into()
+            ),
+            "words that matter stay"
+        );
     }
 
     #[test]
@@ -572,6 +656,79 @@ mod tests {
         assert_eq!(BandcampMemory::load(&dir), m);
         std::fs::write(BandcampMemory::path(&dir), "garbage").unwrap();
         assert_eq!(BandcampMemory::load(&dir), BandcampMemory::default());
+    }
+
+    #[test]
+    fn a_label_account_names_the_artist_in_the_album_title() {
+        let p = parse("https://diffusereality.bandcamp.com/album/x").unwrap();
+        let track = |id: u32, title: &str| {
+            format!(
+                r#"{{"track_id":{id},"webpage_url":"https://diffusereality.bandcamp.com/track/t{id}",
+                "title":"Diffuse Reality Records - {title}","track":"{title}",
+                "artist":"Diffuse Reality Records","album_artist":"Diffuse Reality Records",
+                "uploader":"Diffuse Reality Records","url":"u"}}"#
+            )
+        };
+        let json = format!(
+            r#"{{"_type":"playlist","title":"Flits - Advance [TOBAS 006]","entries":[{},{},null]}}"#,
+            track(1, "Go Get It"),
+            track(2, "Other Artist - Guest Track")
+        );
+        let Ok(Listing::Album(a)) = parse_listing(&p, &json) else {
+            panic!("an album");
+        };
+        assert_eq!(
+            (a.artist.as_str(), a.title.as_str(), a.catno.as_str()),
+            ("Flits", "Advance", "TOBAS 006")
+        );
+        let names: Vec<(&str, &str)> = a
+            .tracks
+            .iter()
+            .map(|t| (t.artist.as_str(), t.title.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [("Flits", "Go Get It"), ("Other Artist", "Guest Track")]
+        );
+        assert!(
+            parse_listing(&p, "null").is_err(),
+            "nothing read is a failure"
+        );
+    }
+
+    /// yt-dlp can't tell a label's account from an artist's: a dash in a title credited to
+    /// the account itself is read as "Artist - Album" either way (labels are what is followed).
+    #[test]
+    fn a_dash_in_a_title_credited_to_the_account_is_read_as_its_artist() {
+        let p = parse("https://patricia.bandcamp.com/album/x").unwrap();
+        let json = r#"{"_type":"playlist","title":"Swamp - Remixes","entries":[
+            {"track_id":1,"webpage_url":"https://patricia.bandcamp.com/track/a","track":"A",
+             "artist":"Patricia","album_artist":"Patricia","uploader":"Patricia","url":"u"}]}"#;
+        let Ok(Listing::Album(a)) = parse_listing(&p, json) else {
+            panic!("an album");
+        };
+        assert_eq!((a.artist.as_str(), a.title.as_str()), ("Swamp", "Remixes"));
+    }
+
+    #[test]
+    fn a_real_label_account_album_is_credited_to_its_artist() {
+        const JSON: &str = include_str!("../tests/fixtures/bandcamp/label-account-album.json");
+        let p =
+            parse("https://diffusereality.bandcamp.com/album/gioele-menoni-mental-roots").unwrap();
+        let Ok(Listing::Album(a)) = parse_listing(&p, JSON) else {
+            panic!("an album");
+        };
+        assert_eq!(
+            (a.artist.as_str(), a.title.as_str()),
+            ("Gioele Menoni", "Mental Roots")
+        );
+        assert_eq!(a.tracks.len(), 3, "the two `null` entries are left out");
+        assert!(
+            a.tracks.iter().all(|t| t.artist == "Gioele Menoni"),
+            "{:?}",
+            a.tracks
+        );
+        assert_eq!(a.tracks[0].title, "Intro");
     }
 
     #[test]

@@ -472,7 +472,10 @@ your yt-dlp (nothing is downloaded until a track is about to play):
     Bandcamp audio **in place**, keeping its Discogs record and its pass;
   - a track the crate lacks is **added**, after the entries with its catalogue number.
 
-  The main window sums it up ("af070 the ooze ep: 1 added, 1 fixed, 1 skipped"). A track Bandcamp
+  The main window sums it up ("af070 the ooze ep: 1 added, 1 fixed, 1 skipped"). A label's own
+  account often credits every track to the label and names the artist in the album's title
+  ("Gioele Menoni - Mental Roots", "Flits - Advance [TOBAS 006]"): the artist and the catalogue
+  number are taken from there, and "[Vinyl]"-style format words are dropped. A track Bandcamp
   doesn't stream (a pre-order) comes in as "no clip (not streamable)".
 - **Labels:** a Bandcamp label page sent from the browser is followed under LABELS, like a
   Discogs label page. When a followed Discogs label has the same name (compared without spaces,
@@ -975,7 +978,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 813 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 816 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
