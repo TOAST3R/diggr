@@ -1,11 +1,11 @@
 //! The browser bridge: a tiny HTTP server on 127.0.0.1 through which a paired browser
-//! extension sends Discogs pages to the player.
+//! extension sends Discogs and Bandcamp pages to the player.
 //!
 //! It is the app's only network listener, so it accepts as little as it can: loopback only,
 //! requests addressed to 127.0.0.1 or localhost (against DNS rebinding), no web-page origins,
 //! no preflight and no cross-origin headers (so no web page can use it), a key from pairing on
 //! every request that does anything, bodies of at most 16 KB with no unknown fields, and only
-//! supported Discogs addresses.
+//! supported Discogs addresses and checked Bandcamp ones (see [`crate::bandcamp`]).
 //!
 //! Every request is answered on the bridge thread without waiting for the UI or Discogs: a
 //! send is checked, answered `202` at once, and handed to the UI as a [`BridgeCommand`]; the
@@ -22,6 +22,7 @@ use platform::{Priority, Spawner};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::bandcamp::{self, BandcampKind, BandcampPage, NameMatch};
 use crate::collection::{Collection, Owned};
 use crate::discogs::cache::{DiskCache, Kind};
 use crate::discogs::url::{self, Page, PageKind};
@@ -54,6 +55,13 @@ pub enum BridgeCommand {
         mode: Mode,
         filters: Filters,
     },
+    /// A Bandcamp page; `title` is the page's title, to name a label.
+    SendBandcamp {
+        page: BandcampPage,
+        mode: Mode,
+        filters: Filters,
+        title: Option<String>,
+    },
     /// A browser was paired.
     Paired,
     /// The browser asked about a marketplace item whose release isn't known yet: look it up
@@ -75,6 +83,10 @@ pub struct Snapshot {
     /// "refreshed" (not part of any answer itself).
     #[serde(skip)]
     pub labels: Vec<u64>,
+    /// The label crates' names and the Bandcamp each follows, so a Bandcamp label's page is
+    /// answered "added", "merged" or "refreshed" (not part of any answer itself).
+    #[serde(skip)]
+    pub label_crates: Vec<(String, Option<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -252,6 +264,9 @@ struct SendBody {
     /// Sent by older extensions; every send now keeps every format.
     #[serde(default, rename = "vinyl_only")]
     _vinyl_only: Option<serde::de::IgnoredAny>,
+    /// A Bandcamp page's title, to name its label (Bandcamp only).
+    #[serde(default)]
+    title: Option<String>,
 }
 
 /// Checks a request in the order of the design (host, origin, route, size, key, body) and
@@ -409,21 +424,18 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
     let Ok(b) = serde_json::from_slice::<SendBody>(body) else {
         return error(422, "invalid body");
     };
+    if let Ok(page) = bandcamp::parse(&b.url) {
+        return send_bandcamp(page, b, shared);
+    }
+    if b.title.is_some() {
+        return error(422, "invalid body");
+    }
     let Ok(page) = url::parse(&b.url) else {
         return error(422, "unsupported");
     };
-    let mode = match (b.mode, b.crate_name) {
-        (ModeName::Play, None) => Mode::Play,
-        (ModeName::Enqueue, None) => Mode::Enqueue,
-        (ModeName::Crate, Some(name)) => {
-            let name = name.trim();
-            let len = name.chars().count();
-            if len == 0 || len > MAX_CRATE_NAME {
-                return error(422, "invalid crate name");
-            }
-            Mode::Crate(name.to_owned())
-        }
-        _ => return error(422, "invalid body"),
+    let mode = match mode_of(b.mode, b.crate_name) {
+        Ok(m) => m,
+        Err(why) => return error(422, why),
     };
     let target = match &mode {
         Mode::Enqueue => shared
@@ -502,6 +514,98 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
         filters: Filters {
             skip_passed: b.skip_passed,
         },
+    };
+    (202, answer, Some(cmd))
+}
+
+/// The send's mode, or why it is refused.
+fn mode_of(mode: ModeName, crate_name: Option<String>) -> Result<Mode, &'static str> {
+    Ok(match (mode, crate_name) {
+        (ModeName::Play, None) => Mode::Play,
+        (ModeName::Enqueue, None) => Mode::Enqueue,
+        (ModeName::Crate, Some(name)) => {
+            let name = name.trim();
+            let len = name.chars().count();
+            if len == 0 || len > MAX_CRATE_NAME {
+                return Err("invalid crate name");
+            }
+            Mode::Crate(name.to_owned())
+        }
+        _ => return Err("invalid body"),
+    })
+}
+
+/// A checked Bandcamp page: a label's follows it (added, merged into the followed label of
+/// the same name, or refreshed), whatever the mode; an album or track goes where the mode says.
+fn send_bandcamp(
+    page: BandcampPage,
+    b: SendBody,
+    shared: &Shared,
+) -> (u16, Value, Option<BridgeCommand>) {
+    if b.title
+        .as_ref()
+        .is_some_and(|t| t.chars().count() > bandcamp::MAX_TITLE)
+    {
+        return error(422, "invalid body");
+    }
+    let mode = match mode_of(b.mode, b.crate_name) {
+        Ok(m) => m,
+        Err(why) => return error(422, why),
+    };
+    let filters = Filters {
+        skip_passed: b.skip_passed,
+    };
+    let snapshot = shared.snapshot.load();
+    if page.kind == BandcampKind::Label {
+        let name = bandcamp::label_name(b.title.as_deref(), &page);
+        let crates = &snapshot.label_crates;
+        let message = if let Some((c, _)) = crates
+            .iter()
+            .find(|(_, bc)| bc.as_deref() == Some(page.name.as_str()))
+        {
+            format!("Refreshed label {}", c.strip_prefix("Label: ").unwrap_or(c))
+        } else if let Some((c, _)) = crates.iter().find(|(c, bc)| {
+            bc.is_none()
+                && (bandcamp::name_match(c, &name) == NameMatch::Same
+                    || bandcamp::name_match(c, &page.name) == NameMatch::Same)
+        }) {
+            format!("Merged into {c}")
+        } else {
+            format!("Added label {name}")
+        };
+        let answer = json!({
+            "page": format!("Label: {name}"),
+            "crate": format!("Label: {name}"),
+            "message": message,
+        });
+        let cmd = BridgeCommand::SendBandcamp {
+            page,
+            mode,
+            filters: Filters { skip_passed: true },
+            title: b.title,
+        };
+        return (202, answer, Some(cmd));
+    }
+    let target = match &mode {
+        Mode::Enqueue => snapshot
+            .crates
+            .iter()
+            .find(|c| c.shown)
+            .map(|c| c.name.clone())
+            .unwrap_or_default(),
+        Mode::Play => page
+            .provisional_name()
+            .chars()
+            .take(MAX_CRATE_NAME)
+            .collect(),
+        Mode::Crate(name) => name.clone(),
+    };
+    let answer = json!({ "page": page.provisional_name(), "crate": target });
+    let cmd = BridgeCommand::SendBandcamp {
+        page,
+        mode,
+        filters,
+        title: b.title,
     };
     (202, answer, Some(cmd))
 }

@@ -293,6 +293,17 @@ pub fn entry_details(
     );
     add("Time", &e.duration.map(clock).unwrap_or_default());
     add("Status", &e.status.note().unwrap_or_default());
+    // Where the audio comes from, with the Bandcamp album it is on.
+    if let Some(o) = &e.origin
+        && let Some(source) = o.source()
+    {
+        let on_bandcamp = source == crate::playlist::ClipSource::Bandcamp && !o.album.is_empty();
+        let text = match on_bandcamp {
+            true => format!("{} · {}", source.name(), o.album),
+            false => source.name().to_owned(),
+        };
+        add("Source", &text);
+    }
     // A track of a record with no clip: how its preview was found.
     if let Some(o) = e.origin.as_ref().filter(|o| !o.search_key.is_empty()) {
         use crate::playlist::{EntryStatus, UnavailableKind};

@@ -35,6 +35,7 @@ use dig::intake::{Command, Discarded, Event, Intake, IntakeHandle, JobRef, Outco
 use dig::jobs::{Filters, JobId};
 use dig::memory::{DigMemory, WantOp};
 use dig::prepare::PrepareHandle;
+use dig::preview::clip::Source;
 use dig::preview::fetcher::{clip_url, preview_path};
 use dig::preview::scheduler::{
     self, Finder, PreviewCommand, PreviewEvent, PreviewHandle, system_finder,
@@ -149,6 +150,10 @@ pub enum DigAction {
     OpenForSale(EntryId),
     /// The entry's release (or master) page on Discogs.
     OpenRecord(EntryId),
+    /// The entry's track page on Bandcamp.
+    OpenBandcamp(EntryId),
+    /// Play the entry from its other source (Bandcamp or YouTube).
+    SwitchSource(EntryId, crate::playlist::ClipSource),
     OpenDialog,
     OpenBrowserDialog,
     /// Top Sellers and the cart.
@@ -170,11 +175,11 @@ enum YtDlpState {
     Found(String),
 }
 
-struct JobView {
-    name: String,
-    target: CrateId,
-    done: usize,
-    total: usize,
+pub(super) struct JobView {
+    pub(super) name: String,
+    pub(super) target: CrateId,
+    pub(super) done: usize,
+    pub(super) total: usize,
 }
 
 /// Options ▸ Discogs…
@@ -230,7 +235,7 @@ pub(super) struct Dig {
     spawner: Arc<dyn Spawner>,
     files: Arc<dyn FileSource>,
     /// The app's config folder (`dig/` goes in it); `None` keeps nothing.
-    config: Option<PathBuf>,
+    pub(super) config: Option<PathBuf>,
     pub(super) settings: DigSettings,
     pub(super) memory: DigMemory,
     pub(super) token: Option<String>,
@@ -241,7 +246,7 @@ pub(super) struct Dig {
     ytdlp: YtDlpState,
     hint_shown: bool,
     offline: bool,
-    jobs: BTreeMap<JobId, JobView>,
+    pub(super) jobs: BTreeMap<JobId, JobView>,
     /// The clips last asked for, in priority order.
     horizon: Vec<String>,
     /// The tracks last asked to be searched for, best first.
@@ -279,13 +284,16 @@ pub(super) struct Dig {
     label_refresh: HashMap<CrateId, HashSet<u64>>,
     /// Download all tracks, while it runs.
     pub(super) downloading: Option<LabelDownload>,
-    /// YouTube limits requests until then (Unix seconds): nothing downloads or searches.
-    pub(super) limited_until: Option<u64>,
+    /// Sources limiting requests, until when (Unix seconds): nothing from them downloads (or,
+    /// for YouTube, searches).
+    pub(super) limited: HashMap<Source, u64>,
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
     /// A Play send's crate: its first entry is armed as soon as it has one.
-    play_when_ready: Option<CrateId>,
+    pub(super) play_when_ready: Option<CrateId>,
+    /// Bandcamp sends, memory and questions.
+    pub(super) bandcamp: super::bandcamp::BandcampState,
     last_playing: Option<(CrateId, EntryId)>,
     pub(super) dialog: Option<DigDialog>,
     /// Shared with the bridge thread once digging has started (unless the bridge is off).
@@ -352,6 +360,12 @@ impl Dig {
         let memory = config.as_deref().map(DigMemory::load).unwrap_or_default();
         let token = config.as_deref().and_then(digconf::load_token);
         let sellers = config.as_deref().map(SellerList::load).unwrap_or_default();
+        let bandcamp = super::bandcamp::BandcampState::new(
+            config
+                .as_deref()
+                .map(dig::bandcamp::BandcampMemory::load)
+                .unwrap_or_default(),
+        );
         let cart = setup
             .cache_root
             .as_deref()
@@ -395,10 +409,11 @@ impl Dig {
             refreshing_wantlist: false,
             label_refresh: HashMap::new(),
             downloading: None,
-            limited_until: None,
+            limited: HashMap::new(),
             quiet: HashSet::new(),
             fail_streak: 0,
             play_when_ready: None,
+            bandcamp,
             last_playing: None,
             dialog: None,
             bridge_shared: None,
@@ -461,7 +476,7 @@ impl Dig {
         self.setup.browser.open(url)
     }
 
-    fn started(&self) -> bool {
+    pub(super) fn started(&self) -> bool {
         self.intake.is_some()
     }
 
@@ -471,7 +486,7 @@ impl Dig {
         &self.horizon
     }
 
-    fn previews_dir(&self) -> PathBuf {
+    pub(super) fn previews_dir(&self) -> PathBuf {
         match &self.setup.cache_root {
             Some(root) => store::dir(root),
             None => std::env::temp_dir()
@@ -582,7 +597,7 @@ impl Dig {
         }
     }
 
-    fn preview(&self, cmd: PreviewCommand) {
+    pub(super) fn preview(&self, cmd: PreviewCommand) {
         if let Some(p) = &self.previews {
             p.send(cmd);
         }
@@ -614,11 +629,11 @@ impl Dig {
             .filter(|j| j.total > 0)
             .map(|j| {
                 let (kind, name) = j.name.split_once(": ").unwrap_or(("", j.name.as_str()));
-                // A seller's job counts the records its copies are of.
-                let what = if kind == "Seller" {
-                    "records"
-                } else {
-                    "releases"
+                // A seller's job counts the records its copies are of; Bandcamp, albums.
+                let what = match kind {
+                    "Seller" => "records",
+                    "Bandcamp" => "albums",
+                    _ => "releases",
                 };
                 format!("{name}: {} of {} {what}", j.done, j.total)
             })
@@ -1016,6 +1031,9 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         found: String::new(),
         album_clip: String::new(),
         album_clip_title: String::new(),
+        bandcamp: String::new(),
+        bandcamp_clip: String::new(),
+        youtube_clip: String::new(),
     }
 }
 
@@ -1079,8 +1097,14 @@ impl DiggrApp {
         label.filter(|&l| self.crates.find_label(l).is_none())
     }
 
-    /// Cmd+V / Ctrl+V: a Discogs address goes to the shown crate; other text is ignored.
+    /// Cmd+V / Ctrl+V: a Discogs or Bandcamp address goes to the shown crate; other text is
+    /// ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
+        match dig::bandcamp::parse(text) {
+            Ok(page) => return self.bandcamp_send(page, SendMode::Enqueue, None, None, false),
+            Err(Refused::Unsupported) => return self.notify(dig::bandcamp::SUPPORTED),
+            Err(Refused::NotDiscogs) => {}
+        }
         match url::parse(text) {
             Ok(page) => self.dig_send_asked(page, SendMode::Enqueue, None),
             Err(Refused::Unsupported) => self.notify(url::SUPPORTED),
@@ -1097,8 +1121,12 @@ impl DiggrApp {
         if !d.started() {
             return self.notify("Discogs isn't ready yet");
         }
-        let (target, created) = match self.crates.find_label(id) {
-            Some(c) => (c, false),
+        let bandcamp = self.bandcamp_crate_for_discogs(&page.provisional_name());
+        let (target, created) = match self.crates.find_label(id).or(bandcamp) {
+            Some(c) => {
+                self.crates.set_label(c, id);
+                (c, false)
+            }
             None => {
                 let base: String = page.provisional_name().chars().take(MAX_NAME).collect();
                 let name = (1..)
@@ -1139,10 +1167,19 @@ impl DiggrApp {
     /// Refresh label: the label's page into its crate again, with the records it holds now
     /// remembered for the summary ("4 new records" / "up to date").
     pub(super) fn dig_refresh_label(&mut self, c: CrateId) {
+        if self.label_refreshing(c) {
+            return;
+        }
+        self.bandcamp_refresh(c);
+        // What YouTube couldn't give is looked for on Bandcamp again.
+        let failed = self.bandcamp_failed_tracks(c);
+        self.bandcamp_untry(c, &failed);
+        let hits: Vec<(CrateId, EntryId)> = failed.into_iter().map(|id| (c, id)).collect();
+        self.bandcamp_fallback(&hits);
         let Some(label) = self.crates.label_of(c) else {
             return;
         };
-        if self.label_refreshing(c) || !self.crates.load(c) {
+        if !self.crates.load(c) {
             return;
         }
         let before = self.crate_releases(c);
@@ -1253,7 +1290,12 @@ impl DiggrApp {
             .count();
         let name = self.crates.name(c).to_owned();
         let done = counts.ready + counts.skipped;
-        let limited = self.dig.as_ref().and_then(|d| d.limited_until);
+        let mut limited: Vec<(Source, u64)> = self
+            .dig
+            .as_ref()
+            .map(|d| d.limited.iter().map(|(s, u)| (*s, *u)).collect())
+            .unwrap_or_default();
+        limited.sort_by_key(|(s, _)| s.name());
         let retry = self.retryable(c).0.len();
         let (mut open, mut raise, mut stop, mut options) = (true, false, false, false);
         let (mut try_now, mut retry_clicked) = (false, false);
@@ -1271,14 +1313,18 @@ impl DiggrApp {
                     done as f32 / total as f32
                 };
                 ui.add(egui::ProgressBar::new(part).text(format!("{done} of {total} tracks")));
-                if let Some(until) = limited {
+                for (source, until) in &limited {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
                         format!(
-                            "Paused: YouTube is limiting requests. Trying again {}.",
+                            "Paused: {} is limiting requests. Trying again {}.",
+                            source.name(),
                             in_minutes(until.saturating_sub(now_secs()))
                         ),
                     );
+                }
+                if !limited.is_empty() {
+                    // The pause lines say it all.
                 } else if full {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
@@ -1301,7 +1347,7 @@ impl DiggrApp {
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if limited.is_some() {
+                    if !limited.is_empty() {
                         try_now = ui.button("Try now").clicked();
                     }
                     if retry > 0 {
@@ -1349,19 +1395,32 @@ impl DiggrApp {
     }
 
     /// Whether YouTube is limiting requests now.
+    #[cfg(test)]
     pub(super) fn youtube_limited(&self) -> bool {
-        self.dig.as_ref().is_some_and(|d| d.limited_until.is_some())
+        self.dig
+            .as_ref()
+            .is_some_and(|d| d.limited.contains_key(&Source::YouTube))
+    }
+
+    /// The limiting source a waiting entry waits for, if any: its clip's source, or YouTube
+    /// for a track still to be searched for.
+    pub(super) fn waiting_for(&self, e: &Entry) -> Option<Source> {
+        let d = self.dig.as_ref()?;
+        let source = match &e.status {
+            EntryStatus::Waiting(WaitKind::Search) => Source::YouTube,
+            EntryStatus::Waiting(WaitKind::Queued | WaitKind::Downloading(_)) => {
+                dig::preview::clip::source_of(clip_of(e)?)
+            }
+            _ => return None,
+        };
+        d.limited.contains_key(&source).then_some(source)
     }
 
     /// A label crate's tracks Retry failed would try again ("clip failed", "not found"), with
     /// the clips to download and the searches to run again.
     pub(super) fn retryable(&self, c: CrateId) -> (Vec<EntryId>, Vec<String>, Vec<SearchRequest>) {
         let (mut ids, mut clips, mut searches) = (Vec::new(), Vec::new(), Vec::new());
-        let Some(p) = self
-            .crates
-            .get(c)
-            .filter(|_| self.crates.label_of(c).is_some())
-        else {
+        let Some(p) = self.crates.get(c).filter(|_| self.crates.is_label(c)) else {
             return (ids, clips, searches);
         };
         for e in p.entries() {
@@ -1397,6 +1456,8 @@ impl DiggrApp {
         if ids.is_empty() {
             return;
         }
+        // Failing again, they are looked for on Bandcamp again.
+        self.bandcamp_untry(c, &ids);
         let Some(p) = self.crates.get_mut(c) else {
             return;
         };
@@ -1435,9 +1496,11 @@ impl DiggrApp {
 
     /// Whether Refresh label is running for crate `c`.
     pub(super) fn label_refreshing(&self, c: CrateId) -> bool {
-        self.dig
-            .as_ref()
-            .is_some_and(|d| d.label_refresh.contains_key(&c))
+        self.bandcamp_reading(c)
+            || self
+                .dig
+                .as_ref()
+                .is_some_and(|d| d.label_refresh.contains_key(&c))
     }
 
     /// The releases crate `c` holds.
@@ -1609,6 +1672,7 @@ impl DiggrApp {
         for c in commands {
             self.dig_bridge_command(c);
         }
+        self.bandcamp_fallback_flush();
         self.dig_play_when_ready();
         self.dig_horizon();
         self.dig_focus();
@@ -1651,6 +1715,25 @@ impl DiggrApp {
                             egui::UserAttentionType::Informational,
                         ));
                 }
+            }
+            BridgeCommand::SendBandcamp {
+                page,
+                mode,
+                filters,
+                title,
+            } => {
+                let mode = match mode {
+                    Mode::Play => SendMode::Play,
+                    Mode::Enqueue => SendMode::Enqueue,
+                    Mode::Crate(name) => SendMode::Crate(name),
+                };
+                self.bandcamp_send(
+                    page,
+                    mode,
+                    Some(filters.skip_passed),
+                    title.as_deref(),
+                    true,
+                );
             }
             BridgeCommand::ResolveShopItem(id) => {
                 if let Some(d) = &self.dig {
@@ -1717,12 +1800,18 @@ impl DiggrApp {
             .map(|s| s.username.clone())
             .collect();
         let labels = self.crates.labels().filter_map(|c| c.label).collect();
+        let label_crates = self
+            .crates
+            .labels()
+            .map(|c| (c.name.clone(), c.bandcamp.clone()))
+            .collect();
         let snap = Snapshot {
             crates,
             playing,
             sends,
             sellers,
             labels,
+            label_crates,
         };
         if snap != d.snapshot {
             shared.snapshot.store(Arc::new(snap.clone()));
@@ -2185,6 +2274,8 @@ impl DiggrApp {
                 }
             })
             .collect();
+        // Tracks the crate has from Bandcamp already take this record over, not added twice.
+        let new = super::bandcamp::absorb_into_bandcamp(p, new);
         let ids = p.replace(placeholder, new);
         if let Some(d) = &mut self.dig {
             d.twin_leftovers.extend(leftovers);
@@ -2360,9 +2451,10 @@ impl DiggrApp {
                 let gone = self.dig_each_searched(&key, duration, None, |e, _| {
                     e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
                 });
-                for (c, id) in gone {
+                for &(c, id) in &gone {
                     self.dig_album_fallback(c, id);
                 }
+                self.bandcamp_fallback(&gone);
             }
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {
@@ -2394,7 +2486,19 @@ impl DiggrApp {
                 }
             }
             PreviewEvent::Failed(clip, reason) => {
+                let mut failed = Vec::new();
+                for c in self.crates.loaded_ids() {
+                    if let Some(p) = self.crates.get(c) {
+                        failed.extend(
+                            p.entries()
+                                .iter()
+                                .filter(|e| clip_of(e) == Some(clip.as_str()))
+                                .map(|e| (c, e.id)),
+                        );
+                    }
+                }
                 self.dig_each_clip(&clip, |p, id| p.set_unavailable(id, reason.clone()));
+                self.bandcamp_fallback(&failed);
                 let Some(d) = &mut self.dig else { return };
                 d.fail_streak += 1;
                 if d.fail_streak == FAILS_BEFORE_UPDATE_HINT {
@@ -2409,25 +2513,31 @@ impl DiggrApp {
                     }
                 });
             }
-            PreviewEvent::Limited { until } => {
+            PreviewEvent::Limited { source, until } => {
                 let Some(d) = &mut self.dig else { return };
-                let first = d.limited_until.is_none();
-                d.limited_until = Some(until);
+                let first = d.limited.insert(source, until).is_none();
                 if let Some(dl) = &mut d.downloading {
                     dl.shown = true;
                 }
                 if first {
                     self.notify(format!(
-                        "YouTube is limiting requests: trying again {}",
+                        "{} is limiting requests: trying again {}",
+                        source.name(),
                         in_minutes(until.saturating_sub(now_secs()))
                     ));
                 }
             }
-            PreviewEvent::Unlimited => {
+            PreviewEvent::Unlimited { source } => {
                 if let Some(d) = &mut self.dig {
-                    d.limited_until = None;
+                    d.limited.remove(&source);
                 }
             }
+            PreviewEvent::BandcampListed { job, albums } => self.bandcamp_listed(job, albums),
+            PreviewEvent::BandcampAlbum { job, album } => self.bandcamp_album(job, album),
+            PreviewEvent::BandcampFailed { job, page, error } => {
+                self.bandcamp_failed(job, &page, &error)
+            }
+            PreviewEvent::BandcampDone { job } => self.bandcamp_done(job),
             PreviewEvent::CacheFull => {
                 let Some(d) = &mut self.dig else { return };
                 let gb = d.settings.cache_gb;
@@ -2590,6 +2700,12 @@ impl DiggrApp {
         // its clips go to the background list.
         let mut searches = searches;
         let background = self.dig_download_step(&mut searches);
+        let keys: Vec<String> = wanted
+            .iter()
+            .chain(background.iter().flatten())
+            .cloned()
+            .collect();
+        self.bandcamp_locate(&keys);
         let Some(d) = &mut self.dig else { return };
         if searches != d.searching {
             d.preview(PreviewCommand::Search(searches.clone()));
@@ -2834,6 +2950,22 @@ impl DiggrApp {
                     None => self.notify(format!("{name} isn't from Discogs")),
                 }
             }
+            DigAction::OpenBandcamp(id) => {
+                let url = self
+                    .crates
+                    .get(c)
+                    .and_then(|p| p.get(id))
+                    .and_then(|e| e.origin.as_ref())
+                    .map(|o| o.bandcamp.clone())
+                    .filter(|u| !u.is_empty());
+                let Some(d) = &self.dig else { return };
+                if let Some(url) = url
+                    && let Err(err) = d.setup.browser.open(&url)
+                {
+                    self.notify(format!("Could not open the browser: {err}"));
+                }
+            }
+            DigAction::SwitchSource(id, to) => self.bandcamp_switch(c, id, to),
             DigAction::OpenRecord(id) => {
                 let url = self
                     .crates
@@ -3847,8 +3979,30 @@ impl DiggrApp {
                 item(ui, "Pass (N)".into(), Some(DigAction::Pass(e.id)), "");
             }
         }
-        let a = DigAction::OpenForSale(e.id);
-        item(ui, "Open for-sale page (I)".into(), Some(a), "");
+        let bandcamp = e
+            .origin
+            .as_ref()
+            .filter(|o| !o.bandcamp.is_empty() && o.release.is_none() && o.master.is_none());
+        if bandcamp.is_some() {
+            // From Bandcamp only: nothing to do on Discogs.
+            const TIP: &str = "This track isn't on Discogs";
+            item(ui, "Add to wantlist (Y)".into(), None, TIP);
+            item(ui, "Add to collection".into(), None, TIP);
+            item(ui, "Open for-sale page (I)".into(), None, TIP);
+        } else {
+            let a = DigAction::OpenForSale(e.id);
+            item(ui, "Open for-sale page (I)".into(), Some(a), "");
+        }
+        if let Some(o) = &e.origin {
+            if let Some(to) = o.other_source() {
+                let a = DigAction::SwitchSource(e.id, to);
+                item(ui, format!("Play from {}", to.name()), Some(a), "");
+            }
+            if !o.bandcamp.is_empty() {
+                let a = DigAction::OpenBandcamp(e.id);
+                item(ui, "Open on Bandcamp".into(), Some(a), "");
+            }
+        }
         if let Some(url) = entry_record_url(e) {
             if ui.button("Open release on Discogs").clicked() {
                 actions.push(Action::Dig(DigAction::OpenRecord(e.id)));
@@ -4028,12 +4182,16 @@ impl DiggrApp {
     /// A question is open (connect, or removing from the collection): shortcuts wait.
     pub(super) fn dig_asking(&self) -> bool {
         self.dig.as_ref().is_some_and(|d| {
-            d.connect.is_some() || d.confirm_discard.is_some() || d.seller_ui.dialog.is_some()
+            d.connect.is_some()
+                || d.confirm_discard.is_some()
+                || d.seller_ui.dialog.is_some()
+                || !d.bandcamp.asks.is_empty()
         })
     }
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
         self.dig_connect_ui(ctx);
+        self.bandcamp_dialog_ui(ctx);
         self.dig_download_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
         self.seller_dialogs_ui(ctx);
@@ -4376,6 +4534,7 @@ impl DiggrApp {
             d.settings.wantlist = None;
             let _ = d.save_settings();
         }
+        self.bandcamp_crate_deleted(id);
     }
 }
 

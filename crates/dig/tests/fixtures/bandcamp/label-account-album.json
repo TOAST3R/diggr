@@ -1,0 +1,47 @@
+{
+ "_type": "playlist",
+ "id": "gioele-menoni-mental-roots",
+ "title": "Gioele Menoni - Mental Roots",
+ "webpage_url": "https://diffusereality.bandcamp.com/album/gioele-menoni-mental-roots",
+ "uploader_id": "diffusereality",
+ "entries": [
+  {
+   "track_id": "2375152815",
+   "webpage_url": "https://diffusereality.bandcamp.com/track/intro-26",
+   "title": "Diffuse Reality Records - Intro",
+   "track": "Intro",
+   "artist": "Diffuse Reality Records",
+   "album_artist": "Diffuse Reality Records",
+   "uploader": "Diffuse Reality Records",
+   "url": "https://t4.bcbits.com/stream/x/mp3-128/1",
+   "duration": 252.632,
+   "release_year": 2026
+  },
+  {
+   "track_id": "1619224100",
+   "webpage_url": "https://diffusereality.bandcamp.com/track/mental-roots",
+   "title": "Diffuse Reality Records - Mental Roots",
+   "track": "Mental Roots",
+   "artist": "Diffuse Reality Records",
+   "album_artist": "Diffuse Reality Records",
+   "uploader": "Diffuse Reality Records",
+   "url": "https://t4.bcbits.com/stream/x/mp3-128/1",
+   "duration": 318.261,
+   "release_year": 2026
+  },
+  {
+   "track_id": "3701924464",
+   "webpage_url": "https://diffusereality.bandcamp.com/track/pitch-shifting",
+   "title": "Diffuse Reality Records - Pitch Shifting",
+   "track": "Pitch Shifting",
+   "artist": "Diffuse Reality Records",
+   "album_artist": "Diffuse Reality Records",
+   "uploader": "Diffuse Reality Records",
+   "url": "https://t4.bcbits.com/stream/x/mp3-128/1",
+   "duration": 312.0,
+   "release_year": 2026
+  },
+  null,
+  null
+ ]
+}

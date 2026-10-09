@@ -33,7 +33,7 @@ $("pair").addEventListener("submit", async (e) => {
   const r = await ask({ type: "pair", code, port });
   const { appName } = await chrome.storage.local.get({ appName: WR.PLACEHOLDER });
   result.className = r.ok ? "" : "bad";
-  result.textContent = r.ok ? `Paired: Discogs pages now have a ${appName} button.` : WR.problem(r.error, appName);
+  result.textContent = r.ok ? `Paired: Discogs and Bandcamp pages now have a ${appName} button.` : WR.problem(r.error, appName);
   $("code").value = "";
   refresh();
 });

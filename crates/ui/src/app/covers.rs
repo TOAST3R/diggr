@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use dig::cover::{CoverHandle, CoverResult};
+use dig::cover::{CoverHandle, CoverKey, CoverResult, bandcamp_art};
 use dig::discogs::model::RecordKey;
 use egui::TextureHandle;
 
@@ -24,29 +24,30 @@ pub const IN_VIEW: usize = 40;
 #[derive(Default)]
 pub(super) struct CoverCache {
     pub(super) handle: Option<CoverHandle>,
-    textures: HashMap<RecordKey, (TextureHandle, u64)>,
+    textures: HashMap<CoverKey, (TextureHandle, u64)>,
     tick: u64,
     /// Asked for and not back yet.
-    asked: HashSet<RecordKey>,
+    asked: HashSet<CoverKey>,
     /// No cover this session.
-    failed: HashSet<RecordKey>,
+    failed: HashSet<CoverKey>,
     /// Looked up again after its address stopped working (only once).
-    refreshed: HashSet<RecordKey>,
+    refreshed: HashSet<CoverKey>,
     /// Waiting for that lookup: not asked for again meanwhile.
-    refreshing: HashSet<RecordKey>,
+    refreshing: HashSet<CoverKey>,
     /// The row the pointer rests on, and since when.
     hover: Option<(EntryId, Instant)>,
     /// The covers of the record rows in view last asked for.
-    in_view: Vec<RecordKey>,
+    in_view: Vec<CoverKey>,
 }
 
-/// The record whose cover an entry shows, and the cover's address.
-pub(super) fn cover_of(e: &Entry) -> Option<(RecordKey, &str)> {
+/// The record whose cover an entry shows, and the cover's address: its Discogs release or
+/// master, else its Bandcamp album's art.
+pub(super) fn cover_of(e: &Entry) -> Option<(CoverKey, &str)> {
     let o = e.origin.as_ref().filter(|o| !o.cover.is_empty())?;
     let key = match (o.release, o.master) {
-        (Some(r), _) => RecordKey::Release(r),
-        (None, Some(m)) => RecordKey::Master(m),
-        _ => return None,
+        (Some(r), _) => CoverKey::Record(RecordKey::Release(r)),
+        (None, Some(m)) => CoverKey::Record(RecordKey::Master(m)),
+        _ => CoverKey::BandcampArt(bandcamp_art(&o.cover)?),
     };
     Some((key, o.cover.as_str()))
 }
@@ -109,7 +110,7 @@ impl CoverCache {
     /// The record rows in view, top first: their covers not loaded yet are asked for (at
     /// most [`IN_VIEW`]), replacing what was still waiting, when the rows in view change.
     pub(super) fn want_in_view(&mut self, entries: &[&Entry]) {
-        let list: Vec<(RecordKey, String)> = entries
+        let list: Vec<(CoverKey, String)> = entries
             .iter()
             .filter_map(|e| cover_of(e))
             .filter(|(k, _)| {
@@ -120,7 +121,7 @@ impl CoverCache {
             .take(IN_VIEW)
             .map(|(k, url)| (k, url.to_owned()))
             .collect();
-        let keys: Vec<RecordKey> = list.iter().map(|(k, _)| *k).collect();
+        let keys: Vec<CoverKey> = list.iter().map(|(k, _)| *k).collect();
         if keys == self.in_view {
             return;
         }
@@ -132,7 +133,7 @@ impl CoverCache {
     }
 
     /// Results from the worker. Returns the records whose address stopped working and should
-    /// be looked up again (once each).
+    /// be looked up again (once each); a Bandcamp cover has no lookup, so it has none.
     pub(super) fn poll(&mut self, ctx: &egui::Context) -> Vec<RecordKey> {
         let Some(h) = &self.handle else {
             return Vec::new();
@@ -161,9 +162,11 @@ impl CoverCache {
                 }
                 CoverResult::Stale(key) => {
                     self.asked.remove(&key);
-                    if self.refreshed.insert(key) {
+                    if let CoverKey::Record(record) = key
+                        && self.refreshed.insert(key)
+                    {
                         self.refreshing.insert(key);
-                        refresh.push(key);
+                        refresh.push(record);
                     } else {
                         self.failed.insert(key);
                     }
@@ -176,6 +179,7 @@ impl CoverCache {
     /// A record's address after looking it up again: an unchanged or missing one means no
     /// cover; a new one is asked for the next time its row is hovered.
     pub(super) fn refreshed(&mut self, key: RecordKey, changed: bool) {
+        let key = CoverKey::Record(key);
         self.refreshing.remove(&key);
         if !changed {
             self.failed.insert(key);
@@ -198,6 +202,6 @@ impl CoverCache {
 
     #[cfg(test)]
     pub(super) fn has_texture(&self, key: RecordKey) -> bool {
-        self.textures.contains_key(&key)
+        self.textures.contains_key(&CoverKey::Record(key))
     }
 }

@@ -194,6 +194,88 @@ pub struct Origin {
     /// That upload's title, for its entry.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub album_clip_title: String,
+    /// The track's Bandcamp page, when it is on Bandcamp.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bandcamp: String,
+    /// Its Bandcamp clip (`bc.‹track id›`): the clip in use, or the one to switch to.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bandcamp_clip: String,
+    /// Its YouTube clip, set aside while the Bandcamp one is in use.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub youtube_clip: String,
+}
+
+/// Where an entry's audio comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipSource {
+    YouTube,
+    Bandcamp,
+}
+
+impl ClipSource {
+    /// Bandcamp clips are `bc.‹track id›`; a YouTube id never has a dot.
+    pub fn of(clip: &str) -> Self {
+        if clip.starts_with("bc.") {
+            ClipSource::Bandcamp
+        } else {
+            ClipSource::YouTube
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ClipSource::YouTube => "YouTube",
+            ClipSource::Bandcamp => "Bandcamp",
+        }
+    }
+
+    /// The row's badge.
+    pub fn badge(self) -> &'static str {
+        match self {
+            ClipSource::YouTube => "YT",
+            ClipSource::Bandcamp => "BC",
+        }
+    }
+}
+
+impl Origin {
+    /// Where the clip in use comes from (`None`: no clip yet).
+    pub fn source(&self) -> Option<ClipSource> {
+        self.clip.as_deref().map(ClipSource::of)
+    }
+
+    /// The YouTube clip, in use or set aside.
+    pub fn youtube(&self) -> Option<&str> {
+        match self.source() {
+            Some(ClipSource::YouTube) => self.clip.as_deref(),
+            _ => Some(self.youtube_clip.as_str()).filter(|c| !c.is_empty()),
+        }
+    }
+
+    /// The source the entry could switch to: the other one, when it has both.
+    pub fn other_source(&self) -> Option<ClipSource> {
+        match self.source()? {
+            ClipSource::YouTube => (!self.bandcamp_clip.is_empty()).then_some(ClipSource::Bandcamp),
+            ClipSource::Bandcamp => self.youtube().map(|_| ClipSource::YouTube),
+        }
+    }
+
+    /// Switches the clip in use to `to`; true if it changed.
+    pub fn switch_to(&mut self, to: ClipSource) -> bool {
+        if self.other_source() != Some(to) {
+            return false;
+        }
+        match to {
+            ClipSource::Bandcamp => {
+                self.youtube_clip = self.clip.take().unwrap_or_default();
+                self.clip = Some(self.bandcamp_clip.clone());
+            }
+            ClipSource::YouTube => {
+                self.clip = Some(std::mem::take(&mut self.youtube_clip));
+            }
+        }
+        true
+    }
 }
 
 /// A marketplace snapshot: how many copies are for sale, and the cheapest.
@@ -307,6 +389,10 @@ impl Entry {
             Some(o) => match (o.release, o.master) {
                 (Some(r), _) => Some(AlbumKey::Release(r)),
                 (None, Some(m)) => Some(AlbumKey::Master(m)),
+                // From Bandcamp only: its album's page.
+                _ if !o.bandcamp.is_empty() && !o.page.is_empty() => {
+                    Some(AlbumKey::Bandcamp(o.page.clone()))
+                }
                 _ => None,
             },
             None if self.album.trim().is_empty() => None,
@@ -382,6 +468,8 @@ pub enum AlbumKey {
     Release(u64),
     /// A master release, for an entry that has no release.
     Master(u64),
+    /// A Bandcamp album's page, for an entry that is on Discogs neither way.
+    Bandcamp(String),
     /// A local file's artist and album tags, lower-cased, so two "Greatest Hits" stay apart.
     Local(String, String),
 }

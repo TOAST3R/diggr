@@ -454,6 +454,57 @@ grouped by record. Click the heading to fold or unfold it.
   so once, waiting tracks say "waiting for YouTube" in their tooltip, and Download all tracks'
   window shows the pause with **Try now**. Previews already downloaded keep playing.
 
+### Bandcamp
+
+Tracks YouTube doesn't have, and digital-only releases Discogs doesn't list, are often on the
+label's or artist's Bandcamp. Bandcamp pages go into Diggr the way Discogs pages do, read through
+your yt-dlp (nothing is downloaded until a track is about to play):
+
+- **Which pages:** a label or artist (`‹name›.bandcamp.com`, or `/music`), an album
+  (`/album/…`) or a track (`/track/…`). Paste the address (Cmd+V), or use the extension on the
+  page or on a link. Other Bandcamp pages are refused, and so is anything that only looks like
+  Bandcamp: the address is checked and rebuilt before yt-dlp sees it.
+- **Merged, not piled on:** each track of an album is matched with the crate's entries by artist
+  and title (ignoring "(Original Mix)", "feat." and accents), and only among the entries of the
+  same catalogue number when the album's title starts with one ("[AF070] The Ooze EP"):
+  - a track the crate plays already is **skipped**;
+  - a track the crate has without a preview ("not found", "clip failed", "no clip") gets the
+    Bandcamp audio **in place**, keeping its Discogs record and its pass;
+  - a track the crate lacks is **added**, after the entries with its catalogue number.
+
+  The main window sums it up ("af070 the ooze ep: 1 added, 1 fixed, 1 skipped"). A label's own
+  account often credits every track to the label and names the artist in the album's title
+  ("Gioele Menoni - Mental Roots", "Flits - Advance [TOBAS 006]"): the artist and the catalogue
+  number are taken from there, and "[Vinyl]"-style format words are dropped. A track Bandcamp
+  doesn't stream (a pre-order) comes in as "no clip (not streamable)".
+- **Labels:** a Bandcamp label page sent from the browser is followed under LABELS, like a
+  Discogs label page. When a followed Discogs label has the same name (compared without spaces,
+  punctuation or a trailing "Records", "Music", "Ltd"…, so `analogicalforce` is "Analogical
+  Force"), that crate follows both and the main window says "Merged into Label: …". A close name
+  ("Lowtide" and "Lowtide Tapes") asks **Merge** or **Separate**, once. Following a Discogs label
+  whose Bandcamp crate exists joins them the same way. **Refresh label** reads both, and on
+  Bandcamp only the albums it hasn't read before. Albums of a followed Bandcamp go to its label
+  crate whatever the send's mode.
+- **Discogs and Bandcamp together:** a Discogs record sent into a crate that has some of its
+  tracks from Bandcamp takes those entries over (they get the release, catalogue number and side,
+  keep playing from Bandcamp, and can switch to the record's video) instead of adding them twice.
+- **Bandcamp when YouTube has nothing:** a Discogs track that ends "not found" or "clip failed"
+  is looked for on Bandcamp, once: on the label's Bandcamp its crate follows, or on the one its
+  label's name suggests ("Lowtide Tapes" → `lowtidetapes.bandcamp.com`). Only the albums whose
+  address holds the record's catalogue number are read (or its title, on a followed Bandcamp), and
+  only the failed tracks change: "Dig: 2 tracks found on Bandcamp". Retry failed tracks and
+  Refresh label look again.
+- **Records:** a label crate (or any grouped crate) groups Bandcamp tracks by album, as it does
+  Discogs releases, with the album's cover from Bandcamp's image host.
+- **Where the sound comes from:** each row ends with **YT** or **BC** (nothing for a local
+  file), and the tooltip says "Source: Bandcamp · ‹album›". An entry with both offers **Play from
+  YouTube** or **Play from Bandcamp** in its menu; the choice is kept, and the other preview stays
+  in the cache. **Open on Bandcamp** opens the track's page, to buy it.
+- **Not on Discogs:** a Bandcamp-only entry has Add to wantlist, Add to collection and Open
+  for-sale page greyed out; Y and I say it isn't from Discogs. N passes it as usual.
+- **Limits:** when Bandcamp limits requests, it waits like YouTube does (10, 20, 40, 60 min),
+  separately: one source waiting never stops the other. Tooltips say "waiting for Bandcamp".
+
 ### Top Sellers
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
@@ -512,8 +563,8 @@ itself uses, checked in October 2026). If Discogs changes them, the first list s
 
 ### From the browser
 
-A Chrome extension (in `extensions/chrome/`) adds a button to Discogs pages: Play in Diggr,
-Enqueue in Diggr and Send to crate. It talks to the player through a small **browser bridge**
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs and Bandcamp pages: Play
+in Diggr, Enqueue in Diggr and Send to crate. It talks to the player through a small **browser bridge**
 that the player starts once its window is up.
 
 - **Local only:** the bridge listens on `127.0.0.1`, port 47800 by default. Other computers
@@ -525,9 +576,10 @@ that the player starts once its window is up.
   random key and sends it with every request; the player keeps only its hash, in
   `dig/bridge.ron`. After 5 wrong codes, pairing is locked for a minute. **Forget browsers**
   revokes every key, and each browser then asks to be paired again.
-- **What it accepts:** only a Discogs page address (the pages that paste accepts), a mode
-  (Play, Enqueue, or a crate of 1 to 40 characters), and the skip-passed switch, in a body of
-  at most 16 KB (a vinyl-only switch from an older extension is accepted and ignored).
+- **What it accepts:** only a Discogs or Bandcamp page address (the pages that paste accepts),
+  a mode (Play, Enqueue, or a crate of 1 to 40 characters), the skip-passed switch, and for a
+  Bandcamp page its title (at most 200 characters, to name a label), in a body of at most 16 KB
+  (a vinyl-only switch from an older extension is accepted and ignored).
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
   playing, and the progress of sends.
@@ -537,7 +589,9 @@ that the player starts once its window is up.
 **Install the extension** (Chrome, or any Chromium browser: Brave, Edge, Arc):
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
-   the `extensions/chrome/` folder. It asks for site access to discogs.com and 127.0.0.1 only.
+   the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com and
+   127.0.0.1 only. (An older copy needs reloading in `chrome://extensions` for Bandcamp, and Chrome
+   asks you to accept the new site access.)
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
 3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
@@ -558,8 +612,11 @@ that the player starts once its window is up.
    add one. A crate created from the browser (New crate…) comes on screen in the player, with
    the playlist opened if it was hidden. A confirmation shows for 3 s ("Sent to Diggr: Label: Lowtide
    Tapes → Playlist").
-4. On any site, right-click a Discogs link for Play in Diggr or Enqueue in Diggr (a label link
-   offers only Diggr: Send label); the toolbar
+   On a Bandcamp album or track page, the button (after the album's or track's name) offers
+   the same as on a release; on a Bandcamp label or artist page, only **Diggr: Send label**,
+   which sends the page's title too, to name the label (see [Bandcamp](#bandcamp)).
+4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr or Enqueue in Diggr (a
+   label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
    and paired, what's playing, and sends in progress.
 
@@ -572,8 +629,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 
 **Manual checklist** (the extension has no automated tests):
 
-- [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com and
-      127.0.0.1 only.
+- [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com,
+      bandcamp.com and 127.0.0.1 only.
 - [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
 - [ ] Release, master, artist, wantlist, list and marketplace item pages each show the
@@ -582,6 +639,10 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 - [ ] A label's page shows the button with only Diggr: Send label; it adds the label under
       LABELS in the player without changing the shown crate, and a second time says
       "Refreshed label ‹name›". Right-clicking a label link offers only Diggr: Send label.
+- [ ] A Bandcamp album and a track page show the button by their name, with Play, Enqueue and
+      Send to crate (New crate… suggests "Artist - Album"); a label page (`/` and `/music`) shows
+      only Diggr: Send label, which follows it as "Label: ‹its name›"; a merch page shows none.
+      Right-clicking a Bandcamp album link offers Play and Enqueue.
 - [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
@@ -900,7 +961,8 @@ version still opens it); the Playlist crate is now the one that counts.
 Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
 yt-dlp path, the Wantlist crate, whether the Connect to Discogs dialog was turned off), `token`
 (readable only by you), `memory.ron` (wanted records, passed tracks, and wantlist changes still
-to be sent, with their retries), `jobs.ron` (sends still in progress), `sellers.ron` (Top
+to be sent, with their retries), `jobs.ron` (sends still in progress), `bandcamp.ron` (the
+Bandcamp albums each label crate has read, and the labels you kept separate), `sellers.ron` (Top
 Sellers: their order, each one's dig criteria, when it was last dug, and whether the first list
 was made) and
 `bridge.ron` (the browser bridge's port and the SHA-256 of each paired browser's key, readable
@@ -927,7 +989,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 778 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 822 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -999,11 +1061,12 @@ What's covered:
   - token checks, wantlist changes, collection adds (one copy, and a checked retry that never
     adds a second), and wanted records found in the collection after a sync;
   - albums and covers from the cache with no request, and covers: fetched once, shrunk,
-    paced to 4 a second, only from Discogs' image hosts, a stale address looked up again.
+    paced to 4 a second, only from Discogs' and Bandcamp's image hosts, a stale address looked up again.
 
   The browser bridge (`crates/dig/tests/bridge.rs`) runs on an ephemeral loopback port:
   pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals
-  by host, origin, preflight, size, unknown fields and non-Discogs addresses, no
+  by host, origin, preflight, size, unknown fields and other addresses (look-alike Bandcamp hosts
+  too), Bandcamp albums and labels (added, merged or refreshed), no
   `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, and a
   send answered in under 100 ms while Discogs is slow.
 
@@ -1012,7 +1075,11 @@ What's covered:
   background list of Download all tracks (after the horizon, paused instead of evicting,
   resumed by a larger cache, stopped by an empty list), YouTube limiting (yt-dlp's 429 and
   bot-check errors told apart from a broken video, nothing failed, waits of 10, 20, 40 and
-  60 min, Try now) and Retry (given-up clips and not-found searches tried again). Also
+  60 min, Try now), Retry (given-up clips and not-found searches tried again), and Bandcamp:
+  a track downloaded as MP3 by its located page, a label read album by album (leaving out
+  albums read before), and a Bandcamp limit that leaves YouTube going. `crates/dig` also checks
+  Bandcamp addresses, reads yt-dlp's answers from fixtures, and runs a real read and download by
+  hand (`--ignored real_bandcamp`). Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
   - a pasted release filling the crate with playable previews;
@@ -1029,6 +1096,12 @@ What's covered:
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget
     browsers, and a taken port that leaves the player working.
+- **Bandcamp in the player** (`crates/ui`, headless, `bandcamp_tests.rs`, with fake pages): a
+  pasted album playing from Bandcamp, a merge that skips, fixes and adds, a label followed from
+  the browser and refreshed with new albums only, merged by name into a Discogs label (and the
+  other way round), Merge or Separate asked once, the YT/BC badges, switching sources and Open on
+  Bandcamp, and the Discogs items off on a Bandcamp-only entry. Merging, name matching and
+  switching are also unit-tested.
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (search text, newest N,

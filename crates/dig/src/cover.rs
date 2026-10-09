@@ -1,6 +1,6 @@
-//! Record covers for the entry tooltip: each fetched once from Discogs' image host (never the
-//! API, so covers cost none of its request budget), shrunk to a thumbnail, and kept on disk
-//! under `<cache>/covers/`.
+//! Record covers for the entry tooltip and record rows: each fetched once from Discogs' or
+//! Bandcamp's image host (never the Discogs API, so covers cost none of its request budget),
+//! shrunk to a thumbnail, and kept on disk under `<cache>/covers/`.
 //!
 //! One low-priority thread fetches one cover at a time, at most 4 a second. Two kinds of
 //! request wait: the hovered row's (only the newest, so sweeping the pointer down a list
@@ -19,6 +19,27 @@ use platform::{Priority, Spawner};
 
 use crate::clock::Clock;
 use crate::discogs::model::RecordKey;
+
+/// Whose cover: a Discogs release or master, or a Bandcamp album by its art's id
+/// (`a0161524395` in `https://f4.bcbits.com/img/a0161524395_5.jpg`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoverKey {
+    Record(RecordKey),
+    BandcampArt(u64),
+}
+
+impl From<RecordKey> for CoverKey {
+    fn from(k: RecordKey) -> Self {
+        CoverKey::Record(k)
+    }
+}
+
+/// A Bandcamp cover's art id, from its address.
+pub fn bandcamp_art(url: &str) -> Option<u64> {
+    let name = url.rsplit('/').next()?;
+    let digits = name.strip_prefix('a')?.split('_').next()?;
+    digits.parse().ok()
+}
 use crate::discogs::transport::USER_AGENT;
 
 pub const DIR: &str = "covers";
@@ -78,12 +99,19 @@ impl ImageSource for UreqImages {
     }
 }
 
-/// Only Discogs' image hosts, over https: an address from cached JSON never sends a request
+/// Only Discogs' and Bandcamp's image hosts, over https: an address from cached JSON never sends a request
 /// anywhere else.
 pub fn allowed(url: &str) -> bool {
     url.strip_prefix("https://")
         .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .is_some_and(|host| matches!(host, "i.discogs.com" | "img.discogs.com"))
+        .is_some_and(|host| {
+            matches!(host, "i.discogs.com" | "img.discogs.com")
+                // Bandcamp's image hosts: f1.bcbits.com … f4.bcbits.com.
+                || host
+                    .strip_suffix(".bcbits.com")
+                    .and_then(|h| h.strip_prefix('f'))
+                    .is_some_and(|n| n.len() == 1 && n.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 /// A cover's pixels, unpremultiplied RGBA.
@@ -96,11 +124,11 @@ pub struct Cover {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoverResult {
-    Ready(RecordKey, Arc<Cover>),
+    Ready(CoverKey, Arc<Cover>),
     /// No cover this session (no image, a broken one, or a failed fetch).
-    Failed(RecordKey),
+    Failed(CoverKey),
     /// The address is gone (403/404): the record's data may hold a newer one.
-    Stale(RecordKey),
+    Stale(CoverKey),
 }
 
 /// The synchronous core (tests drive it directly); [`CoverHandle`] runs it on a thread.
@@ -131,16 +159,17 @@ impl Covers {
         }
     }
 
-    pub fn path(&self, key: RecordKey) -> Option<PathBuf> {
+    pub fn path(&self, key: CoverKey) -> Option<PathBuf> {
         let name = match key {
-            RecordKey::Release(id) => format!("release-{id}.png"),
-            RecordKey::Master(id) => format!("master-{id}.png"),
+            CoverKey::Record(RecordKey::Release(id)) => format!("release-{id}.png"),
+            CoverKey::Record(RecordKey::Master(id)) => format!("master-{id}.png"),
+            CoverKey::BandcampArt(id) => format!("bandcamp-{id}.png"),
         };
         Some(self.dir.as_ref()?.join(name))
     }
 
     /// `key`'s cover: from disk, else fetched from `url`, shrunk, and stored.
-    pub fn load(&mut self, key: RecordKey, url: &str) -> CoverResult {
+    pub fn load(&mut self, key: CoverKey, url: &str) -> CoverResult {
         if let Some(c) = self.path(key).and_then(|p| read_png(&p)) {
             return CoverResult::Ready(key, Arc::new(c));
         }
@@ -293,9 +322,9 @@ pub fn test_jpeg(w: u32, h: u32) -> Vec<u8> {
 
 enum Request {
     /// The hovered row's cover: goes first, replacing a hovered one still waiting.
-    Hover(RecordKey, String),
+    Hover(CoverKey, String),
     /// The covers of the rows in view, top first, replacing the list still waiting.
-    InView(Vec<(RecordKey, String)>),
+    InView(Vec<(CoverKey, String)>),
 }
 
 /// The worker thread's end of the channels.
@@ -317,17 +346,16 @@ impl CoverHandle {
             "covers",
             Priority::Low,
             Box::new(move || {
-                let mut hover: Option<(RecordKey, String)> = None;
-                let mut in_view: VecDeque<(RecordKey, String)> = VecDeque::new();
-                let take =
-                    |r: Request,
-                     hover: &mut Option<(RecordKey, String)>,
-                     in_view: &mut VecDeque<(RecordKey, String)>| {
-                        match r {
-                            Request::Hover(k, url) => *hover = Some((k, url)),
-                            Request::InView(list) => *in_view = list.into(),
-                        }
-                    };
+                let mut hover: Option<(CoverKey, String)> = None;
+                let mut in_view: VecDeque<(CoverKey, String)> = VecDeque::new();
+                let take = |r: Request,
+                            hover: &mut Option<(CoverKey, String)>,
+                            in_view: &mut VecDeque<(CoverKey, String)>| {
+                    match r {
+                        Request::Hover(k, url) => *hover = Some((k, url)),
+                        Request::InView(list) => *in_view = list.into(),
+                    }
+                };
                 loop {
                     if hover.is_none() && in_view.is_empty() {
                         match req_rx.recv() {
@@ -359,12 +387,12 @@ impl CoverHandle {
     }
 
     /// Asks for the hovered row's cover first, replacing a hovered one still waiting.
-    pub fn request(&self, key: RecordKey, url: &str) {
+    pub fn request(&self, key: CoverKey, url: &str) {
         let _ = self.requests.send(Request::Hover(key, url.to_owned()));
     }
 
     /// The covers of the rows in view, top first: they replace the list still waiting.
-    pub fn want(&self, list: Vec<(RecordKey, String)>) {
+    pub fn want(&self, list: Vec<(CoverKey, String)>) {
         let _ = self.requests.send(Request::InView(list));
     }
 
@@ -390,7 +418,7 @@ mod tests {
         let images = FakeImages::new(Ok(test_jpeg(600, 300)));
         let clock = Arc::new(FakeClock::default());
         let mut c = covers(&root, &images, &clock);
-        let key = RecordKey::Release(1001);
+        let key = CoverKey::Record(RecordKey::Release(1001));
         let CoverResult::Ready(_, cover) = c.load(key, URL) else {
             panic!("a cover");
         };
@@ -411,7 +439,7 @@ mod tests {
     fn failures_are_remembered_and_gone_addresses_are_stale() {
         let root = crate::test_dir("covers-fail");
         let clock = Arc::new(FakeClock::default());
-        let key = RecordKey::Master(9);
+        let key = CoverKey::Record(RecordKey::Master(9));
 
         let images = FakeImages::new(Err(ImageError::Net("down".into())));
         let mut c = covers(&root, &images, &clock);
@@ -437,6 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn bandcamp_covers_are_keyed_by_their_art() {
+        assert_eq!(
+            bandcamp_art("https://f4.bcbits.com/img/a0161524395_5.jpg"),
+            Some(161524395)
+        );
+        assert_eq!(bandcamp_art("https://f4.bcbits.com/img/x.jpg"), None);
+        assert!(allowed("https://f4.bcbits.com/img/a0161524395_5.jpg"));
+        for bad in [
+            "https://f44.bcbits.com/x.jpg",
+            "https://bcbits.com/x.jpg",
+            "https://f4.bcbits.com.evil.net/x.jpg",
+            "http://f4.bcbits.com/x.jpg",
+        ] {
+            assert!(!allowed(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn only_discogs_image_hosts_are_asked() {
         let root = crate::test_dir("covers-hosts");
         let images = FakeImages::new(Ok(test_jpeg(10, 10)));
@@ -450,8 +496,8 @@ mod tests {
             "",
         ] {
             assert_eq!(
-                c.load(RecordKey::Release(1), url),
-                CoverResult::Failed(RecordKey::Release(1)),
+                c.load(CoverKey::Record(RecordKey::Release(1)), url),
+                CoverResult::Failed(CoverKey::Record(RecordKey::Release(1))),
                 "{url}"
             );
         }
@@ -467,18 +513,24 @@ mod tests {
         let clock = Arc::new(FakeClock::default());
         let mut c = Covers::new(None, images.clone(), clock.clone());
         for id in 0..5 {
-            c.load(RecordKey::Release(id), URL);
+            c.load(CoverKey::Record(RecordKey::Release(id)), URL);
         }
         assert_eq!(images.count(), 5);
         assert_eq!(clock.now(), Duration::from_secs(1), "4 a second");
 
         let images = FakeImages::new(Err(ImageError::Status(429)));
         let mut c = covers(&root, &images, &clock);
-        c.load(RecordKey::Release(1), URL);
-        c.load(RecordKey::Release(2), "https://i.discogs.com/2.jpeg");
+        c.load(CoverKey::Record(RecordKey::Release(1)), URL);
+        c.load(
+            CoverKey::Record(RecordKey::Release(2)),
+            "https://i.discogs.com/2.jpeg",
+        );
         assert_eq!(images.count(), 1, "paused after a 429");
         clock.advance(BACKOFF);
-        c.load(RecordKey::Release(3), "https://i.discogs.com/3.jpeg");
+        c.load(
+            CoverKey::Record(RecordKey::Release(3)),
+            "https://i.discogs.com/3.jpeg",
+        );
         assert_eq!(images.count(), 2, "and fetching again a minute later");
     }
 
@@ -501,7 +553,7 @@ mod tests {
         // The first starts at once; the next 39 wait behind it and only the last is fetched.
         for id in 0..40 {
             h.request(
-                RecordKey::Release(id),
+                CoverKey::Record(RecordKey::Release(id)),
                 &format!("https://i.discogs.com/{id}.jpeg"),
             );
         }
@@ -510,7 +562,7 @@ mod tests {
         };
         let mut keys = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while keys.last() != Some(&RecordKey::Release(39)) {
+        while keys.last() != Some(&CoverKey::Record(RecordKey::Release(39))) {
             assert!(std::time::Instant::now() < deadline, "timed out: {keys:?}");
             keys.extend(h.poll().iter().map(key));
             std::thread::sleep(Duration::from_millis(5));
@@ -529,21 +581,21 @@ mod tests {
         // Rows 1..=12 in view, then scrolled: 20..=23 replace whatever still waits.
         h.want(
             (1..=12)
-                .map(|id| (RecordKey::Release(id), url(id)))
+                .map(|id| (CoverKey::Record(RecordKey::Release(id)), url(id)))
                 .collect(),
         );
         h.want(
             (20..=23)
-                .map(|id| (RecordKey::Release(id), url(id)))
+                .map(|id| (CoverKey::Record(RecordKey::Release(id)), url(id)))
                 .collect(),
         );
-        h.request(RecordKey::Release(99), &url(99));
+        h.request(CoverKey::Record(RecordKey::Release(99)), &url(99));
         let key = |r: &CoverResult| match r {
             CoverResult::Ready(k, _) | CoverResult::Failed(k) | CoverResult::Stale(k) => *k,
         };
         let mut keys = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while keys.last() != Some(&RecordKey::Release(23)) {
+        while keys.last() != Some(&CoverKey::Record(RecordKey::Release(23))) {
             assert!(std::time::Instant::now() < deadline, "timed out: {keys:?}");
             keys.extend(h.poll().iter().map(key));
             std::thread::sleep(Duration::from_millis(2));
@@ -551,7 +603,8 @@ mod tests {
         let ids: Vec<u64> = keys
             .iter()
             .map(|k| match k {
-                RecordKey::Release(id) | RecordKey::Master(id) => *id,
+                CoverKey::Record(RecordKey::Release(id) | RecordKey::Master(id))
+                | CoverKey::BandcampArt(id) => *id,
             })
             .collect();
         let at = |id: u64| ids.iter().position(|&i| i == id).unwrap();
@@ -560,8 +613,12 @@ mod tests {
         assert!(!ids.contains(&12), "scrolled past before its turn: {ids:?}");
         // Cached on disk now: asked again, they come back without a fetch.
         let fetched = images.count();
-        h.want(vec![(RecordKey::Release(20), url(20))]);
-        while !h.poll().iter().any(|r| key(r) == RecordKey::Release(20)) {
+        h.want(vec![(CoverKey::Record(RecordKey::Release(20)), url(20))]);
+        while !h
+            .poll()
+            .iter()
+            .any(|r| key(r) == CoverKey::Record(RecordKey::Release(20)))
+        {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(images.count(), fetched);

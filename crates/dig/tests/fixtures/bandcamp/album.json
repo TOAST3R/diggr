@@ -1,0 +1,60 @@
+{
+ "_type": "playlist",
+ "id": "af070-the-ooze-ep",
+ "title": "[AF070] The Ooze EP",
+ "webpage_url": "https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep",
+ "uploader_id": "analogicalforce",
+ "entries": [
+  {
+   "id": "3020153053",
+   "title": "Patricia - The Ooze",
+   "track": "The Ooze",
+   "artist": "Patricia",
+   "album": "[AF070] The Ooze EP",
+   "album_artist": "Patricia",
+   "duration": 403.521,
+   "track_id": "3020153053",
+   "track_number": 1,
+   "webpage_url": "https://analogicalforce.bandcamp.com/track/the-ooze",
+   "thumbnail": "https://f4.bcbits.com/img/a0161524395_5.jpg",
+   "release_year": 2026,
+   "uploader_id": "analogicalforce",
+   "url": "https://t4.bcbits.com/stream/x/mp3-128/1",
+   "acodec": "mp3",
+   "abr": 128
+  },
+  {
+   "id": "2754251094",
+   "title": "Patricia - Swamp",
+   "track": "Swamp",
+   "artist": "Patricia",
+   "album": "[AF070] The Ooze EP",
+   "album_artist": "Patricia",
+   "duration": 390.704,
+   "track_id": "2754251094",
+   "track_number": 3,
+   "webpage_url": "https://analogicalforce.bandcamp.com/track/swamp",
+   "thumbnail": "https://f4.bcbits.com/img/a0161524395_5.jpg",
+   "release_year": 2026,
+   "uploader_id": "analogicalforce",
+   "url": "https://t4.bcbits.com/stream/x/mp3-128/1",
+   "acodec": "mp3",
+   "abr": 128
+  },
+  {
+   "id": "2754251094",
+   "title": "Patricia - Bonus",
+   "track": "Bonus",
+   "artist": "Patricia",
+   "album": "[AF070] The Ooze EP",
+   "album_artist": "Patricia",
+   "duration": null,
+   "track_id": "3020153099",
+   "track_number": 3,
+   "webpage_url": "https://analogicalforce.bandcamp.com/track/bonus",
+   "thumbnail": "https://f4.bcbits.com/img/a0161524395_5.jpg",
+   "release_year": 2026,
+   "uploader_id": "analogicalforce"
+  }
+ ]
+}

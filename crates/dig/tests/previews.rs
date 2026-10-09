@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use dig::bandcamp::{self, BandcampAlbum, BandcampTrack, Listing};
+use dig::preview::clip::Source;
 use dig::preview::fetcher::{FakeFetcher, Fetcher};
 use dig::preview::scheduler::{Config, Finder, PreviewCommand, PreviewEvent, PreviewHandle};
 use platform::native::NativeSpawner;
@@ -513,7 +515,12 @@ fn a_limited_youtube_pauses_everything_and_fails_nothing() {
     // After it, YouTube answers again: everything downloads, and the wait is over.
     fake.limited.store(false, Ordering::SeqCst);
     let ev = until(&h, |ev| done_count(ev) == 3);
-    assert!(ev.contains(&PreviewEvent::Unlimited), "{ev:?}");
+    assert!(
+        ev.contains(&PreviewEvent::Unlimited {
+            source: Source::YouTube
+        }),
+        "{ev:?}"
+    );
     for c in &wanted {
         assert!(d.join(format!("{c}.m4a")).exists());
     }
@@ -532,7 +539,9 @@ fn try_now_ends_the_wait() {
     fake.limited.store(false, Ordering::SeqCst);
     h.send(PreviewCommand::TryNow);
     let ev = until(&h, |ev| done_count(ev) == 1);
-    assert!(ev.contains(&PreviewEvent::Unlimited));
+    assert!(ev.contains(&PreviewEvent::Unlimited {
+        source: Source::YouTube
+    }));
 }
 
 #[test]
@@ -604,4 +613,153 @@ fn retry_tries_given_up_clips_and_not_found_searches_again() {
         ev.iter()
             .any(|e| matches!(e, PreviewEvent::Found { clip, .. } if clip == "hiddensoul1"))
     });
+}
+
+// ---- Bandcamp -------------------------------------------------------------------------------
+
+const OOZE: &str = "https://analogicalforce.bandcamp.com/track/the-ooze";
+
+fn bc_track(id: &str, title: &str) -> BandcampTrack {
+    BandcampTrack {
+        track_id: id.into(),
+        url: format!(
+            "https://analogicalforce.bandcamp.com/track/{}",
+            title.to_lowercase()
+        ),
+        artist: "Patricia".into(),
+        title: title.into(),
+        duration: Some(400.0),
+        streamable: true,
+    }
+}
+
+fn bc_album(slug: &str, tracks: Vec<BandcampTrack>) -> BandcampAlbum {
+    BandcampAlbum {
+        url: format!("https://analogicalforce.bandcamp.com/album/{slug}"),
+        title: slug.into(),
+        catno: String::new(),
+        artist: "Patricia".into(),
+        cover: String::new(),
+        year: None,
+        tracks,
+    }
+}
+
+#[test]
+fn a_bandcamp_track_downloads_as_mp3_by_its_page() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let (h, d) = start("bandcamp", &fake, |_| {});
+    let key = "bc.3020153053".to_owned();
+    h.send(PreviewCommand::Locate(vec![(key.clone(), OOZE.into())]));
+    want(&h, std::slice::from_ref(&key));
+    until(&h, |ev| done_count(ev) == 1);
+    assert!(d.join("bc.3020153053.mp3").exists());
+    // A Bandcamp key nobody located is given up on, never guessed.
+    want(&h, &["bc.42".to_owned()]);
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Failed(c, _) if c == "bc.42"))
+    });
+}
+
+#[test]
+fn a_label_page_is_read_album_by_album() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let label = bandcamp::parse("https://analogicalforce.bandcamp.com/").unwrap();
+    let a = "https://analogicalforce.bandcamp.com/album/a";
+    let b = "https://analogicalforce.bandcamp.com/album/b";
+    fake.page(&label.url(), Listing::Albums(vec![a.into(), b.into()]));
+    fake.page(a, Listing::Album(bc_album("a", vec![bc_track("1", "One")])));
+    // `b` isn't there: it fails, and the rest goes on.
+    let (h, _) = start("bandcamp-read", &fake, |cfg| {
+        cfg.read_gap = Duration::from_millis(10)
+    });
+    h.send(PreviewCommand::ReadBandcamp {
+        job: 7,
+        page: label.clone(),
+        skip: Vec::new(),
+        only: Vec::new(),
+    });
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 7 }));
+    assert!(ev.contains(&PreviewEvent::BandcampListed { job: 7, albums: 2 }));
+    assert!(ev.iter().any(
+        |e| matches!(e, PreviewEvent::BandcampAlbum { job: 7, album } if album.tracks.len() == 1)
+    ));
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::BandcampFailed { job: 7, page, .. } if page == b))
+    );
+    assert_eq!(
+        fake.pages_read().len(),
+        3,
+        "the label, then each album once"
+    );
+    // A refresh leaves out what was read before.
+    h.send(PreviewCommand::ReadBandcamp {
+        job: 8,
+        page: label,
+        skip: vec![a.into()],
+        only: Vec::new(),
+    });
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 8 }));
+    assert!(ev.contains(&PreviewEvent::BandcampListed { job: 8, albums: 1 }));
+    assert_eq!(fake.pages_read().len(), 5, "the label and `b` only");
+    // Narrowed to a catalogue number no address holds: nothing is read.
+    h.send(PreviewCommand::ReadBandcamp {
+        job: 9,
+        page: bandcamp::parse("https://analogicalforce.bandcamp.com/").unwrap(),
+        skip: Vec::new(),
+        only: vec![bandcamp::squash("TOBAS 005")],
+    });
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 9 }));
+    assert!(
+        ev.contains(&PreviewEvent::BandcampListed { job: 9, albums: 0 }),
+        "{ev:?}"
+    );
+}
+
+#[test]
+fn a_limited_bandcamp_waits_while_youtube_goes_on() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.bandcamp_limited.store(true, Ordering::SeqCst);
+    let (h, d) = start("bandcamp-limited", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_secs(600)
+    });
+    let bc = "bc.3020153053".to_owned();
+    h.send(PreviewCommand::Locate(vec![(bc.clone(), OOZE.into())]));
+    want(&h, &[bc.clone(), clip(1)]);
+    let ev = until(&h, |ev| limited_events(ev) == 1 && done_count(ev) == 1);
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        PreviewEvent::Limited {
+            source: Source::Bandcamp,
+            ..
+        }
+    )));
+    assert!(
+        d.join(format!("{}.m4a", clip(1))).exists(),
+        "YouTube went on"
+    );
+    assert!(!ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..))));
+    // A page read waits too, then goes through after Try now.
+    let page = bandcamp::parse(OOZE).unwrap();
+    fake.page(
+        OOZE,
+        Listing::Album(bc_album("x", vec![bc_track("3020153053", "Ooze")])),
+    );
+    h.send(PreviewCommand::ReadBandcamp {
+        job: 1,
+        page,
+        skip: Vec::new(),
+        only: Vec::new(),
+    });
+    fake.bandcamp_limited.store(false, Ordering::SeqCst);
+    h.send(PreviewCommand::TryNow);
+    let ev = until(&h, |ev| {
+        done_count(ev) == 1 && ev.contains(&PreviewEvent::BandcampDone { job: 1 })
+    });
+    assert!(ev.contains(&PreviewEvent::Unlimited {
+        source: Source::Bandcamp
+    }));
+    assert!(d.join("bc.3020153053.mp3").exists());
 }

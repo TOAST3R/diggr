@@ -30,6 +30,8 @@ use crate::spectrum::{Analyzer, BARS};
 use crate::widgets::{self, Skinned, SliderSprites, color};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod bandcamp;
+#[cfg(not(target_arch = "wasm32"))]
 mod covers;
 #[cfg(not(target_arch = "wasm32"))]
 mod digging;
@@ -1475,7 +1477,7 @@ impl DiggrApp {
         if !self.crates.is_locked(c) {
             return false;
         }
-        self.notify(if self.crates.label_of(c).is_some() {
+        self.notify(if self.crates.is_label(c) {
             LABEL_CRATE_HINT
         } else if self.crates.is_wantlist(c) {
             "Records come into this crate with Add to wantlist (Y)"
@@ -1492,7 +1494,7 @@ impl DiggrApp {
         if !self.crates.is_locked(c) {
             return false;
         }
-        if self.crates.label_of(c).is_some() {
+        if self.crates.is_label(c) {
             self.notify(LABEL_CRATE_HINT);
         } else if !self.discogs_hint_shown {
             self.discogs_hint_shown = true;
@@ -2220,7 +2222,7 @@ impl DiggrApp {
             .crates
             .list()
             .iter()
-            .filter(|c| !seller_ids.contains(&c.id) && c.label.is_none())
+            .filter(|c| !seller_ids.contains(&c.id) && !c.is_label())
             .cloned()
             .partition(|c| !c.discogs());
         // The Discogs group is anchored to the bottom: DISCOGS, the wantlist then the
@@ -2447,7 +2449,7 @@ impl DiggrApp {
                     tip += "\nYour Discogs collection";
                 } else if c.wantlist {
                     tip += "\nYour Discogs wantlist";
-                } else if c.label.is_some() {
+                } else if c.is_label() {
                     tip += "\nA label you follow: it fills from the label's page";
                 } else if undug {
                     tip += "\nTop Sellers: double-click to dig it";
@@ -2514,7 +2516,7 @@ impl DiggrApp {
                         );
                         return;
                     }
-                    if c.label.is_some() {
+                    if c.is_label() {
                         self.label_menu(ui, c.id, actions);
                         return;
                     }
@@ -3914,6 +3916,12 @@ impl DiggrApp {
                 }
                 let current = shown.current() == Some(e.id);
                 let (mut col, dur) = row_look(e, current, &d.colors);
+                // Where the audio comes from: "YT", "BC" (nothing for local files).
+                let source = e
+                    .origin
+                    .as_ref()
+                    .and_then(|o| o.source())
+                    .map(|s| s.badge());
                 let marks = self.dig_marks(e);
                 let owned = marks.owned.clone();
                 let badges = Badges {
@@ -3951,7 +3959,19 @@ impl DiggrApp {
                         let text = match c {
                             Col::Number => format!("{}.", idx + 1),
                             Col::Field(Field::Time) => {
-                                draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
+                                let w = draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
+                                if let Some(src) = source {
+                                    let right = cell.right() - w - 6.0 * scale;
+                                    source_badge(
+                                        &cell_clip,
+                                        right,
+                                        cell.center().y,
+                                        src,
+                                        &font,
+                                        col,
+                                        scale,
+                                    );
+                                }
                                 continue;
                             }
                             Col::Field(Field::Title)
@@ -3988,7 +4008,11 @@ impl DiggrApp {
                         );
                     }
                 } else {
-                    let dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
+                    let mut dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
+                    if let Some(src) = source {
+                        let right = rr.right() - dur_w - 9.0 * scale;
+                        dur_w += source_badge(&clip, right, rr.center().y, src, &font, col, scale);
+                    }
                     let name_clip = clip.with_clip_rect(Rect::from_min_max(
                         rr.min,
                         pos2(rr.right() - dur_w - 8.0 * scale, rr.max.y),
@@ -4036,20 +4060,12 @@ impl DiggrApp {
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
                     let mut details = format::entry_details(e, marks.clone(), unix_now());
-                    // While YouTube limits requests, what waits for it says so.
+                    // While a source limits requests, what waits for it says so.
                     #[cfg(not(target_arch = "wasm32"))]
-                    if self.youtube_limited()
-                        && matches!(
-                            e.status,
-                            EntryStatus::Waiting(
-                                crate::playlist::WaitKind::Queued
-                                    | crate::playlist::WaitKind::Search
-                                    | crate::playlist::WaitKind::Downloading(_)
-                            )
-                        )
+                    if let Some(source) = self.waiting_for(e)
                         && let Some((_, status)) = details.iter_mut().find(|(k, _)| *k == "Status")
                     {
-                        *status += " · waiting for YouTube";
+                        *status += &format!(" · waiting for {}", source.name());
                     }
                     // Only what's in memory: the cover worker reads files and fetches.
                     #[cfg(not(target_arch = "wasm32"))]
@@ -4453,7 +4469,7 @@ impl DiggrApp {
         let Some(id) = self.confirm_delete else {
             return;
         };
-        let label = self.crates.label_of(id).is_some();
+        let label = self.crates.is_label(id);
         let question = if label {
             format!(
                 "Stop following \"{}\" and delete its crate ({})?",
@@ -4537,7 +4553,7 @@ impl DiggrApp {
         if ui.button("New crate…").clicked() {
             actions.push(Action::NewCrate);
         }
-        if self.crates.label_of(shown).is_some() {
+        if self.crates.is_label(shown) {
             ui.separator();
             self.label_menu(ui, shown, actions);
             return;
@@ -5591,6 +5607,29 @@ fn entry_badges(
         x += badge(painter, x, at.y, f, fill, &small, bg, scale);
     }
     (x - at.x, pill_rect)
+}
+
+/// An entry's source at the end of its row ("YT", "BC"), outlined, its right edge at `right`;
+/// returns the width it takes.
+fn source_badge(
+    painter: &egui::Painter,
+    right: f32,
+    y: f32,
+    label: &str,
+    font: &egui::FontId,
+    col: Color32,
+    scale: f32,
+) -> f32 {
+    let small = badge_font(font);
+    let dim = col.gamma_multiply(0.7);
+    let pad = vec2(2.0 * scale, 0.5 * scale);
+    let galley = painter.layout_no_wrap(label.into(), small, dim);
+    let size = galley.size() + pad * 2.0;
+    let rect = Rect::from_min_size(pos2(right - size.x, y - size.y / 2.0), size);
+    let stroke = egui::Stroke::new(scale * 0.75, dim);
+    painter.rect_stroke(rect, 2.0 * scale, stroke, egui::StrokeKind::Inside);
+    painter.galley(rect.min + pad, galley, dim);
+    size.x + 4.0 * scale
 }
 
 /// One filled badge at `x`, centred on `y`; returns its width with the gap after it.
@@ -6756,7 +6795,9 @@ mod headless_tests {
         }
 
         fn until(&mut self, mut done: impl FnMut(&mut Self) -> bool, what: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            // Generous: the whole workspace's tests share the machine, and a passing wait
+            // ends as soon as `done` holds.
+            let deadline = Instant::now() + Duration::from_secs(15);
             while !done(self) {
                 assert!(Instant::now() < deadline, "timed out: {what}");
                 self.pump();
@@ -6900,6 +6941,8 @@ mod headless_tests {
         color: Option<Color32>,
     }
 
+    // Bandcamp pages, with fake pages and previews.
+    mod bandcamp_tests;
     // Digging, with a fake Discogs, fake previews and a fake browser.
     mod dig_tests;
     mod record_tests;

@@ -11,6 +11,7 @@ use ::dig::discogs::transport::{FakeTransport, Method};
 use ::dig::discogs::url;
 use ::dig::jobs::{Filters, Job, Jobs};
 use ::dig::memory::DigMemory;
+use ::dig::preview::clip::Source;
 use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
 use ::dig::preview::scheduler::Finder;
 
@@ -2221,7 +2222,10 @@ fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
         .unwrap()
         .shown = false;
     let until = ::dig::now_secs() + 600;
-    rig.app.dig_preview_event(PreviewEvent::Limited { until });
+    rig.app.dig_preview_event(PreviewEvent::Limited {
+        source: Source::YouTube,
+        until,
+    });
     assert!(
         message(&rig).starts_with("YouTube is limiting requests: trying again in 10 min"),
         "{}",
@@ -2240,12 +2244,15 @@ fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
     // A second limited answer says nothing new.
     rig.app.notify("");
     rig.app.dig_preview_event(PreviewEvent::Limited {
+        source: Source::YouTube,
         until: until + 1200,
     });
     assert_eq!(message(&rig), "");
     rig.click_text("Try now");
     assert!(rig.app.youtube_limited(), "until YouTube answers");
-    rig.app.dig_preview_event(PreviewEvent::Unlimited);
+    rig.app.dig_preview_event(PreviewEvent::Unlimited {
+        source: Source::YouTube,
+    });
     assert!(!rig.app.youtube_limited());
     let out = rig.frame(Vec::new());
     assert!(!text_list(&out).iter().any(|t| t.starts_with("Paused")));
