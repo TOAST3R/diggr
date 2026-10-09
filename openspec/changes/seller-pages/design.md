@@ -3,7 +3,7 @@
 - `url::parse` recognises a seller only at `/seller/‹name›`, `/seller/‹name›/profile` and `/user/‹name›`. A test pins `/seller/decks.de/feedback` as Unsupported. `/sell/list?seller=…` isn't recognised.
 - The extension's `pages.js` mirrors those patterns (`KINDS`) and has no seller entry in `LINK_PATTERNS`. `content.js` shows one item, "Add seller to ‹App›", on seller pages.
 - The bridge's `send` already handles `PageKind::Seller` whatever the mode: add or refresh, show its crate, come to the front. `Snapshot.sellers` is kept up to date, but `#[serde(skip)]`, so the extension can't see it.
-- `label-crates` changes the same extension requirements and adds `Snapshot.labels` and the label link item. This change builds on it.
+- `label-crates` changes the same extension requirements and adds the label link item. This change builds on it.
 
 ## Goals / Non-Goals
 
@@ -44,7 +44,7 @@ The `/seller/decks.de/feedback` test changes from Unsupported to Seller, and new
 
 ### 4. Wording
 
-"Add seller to ‹App›" becomes "‹App›: Add seller", matching label-crates' "‹App›: Add to Labels". Both come from the app's reported name, as every extension label does.
+"Add seller to ‹App›" becomes "‹App›: Add seller", matching label-crates' "‹App›: Send label". Both come from the app's reported name, as every extension label does.
 
 ## Risks / Trade-offs
 

@@ -48,6 +48,10 @@ pub struct CrateInfo {
     /// A Top Sellers crate: the seller's username (pinned under TOP SELLERS).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seller: Option<String>,
+    /// A followed label's crate: the label's Discogs id (pinned under LABELS). It fills only
+    /// from that label's page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<u64>,
     /// Shown grouped by record, once toggled; `None` follows the crate's kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouped: Option<bool>,
@@ -82,11 +86,11 @@ impl CrateInfo {
         self.collection || self.wantlist
     }
 
-    /// Grouped by record: as toggled, else the user's Discogs crates and seller crates are
-    /// and others aren't.
+    /// Grouped by record: as toggled, else the user's Discogs crates, seller crates and label
+    /// crates are and others aren't.
     pub fn is_grouped(&self) -> bool {
         self.grouped
-            .unwrap_or_else(|| self.discogs() || self.seller.is_some())
+            .unwrap_or_else(|| self.discogs() || self.seller.is_some() || self.label.is_some())
     }
 }
 
@@ -141,6 +145,7 @@ impl Crates {
                     collection: false,
                     wantlist: false,
                     seller: None,
+                    label: None,
                     grouped: None,
                     records: 0,
                 }],
@@ -235,6 +240,7 @@ impl Crates {
                 collection: false,
                 wantlist: false,
                 seller: None,
+                label: None,
                 grouped: None,
                 records: 0,
             });
@@ -265,6 +271,7 @@ impl Crates {
                         collection: false,
                         wantlist: false,
                         seller: None,
+                        label: None,
                         grouped: None,
                         records: 0,
                     },
@@ -587,6 +594,42 @@ impl Crates {
         self.info(id).and_then(|c| c.seller.as_deref())
     }
 
+    /// Takes no hand edits: the user's Discogs crates mirror the account, and a label crate
+    /// fills only from its label.
+    pub fn is_locked(&self, id: CrateId) -> bool {
+        self.is_discogs(id) || self.label_of(id).is_some()
+    }
+
+    /// The label whose crate this is (LABELS).
+    pub fn label_of(&self, id: CrateId) -> Option<u64> {
+        self.info(id).and_then(|c| c.label)
+    }
+
+    /// The crate following `label`, if any.
+    pub fn find_label(&self, label: u64) -> Option<CrateId> {
+        self.index
+            .crates
+            .iter()
+            .find(|c| c.label == Some(label))
+            .map(|c| c.id)
+    }
+
+    /// The label crates, in the order they were followed (created).
+    pub fn labels(&self) -> impl Iterator<Item = &CrateInfo> {
+        self.index.crates.iter().filter(|c| c.label.is_some())
+    }
+
+    /// Marks a crate as following `label` (LABELS); it stays the label's after a rename.
+    pub fn set_label(&mut self, id: CrateId, label: u64) {
+        if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
+            && c.label != Some(label)
+        {
+            c.label = Some(label);
+            self.mark_index();
+        }
+        self.apply_grouped(id);
+    }
+
     /// Marks a crate as a seller's (Top Sellers); it stays theirs after a rename.
     pub fn set_seller(&mut self, id: CrateId, seller: &str) {
         if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
@@ -611,6 +654,7 @@ impl Crates {
             collection: false,
             wantlist: false,
             seller: None,
+            label: None,
             grouped: None,
             records: 0,
         });
@@ -1206,6 +1250,29 @@ mod tests {
         );
         assert!(c.is_grouped(id));
         assert_eq!(c.seller_of(PLAYLIST), None);
+    }
+
+    #[test]
+    fn a_label_crate_stays_the_labels_is_grouped_and_locked() {
+        let cfg = config("label");
+        let id = {
+            let mut c = Crates::open(&cfg);
+            let id = c.create("Label: Siesta Records").unwrap();
+            assert_eq!((c.label_of(id), c.find_label(77)), (None, None));
+            assert!(!c.is_locked(id));
+            c.set_label(id, 77);
+            assert!(c.is_grouped(id), "label crates are grouped by default");
+            assert!(c.is_locked(id), "a label crate takes no hand edits");
+            c.rename(id, "Siesta").unwrap();
+            c.save_due(true, Duration::ZERO);
+            id
+        };
+        let c = Crates::open(&cfg);
+        assert_eq!(c.label_of(id), Some(77), "after a rename and a restart");
+        assert_eq!(c.find_label(77), Some(id));
+        assert_eq!(c.labels().map(|i| i.id).collect::<Vec<_>>(), [id]);
+        assert!(c.is_grouped(id) && c.is_locked(id));
+        assert!(!c.is_locked(PLAYLIST));
     }
 
     #[test]

@@ -1446,7 +1446,7 @@ impl DiggrApp {
     }
 
     /// Removes entries of the shown crate (Remove, Remove album, Delete), except from the
-    /// Discogs crates, which records leave only through the Discogs items.
+    /// Discogs crates, which records leave only through the Discogs items, and label crates.
     fn remove_entries(&mut self, ids: &[EntryId]) {
         if self.refuse_discogs_edit(self.crates.shown_id()) {
             return;
@@ -1464,17 +1464,20 @@ impl DiggrApp {
         self.crates
             .list()
             .iter()
-            .filter(|c| c.id != self.crates.shown_id() && !self.crates.is_discogs(c.id))
+            .filter(|c| c.id != self.crates.shown_id() && !self.crates.is_locked(c.id))
             .map(|c| (c.id, c.name.clone()))
             .collect()
     }
 
-    /// Whether crate `c` is a Discogs crate, which only the Discogs items fill; says how.
+    /// Whether crate `c` is a Discogs crate, which only the Discogs items fill, or a label
+    /// crate, which only its label fills; says how.
     fn refuse_discogs_insert(&mut self, c: CrateId) -> bool {
-        if !self.crates.is_discogs(c) {
+        if !self.crates.is_locked(c) {
             return false;
         }
-        self.notify(if self.crates.is_wantlist(c) {
+        self.notify(if self.crates.label_of(c).is_some() {
+            LABEL_CRATE_HINT
+        } else if self.crates.is_wantlist(c) {
             "Records come into this crate with Add to wantlist (Y)"
         } else {
             "Records come into this crate with Add to collection"
@@ -1482,13 +1485,16 @@ impl DiggrApp {
         true
     }
 
-    /// Whether crate `c` is a Discogs crate, which takes no hand removals; the first refusal
-    /// of the session says how records leave it.
+    /// Whether crate `c` is a Discogs crate or a label crate, which take no hand removals; the
+    /// first refusal of the session says how records leave a Discogs crate, and every one says
+    /// how a label crate works.
     fn refuse_discogs_edit(&mut self, c: CrateId) -> bool {
-        if !self.crates.is_discogs(c) {
+        if !self.crates.is_locked(c) {
             return false;
         }
-        if !self.discogs_hint_shown {
+        if self.crates.label_of(c).is_some() {
+            self.notify(LABEL_CRATE_HINT);
+        } else if !self.discogs_hint_shown {
             self.discogs_hint_shown = true;
             self.notify(if self.crates.is_wantlist(c) {
                 "Records leave this crate with Remove from wantlist (Y)"
@@ -2209,23 +2215,32 @@ impl DiggrApp {
         let rows = ((h / row_h).floor() as usize).max(1);
         let (sellers, folded) = self.sidebar_sellers();
         let seller_ids: HashSet<CrateId> = sellers.iter().map(|s| s.0).collect();
+        let labels: Vec<_> = self.crates.labels().cloned().collect();
         let (mine, collection): (Vec<_>, Vec<_>) = self
             .crates
             .list()
             .iter()
-            .filter(|c| !seller_ids.contains(&c.id))
+            .filter(|c| !seller_ids.contains(&c.id) && c.label.is_none())
             .cloned()
             .partition(|c| !c.discogs());
         // The Discogs group is anchored to the bottom: DISCOGS, the wantlist then the
-        // collection, then TOP SELLERS and the seller crates (unless folded). When it doesn't
-        // all fit, the seller crates at its end are left out first.
+        // collection, then LABELS and the label crates, then TOP SELLERS and the seller crates
+        // (each unless folded). When it doesn't all fit, the crates at its end are left out
+        // first.
         let mut collection = collection;
         collection.sort_by_key(|c| !c.wantlist);
         let mut bottom: Vec<SideRow> = Vec::new();
-        if !collection.is_empty() || !sellers.is_empty() {
+        if !collection.is_empty() || !labels.is_empty() || !sellers.is_empty() {
             bottom.push(SideRow::Discogs);
         }
         bottom.extend(collection.into_iter().map(|c| SideRow::Crate(c, None)));
+        if !labels.is_empty() {
+            let folded = self.settings.labels_folded;
+            bottom.push(SideRow::Labels(labels.len(), folded));
+            if !folded {
+                bottom.extend(labels.into_iter().map(|c| SideRow::Crate(c, None)));
+            }
+        }
         if !sellers.is_empty() {
             bottom.push(SideRow::Sellers(sellers.len(), folded));
             if !folded {
@@ -2269,6 +2284,17 @@ impl DiggrApp {
             match row {
                 SideRow::Discogs => {
                     heading(r, "DISCOGS");
+                }
+                SideRow::Labels(n, folded) => {
+                    let mark = if folded { "⏵" } else { "⏷" };
+                    let dr = heading(r, &format!("{mark} LABELS ({n})"));
+                    if ui
+                        .interact(dr, Id::new("pl_side_labels"), Sense::click())
+                        .on_hover_text("The labels you follow: click to fold")
+                        .clicked()
+                    {
+                        actions.push(Action::ToggleLabelsFold);
+                    }
                 }
                 SideRow::Sellers(n, folded) => {
                     let mark = if folded { "⏵" } else { "⏷" };
@@ -2317,7 +2343,7 @@ impl DiggrApp {
             if over {
                 target = Some(c.id);
             }
-            if over && !self.crates.is_discogs(c.id) && seller.is_none() {
+            if over && !self.crates.is_locked(c.id) && seller.is_none() {
                 painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
             } else if c.id == shown {
                 painter.rect_filled(
@@ -2421,6 +2447,8 @@ impl DiggrApp {
                     tip += "\nYour Discogs collection";
                 } else if c.wantlist {
                     tip += "\nYour Discogs wantlist";
+                } else if c.label.is_some() {
+                    tip += "\nA label you follow: it fills from the label's page";
                 } else if undug {
                     tip += "\nTop Sellers: double-click to dig it";
                 } else if seller.is_some() {
@@ -2451,6 +2479,12 @@ impl DiggrApp {
             if resp.clicked() || menu_click {
                 self.side_crate = Some(c.id);
             }
+            // Move to Labels needs the crate's entries: a right-click loads it.
+            if menu_click && readable {
+                self.crates.load(c.id);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let movable = self.label_to_move(c.id);
             let open = if menu_click {
                 Some(egui::SetOpenCommand::Bool(true))
             } else if resp.clicked() {
@@ -2480,6 +2514,10 @@ impl DiggrApp {
                         );
                         return;
                     }
+                    if c.label.is_some() {
+                        self.label_menu(ui, c.id, actions);
+                        return;
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     if c.discogs() {
                         self.dig_refresh_item(ui, c, actions);
@@ -2506,6 +2544,19 @@ impl DiggrApp {
                                 ui.close();
                             }
                         }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(label) = movable
+                        && ui
+                            .button("Move to Labels")
+                            .on_hover_text(
+                                "Follow this crate's label: it moves under LABELS and fills \
+                                 only from the label from then on",
+                            )
+                            .clicked()
+                    {
+                        actions.push(Action::MoveToLabels(c.id, label));
+                        ui.close();
                     }
                     if ui
                         .add_enabled(readable, egui::Button::new("Rename crate…"))
@@ -3124,8 +3175,8 @@ impl DiggrApp {
             ui.close();
         }
         // The Discogs crates mirror the account: records leave them with Remove from wantlist
-        // or Remove from collection, never one track at a time.
-        let discogs = self.crates.is_discogs(self.crates.shown_id());
+        // or Remove from collection, never one track at a time; a label crate keeps them all.
+        let discogs = self.crates.is_locked(self.crates.shown_id());
         if !discogs && ui.button("Remove").clicked() {
             actions.push(Action::RemoveEntry(e.id));
             ui.close();
@@ -3710,7 +3761,7 @@ impl DiggrApp {
                 });
             }
             // An empty crate says how to fill it (not the Discogs crates: a paste can't).
-            if shown.is_empty() && !self.crates.is_discogs(self.crates.shown_id()) {
+            if shown.is_empty() && !self.crates.is_locked(self.crates.shown_id()) {
                 let lines = empty_crate_hint(PASTE_MODIFIER);
                 let line_h = sk.def.font.glyph_h as f32 + 4.0;
                 let body = list_h - (rows_top - top);
@@ -4139,7 +4190,7 @@ impl DiggrApp {
             let filtered = self.crates.shown().bpm_filter().is_some();
             let picks = self.crates.shown().picks_filter();
             let offered = self.offered_facets();
-            let discogs = self.crates.is_discogs(self.crates.shown_id());
+            let discogs = self.crates.is_locked(self.crates.shown_id());
             let seller_crate = self.crates.seller_of(self.crates.shown_id()).is_some();
             let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
             let menu_rect = menu.rect;
@@ -4373,6 +4424,11 @@ impl DiggrApp {
                 let to = self.crates.create(name)?;
                 self.send_to(ids, to);
             }
+            NameFor::ExportLabel(from) => {
+                let to = self.crates.create(name)?;
+                self.export_label(*from, to);
+                self.show_crate(to);
+            }
         }
         Ok(())
     }
@@ -4382,16 +4438,28 @@ impl DiggrApp {
         let Some(id) = self.confirm_delete else {
             return;
         };
-        let question = format!(
-            "Delete crate \"{}\" ({})?",
-            self.crates.name(id),
-            entries_label(self.crates.entry_count(id))
-        );
+        let label = self.crates.label_of(id).is_some();
+        let question = if label {
+            format!(
+                "Stop following \"{}\" and delete its crate ({})?",
+                self.crates.name(id),
+                entries_label(self.crates.entry_count(id))
+            )
+        } else {
+            format!(
+                "Delete crate \"{}\" ({})?",
+                self.crates.name(id),
+                entries_label(self.crates.entry_count(id))
+            )
+        };
         let mut choice = None;
         let modal = egui::Modal::new(Id::new("delete-crate")).show(ctx, |ui| {
             ui.label(question);
             ui.horizontal(|ui| {
-                if ui.button("Delete").clicked() {
+                if ui
+                    .button(if label { "Delete label" } else { "Delete" })
+                    .clicked()
+                {
                     choice = Some(true);
                 }
                 if ui.button("Cancel").clicked() {
@@ -4454,6 +4522,11 @@ impl DiggrApp {
         if ui.button("New crate…").clicked() {
             actions.push(Action::NewCrate);
         }
+        if self.crates.label_of(shown).is_some() {
+            ui.separator();
+            self.label_menu(ui, shown, actions);
+            return;
+        }
         let editable = shown != PLAYLIST;
         if ui
             .add_enabled(editable, egui::Button::new("Rename crate…"))
@@ -4466,6 +4539,79 @@ impl DiggrApp {
             .clicked()
         {
             actions.push(Action::DeleteCrate(shown));
+        }
+    }
+
+    /// Export to crate: every entry of label crate `from` copied into `to`, in order, without
+    /// what `to` already holds. The label crate is unchanged.
+    fn export_label(&mut self, from: CrateId, to: CrateId) {
+        if !self.crates.load(from) || self.refuse_discogs_insert(to) {
+            return;
+        }
+        let ids: Vec<EntryId> = self
+            .crates
+            .get(from)
+            .map(|p| p.entries().iter().map(|e| e.id).collect())
+            .unwrap_or_default();
+        match self.crates.send(from, &ids, to) {
+            Ok(n) => {
+                self.mark_crate(to);
+                self.notify(format!(
+                    "{} › {}: {}",
+                    self.crates.name(from),
+                    self.crates.name(to),
+                    match n {
+                        0 => "nothing new".to_owned(),
+                        n => entries_label(n),
+                    }
+                ));
+            }
+            Err(e) => self.notify(e),
+        }
+    }
+
+    /// A label crate's menu, in the sidebar and the title-bar crate menu: Delete label…,
+    /// Export to crate ▸ (the normal crates, then New crate…), Refresh label, and Download all
+    /// tracks.
+    fn label_menu(&self, ui: &mut Ui, c: CrateId, actions: &mut Vec<Action>) {
+        if ui.button("Delete label…").clicked() {
+            actions.push(Action::DeleteLabel(c));
+            ui.close();
+        }
+        ui.menu_button("Export to crate", |ui| {
+            for (id, name) in self.send_targets() {
+                if id == c || self.crates.seller_of(id).is_some() {
+                    continue;
+                }
+                if ui.button(name).clicked() {
+                    actions.push(Action::ExportLabel(c, Some(id)));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New crate…").clicked() {
+                actions.push(Action::ExportLabel(c, None));
+                ui.close();
+            }
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let busy = self.label_refreshing(c);
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(if busy {
+                        "Refreshing…"
+                    } else {
+                        "Refresh label"
+                    }),
+                )
+                .on_hover_text("Read the label's page again: only new records come in")
+                .clicked()
+            {
+                actions.push(Action::Dig(DigAction::RefreshLabel(c)));
+                ui.close();
+            }
         }
     }
 
@@ -4726,6 +4872,26 @@ impl DiggrApp {
             Action::InvertSelection => self.crates.shown_mut().invert_selection(),
             Action::ExportM3u => self.export_m3u(),
             Action::ShowCrate(id) => self.show_crate(id),
+            Action::DeleteLabel(id) => self.confirm_delete = Some(id),
+            Action::ExportLabel(from, Some(to)) => self.export_label(from, to),
+            Action::ExportLabel(from, None) => {
+                let name = self.crates.name(from);
+                let name = name.strip_prefix("Label: ").unwrap_or(name).to_owned();
+                self.name_dialog = Some(NameDialog::new(NameFor::ExportLabel(from), name));
+            }
+            Action::ToggleLabelsFold => {
+                self.settings.labels_folded = !self.settings.labels_folded;
+                self.mark_settings();
+            }
+            Action::MoveToLabels(id, label) => {
+                if self.crates.find_label(label).is_none() {
+                    self.crates.set_label(id, label);
+                    self.notify(format!(
+                        "{} is under LABELS: it fills from its label now",
+                        self.crates.name(id)
+                    ));
+                }
+            }
             Action::NewCrate => self.name_dialog = Some(NameDialog::new(NameFor::NewCrate, "")),
             Action::RenameCrate(id) => {
                 let name = self.crates.name(id).to_owned();
@@ -4807,6 +4973,8 @@ type Placed = (crate::crates::CrateInfo, usize, Option<(bool, bool)>);
 /// A row of the sidebar's Discogs group.
 enum SideRow {
     Discogs,
+    /// LABELS: how many, and whether folded.
+    Labels(usize, bool),
     /// TOP SELLERS: how many, and whether folded.
     Sellers(usize, bool),
     /// A crate; for a seller crate, whether it was dug and is being refreshed.
@@ -4887,6 +5055,14 @@ enum Action {
     /// Rename or delete a crate (from the crate menu or the sidebar).
     RenameCrate(CrateId),
     DeleteCrate(CrateId),
+    /// Fold or unfold LABELS in the sidebar.
+    ToggleLabelsFold,
+    /// Delete label…: asks, then stops following the label and deletes its crate.
+    DeleteLabel(CrateId),
+    /// Export to crate: copy a label crate's entries into a crate, or (`None`) a new one.
+    ExportLabel(CrateId, Option<CrateId>),
+    /// Make a crate filled from a label's page that label's crate (LABELS).
+    MoveToLabels(CrateId, u64),
     /// Send the dragged entries (the selection when the dragged one is in it) to a crate.
     DropOnCrate(EntryId, CrateId),
     /// Empty a crate (Clear crate in ≡ acts on the shown one).
@@ -4931,6 +5107,8 @@ enum NameFor {
     RenameCrate(CrateId),
     /// A new crate for these entries of the shown crate.
     SendToNew(Vec<EntryId>),
+    /// A new crate for a copy of this label crate.
+    ExportLabel(CrateId),
 }
 
 impl NameFor {
@@ -4938,7 +5116,9 @@ impl NameFor {
     fn labels(&self) -> (&'static str, &'static str) {
         match self {
             NameFor::Preset => ("Save EQ preset", "Save"),
-            NameFor::NewCrate | NameFor::SendToNew(_) => ("New crate", "Create"),
+            NameFor::NewCrate | NameFor::SendToNew(_) | NameFor::ExportLabel(_) => {
+                ("New crate", "Create")
+            }
             NameFor::RenameCrate(_) => ("Rename crate", "Rename"),
         }
     }
@@ -5516,6 +5696,10 @@ fn engine_status(slot: &EngineSlot) -> String {
         EngineSlot::Failed(e) => format!("AUDIO ERROR: {e}"),
     }
 }
+
+/// What a label crate says when the user tries to add to it or remove from it.
+const LABEL_CRATE_HINT: &str =
+    "Label crates fill from their label: Refresh label brings new records, N passes a track";
 
 /// How long a verdict stays on the title line.
 const FLASH_SECS: Duration = Duration::from_millis(1500);

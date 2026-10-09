@@ -261,6 +261,41 @@ fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
 }
 
 #[test]
+fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
+    let fakes = Fakes::new();
+    let (mut rig, _, _) = two_sellers("labels-sidebar", &fakes);
+    let siesta = rig.app.crates.create("Label: Siesta Records").unwrap();
+    rig.app.crates.set_label(siesta, 77);
+    let out = rig.frame(Vec::new());
+    let y = |t: &str| {
+        texts(&out)
+            .into_iter()
+            .find(|x| x.text == t)
+            .unwrap_or_else(|| panic!("{t}: {:?}", text_list(&out)))
+            .rect
+            .center()
+            .y
+    };
+    assert!(y("DISCOGS") < y("⏷ LABELS (1)"));
+    assert!(y("⏷ LABELS (1)") < y("Label: Siesta Records"));
+    assert!(y("Label: Siesta Records") < y("⏷ TOP SELLERS (2)"));
+    assert_eq!(
+        texts(&out)
+            .iter()
+            .filter(|t| t.text == "Label: Siesta Records")
+            .count(),
+        1,
+        "not also in the top list"
+    );
+
+    rig.click_text("⏷ LABELS (1)");
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏵ LABELS (1)"));
+    assert!(!shows(&out, "Label: Siesta Records"), "folded");
+    assert!(rig.app.settings.labels_folded, "the fold is a setting");
+}
+
+#[test]
 fn top_sellers_sit_under_discogs_and_fold() {
     let fakes = Fakes::new();
     let (mut rig, _, _) = two_sellers("sellers-sidebar", &fakes);

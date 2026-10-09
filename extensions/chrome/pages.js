@@ -43,10 +43,13 @@ var WR = (() => {
     return null;
   }
 
-  // Context-menu link patterns (match patterns can't say "digits"; the player checks).
+  // Context-menu link patterns (match patterns can't say "digits"; the player checks). A label
+  // link has its own item (Send label), so it is kept apart.
   const LINK_PATTERNS = [];
+  const LABEL_LINK_PATTERNS = [];
   for (const host of ["*://discogs.com", "*://www.discogs.com"]) {
-    for (const kind of ["release", "master", "artist", "label", "lists"]) {
+    LABEL_LINK_PATTERNS.push(`${host}/label/*`, `${host}/*/label/*`);
+    for (const kind of ["release", "master", "artist", "lists"]) {
       LINK_PATTERNS.push(`${host}/${kind}/*`, `${host}/*/${kind}/*`);
     }
     for (const shop of ["shop/item", "sell/item"]) {
@@ -144,6 +147,7 @@ var WR = (() => {
     DEFAULT_PORT,
     pageKind,
     LINK_PATTERNS,
+    LABEL_LINK_PATTERNS,
     SUPPORTED,
     MAX_NAME,
     suggestName,

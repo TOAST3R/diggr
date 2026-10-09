@@ -815,19 +815,46 @@ fn a_browser_send_is_answered_at_once_and_the_crate_fills_in_afterwards() {
         answer.contains(r#""page":"Label: Lowtide Tapes""#),
         "{answer}"
     );
-    assert!(answer.contains(r#""crate":"Playlist""#), "{answer}");
+    assert!(answer.contains(r#""added":true"#), "{answer}");
 
-    // Exactly as a paste: the label's records arrive in the shown crate.
+    // The label is followed: its crate fills under LABELS, out of sight.
     rig.until(
-        |r| r.app.crates.get(PLAYLIST).is_some_and(|p| !p.is_empty()),
-        "the crate fills in",
+        |r| {
+            r.app
+                .crates
+                .find_label(12345)
+                .and_then(|c| r.app.crates.get(c))
+                .is_some_and(|p| !p.is_empty())
+        },
+        "the label's crate fills in",
     );
+    let c = rig.app.crates.find_label(12345).unwrap();
+    assert_eq!(rig.app.crates.name(c), "Label: Lowtide Tapes");
+    assert_eq!(rig.app.crates.shown_id(), PLAYLIST, "the shown crate stays");
+    assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
     let (status, crates) = http(bridge_port(&rig), "GET", "/v1/crates", Some(&key), "");
     assert_eq!(status, 200);
     assert!(
         crates.contains(r#"{"name":"Playlist","playing":false,"shown":true}"#),
         "{crates}"
     );
+
+    // Sent again, once the first send is done: the same crate, refreshed, nothing doubled.
+    let port = bridge_port(&rig);
+    let idle = |key: &str| {
+        let (_, status) = http(port, "GET", "/v1/status", Some(key), "");
+        status.contains(r#""sends":[]"#)
+    };
+    rig.until(|_| idle(&key), "the first send is done");
+    let len = |rig: &Rig| rig.app.crates.get(c).map_or(0, |p| p.len());
+    let before = len(&rig);
+    rig.frame(Vec::new());
+    let (_, answer) = http(bridge_port(&rig), "POST", "/v1/send", Some(&key), &body);
+    assert!(answer.contains("Refreshed label Lowtide Tapes"), "{answer}");
+    rig.pump();
+    rig.until(|_| idle(&key), "the refresh is done");
+    assert_eq!(rig.app.crates.labels().count(), 1, "no second crate");
+    assert_eq!(len(&rig), before, "nothing doubled");
 }
 
 #[test]
@@ -1831,6 +1858,218 @@ fn the_collection_crate_takes_nothing_by_hand_but_lets_records_out() {
     rig.app.apply(Action::SendTo(first, Some(PLAYLIST)), &ctx);
     assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 2);
     assert_eq!(rig.app.crates.get(coll).unwrap().len(), before);
+}
+
+const LOWTIDE: &str = "https://www.discogs.com/label/12345-Lowtide-Tapes";
+
+/// A normal crate named `name`, filled by pasting the Lowtide Tapes label's page into it.
+fn pasted_label_crate(rig: &mut Rig, name: &str) -> CrateId {
+    let c = rig.app.crates.create(name).unwrap();
+    rig.app.show_crate(c);
+    rig.app.dig_paste(LOWTIDE);
+    rig.until(
+        |r| r.app.crates.get(c).is_some_and(|p| !p.is_empty()),
+        "the label's records arrive",
+    );
+    for _ in 0..50 {
+        rig.pump();
+    }
+    c
+}
+
+#[test]
+fn a_crate_filled_from_one_label_moves_under_labels() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-move", &fakes, |_| {});
+    let c = pasted_label_crate(&mut rig, "Label: Lowtide Tapes");
+    let n = clips(&rig, c).len();
+    assert_eq!(rig.app.label_to_move(c), Some(12345));
+    assert_eq!(rig.app.label_to_move(PLAYLIST), None);
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::MoveToLabels(c, 12345), &ctx);
+    assert_eq!(rig.app.crates.label_of(c), Some(12345));
+    assert_eq!(rig.app.crates.find_label(12345), Some(c));
+    assert!(rig.app.crates.is_locked(c));
+    assert_eq!(
+        rig.app.crates.name(c),
+        "Label: Lowtide Tapes",
+        "keeps its name"
+    );
+    assert_eq!(clips(&rig, c).len(), n, "and its entries");
+    assert_eq!(rig.app.label_to_move(c), None, "already a label crate");
+
+    // A second crate from the same label can't follow it too; a mixed one never can.
+    let again = pasted_label_crate(&mut rig, "Lowtide again");
+    assert_eq!(
+        rig.app.label_to_move(again),
+        None,
+        "the label has its crate"
+    );
+    rig.app.crates.set_label(c, 1); // pretend Lowtide Tapes isn't followed
+    assert_eq!(rig.app.label_to_move(again), Some(12345));
+    rig.app.show_crate(again);
+    rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
+    assert_eq!(rig.app.label_to_move(again), None, "a local file in it");
+}
+
+/// Lowtide Tapes followed: a crate filled from its page, moved under LABELS.
+fn followed_label(rig: &mut Rig) -> CrateId {
+    let c = pasted_label_crate(rig, "Label: Lowtide Tapes");
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::MoveToLabels(c, 12345), &ctx);
+    c
+}
+
+#[test]
+fn a_label_crates_menu_is_delete_export_refresh() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-menu", &fakes, |_| {});
+    followed_label(&mut rig);
+    rig.app.settings.playlist_width = 700;
+    rig.frame(Vec::new());
+    let at = {
+        let out = rig.frame(Vec::new());
+        texts(&out)
+            .into_iter()
+            .find(|t| t.text == "Label: Lowtide Tapes")
+            .unwrap()
+            .rect
+            .center()
+    };
+    rig.click_with(at, PointerButton::Secondary);
+    let items = text_list(&rig.frame(Vec::new()));
+    for want in ["Delete label…", "Export to crate", "Refresh label"] {
+        assert!(items.iter().any(|t| t == want), "{want}: {items:?}");
+    }
+    for gone in ["Rename crate…", "Delete crate…", "Move to Labels"] {
+        assert!(!items.iter().any(|t| t == gone), "{gone}: {items:?}");
+    }
+}
+
+#[test]
+fn export_copies_a_label_into_a_crate_and_the_label_stays() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-export", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let n = rig.app.crates.get(c).unwrap().len();
+    let ctx = rig.ctx.clone();
+    // Into a new crate, named after the label by default.
+    rig.app.apply(Action::ExportLabel(c, None), &ctx);
+    let dialog = rig.app.name_dialog.as_ref().expect("asks for a name");
+    assert_eq!(dialog.text, "Lowtide Tapes");
+    rig.app
+        .apply_name(&NameFor::ExportLabel(c), "Lowtide Tapes")
+        .unwrap();
+    rig.app.name_dialog = None;
+    let copy = rig.app.crates.find("Lowtide Tapes").unwrap();
+    assert_eq!(rig.app.crates.shown_id(), copy, "shown");
+    assert_eq!(rig.app.crates.get(copy).unwrap().len(), n);
+    assert!(!rig.app.crates.is_locked(copy), "a normal crate");
+    assert_eq!(
+        rig.app.crates.get(c).unwrap().len(),
+        n,
+        "the label is unchanged"
+    );
+    assert_eq!(rig.app.crates.label_of(c), Some(12345));
+    // Into one that holds some already: only the rest.
+    let friday = rig.app.crates.create("Friday").unwrap();
+    rig.app.show_crate(copy);
+    let first = rig.app.crates.shown().entries()[0].id;
+    rig.app.apply(Action::SendTo(first, Some(friday)), &ctx);
+    rig.app.apply(Action::ExportLabel(c, Some(friday)), &ctx);
+    assert_eq!(
+        rig.app.crates.get(friday).unwrap().len(),
+        n,
+        "nothing twice"
+    );
+}
+
+#[test]
+fn delete_label_asks_then_stops_following() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-delete", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::DeleteLabel(c), &ctx);
+    assert_eq!(rig.app.confirm_delete, Some(c), "asks first");
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out)
+            .iter()
+            .any(|t| t.starts_with("Stop following \"Label: Lowtide Tapes\"")),
+        "{:?}",
+        text_list(&out)
+    );
+    rig.click_text("Delete label");
+    rig.frame(Vec::new());
+    assert!(rig.app.crates.info(c).is_none(), "the crate is gone");
+    assert_eq!(rig.app.crates.find_label(12345), None, "not followed");
+}
+
+#[test]
+fn refresh_label_brings_only_whats_new_and_says_so() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-refresh", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let n = rig.app.crates.get(c).unwrap().len();
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::RefreshLabel(c)), &ctx);
+    assert!(rig.app.label_refreshing(c), "Refreshing…");
+    rig.until(|r| !r.app.label_refreshing(c), "the refresh ends");
+    assert_eq!(message(&rig), "Label: Lowtide Tapes: up to date");
+    assert_eq!(rig.app.crates.get(c).unwrap().len(), n, "nothing doubled");
+    assert_eq!(rig.app.crates.shown_id(), c, "the view is left alone");
+}
+
+#[test]
+fn a_label_crate_takes_and_loses_nothing_by_hand_but_pass_dims() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-locked", &fakes, |_| {});
+    let c = play_release(&mut rig);
+    rig.until(|r| all_playable(r, c, 3), "all previews ready");
+    rig.app.crates.set_label(c, 77);
+    let ctx = rig.ctx.clone();
+    let says = |rig: &Rig| message(rig).contains("Label crates fill from their label");
+    // In: files, a paste, a drop or a send from another crate.
+    rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
+    assert!(says(&rig), "{}", message(&rig));
+    rig.app.notify("");
+    rig.app
+        .dig_paste("https://www.discogs.com/release/1003-Undertow");
+    assert!(says(&rig), "{}", message(&rig));
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert!(!holds(&rig, c, 1003), "no send started");
+    assert!(
+        !rig.app.send_targets().iter().any(|(t, _)| *t == c),
+        "Send to crate doesn't list it"
+    );
+    // Out: Delete, Remove selected, Clear crate; and the menus don't offer them.
+    rig.app.notify("");
+    rig.app.apply(Action::SelectAll, &ctx);
+    rig.app.apply(Action::RemoveSelected, &ctx);
+    assert!(says(&rig), "{}", message(&rig));
+    rig.app.notify("");
+    rig.app.apply(Action::ClearCrate(c), &ctx);
+    assert!(says(&rig), "{}", message(&rig));
+    assert_eq!(clips(&rig, c).len(), 3, "nothing left the crate");
+    rig.app.apply(Action::SelectNone, &ctx);
+    rig.frame(Vec::new());
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    let items = text_list(&rig.frame(Vec::new()));
+    assert!(!items.iter().any(|t| t == "Remove"), "{items:?}");
+    assert!(items.iter().any(|t| t == "Pass (N)"), "{items:?}");
+    key(&mut rig, Key::Escape);
+    // Pass dims the track, keeps it, and moves on.
+    key(&mut rig, Key::N);
+    assert!(memory(&rig).is_passed(CLIPS[0]));
+    rig.until(
+        |r| playing_clip(r).as_deref() == Some(CLIPS[1]),
+        "the next preview plays",
+    );
+    assert_eq!(clips(&rig, c).len(), 3, "passed, not removed");
 }
 
 const COPIES_1001: &str = "/users/digger/collection/releases/1001";

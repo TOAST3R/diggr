@@ -9,7 +9,7 @@ On Discogs release, master release, artist, label, wantlist, collection, list an
 
 On a seller's page (`/seller/‹name›` and any page under it, `/sell/list` with a `seller=‹name›` parameter, or `/user/‹name›` with no further path; see `seller-crates`), the button SHALL be shown the same way, and its menu SHALL offer only ‹App›: Add seller, or ‹App›: In Top Sellers · Refresh when the seller is already in the app's Top Sellers. Choosing it SHALL send the page to the app, which adds or refreshes that seller.
 
-On a label's page, the button's menu SHALL offer only ‹App›: Add to Labels, or ‹App›: In Labels · Refresh when the app already follows that label. Choosing it SHALL send the page to the app, which follows or refreshes that label (see `label-crates`).
+On a label's page, the button's menu SHALL offer only ‹App›: Send label. Choosing it SHALL send the page to the app, which follows that label, or refreshes it when it is already followed (see `label-crates`).
 
 New crate… SHALL open a field in the menu holding a suggested name, taken from the page's title, as editable text; Enter or Create SHALL send:
 - for a release, master release or listing, "Artist - Title";
@@ -23,11 +23,11 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 
 #### Scenario: Label page
 - **WHEN** the user opens a Discogs label page while the app is running and paired
-- **THEN** the button's menu offers only ‹App›: Add to Labels, and choosing it follows the label in the app without changing its shown crate
+- **THEN** the button's menu offers only ‹App›: Send label, and choosing it follows the label in the app without changing its shown crate
 
 #### Scenario: Followed label
-- **WHEN** the user opens the page of a label the app already follows
-- **THEN** the menu offers only ‹App›: In Labels · Refresh, and choosing it refreshes the label's crate
+- **WHEN** the user opens the page of a label the app already follows and chooses ‹App›: Send label
+- **THEN** the label's crate is refreshed, and no second crate is made
 
 #### Scenario: Send to a new crate
 - **WHEN** the user chooses Send to crate, then New crate…, and enters "Friday"
@@ -66,7 +66,7 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 - **THEN** it offers the skip passed switch and no vinyl only switch
 
 ### Requirement: Links anywhere
-Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›, except a link to a label's page, which SHALL offer only ‹App›: Add to Labels, and a link to a seller's page, which SHALL offer only ‹App›: Add seller.
+Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›, except a link to a label's page, which SHALL offer only ‹App›: Send label, and a link to a seller's page, which SHALL offer only ‹App›: Add seller.
 
 #### Scenario: Forum link
 - **WHEN** the user right-clicks a Discogs release link in a forum post and chooses Enqueue in ‹App›
@@ -74,7 +74,7 @@ Right-clicking a link to a supported Discogs page, on any website, SHALL offer P
 
 #### Scenario: Label link
 - **WHEN** the user right-clicks a Discogs label link in a forum post
-- **THEN** the menu offers only ‹App›: Add to Labels, and choosing it follows the label in the app
+- **THEN** the menu offers only ‹App›: Send label, and choosing it follows the label in the app
 
 #### Scenario: Seller link
 - **WHEN** the user right-clicks a link to `https://www.discogs.com/seller/decks.de/profile` on a forum

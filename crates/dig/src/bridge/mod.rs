@@ -71,6 +71,10 @@ pub struct Snapshot {
     /// part of any answer itself).
     #[serde(skip)]
     pub sellers: Vec<String>,
+    /// The followed labels' Discogs ids, so a label's page is answered "added" or
+    /// "refreshed" (not part of any answer itself).
+    #[serde(skip)]
+    pub labels: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -463,6 +467,31 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             filters: Filters {
                 skip_passed: b.skip_passed,
             },
+        };
+        return (202, answer, Some(cmd));
+    }
+    // A label's page follows that label (or refreshes it), whatever the mode, and leaves the
+    // app where it is: several labels can be sent in a row from the browser.
+    if let url::PageKind::Label(id) = page.kind {
+        let known = shared.snapshot.load().labels.contains(&id);
+        let name = page.provisional_name();
+        let label = name.strip_prefix("Label: ").unwrap_or(&name).to_owned();
+        let message = if known {
+            format!("Refreshed label {label}")
+        } else {
+            format!("Added label {label}")
+        };
+        let answer = json!({
+            "page": name,
+            "crate": name,
+            "label": id,
+            "added": !known,
+            "message": message,
+        });
+        let cmd = BridgeCommand::Send {
+            page,
+            mode,
+            filters: Filters { skip_passed: true },
         };
         return (202, answer, Some(cmd));
     }

@@ -111,6 +111,7 @@ fn wrong(code: &str) -> &'static str {
 }
 
 const LABEL: &str = "https://www.discogs.com/label/12345-Lowtide-Tapes";
+const ARTIST: &str = "https://www.discogs.com/artist/4242-Nightcraft";
 
 fn send_body(url: &str, mode: &str) -> String {
     format!(r#"{{"url":"{url}","mode":"{mode}","skip_passed":false}}"#)
@@ -319,10 +320,10 @@ fn only_supported_discogs_pages_in_the_exact_shape_are_accepted() {
     // An older extension still sends vinyl only: accepted, and ignored.
     let a = r.send(
         &key,
-        &format!(r#"{{"url":"{LABEL}","mode":"crate","crate":" Friday ","vinyl_only":true,"skip_passed":true}}"#),
+        &format!(r#"{{"url":"{ARTIST}","mode":"crate","crate":" Friday ","vinyl_only":true,"skip_passed":true}}"#),
     );
     assert_eq!(a.status, 202);
-    assert_eq!(a.json["page"], "Label: Lowtide Tapes");
+    assert_eq!(a.json["page"], "Artist: Nightcraft");
     assert_eq!(a.json["crate"], "Friday");
     match &r.bridge.poll()[..] {
         [
@@ -332,7 +333,7 @@ fn only_supported_discogs_pages_in_the_exact_shape_are_accepted() {
                 filters,
             },
         ] => {
-            assert_eq!(page.url(), "https://www.discogs.com/label/12345");
+            assert_eq!(page.url(), "https://www.discogs.com/artist/4242");
             assert_eq!(*mode, Mode::Crate("Friday".into()));
             assert_eq!(*filters, Filters { skip_passed: true });
         }
@@ -373,6 +374,7 @@ fn crates_and_status_come_from_the_snapshot() {
             total: 312,
         }],
         sellers: Vec::new(),
+        labels: Vec::new(),
     }));
     let c = r.call("GET", "/v1/crates", Some(&key), "").json;
     assert_eq!(
@@ -392,7 +394,7 @@ fn crates_and_status_come_from_the_snapshot() {
         s["sends"],
         serde_json::json!([{"page": "Label: Lowtide Tapes", "done": 120, "total": 312}])
     );
-    let a = r.send(&key, &send_body(LABEL, "enqueue"));
+    let a = r.send(&key, &send_body(ARTIST, "enqueue"));
     assert_eq!(a.json["crate"], "Friday", "enqueue goes to the shown crate");
 }
 
@@ -561,6 +563,37 @@ fn a_new_shop_item_is_checking_until_its_release_is_known() {
         0,
     );
     assert_eq!(owned(&r, &key, item)["owned"], "this");
+}
+
+#[test]
+fn a_label_page_follows_or_refreshes_whatever_the_mode() {
+    let r = rig("label");
+    let key = r.pair();
+    r.bridge.poll();
+    for mode in ["enqueue", "play"] {
+        let a = r.send(&key, &send_body(LABEL, mode));
+        assert_eq!(a.status, 202);
+        assert_eq!(a.json["message"], "Added label Lowtide Tapes");
+        assert_eq!(
+            (&a.json["label"], &a.json["added"]),
+            (&12345.into(), &true.into())
+        );
+        assert_eq!(a.json["crate"], "Label: Lowtide Tapes", "its own crate");
+        match &r.bridge.poll()[..] {
+            [BridgeCommand::Send { page, filters, .. }] => {
+                assert_eq!(page.kind, dig::discogs::url::PageKind::Label(12345));
+                assert_eq!(*filters, Filters { skip_passed: true }, "passes stay out");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    r.shared.snapshot.store(Arc::new(Snapshot {
+        labels: vec![12345],
+        ..Snapshot::default()
+    }));
+    let a = r.send(&key, &send_body(LABEL, "enqueue"));
+    assert_eq!(a.json["message"], "Refreshed label Lowtide Tapes");
+    assert_eq!(a.json["added"], false);
 }
 
 #[test]
