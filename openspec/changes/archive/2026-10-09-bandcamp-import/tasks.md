@@ -40,7 +40,7 @@
 - [x] 6.1 The bridge accepts Bandcamp addresses through `bandcamp::parse`, plus an optional `title` (≤ 200 characters, Bandcamp only); labels follow without coming to the front and answer Added, Merged or Refreshed; albums and tracks use the mode. Tests in `crates/dig/tests/bridge.rs`: an album, a merged label, and a look-alike host refused.
 - [x] 6.2 Extension manifest: add the `*://*.bandcamp.com/*` host permission (and content script match).
 - [x] 6.3 `pages.js`: Bandcamp kinds and link patterns. `content.js`: the button on album and track pages (normal menu) and on label pages (Send label only), placed by the title or floating, with the "Artist - Title" suggestion; sends the page title with Bandcamp pages. `background.js`: context menu items on Bandcamp links.
-- [ ] 6.4 Load the unpacked extension and check by hand: album, track, label and merch pages, plus a link in a forum.
+- [x] 6.4 Load the unpacked extension and check by hand: album, track, label and merch pages, plus a link in a forum.
 
 ## 7. Discogs and Bandcamp together
 
