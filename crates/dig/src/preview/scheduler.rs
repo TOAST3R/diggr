@@ -10,8 +10,12 @@
 //! clips take the slots the horizon leaves free, in order, and never make the cache delete
 //! anything. When the cache is full, the list pauses and [`PreviewEvent::CacheFull`] says so;
 //! a new limit resumes it.
+//!
+//! Clips come from YouTube or Bandcamp (see [`super::clip`]); each source has its own wait
+//! when it limits requests, so one limiting never stops the other. Bandcamp pages are read
+//! here too, one at a time and at least [`READ_GAP`] apart, as they run the same yt-dlp.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,9 +24,11 @@ use std::time::{Duration, Instant};
 
 use platform::{Priority, Spawner};
 
+use super::clip::{Clip, Source, source_of, track_id_of};
 use super::fetcher::{FetchError, Fetcher, preview_path};
 use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
+use crate::bandcamp::{BandcampAlbum, BandcampPage, Listing};
 
 /// Entries kept ready after the playing one.
 pub const AHEAD: usize = 3;
@@ -38,6 +44,8 @@ pub const LIMITED_WAIT: Duration = Duration::from_secs(10 * 60);
 const MAX_LIMITED_WAITS: u32 = 6;
 /// A search that failed (offline, yt-dlp error) is tried again after this long.
 const SEARCH_RETRY: Duration = Duration::from_secs(60);
+/// The least time between two Bandcamp page reads.
+pub const READ_GAP: Duration = Duration::from_secs(1);
 
 /// The clips to have ready, in priority order: the armed entry's, then from `start` (the
 /// playing entry, or the shown crate's current one when stopped) the next `AHEAD + 1` entries
@@ -89,6 +97,16 @@ pub enum PreviewCommand {
         clips: Vec<String>,
         searches: Vec<SearchRequest>,
     },
+    /// Where Bandcamp clips are: key (`bc.‹id›`) → the track's checked page. Sent before the
+    /// keys are wanted; a Bandcamp key with no page is given up on.
+    Locate(Vec<(String, String)>),
+    /// Read a Bandcamp page for job `job`: a label's albums are then read one by one,
+    /// except those in `skip` (read before).
+    ReadBandcamp {
+        job: u64,
+        page: BandcampPage,
+        skip: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,12 +131,35 @@ pub enum PreviewEvent {
     },
     /// The background list paused: the cache is at its limit. A new limit resumes it.
     CacheFull,
-    /// YouTube is limiting requests: nothing starts until `until` (Unix seconds).
+    /// The source is limiting requests: nothing from it starts until `until` (Unix seconds).
     Limited {
+        source: Source,
         until: u64,
     },
-    /// YouTube answers normally again.
-    Unlimited,
+    /// The source answers normally again.
+    Unlimited {
+        source: Source,
+    },
+    /// A label page of job `job` lists this many albums and tracks, read next.
+    BandcampListed {
+        job: u64,
+        albums: usize,
+    },
+    /// An album (or track) of job `job` was read.
+    BandcampAlbum {
+        job: u64,
+        album: BandcampAlbum,
+    },
+    /// A page of job `job` couldn't be read, with yt-dlp's reason.
+    BandcampFailed {
+        job: u64,
+        page: String,
+        error: String,
+    },
+    /// Every page of job `job` was read (or failed).
+    BandcampDone {
+        job: u64,
+    },
     /// A search found nothing usable for the entries under `key` of length `duration`.
     NotFound {
         key: String,
@@ -134,8 +175,10 @@ pub struct Config {
     pub program: Option<String>,
     pub timeout: Duration,
     pub recheck: Duration,
-    /// The first wait when YouTube limits requests.
+    /// The first wait when a source limits requests.
     pub limited_wait: Duration,
+    /// The least time between two Bandcamp page reads.
+    pub read_gap: Duration,
 }
 
 impl Config {
@@ -148,6 +191,7 @@ impl Config {
             timeout: TIMEOUT,
             recheck: RECHECK,
             limited_wait: LIMITED_WAIT,
+            read_gap: READ_GAP,
         }
     }
 }
@@ -157,6 +201,16 @@ enum Msg {
     Progress(String, u8),
     Result(String, Result<PathBuf, FetchError>),
     Searched(SearchRequest, Result<Vec<SearchResult>, FetchError>),
+    Read(u64, BandcampPage, Result<Listing, FetchError>),
+}
+
+/// One source's wait while it limits requests.
+#[derive(Debug, Default)]
+struct Limit {
+    /// Nothing from the source starts before this; past it, the next start is a try.
+    until: Option<Instant>,
+    /// The wait after the next limited answer.
+    backoff: Duration,
 }
 
 struct Running {
@@ -193,10 +247,18 @@ struct Scheduler {
     background: Vec<String>,
     /// The background list waits for a larger cache.
     paused: bool,
-    /// YouTube limits requests: nothing starts before this; past it, the next start is a try.
-    limited_until: Option<Instant>,
-    /// The wait after the next limited answer.
-    backoff: Duration,
+    /// Each source's wait while it limits requests.
+    limits: HashMap<Source, Limit>,
+    /// Bandcamp clips' pages, by key.
+    urls: HashMap<String, String>,
+    /// Bandcamp pages to read, in order, with their job.
+    reads: VecDeque<(u64, BandcampPage)>,
+    /// Per job: album pages its label listing leaves out.
+    skips: HashMap<u64, HashSet<String>>,
+    /// A page is being read.
+    reading: bool,
+    /// When the last read ended.
+    last_read: Option<Instant>,
 }
 
 impl Scheduler {
@@ -240,9 +302,18 @@ impl Scheduler {
                 self.evict();
             }
             PreviewCommand::TryNow => {
-                if self.limited_until.is_some() {
-                    self.limited_until = Some(Instant::now());
+                for l in self.limits.values_mut() {
+                    if l.until.is_some() {
+                        l.until = Some(Instant::now());
+                    }
                 }
+            }
+            PreviewCommand::Locate(urls) => self.urls.extend(urls),
+            PreviewCommand::ReadBandcamp { job, page, skip } => {
+                if !skip.is_empty() {
+                    self.skips.insert(job, skip.into_iter().collect());
+                }
+                self.reads.push_back((job, page));
             }
             PreviewCommand::Retry { clips, searches } => {
                 for c in &clips {
@@ -280,34 +351,138 @@ impl Scheduler {
         }
     }
 
-    /// Whether YouTube's wait is still on: nothing starts.
-    fn waiting_for_youtube(&self) -> bool {
-        self.limited_until.is_some_and(|t| Instant::now() < t)
+    /// Whether the source's wait is still on: nothing from it starts.
+    fn waiting(&self, source: Source) -> bool {
+        self.limits
+            .get(&source)
+            .and_then(|l| l.until)
+            .is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Whether any source is limited (its wait on, or its try not answered yet).
+    fn any_limited(&self) -> bool {
+        self.limits.values().any(|l| l.until.is_some())
     }
 
     /// A limited answer: wait, longer each time a try after a wait is limited too. Answers
     /// for requests already under way when the wait began change nothing.
-    fn limited(&mut self) {
-        if self.waiting_for_youtube() {
+    fn limited(&mut self, source: Source) {
+        if self.waiting(source) {
             return;
         }
         let base = self.cfg.limited_wait;
-        self.backoff = if self.limited_until.is_some() {
-            (self.backoff * 2).min(base * MAX_LIMITED_WAITS)
+        let l = self.limits.entry(source).or_default();
+        l.backoff = if l.until.is_some() {
+            (l.backoff * 2).min(base * MAX_LIMITED_WAITS)
         } else {
             base
         };
-        self.limited_until = Some(Instant::now() + self.backoff);
-        self.events.push(PreviewEvent::Limited {
-            until: crate::now_secs() + self.backoff.as_secs(),
-        });
+        l.until = Some(Instant::now() + l.backoff);
+        let until = crate::now_secs() + l.backoff.as_secs();
+        self.events.push(PreviewEvent::Limited { source, until });
     }
 
-    /// A download or search went through: YouTube answers normally.
-    fn answered(&mut self) {
-        if self.limited_until.take().is_some() {
-            self.backoff = self.cfg.limited_wait;
-            self.events.push(PreviewEvent::Unlimited);
+    /// A request to the source went through: it answers normally.
+    fn answered(&mut self, source: Source) {
+        if let Some(l) = self.limits.get_mut(&source)
+            && l.until.take().is_some()
+        {
+            l.backoff = self.cfg.limited_wait;
+            self.events.push(PreviewEvent::Unlimited { source });
+        }
+    }
+
+    /// Reads the next Bandcamp page, when none is being read and the gap since the last is
+    /// over.
+    fn read_next(&mut self) {
+        if self.reading
+            || self.reads.is_empty()
+            || self.waiting(Source::Bandcamp)
+            || self
+                .last_read
+                .is_some_and(|t| t.elapsed() < self.cfg.read_gap)
+        {
+            return;
+        }
+        if self.fetcher.is_none() {
+            if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
+                self.look();
+            }
+            if self.fetcher.is_none() {
+                return;
+            }
+        }
+        let Some((job, page)) = self.reads.pop_front() else {
+            return;
+        };
+        let fetcher = self.fetcher.clone().expect("checked");
+        let inbox = self.inbox.clone();
+        self.reading = true;
+        let (p2, j2) = (page.clone(), job);
+        let spawned = self.spawner.spawn(
+            "dig-bandcamp",
+            Priority::Low,
+            Box::new(move || {
+                let result = fetcher.read_bandcamp(&p2);
+                let _ = inbox.send(Msg::Read(j2, p2, result));
+            }),
+        );
+        if spawned.is_err() {
+            self.reading = false;
+            self.reads.push_front((job, page));
+        }
+    }
+
+    fn read_done(&mut self, job: u64, page: BandcampPage, result: Result<Listing, FetchError>) {
+        self.reading = false;
+        self.last_read = Some(Instant::now());
+        match result {
+            Ok(Listing::Albums(mut urls)) => {
+                self.answered(Source::Bandcamp);
+                if let Some(skip) = self.skips.remove(&job) {
+                    urls.retain(|u| !skip.contains(u));
+                }
+                self.events.push(PreviewEvent::BandcampListed {
+                    job,
+                    albums: urls.len(),
+                });
+                // A label's albums are read before any later send's pages.
+                for url in urls.iter().rev() {
+                    if let Ok(p) = crate::bandcamp::parse(url) {
+                        self.reads.push_front((job, p));
+                    }
+                }
+            }
+            Ok(Listing::Album(album)) => {
+                self.answered(Source::Bandcamp);
+                self.events.push(PreviewEvent::BandcampAlbum { job, album });
+            }
+            // Not the page's fault: read again once the wait is over.
+            Err(FetchError::Limited(_)) => {
+                self.reads.push_front((job, page));
+                return self.limited(Source::Bandcamp);
+            }
+            Err(FetchError::NoProgram) => {
+                self.reads.push_front((job, page));
+                self.fetcher = None;
+                self.said_missing = false;
+                self.look();
+                return;
+            }
+            Err(e) => {
+                let error = match e {
+                    FetchError::Failed(t) => t,
+                    other => format!("{other:?}"),
+                };
+                self.events.push(PreviewEvent::BandcampFailed {
+                    job,
+                    page: page.url(),
+                    error,
+                });
+            }
+        }
+        if !self.reads.iter().any(|(j, _)| *j == job) {
+            self.events.push(PreviewEvent::BandcampDone { job });
         }
     }
 
@@ -337,7 +512,7 @@ impl Scheduler {
             }
         }
         self.to_search = left;
-        if self.searching.is_some() || self.waiting_for_youtube() {
+        if self.searching.is_some() || self.waiting(Source::YouTube) {
             return;
         }
         let Some(i) = self.to_search.iter().position(|r| {
@@ -376,7 +551,7 @@ impl Scheduler {
         self.searching = None;
         let found = match result {
             Ok(results) => {
-                self.answered();
+                self.answered(Source::YouTube);
                 search::best(&req, &results).cloned()
             }
             Err(FetchError::Limited(_)) => {
@@ -384,7 +559,7 @@ impl Scheduler {
                 if !self.to_search.iter().any(|r| r.key == req.key) {
                     self.to_search.insert(0, req);
                 }
-                return self.limited();
+                return self.limited(Source::YouTube);
             }
             Err(FetchError::NoProgram) => {
                 self.fetcher = None;
@@ -435,7 +610,7 @@ impl Scheduler {
         };
         match result {
             Ok(path) => {
-                self.answered();
+                self.answered(source_of(&clip));
                 self.failures.remove(&clip);
                 self.delivered.insert(clip.clone());
                 let background = !self.protected.contains(&clip);
@@ -457,7 +632,7 @@ impl Scheduler {
             }
             Err(FetchError::InvalidId) => self.give_up(clip),
             // Not the clip's fault: it stays wanted, and starts again once the wait is over.
-            Err(FetchError::Limited(_)) => self.limited(),
+            Err(FetchError::Limited(_)) => self.limited(source_of(&clip)),
             Err(_) => {
                 let n = self.failures.entry(clip.clone()).or_default();
                 *n += 1;
@@ -498,13 +673,11 @@ impl Scheduler {
 
     /// Starts downloads for the wanted clips, best first, while slots are free.
     fn fill(&mut self) {
-        if self.waiting_for_youtube() {
-            return;
-        }
         let todo: Vec<String> = self
             .wanted
             .iter()
             .filter(|c| !self.running.contains_key(*c) && !self.given_up.contains(*c))
+            .filter(|c| !self.waiting(source_of(c)))
             .cloned()
             .collect();
         for clip in todo {
@@ -541,13 +714,14 @@ impl Scheduler {
     /// Starts background downloads in the slots the horizon leaves free, while the cache is
     /// under its limit; clips already in the cache are reported done at once.
     fn fill_background(&mut self) {
-        if self.paused || self.waiting_for_youtube() {
+        if self.paused {
             return;
         }
         let todo: Vec<String> = self
             .background
             .iter()
             .filter(|c| !self.running.contains_key(*c) && !self.given_up.contains(*c))
+            .filter(|c| !self.waiting(source_of(c)))
             .cloned()
             .collect();
         for clip in todo {
@@ -577,6 +751,16 @@ impl Scheduler {
     }
 
     fn start(&mut self, clip: String) {
+        let target = match track_id_of(&clip) {
+            None => Clip::YouTube(clip.clone()),
+            Some(track_id) => match self.urls.get(&clip) {
+                Some(url) => Clip::Bandcamp {
+                    track_id: track_id.to_owned(),
+                    url: url.clone(),
+                },
+                None => return self.give_up(clip),
+            },
+        };
         let fetcher = self.fetcher.clone().expect("checked");
         let cancel = Arc::new(AtomicBool::new(false));
         let (c2, dir, inbox, id) = (
@@ -592,7 +776,7 @@ impl Scheduler {
                 let progress_inbox = inbox.clone();
                 let progress_id = id.clone();
                 let result = fetcher.fetch(
-                    &id,
+                    &target,
                     &dir,
                     &move |p| {
                         let _ = progress_inbox.send(Msg::Progress(progress_id.clone(), p));
@@ -652,8 +836,12 @@ impl PreviewHandle {
             search_failed: HashMap::new(),
             background: Vec::new(),
             paused: false,
-            limited_until: None,
-            backoff: Duration::ZERO,
+            limits: HashMap::new(),
+            urls: HashMap::new(),
+            reads: VecDeque::new(),
+            skips: HashMap::new(),
+            reading: false,
+            last_read: None,
         };
         spawner.spawn(
             "dig-previews",
@@ -663,13 +851,15 @@ impl PreviewHandle {
                     s.remembered = Searches::load(dir);
                 }
                 loop {
-                    let tick =
-                        if s.running.is_empty() && s.fetcher.is_some() && s.limited_until.is_none()
-                        {
-                            Duration::from_secs(5)
-                        } else {
-                            Duration::from_millis(100).min(s.cfg.recheck)
-                        };
+                    let tick = if s.running.is_empty()
+                        && s.fetcher.is_some()
+                        && !s.any_limited()
+                        && s.reads.is_empty()
+                    {
+                        Duration::from_secs(5)
+                    } else {
+                        Duration::from_millis(100).min(s.cfg.recheck)
+                    };
                     match rx.recv_timeout(tick) {
                         Ok(Msg::Cmd(c)) => s.handle(c),
                         Ok(Msg::Progress(clip, p)) => {
@@ -679,6 +869,7 @@ impl PreviewHandle {
                         }
                         Ok(Msg::Result(clip, r)) => s.finished(clip, r),
                         Ok(Msg::Searched(req, r)) => s.searched(req, r),
+                        Ok(Msg::Read(job, page, r)) => s.read_done(job, page, r),
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
@@ -686,6 +877,9 @@ impl PreviewHandle {
                     // Searches first: a found track joins the downloads at the next horizon.
                     if !s.to_search.is_empty() {
                         s.search_next();
+                    }
+                    if !s.reads.is_empty() {
+                        s.read_next();
                     }
                     if !s.wanted.is_empty() {
                         s.fill();
@@ -751,8 +945,12 @@ mod tests {
             search_failed: HashMap::new(),
             background: Vec::new(),
             paused: false,
-            limited_until: None,
-            backoff: Duration::ZERO,
+            limits: HashMap::new(),
+            urls: HashMap::new(),
+            reads: VecDeque::new(),
+            skips: HashMap::new(),
+            reading: false,
+            last_read: None,
         }
     }
 
@@ -761,14 +959,16 @@ mod tests {
         let base = Duration::from_secs(600);
         let mut s = scheduler(base);
         let mut waits = Vec::new();
+        let yt = Source::YouTube;
+        let backoff = |s: &Scheduler| s.limits[&yt].backoff;
         for _ in 0..5 {
-            s.limited();
-            waits.push(s.backoff);
+            s.limited(yt);
+            waits.push(backoff(&s));
             // A second limited answer within the wait (the other slot) changes nothing.
-            s.limited();
-            assert_eq!(s.backoff, *waits.last().unwrap());
+            s.limited(yt);
+            assert_eq!(backoff(&s), *waits.last().unwrap());
             // The wait is over: the next answer is the try.
-            s.limited_until = Some(Instant::now() - Duration::from_secs(1));
+            s.limits.get_mut(&yt).unwrap().until = Some(Instant::now() - Duration::from_secs(1));
         }
         let min = |m: u64| Duration::from_secs(m * 60);
         assert_eq!(waits, [min(10), min(20), min(40), min(60), min(60)]);
@@ -778,11 +978,34 @@ mod tests {
             .filter(|e| matches!(e, PreviewEvent::Limited { .. }))
             .count();
         assert_eq!(limited, 5, "one event per wait");
-        s.answered();
-        assert_eq!(s.limited_until, None);
-        assert_eq!(s.events.last(), Some(&PreviewEvent::Unlimited));
-        s.limited();
-        assert_eq!(s.backoff, min(10), "starts again at 10 minutes");
+        s.answered(yt);
+        assert_eq!(s.limits[&yt].until, None);
+        assert_eq!(
+            s.events.last(),
+            Some(&PreviewEvent::Unlimited { source: yt })
+        );
+        s.limited(yt);
+        assert_eq!(backoff(&s), min(10), "starts again at 10 minutes");
+    }
+
+    #[test]
+    fn each_source_waits_on_its_own() {
+        let mut s = scheduler(Duration::from_secs(600));
+        s.limited(Source::Bandcamp);
+        assert!(s.waiting(Source::Bandcamp));
+        assert!(!s.waiting(Source::YouTube));
+        assert_eq!(
+            s.events,
+            [PreviewEvent::Limited {
+                source: Source::Bandcamp,
+                until: crate::now_secs() + 600
+            }]
+        );
+        s.answered(Source::YouTube);
+        assert!(
+            s.waiting(Source::Bandcamp),
+            "a YouTube answer ends no Bandcamp wait"
+        );
     }
 
     #[test]

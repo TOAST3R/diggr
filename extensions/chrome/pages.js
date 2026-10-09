@@ -1,5 +1,6 @@
 // Shared by the service worker, the content script, the options page and the popup: which
-// Discogs pages the player can dig, and the messages shown when something is missing.
+// Discogs and Bandcamp pages the player can dig, and the messages shown when something is
+// missing.
 //
 // The check here is coarse, only to decide where the button appears: the player parses the
 // address itself and refuses anything else.
@@ -26,12 +27,27 @@ var WR = (() => {
     [new RegExp(`^/${LANG}user/[^/]+/?$`), "Seller"],
   ];
 
-  /** "Label", "Release"… for a supported Discogs page, else null. */
+  // Bandcamp: ‹name›.bandcamp.com/ or /music (a label or artist), /album/…, /track/….
+  const BANDCAMP_HOST = /^[a-z0-9][a-z0-9-]{0,62}\.bandcamp\.com$/;
+  const BANDCAMP_KINDS = [
+    [/^\/(?:music\/?)?$/, "BandcampLabel"],
+    [/^\/album\/[a-z0-9-]+\/?$/, "BandcampAlbum"],
+    [/^\/track\/[a-z0-9-]+\/?$/, "BandcampTrack"],
+  ];
+
+  /**
+   * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum" or
+   * "BandcampTrack" for a Bandcamp one; else null.
+   */
   function pageKind(address) {
     let u;
     try {
       u = new URL(address);
     } catch {
+      return null;
+    }
+    if (u.protocol === "https:" && BANDCAMP_HOST.test(u.hostname)) {
+      for (const [re, kind] of BANDCAMP_KINDS) if (re.test(u.pathname)) return kind;
       return null;
     }
     if (u.hostname !== "www.discogs.com" && u.hostname !== "discogs.com") return null;
@@ -58,9 +74,12 @@ var WR = (() => {
     LINK_PATTERNS.push(`${host}/wantlist*`, `${host}/*/wantlist*`);
     LINK_PATTERNS.push(`${host}/user/*/collection*`, `${host}/*/user/*/collection*`);
   }
+  LINK_PATTERNS.push("https://*.bandcamp.com/album/*", "https://*.bandcamp.com/track/*");
+  LABEL_LINK_PATTERNS.push("https://*.bandcamp.com/", "https://*.bandcamp.com/music");
 
   const SUPPORTED =
-    "a release, master release, artist, label, wantlist, collection, list, marketplace item or seller";
+    "a release, master release, artist, label, wantlist, collection, list, marketplace item " +
+    "or seller on Discogs; a label, album or track on Bandcamp";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -92,6 +111,12 @@ var WR = (() => {
       return user ? fit(`Wantlist: ${user}`) : "";
     }
     let t = String(title || "");
+    // Bandcamp: "Album | Artist", "Track | Artist" (a label's own page: "Music | Label").
+    if (kind === "BandcampAlbum" || kind === "BandcampTrack") {
+      const [what, who] = t.split(" | ");
+      return fit(who ? `${who.trim()} - ${what.trim()}` : what.trim());
+    }
+    if (kind === "BandcampLabel") return fit(t.split(" | ").pop().trim());
     t = t.split(" | ")[0]; // "… | Releases | Discogs"
     t = t.replace(/\s+[-–—]\s*Discogs\s*$/i, ""); // older "… - Discogs"
     t = t.replace(/\s+for sale\b.*$/i, ""); // marketplace items
@@ -142,8 +167,14 @@ var WR = (() => {
     }
   }
 
+  /** A Bandcamp page's kind (see pageKind). */
+  function isBandcamp(kind) {
+    return typeof kind === "string" && kind.startsWith("Bandcamp");
+  }
+
   return {
     PLACEHOLDER,
+    isBandcamp,
     DEFAULT_PORT,
     pageKind,
     LINK_PATTERNS,

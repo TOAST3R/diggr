@@ -7,9 +7,11 @@
 //! - [`prepare`]: analyzes downloaded previews so they open with their waveform and sections;
 //! - [`bridge`]: a loopback server through which a paired browser extension sends pages;
 //! - [`cover`]: record covers for the entry tooltip, from Discogs' image host.
+//! - [`bandcamp`]: Bandcamp pages, checked and read through yt-dlp.
 //!
 //! Native only: the web build leaves this crate out.
 
+pub mod bandcamp;
 pub mod bridge;
 pub mod browser;
 pub mod clock;

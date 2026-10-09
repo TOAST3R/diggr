@@ -3,11 +3,12 @@
   "name": "Diggr bridge",
   "short_name": "Diggr",
   "version": "0.1.0",
-  "description": "Send Discogs pages and links to the player running on this computer.",
+  "description": "Send Discogs and Bandcamp pages and links to the player running on this computer.",
   "permissions": ["storage", "contextMenus"],
   "host_permissions": [
     "https://www.discogs.com/*",
     "https://discogs.com/*",
+    "https://*.bandcamp.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -15,7 +16,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.discogs.com/*", "https://discogs.com/*"],
+      "matches": ["https://www.discogs.com/*", "https://discogs.com/*", "https://*.bandcamp.com/*"],
       "js": ["pages.js", "content.js"],
       "run_at": "document_idle"
     }

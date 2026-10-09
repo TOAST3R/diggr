@@ -375,6 +375,7 @@ fn crates_and_status_come_from_the_snapshot() {
         }],
         sellers: Vec::new(),
         labels: Vec::new(),
+        label_crates: Vec::new(),
     }));
     let c = r.call("GET", "/v1/crates", Some(&key), "").json;
     assert_eq!(
@@ -630,4 +631,88 @@ fn a_seller_page_adds_or_refreshes_whatever_the_mode() {
         status.json.get("sellers").is_none(),
         "never part of an answer"
     );
+}
+
+#[test]
+fn a_bandcamp_album_goes_where_the_mode_says() {
+    let r = rig("bandcamp-album");
+    let key = r.pair();
+    r.bridge.poll();
+    let album = "https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep?from=x";
+    let a = r.send(&key, &send_body(album, "enqueue"));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["page"], "af070 the ooze ep");
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendBandcamp { page, mode, .. }] => {
+            assert_eq!(
+                page.url(),
+                "https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep"
+            );
+            assert_eq!(*mode, dig::bridge::Mode::Enqueue);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_bandcamp_label_is_added_merged_or_refreshed() {
+    let r = rig("bandcamp-label");
+    let key = r.pair();
+    r.bridge.poll();
+    let label = "https://analogicalforce.bandcamp.com/music";
+    let titled = format!(
+        r#"{{"url":"{label}","mode":"enqueue","skip_passed":false,"title":"Music | Analogical Force"}}"#
+    );
+    let a = r.send(&key, &titled);
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["message"], "Added label Analogical Force");
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendBandcamp { title, filters, .. }] => {
+            assert_eq!(title.as_deref(), Some("Music | Analogical Force"));
+            assert_eq!(*filters, Filters { skip_passed: true });
+        }
+        other => panic!("{other:?}"),
+    }
+    // The Discogs label of that name is followed: merged.
+    r.shared.snapshot.store(Arc::new(Snapshot {
+        label_crates: vec![("Label: Analogical Force".into(), None)],
+        ..Snapshot::default()
+    }));
+    let a = r.send(&key, &send_body(label, "play"));
+    assert_eq!(a.json["message"], "Merged into Label: Analogical Force");
+    // Following that Bandcamp already: refreshed.
+    r.shared.snapshot.store(Arc::new(Snapshot {
+        label_crates: vec![(
+            "Label: Analogical Force".into(),
+            Some("analogicalforce".into()),
+        )],
+        ..Snapshot::default()
+    }));
+    let a = r.send(&key, &send_body(label, "enqueue"));
+    assert_eq!(a.json["message"], "Refreshed label Analogical Force");
+}
+
+#[test]
+fn bandcamp_look_alikes_and_long_titles_are_refused() {
+    let r = rig("bandcamp-refused");
+    let key = r.pair();
+    r.bridge.poll();
+    for url in [
+        "https://bandcamp.com.evil.net/album/x",
+        "https://a.bandcamp.com/merch",
+        "https://a.bandcamp.com/album/x;rm",
+    ] {
+        let a = r.send(&key, &send_body(url, "enqueue"));
+        assert_eq!(a.status, 422, "{url}");
+    }
+    let long = "x".repeat(201);
+    let body = format!(
+        r#"{{"url":"https://a.bandcamp.com/","mode":"enqueue","skip_passed":false,"title":"{long}"}}"#
+    );
+    assert_eq!(r.send(&key, &body).status, 422);
+    // A title belongs to Bandcamp pages only.
+    let body =
+        format!(r#"{{"url":"{LABEL}","mode":"enqueue","skip_passed":false,"title":"Lowtide"}}"#);
+    assert_eq!(r.send(&key, &body).status, 422);
+    assert!(r.bridge.poll().is_empty(), "nothing was sent on");
 }

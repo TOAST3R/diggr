@@ -1,0 +1,32 @@
+{
+ "_type": "playlist",
+ "id": "analogicalforce",
+ "title": "Discography of analogicalforce",
+ "webpage_url": "https://analogicalforce.bandcamp.com/music",
+ "entries": [
+  {
+   "_type": "url",
+   "url": "https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep"
+  },
+  {
+   "_type": "url",
+   "url": "https://analogicalforce.bandcamp.com/album/af069-hidden-soul-ep"
+  },
+  {
+   "_type": "url",
+   "url": "https://analogicalforce.bandcamp.com/album/is3-memorabilia-ep"
+  },
+  {
+   "_type": "url",
+   "url": "https://analogicalforce.bandcamp.com/album/af068-radical-meditation-ep"
+  },
+  {
+   "_type": "url",
+   "url": "https://analogicalforce.bandcamp.com/track/a-single"
+  },
+  {
+   "_type": "url",
+   "url": "https://evil.example.com/album/x"
+  }
+ ]
+}

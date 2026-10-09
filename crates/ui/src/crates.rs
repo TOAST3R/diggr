@@ -52,6 +52,10 @@ pub struct CrateInfo {
     /// from that label's page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<u64>,
+    /// A followed label's Bandcamp (`analogicalforce` for analogicalforce.bandcamp.com), alone
+    /// or beside its Discogs id: the crate fills from that page too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandcamp: Option<String>,
     /// Shown grouped by record, once toggled; `None` follows the crate's kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouped: Option<bool>,
@@ -86,11 +90,16 @@ impl CrateInfo {
         self.collection || self.wantlist
     }
 
+    /// A label crate (LABELS): following a Discogs label, a Bandcamp one, or both.
+    pub fn is_label(&self) -> bool {
+        self.label.is_some() || self.bandcamp.is_some()
+    }
+
     /// Grouped by record: as toggled, else the user's Discogs crates, seller crates and label
     /// crates are and others aren't.
     pub fn is_grouped(&self) -> bool {
         self.grouped
-            .unwrap_or_else(|| self.discogs() || self.seller.is_some() || self.label.is_some())
+            .unwrap_or_else(|| self.discogs() || self.seller.is_some() || self.is_label())
     }
 }
 
@@ -146,6 +155,7 @@ impl Crates {
                     wantlist: false,
                     seller: None,
                     label: None,
+                    bandcamp: None,
                     grouped: None,
                     records: 0,
                 }],
@@ -241,6 +251,7 @@ impl Crates {
                 wantlist: false,
                 seller: None,
                 label: None,
+                bandcamp: None,
                 grouped: None,
                 records: 0,
             });
@@ -272,6 +283,7 @@ impl Crates {
                         wantlist: false,
                         seller: None,
                         label: None,
+                        bandcamp: None,
                         grouped: None,
                         records: 0,
                     },
@@ -597,10 +609,40 @@ impl Crates {
     /// Takes no hand edits: the user's Discogs crates mirror the account, and a label crate
     /// fills only from its label.
     pub fn is_locked(&self, id: CrateId) -> bool {
-        self.is_discogs(id) || self.label_of(id).is_some()
+        self.is_discogs(id) || self.is_label(id)
     }
 
-    /// The label whose crate this is (LABELS).
+    /// A label crate (LABELS), following Discogs, Bandcamp or both.
+    pub fn is_label(&self, id: CrateId) -> bool {
+        self.info(id).is_some_and(CrateInfo::is_label)
+    }
+
+    /// The Bandcamp this label crate follows.
+    pub fn bandcamp_of(&self, id: CrateId) -> Option<&str> {
+        self.info(id).and_then(|c| c.bandcamp.as_deref())
+    }
+
+    /// The crate following the Bandcamp `name` (its subdomain), if any.
+    pub fn find_bandcamp(&self, name: &str) -> Option<CrateId> {
+        self.index
+            .crates
+            .iter()
+            .find(|c| c.bandcamp.as_deref() == Some(name))
+            .map(|c| c.id)
+    }
+
+    /// Marks a crate as following the Bandcamp `name` too (LABELS).
+    pub fn set_bandcamp(&mut self, id: CrateId, name: &str) {
+        if let Some(c) = self.index.crates.iter_mut().find(|c| c.id == id)
+            && c.bandcamp.as_deref() != Some(name)
+        {
+            c.bandcamp = Some(name.to_owned());
+            self.mark_index();
+        }
+        self.apply_grouped(id);
+    }
+
+    /// The Discogs label whose crate this is (LABELS).
     pub fn label_of(&self, id: CrateId) -> Option<u64> {
         self.info(id).and_then(|c| c.label)
     }
@@ -616,7 +658,7 @@ impl Crates {
 
     /// The label crates, in the order they were followed (created).
     pub fn labels(&self) -> impl Iterator<Item = &CrateInfo> {
-        self.index.crates.iter().filter(|c| c.label.is_some())
+        self.index.crates.iter().filter(|c| c.is_label())
     }
 
     /// Marks a crate as following `label` (LABELS); it stays the label's after a rename.
@@ -655,6 +697,7 @@ impl Crates {
             wantlist: false,
             seller: None,
             label: None,
+            bandcamp: None,
             grouped: None,
             records: 0,
         });
@@ -1273,6 +1316,39 @@ mod tests {
         assert_eq!(c.labels().map(|i| i.id).collect::<Vec<_>>(), [id]);
         assert!(c.is_grouped(id) && c.is_locked(id));
         assert!(!c.is_locked(PLAYLIST));
+    }
+
+    #[test]
+    fn a_bandcamp_label_crate_alone_or_beside_discogs() {
+        let cfg = config("bandcamp-label");
+        let (bc, both) = {
+            let mut c = Crates::open(&cfg);
+            let bc = c.create("Label: Lowtide Tapes").unwrap();
+            c.set_bandcamp(bc, "lowtidetapes");
+            let both = c.create("Label: Siesta Records").unwrap();
+            c.set_label(both, 77);
+            c.set_bandcamp(both, "siestarecords");
+            c.save_due(true, Duration::ZERO);
+            (bc, both)
+        };
+        let c = Crates::open(&cfg);
+        assert!(c.is_label(bc) && c.is_locked(bc) && c.is_grouped(bc));
+        assert_eq!(c.label_of(bc), None);
+        assert_eq!(c.find_bandcamp("lowtidetapes"), Some(bc));
+        assert_eq!(
+            (c.label_of(both), c.bandcamp_of(both)),
+            (Some(77), Some("siestarecords"))
+        );
+        assert_eq!(c.labels().count(), 2);
+    }
+
+    #[test]
+    fn an_index_saved_before_bandcamp_loads_unchanged() {
+        let old =
+            r#"(id: 4, name: "Label: Siesta Records", entries: 3, created: 1, label: Some(77))"#;
+        let info: CrateInfo = ron::from_str(old).unwrap();
+        assert_eq!((info.label, info.bandcamp.as_deref()), (Some(77), None));
+        assert!(info.is_label());
     }
 
     #[test]

@@ -1,8 +1,8 @@
-// On discogs.com: a button next to the page's title (floating in a corner when there is none)
-// with Play in ‹App›, Enqueue in ‹App›, Send to crate (with a New crate… field) and the two
-// switches. Only the address,
-// the title's position and the document title (for New crate…'s suggested name) are read from
-// the page; everything goes to the player through the service worker.
+// On discogs.com and Bandcamp: a button next to the page's title (floating in a corner when
+// there is none) with Play in ‹App›, Enqueue in ‹App›, Send to crate (with a New crate… field)
+// and the switch; a label's page has only Send label. Only the address, the title's position
+// and the document title (for New crate…'s suggested name, and a Bandcamp label's name) are
+// read from the page; everything goes to the player through the service worker.
 
 (() => {
   const STYLE = `
@@ -100,9 +100,21 @@
     place();
   }
 
-  /** After the page's main heading, else floating in the bottom-right corner. */
+  /** The page's title: Discogs' main heading, or Bandcamp's album, track or label name. */
+  function heading() {
+    if (WR.isBandcamp(WR.pageKind(location.href))) {
+      return (
+        document.querySelector("#name-section .trackTitle") ||
+        document.querySelector("#band-name-location .title") ||
+        document.querySelector("#name-section h2")
+      );
+    }
+    return document.querySelector("h1");
+  }
+
+  /** After the page's title, else floating in the bottom-right corner. */
   function place() {
-    const h1 = document.querySelector("h1");
+    const h1 = heading();
     const wrap = root.querySelector(".wrap");
     if (h1) {
       if (host.previousElementSibling !== h1 || !host.isConnected) h1.after(host);
@@ -128,9 +140,9 @@
       title:
         kind === "Seller"
           ? `Add this seller to ${appName}'s Top Sellers`
-          : kind === "Label"
+          : kind === "Label" || kind === "BandcampLabel"
             ? `Follow this label in ${appName}: it goes under LABELS`
-            : `Send this ${kind.toLowerCase()} to ${appName}`,
+            : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
@@ -195,7 +207,7 @@
       return;
     }
     // A label's page follows the label under LABELS (or refreshes it): nothing else to pick.
-    if (WR.pageKind(location.href) === "Label") {
+    if (["Label", "BandcampLabel"].includes(WR.pageKind(location.href))) {
       menu.append(item(`${appName}: Send label`, () => sendPage("enqueue")));
       wrap.append(menu);
       return;
@@ -281,7 +293,9 @@
 
   async function sendPage(mode, crate) {
     closeMenus();
-    const r = await ask({ type: "send", url: location.href, mode, crate });
+    // A Bandcamp label is named after its page's title ("Music | Analogical Force").
+    const title = WR.pageKind(location.href) === "BandcampLabel" ? document.title : undefined;
+    const r = await ask({ type: "send", url: location.href, mode, crate, title });
     if (r.ok && r.json.message) toast(`${appName}: ${r.json.message}`);
     else if (r.ok) toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}`);
     else toast(WR.problem(r.error, appName), false);
@@ -295,7 +309,7 @@
       closeMenus();
       render();
     } else if (host && root.querySelector(".wrap")) {
-      if (!host.isConnected || document.querySelector("h1")?.nextElementSibling !== host) place();
+      if (!host.isConnected || heading()?.nextElementSibling !== host) place();
     }
   }
   tick();
