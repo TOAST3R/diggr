@@ -16,8 +16,8 @@
 
 ## 3b. Download all tracks
 
-- [ ] 3.4 Preview worker: `PreviewCommand::Background { clips }`, downloaded after the horizon in the same 2 slots, only while the cache is under its limit, never evicting for them; pauses with `PreviewEvent::CacheFull`; `SetLimit` resumes; an empty list stops; unit tests in `scheduler.rs` (horizon first, background after, pause instead of evicting, resume on a larger limit, stop)
-- [ ] 3.5 App: Download all tracks / "Stop downloading (N of M)"; entries waiting for a search are searched after the window's; progress from `Done` / `Failed`; the cache-full modal (Raise to 2× / Stop / Options ▸ Discogs…); the end message with skipped ones; headless tests (all downloaded with another crate playing, cache full asks and Raise resumes, Stop)
+- [x] 3.4 Preview worker: `PreviewCommand::Background { clips }`, downloaded after the horizon in the same 2 slots, only while the cache is under its limit, never evicting for them; pauses with `PreviewEvent::CacheFull`; `SetLimit` resumes; an empty list stops; unit tests in `scheduler.rs` (horizon first, background after, pause instead of evicting, resume on a larger limit, stop)
+- [x] 3.5 App: Download all tracks / "Downloading (N of M)…"; entries waiting for a search are searched after the window's; the progress window (label, bar, tracks downloading now, without a preview, Stop at any moment; closing hides it, the menu shows it again); cache full shows it paused with Raise cache to 2× / Stop / Options › Discogs…; the end message with skipped ones; headless tests (all downloaded with another crate playing, the window and Stop, cache full brings the window back and Raise resumes, the menu item shows it again)
 
 ## 4. Sidebar
 
@@ -30,4 +30,4 @@
 
 ## 6. Docs and checks
 
-- [ ] 6.1 README (Labels: following from the browser, refresh, the menu, Move to Labels; the extension's label button; paste unchanged; test count), the extension's manual checklist, and the help panel; run `cargo test --workspace`, clippy, fmt and the wasm check
+- [x] 6.1 README (Labels: following from the browser, refresh, the menu, Move to Labels; the extension's label button; paste unchanged; test count), the extension's manual checklist, and the help panel; run `cargo test --workspace`, clippy, fmt and the wasm check

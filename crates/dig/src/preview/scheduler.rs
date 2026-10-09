@@ -5,6 +5,11 @@
 //!
 //! The UI computes the horizon ([`horizon`]) and sends it whenever it changes; this worker owns
 //! the downloads and reports progress, finished files and failures.
+//!
+//! Besides the horizon there can be a background list (a label's Download all tracks): its
+//! clips take the slots the horizon leaves free, in order, and never make the cache delete
+//! anything. When the cache is full, the list pauses and [`PreviewEvent::CacheFull`] says so;
+//! a new limit resumes it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -70,6 +75,9 @@ pub enum PreviewCommand {
     /// The tracks to find in the window, best first (replacing the previous list): each is
     /// answered from the remembered results, or searched for, one at a time.
     Search(Vec<SearchRequest>),
+    /// Clips to download after the horizon, in order (replacing the previous list; empty
+    /// stops it). They never cause an eviction: the list pauses when the cache is full.
+    Background(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +100,8 @@ pub enum PreviewEvent {
         title: String,
         duration: Option<f64>,
     },
+    /// The background list paused: the cache is at its limit. A new limit resumes it.
+    CacheFull,
     /// A search found nothing usable for the entries under `key` of length `duration`.
     NotFound {
         key: String,
@@ -159,6 +169,10 @@ struct Scheduler {
     searching: Option<String>,
     /// Tracks whose search failed, and when (tried again after [`SEARCH_RETRY`]).
     search_failed: HashMap<String, Instant>,
+    /// Clips to download after the horizon, in order.
+    background: Vec<String>,
+    /// The background list waits for a larger cache.
+    paused: bool,
 }
 
 impl Scheduler {
@@ -186,7 +200,7 @@ impl Scheduler {
         match cmd {
             PreviewCommand::Want { wanted, protected } => {
                 for (clip, r) in &self.running {
-                    if !wanted.contains(clip) {
+                    if !wanted.contains(clip) && !self.background.contains(clip) {
                         r.cancel.store(true, Ordering::Release);
                     }
                 }
@@ -198,7 +212,17 @@ impl Scheduler {
             }
             PreviewCommand::SetLimit(l) => {
                 self.cfg.limit = l;
+                self.paused = false;
                 self.evict();
+            }
+            PreviewCommand::Background(clips) => {
+                for (clip, r) in &self.running {
+                    if !clips.contains(clip) && !self.wanted.contains(clip) {
+                        r.cancel.store(true, Ordering::Release);
+                    }
+                }
+                self.background = clips;
+                self.paused = false;
             }
             PreviewCommand::SetProgram(p) => {
                 self.cfg.program = p;
@@ -328,8 +352,16 @@ impl Scheduler {
             Ok(path) => {
                 self.failures.remove(&clip);
                 self.delivered.insert(clip.clone());
+                let background = !self.protected.contains(&clip);
+                self.background.retain(|c| *c != clip);
                 self.events.push(PreviewEvent::Done(clip, path));
-                self.evict();
+                // A background download never deletes anything: over the limit, the list
+                // waits for a larger cache instead.
+                if !background {
+                    self.evict();
+                } else if store::total_size(&self.cfg.dir) >= self.cfg.limit {
+                    self.pause();
+                }
             }
             Err(FetchError::Cancelled) if !run.timed_out => {}
             Err(FetchError::NoProgram) => {
@@ -349,6 +381,7 @@ impl Scheduler {
     }
 
     fn give_up(&mut self, clip: String) {
+        self.background.retain(|c| *c != clip);
         self.given_up.insert(clip.clone());
         self.events
             .push(PreviewEvent::Failed(clip, "clip failed".into()));
@@ -402,6 +435,51 @@ impl Scheduler {
                 if self.fetcher.is_none() {
                     return;
                 }
+            }
+            self.start(clip);
+        }
+    }
+
+    fn pause(&mut self) {
+        if !self.paused && !self.background.is_empty() {
+            self.paused = true;
+            self.events.push(PreviewEvent::CacheFull);
+        }
+    }
+
+    /// Starts background downloads in the slots the horizon leaves free, while the cache is
+    /// under its limit; clips already in the cache are reported done at once.
+    fn fill_background(&mut self) {
+        if self.paused {
+            return;
+        }
+        let todo: Vec<String> = self
+            .background
+            .iter()
+            .filter(|c| !self.running.contains_key(*c) && !self.given_up.contains(*c))
+            .cloned()
+            .collect();
+        for clip in todo {
+            let path = preview_path(&self.cfg.dir, &clip);
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                self.background.retain(|c| *c != clip);
+                self.delivered.insert(clip.clone());
+                self.events.push(PreviewEvent::Done(clip, path));
+                continue;
+            }
+            if self.running.len() >= SLOTS {
+                return;
+            }
+            if self.fetcher.is_none() {
+                if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
+                    self.look();
+                }
+                if self.fetcher.is_none() {
+                    return;
+                }
+            }
+            if store::total_size(&self.cfg.dir) >= self.cfg.limit {
+                return self.pause();
             }
             self.start(clip);
         }
@@ -481,6 +559,8 @@ impl PreviewHandle {
             to_search: Vec::new(),
             searching: None,
             search_failed: HashMap::new(),
+            background: Vec::new(),
+            paused: false,
         };
         spawner.spawn(
             "dig-previews",
@@ -514,6 +594,9 @@ impl PreviewHandle {
                     }
                     if !s.wanted.is_empty() {
                         s.fill();
+                    }
+                    if !s.background.is_empty() {
+                        s.fill_background();
                     }
                     if !s.events.is_empty() {
                         for e in s.events.drain(..) {

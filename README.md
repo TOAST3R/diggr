@@ -136,7 +136,8 @@ and Home/End jump), and Enter plays the entry under it.
     is listed on its left with its number of entries: • marks the one shown, and the player's
     play (or pause) sign marks the one your track comes from while it plays (or is paused).
     Your Discogs collection crate is pinned at the bottom under **DISCOGS**, in amber with a
-    record icon, even if you rename it. **Playlist**'s menu offers Clear crate (it can't be
+    record icon, even if you rename it, followed by the labels you follow (**LABELS**, see
+    [Labels](#labels)) and **TOP SELLERS**. **Playlist**'s menu offers Clear crate (it can't be
     renamed or deleted: Eject and opened files use it). Click one to
     show it, right-click it (Control-click on a Mac) for **Rename crate…** and **Delete crate…**, or
     click a crate and press Delete, or click **+ New crate**. Drag entries onto
@@ -337,7 +338,8 @@ ahead of what plays. Other pasted text is ignored.
 - **Previews:** the playing entry and the next 3 download two at a time, with progress where
   the duration goes. While stopped, it's the current entry of the crate on screen and the next
   3. Each downloaded preview is analyzed and its waveform built before it plays, so section
-  jumps and loops work from its first second.
+  jumps and loops work from its first second. A label's **Download all tracks** fetches the
+  rest behind these (see [Labels](#labels)).
 - **Verdicts on the playing track:** `Y` adds its record to your wantlist: all its tracks go
   to the **Wantlist** crate, they're marked ★ wherever they appear, and (with a token) the
   release goes on your Discogs wantlist. Pressing `Y` again takes the record off, here and on
@@ -409,8 +411,39 @@ ahead of what plays. Other pasted text is ignored.
     the `PATH`. Until it's found, entries say "needs yt-dlp". If clips keep failing, try
     `yt-dlp -U`.
   - The dialog also sets the default filter for every send (skip what you've passed) and the
-    preview cache size (2 GB by default; the least recently played go first).
+    preview cache size (2 GB by default; the least recently played go first, except for
+    Download all tracks, which never deletes anything: see [Labels](#labels)).
 - Previews are for listening while you dig. They stay in the cache and are never exported.
+
+### Labels
+
+Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›"),
+grouped by record. Click the heading to fold or unfold it.
+
+- **Follow a label** from the browser: on a Discogs label page, or a link to one, the
+  extension offers only **Diggr: Send label**. The label's crate is made and fills in the
+  background: the crate on screen, playback and the window stay as they are, so you can send
+  several labels in a row. Sending a followed label again refreshes it. Pasting a label's
+  address in the player (Cmd+V) still adds its tracks to the crate on screen instead.
+- **Move to Labels:** a crate filled from one label's page (every entry from it) offers Move to
+  Labels in its right-click menu, and becomes that label's crate.
+- **A label crate fills only from its label.** Paste, drops, Send to crate, Delete, Remove and
+  Clear crate are refused, with a message that says so. **N** (pass) dims a track as anywhere
+  else, and Y, I and copying entries out work as usual.
+- **Right-click a label crate** for:
+  - **Delete label…**: asks, stops following the label and deletes its crate. What you passed
+    stays passed if you follow it again.
+  - **Export to crate ▸**: copies every entry into one of your crates, or a new one named after
+    the label, skipping what that crate holds. The label stays followed.
+  - **Refresh label**: reads the label's page again. Only new records come in, and the main
+    window says how many ("Label: Siesta Records: 4 new records", or "up to date").
+  - **Download all tracks**: downloads every preview of the label to the preview cache in the
+    background, behind what's playing, so the whole label plays instantly. A window shows the
+    progress ("120 of 300 tracks"), what's downloading now, and **Stop**, which ends it at any
+    moment. Closing the window only hides it: while it runs, the label's menu reads
+    **Downloading (N of M)…** and shows it again. It never deletes other previews: when the cache
+    is full it pauses, and the window asks to **Raise cache** to twice its size or stop. At the
+    end the main window says "Label: Siesta Records: all 40 tracks downloaded".
 
 ### Top Sellers
 
@@ -501,7 +534,10 @@ that the player starts once its window is up.
 3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
    Diggr**, which adds the seller to Top Sellers (or refreshes it) and asks the player to
    come to the front (macOS may only bounce its Dock icon).
-   On a Discogs release, master, artist, label, wantlist, list or marketplace item page, the
+   On a label's page, the button offers only **Diggr: Send label**, which follows the label
+   under LABELS in the player (or refreshes it), without bringing the player to the front
+   (see [Labels](#labels)).
+   On a Discogs release, master, artist, wantlist, list or marketplace item page, the
    button after the title (or in the bottom-right corner) offers **Play in Diggr**, **Enqueue
    in Diggr** and **Send to crate** (the player's crates, or New crate…, which suggests a name
    from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the skip-passed
@@ -513,7 +549,8 @@ that the player starts once its window is up.
    add one. A crate created from the browser (New crate…) comes on screen in the player, with
    the playlist opened if it was hidden. A confirmation shows for 3 s ("Sent to Diggr: Label: Lowtide
    Tapes → Playlist").
-4. On any site, right-click a Discogs link for Play in Diggr or Enqueue in Diggr; the toolbar
+4. On any site, right-click a Discogs link for Play in Diggr or Enqueue in Diggr (a label link
+   offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
    and paired, what's playing, and sends in progress.
 
@@ -530,13 +567,16 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       127.0.0.1 only.
 - [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
-- [ ] Release, master, artist, label, wantlist, list and marketplace item pages each show the
+- [ ] Release, master, artist, wantlist, list and marketplace item pages each show the
       button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
       shows no button.
+- [ ] A label's page shows the button with only Diggr: Send label; it adds the label under
+      LABELS in the player without changing the shown crate, and a second time says
+      "Refreshed label ‹name›". Right-clicking a label link offers only Diggr: Send label.
 - [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
-      artist or label, and "Wantlist: user" on a wantlist, within 40 characters.
+      artist, and "Wantlist: user" on a wantlist, within 40 characters.
 - [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
 - [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in Diggr adds
       it and the toolbar shows ✓.
@@ -878,7 +918,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 754 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 770 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -924,6 +964,11 @@ What's covered:
   - skin validation, that the committed skin matches its generator, and that a skin without
     an LCD colour keeps green;
   - the empty crate hint and the verdict flash wording (and, headless, which verdicts flash);
+  - label crates: the label field and `is_locked`, every refused edit while pass still works,
+    Move to Labels, the LABELS group and its fold, the label crate menu, Export to crate,
+    Delete label, Refresh label's summary, a label sent from the browser (followed, then
+    refreshed, nothing doubled), and Download all tracks (all downloaded behind what plays,
+    its progress window and Stop, the cache-full question, the menu showing the window again);
   - repaint policy;
   - headless egui click/drag tests of the skinned widgets;
   - the whole player driven headlessly against `ManualSink`: switching crates leaves playback
@@ -953,7 +998,9 @@ What's covered:
   send answered in under 100 ms while Discogs is slow.
 
   The preview scheduler runs against a fake yt-dlp: the horizon, 2 slots, the armed entry
-  first, cancelling, retries, the timeout, yt-dlp appearing later, and the cache limit. Also
+  first, cancelling, retries, the timeout, yt-dlp appearing later, the cache limit, and the
+  background list of Download all tracks (after the horizon, paused instead of evicting,
+  resumed by a larger cache, stopped by an empty list). Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
   - a pasted release filling the crate with playable previews;
