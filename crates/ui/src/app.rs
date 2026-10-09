@@ -6795,7 +6795,9 @@ mod headless_tests {
         }
 
         fn until(&mut self, mut done: impl FnMut(&mut Self) -> bool, what: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            // Generous: the whole workspace's tests share the machine, and a passing wait
+            // ends as soon as `done` holds.
+            let deadline = Instant::now() + Duration::from_secs(15);
             while !done(self) {
                 assert!(Instant::now() < deadline, "timed out: {what}");
                 self.pump();

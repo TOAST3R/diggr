@@ -485,6 +485,15 @@ your yt-dlp (nothing is downloaded until a track is about to play):
   whose Bandcamp crate exists joins them the same way. **Refresh label** reads both, and on
   Bandcamp only the albums it hasn't read before. Albums of a followed Bandcamp go to its label
   crate whatever the send's mode.
+- **Discogs and Bandcamp together:** a Discogs record sent into a crate that has some of its
+  tracks from Bandcamp takes those entries over (they get the release, catalogue number and side,
+  keep playing from Bandcamp, and can switch to the record's video) instead of adding them twice.
+- **Bandcamp when YouTube has nothing:** a Discogs track that ends "not found" or "clip failed"
+  is looked for on Bandcamp, once: on the label's Bandcamp its crate follows, or on the one its
+  label's name suggests ("Lowtide Tapes" → `lowtidetapes.bandcamp.com`). Only the albums whose
+  address holds the record's catalogue number are read (or its title, on a followed Bandcamp), and
+  only the failed tracks change: "Dig: 2 tracks found on Bandcamp". Retry failed tracks and
+  Refresh label look again.
 - **Records:** a label crate (or any grouped crate) groups Bandcamp tracks by album, as it does
   Discogs releases, with the album's cover from Bandcamp's image host.
 - **Where the sound comes from:** each row ends with **YT** or **BC** (nothing for a local
@@ -980,7 +989,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 818 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 822 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

@@ -6,11 +6,19 @@
 //! gets the Bandcamp audio in place, and only what the crate lacks is added. A Bandcamp label
 //! is followed under LABELS like a Discogs one, and joins the followed Discogs label of the
 //! same name (asking when the names are only close).
+//!
+//! It works the other way too: a Discogs record arriving in a crate takes over the
+//! Bandcamp-only entries of the same tracks instead of adding them twice, and a Discogs track
+//! that YouTube can't give ("not found", "clip failed") is looked for on Bandcamp: on the
+//! label's Bandcamp the crate follows, else on the one its label's name suggests. Only the
+//! albums whose address holds the record's catalogue number (or title) are read, and only
+//! the failed tracks are fixed.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use dig::bandcamp::{
-    self, BandcampAlbum, BandcampKind, BandcampMemory, BandcampPage, NameMatch, name_match,
+    self, BandcampAlbum, BandcampKind, BandcampMemory, BandcampPage, MIN_NEEDLE, NameMatch,
+    name_key, name_match, squash,
 };
 use dig::discogs::matching::fold;
 use dig::jobs::JobId;
@@ -23,7 +31,7 @@ use super::DiggrApp;
 use super::digging::{JobView, SendMode};
 use crate::crates::{CrateId, MAX_NAME};
 use crate::playlist::{
-    ClipSource, Entry, EntryId, EntryStatus, NewEntry, Origin, UnavailableKind, WaitKind,
+    ClipSource, Entry, EntryId, EntryStatus, NewEntry, Origin, Playlist, UnavailableKind, WaitKind,
 };
 
 /// Bandcamp sends get job ids far from the intake's, so both fit in one list of sends.
@@ -47,6 +55,20 @@ struct Job {
     /// Albums that brought at least one track.
     new_records: usize,
     failed: Vec<String>,
+    /// Looking for failed tracks: only they are fixed, nothing is added.
+    fallback: Option<Fallback>,
+}
+
+/// A look on Bandcamp for a crate's tracks YouTube couldn't give.
+#[derive(Debug, Clone, Default)]
+struct Fallback {
+    /// The Bandcamp looked at (its subdomain).
+    name: String,
+    /// Guessed from the label's name, not followed: a listing that fails means there is none.
+    guessed: bool,
+    /// What album addresses are searched for: catalogue numbers (and titles).
+    needles: Vec<String>,
+    entries: Vec<EntryId>,
 }
 
 /// "Merge into Label: Siesta?", waiting for an answer.
@@ -68,6 +90,12 @@ pub(super) struct BandcampState {
     pub(super) memory: BandcampMemory,
     /// Merge or Separate questions, oldest first; one is shown at a time.
     pub(super) asks: VecDeque<MergeAsk>,
+    /// Looks on Bandcamp waiting to start, by crate and Bandcamp.
+    pending: HashMap<(CrateId, String), Fallback>,
+    /// Entries looked for on Bandcamp this session (each once, until retried).
+    tried: HashSet<(CrateId, EntryId)>,
+    /// Guessed Bandcamps that don't exist, this session.
+    missing: HashSet<String>,
 }
 
 /// How a Bandcamp track meets a crate.
@@ -181,6 +209,83 @@ pub(super) fn plan_merge(entries: &[Entry], album: &BandcampAlbum) -> Vec<Step> 
         .collect()
 }
 
+/// A Discogs record's new entries meeting the crate's Bandcamp-only entries: the same track
+/// (by artist and title, among the same catalogue number when Bandcamp has it) takes the
+/// record over in place, keeping its Bandcamp audio (the record's YouTube clip set aside),
+/// and isn't added again. Returns what is left to add.
+pub(super) fn absorb_into_bandcamp(p: &mut Playlist, new: Vec<NewEntry>) -> Vec<NewEntry> {
+    let bandcamp_only = |e: &Entry| {
+        e.origin
+            .as_ref()
+            .is_some_and(|o| !o.bandcamp.is_empty() && o.release.is_none() && o.master.is_none())
+    };
+    if !p.entries().iter().any(bandcamp_only) {
+        return new;
+    }
+    let mut used: HashSet<EntryId> = HashSet::new();
+    let mut left = Vec::new();
+    for n in new {
+        let Some(o) = n.origin.clone() else {
+            left.push(n);
+            continue;
+        };
+        let catno = catno_key(&o.catno);
+        let same_catno = |e: &Entry| {
+            e.origin
+                .as_ref()
+                .is_some_and(|eo| catno_key(&eo.catno) == catno)
+        };
+        let narrowed = !catno.is_empty()
+            && p.entries()
+                .iter()
+                .any(|e| bandcamp_only(e) && same_catno(e));
+        let key = match_key(&n.artist, &n.title);
+        let found = p
+            .entries()
+            .iter()
+            .filter(|e| bandcamp_only(e) && !used.contains(&e.id))
+            .filter(|e| !narrowed || same_catno(e))
+            .find(|e| match_key(&e.artist, &e.title) == key)
+            .map(|e| e.id);
+        let Some(id) = found else {
+            left.push(n);
+            continue;
+        };
+        used.insert(id);
+        let Some(e) = p.entries_mut().find(|e| e.id == id) else {
+            continue;
+        };
+        let bc = e.origin.take().unwrap_or_default();
+        let playing_bandcamp = bc.clip.is_some();
+        e.origin = Some(Origin {
+            clip: if playing_bandcamp {
+                bc.clip.clone()
+            } else {
+                o.clip.clone()
+            },
+            youtube_clip: if playing_bandcamp {
+                o.clip.clone().unwrap_or_default()
+            } else {
+                String::new()
+            },
+            bandcamp: bc.bandcamp,
+            bandcamp_clip: bc.bandcamp_clip,
+            ..o
+        });
+        e.artist = n.artist;
+        e.title = n.title;
+        if e.duration.is_none() {
+            e.duration = n.duration;
+        }
+        // Bandcamp doesn't stream it: the record's own way to a preview takes over.
+        if !playing_bandcamp {
+            e.source = n.source;
+            p.set_waiting(id, n.status);
+        }
+    }
+    left
+}
+
 impl BandcampState {
     pub(super) fn new(memory: BandcampMemory) -> Self {
         Self {
@@ -273,14 +378,41 @@ impl DiggrApp {
         skip_passed: bool,
     ) {
         let to = self.crates.name(target).to_owned();
-        let label_name = match self.crates.is_label(target) {
-            true => to.strip_prefix("Label: ").unwrap_or(&to).to_owned(),
-            false => page.name.clone(),
-        };
         let skip: Vec<String> = match label {
             true => self.bandcamp_read_albums(target),
             false => Vec::new(),
         };
+        self.bandcamp_job(page, target, name.clone(), label, skip_passed, skip, None);
+        if !label {
+            self.notify(if to == name {
+                format!("Digging {to} on Bandcamp")
+            } else {
+                format!("{name} › {to}")
+            });
+        }
+    }
+
+    /// Starts reading `page` into `target` as a send in progress.
+    #[allow(clippy::too_many_arguments)]
+    fn bandcamp_job(
+        &mut self,
+        page: BandcampPage,
+        target: CrateId,
+        name: String,
+        label: bool,
+        skip_passed: bool,
+        skip: Vec<String>,
+        fallback: Option<Fallback>,
+    ) {
+        let to = self.crates.name(target).to_owned();
+        let label_name = match self.crates.is_label(target) {
+            true => to.strip_prefix("Label: ").unwrap_or(&to).to_owned(),
+            false => page.name.clone(),
+        };
+        let only = fallback
+            .as_ref()
+            .map(|f| f.needles.clone())
+            .unwrap_or_default();
         let Some(d) = &mut self.dig else { return };
         let bc = &mut d.bandcamp;
         bc.next = bc.next.max(FIRST_JOB) + 1;
@@ -298,6 +430,7 @@ impl DiggrApp {
                 skipped: 0,
                 new_records: 0,
                 failed: Vec::new(),
+                fallback,
             },
         );
         d.jobs.insert(
@@ -309,14 +442,12 @@ impl DiggrApp {
                 total: 0,
             },
         );
-        d.preview(PreviewCommand::ReadBandcamp { job, page, skip });
-        if !label {
-            self.notify(if to == name {
-                format!("Digging {to} on Bandcamp")
-            } else {
-                format!("{name} › {to}")
-            });
-        }
+        d.preview(PreviewCommand::ReadBandcamp {
+            job,
+            page,
+            skip,
+            only,
+        });
     }
 
     /// The album pages a label crate has read.
@@ -423,9 +554,24 @@ impl DiggrApp {
 
     /// Whether crate `c` is reading from Bandcamp.
     pub(super) fn bandcamp_reading(&self, c: CrateId) -> bool {
-        self.dig
-            .as_ref()
-            .is_some_and(|d| d.bandcamp.jobs.values().any(|j| j.target == c))
+        self.dig.as_ref().is_some_and(|d| {
+            d.bandcamp
+                .jobs
+                .values()
+                .any(|j| j.target == c && j.fallback.is_none())
+        })
+    }
+
+    /// Whether Bandcamp is looked at for crate `c`'s failed tracks (waiting or reading).
+    #[cfg(test)]
+    pub(super) fn bandcamp_looking(&self, c: CrateId) -> bool {
+        self.dig.as_ref().is_some_and(|d| {
+            d.bandcamp.pending.keys().any(|(pc, _)| *pc == c)
+                || d.bandcamp
+                    .jobs
+                    .values()
+                    .any(|j| j.target == c && j.fallback.is_some())
+        })
     }
 
     // ---- what the preview worker read --------------------------------------------------
@@ -445,6 +591,14 @@ impl DiggrApp {
             return;
         };
         j.failed.push(format!("{page}: {error}"));
+        if let Some(f) = j.fallback.as_ref().filter(|f| f.guessed)
+            && page.ends_with("/music")
+        {
+            let name = f.name.clone();
+            if let Some(d) = &mut self.dig {
+                d.bandcamp.missing.insert(name);
+            }
+        }
         if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&job)) {
             v.done += 1;
         }
@@ -457,15 +611,19 @@ impl DiggrApp {
             return;
         };
         let (target, skip_passed, label) = (j.target, j.skip_passed, j.label_name.clone());
+        // Looking for failed tracks: only those are fixed, and the album isn't counted read.
+        let fix_only = j.fallback.is_some();
         if let Some(v) = d.jobs.get_mut(&job) {
             v.done += 1;
         }
-        d.bandcamp
-            .memory
-            .albums
-            .entry(target)
-            .or_default()
-            .insert(album.url.clone());
+        if !fix_only {
+            d.bandcamp
+                .memory
+                .albums
+                .entry(target)
+                .or_default()
+                .insert(album.url.clone());
+        }
         let Some(p) = self.crates.get_mut(target) else {
             return;
         };
@@ -514,6 +672,7 @@ impl DiggrApp {
                     ready.push((id, key));
                     fixed += 1;
                 }
+                Step::Add if fix_only => {}
                 Step::Add => {
                     if skip_passed && d.memory.is_passed(&key) {
                         skipped += 1;
@@ -603,6 +762,17 @@ impl DiggrApp {
         let Some(j) = d.bandcamp.jobs.remove(&job) else {
             return;
         };
+        if j.fallback.is_some() {
+            if j.fixed > 0 {
+                let name = self.crates.name(j.target).to_owned();
+                let tracks = match j.fixed {
+                    1 => "1 track".to_owned(),
+                    n => format!("{n} tracks"),
+                };
+                self.notify(format!("{name}: {tracks} found on Bandcamp"));
+            }
+            return;
+        }
         if let Some(cfg) = d.config.as_deref()
             && let Err(e) = d.bandcamp.memory.save(cfg)
         {
@@ -635,6 +805,148 @@ impl DiggrApp {
             )
         };
         self.notify(text);
+    }
+
+    // ---- looking on Bandcamp for what YouTube couldn't give -------------------------------
+
+    /// Tracks of Discogs records that just became "not found" or "clip failed" (or that Retry
+    /// or Refresh label asks about): each is looked for on Bandcamp once, on the label's
+    /// Bandcamp the crate follows, else on the one its label's name suggests.
+    pub(super) fn bandcamp_fallback(&mut self, hits: &[(CrateId, EntryId)]) {
+        let Some(d) = &self.dig else { return };
+        // One look per track: (crate, the look).
+        let mut wants: Vec<(CrateId, Fallback)> = Vec::new();
+        for &(c, id) in hits {
+            if d.bandcamp.tried.contains(&(c, id)) {
+                continue;
+            }
+            let Some(e) = self.crates.get(c).and_then(|p| p.get(id)) else {
+                continue;
+            };
+            let Some(o) = e.origin.as_ref() else { continue };
+            // Only Discogs records: a Bandcamp entry has nothing more to find there.
+            if !fixable(e) || (o.release.is_none() && o.master.is_none()) {
+                continue;
+            }
+            let (name, guessed) = match self.crates.bandcamp_of(c) {
+                Some(n) => (n.to_owned(), false),
+                None => {
+                    let guess = name_key(&o.label);
+                    if guess.is_empty() || guess.len() > 63 || d.bandcamp.missing.contains(&guess) {
+                        continue;
+                    }
+                    (guess, true)
+                }
+            };
+            let mut needles = Vec::new();
+            let catno = squash(&o.catno);
+            if catno.len() >= MIN_NEEDLE {
+                needles.push(catno);
+            }
+            // A guessed Bandcamp could be someone else's: only a catalogue number will do.
+            let title = squash(&o.album);
+            if !guessed && title.len() >= MIN_NEEDLE + 2 {
+                needles.push(title);
+            }
+            if needles.is_empty() {
+                continue;
+            }
+            wants.push((
+                c,
+                Fallback {
+                    name,
+                    guessed,
+                    needles,
+                    entries: vec![id],
+                },
+            ));
+        }
+        let Some(d) = &mut self.dig else { return };
+        for (c, want) in wants {
+            d.bandcamp
+                .tried
+                .extend(want.entries.iter().map(|&id| (c, id)));
+            let f = d
+                .bandcamp
+                .pending
+                .entry((c, want.name.clone()))
+                .or_insert_with(|| Fallback {
+                    name: want.name.clone(),
+                    guessed: want.guessed,
+                    ..Fallback::default()
+                });
+            for n in want.needles {
+                if !f.needles.contains(&n) {
+                    f.needles.push(n);
+                }
+            }
+            f.entries.extend(want.entries);
+        }
+    }
+
+    /// Retry failed tracks or Refresh label: these entries may be looked for again.
+    pub(super) fn bandcamp_untry(&mut self, c: CrateId, ids: &[EntryId]) {
+        if let Some(d) = &mut self.dig {
+            for &id in ids {
+                d.bandcamp.tried.remove(&(c, id));
+            }
+        }
+    }
+
+    /// A crate's tracks that YouTube couldn't give and Bandcamp might.
+    pub(super) fn bandcamp_failed_tracks(&self, c: CrateId) -> Vec<EntryId> {
+        self.crates
+            .get(c)
+            .map(|p| {
+                p.entries()
+                    .iter()
+                    .filter(|e| fixable(e))
+                    .map(|e| e.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each frame: the looks waiting start, one at a time per Bandcamp (its listing is read
+    /// once for all the needles gathered meanwhile).
+    pub(super) fn bandcamp_fallback_flush(&mut self) {
+        let Some(d) = &self.dig else { return };
+        if d.bandcamp.pending.is_empty() || !d.started() {
+            return;
+        }
+        let busy: HashSet<String> = d
+            .bandcamp
+            .jobs
+            .values()
+            .filter_map(|j| j.fallback.as_ref().map(|f| f.name.clone()))
+            .collect();
+        let ready: Vec<(CrateId, String)> = d
+            .bandcamp
+            .pending
+            .keys()
+            .filter(|(_, n)| !busy.contains(n))
+            .cloned()
+            .collect();
+        let mut started = HashSet::new();
+        for key in ready {
+            if !started.insert(key.1.clone()) {
+                continue;
+            }
+            let Some(d) = &mut self.dig else { return };
+            let Some(f) = d.bandcamp.pending.remove(&key) else {
+                continue;
+            };
+            // Found missing while this waited: not asked again.
+            if f.guessed && d.bandcamp.missing.contains(&f.name) {
+                continue;
+            }
+            let page = BandcampPage {
+                name: key.1.clone(),
+                kind: BandcampKind::Label,
+            };
+            let name = format!("{}.bandcamp.com", key.1);
+            self.bandcamp_job(page, key.0, name, false, false, Vec::new(), Some(f));
+        }
     }
 
     /// The Bandcamp clips among `keys` the preview worker doesn't know the page of yet: told

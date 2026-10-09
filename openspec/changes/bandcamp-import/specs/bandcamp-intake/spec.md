@@ -95,3 +95,25 @@ An entry with a Bandcamp track SHALL offer Open on Bandcamp in its menu, opening
 #### Scenario: Not on Discogs
 - **WHEN** the user presses Y on a Bandcamp-only entry
 - **THEN** nothing is added to the wantlist, and the main window says the track isn't on Discogs
+
+### Requirement: Discogs records take over Bandcamp tracks
+When a Discogs record's tracks come into a crate that holds Bandcamp-only entries (no Discogs release or master), each of its tracks SHALL be matched with them as an album is merged (artist and title, among the same catalogue number when the Bandcamp entries have it). A matching entry SHALL take the record over in place: its release, master, catalogue number, side, year, formats and for-sale snapshot, keeping its Bandcamp audio with the record's YouTube clip set aside (so it can switch). It SHALL NOT be added a second time. A Bandcamp entry that Bandcamp doesn't stream SHALL take the record's own clip or search instead.
+
+#### Scenario: Bandcamp first, then Discogs
+- **WHEN** a crate holds "Nightcraft - Glasshouse" and "Nightcraft - Last Light" from Bandcamp (LT-012), and the Discogs release LT-012 with three tracks is sent into it
+- **THEN** the crate holds three entries: the two take release 1001 and keep playing from Bandcamp, and only "Glasshouse (Lumen Remix)" is added
+
+### Requirement: Bandcamp for tracks YouTube can't give
+A track of a Discogs record that becomes "not found" or "clip failed" SHALL be looked for on Bandcamp, once per session:
+- **Where:** on the Bandcamp its label crate follows; otherwise on the one the record's label name suggests (folded, without spaces or a trailing "Records", "Music"…: "Lowtide Tapes" → `lowtidetapes.bandcamp.com`).
+- **Which albums:** the label's listing SHALL be read once, and only the albums whose address holds the record's catalogue number (letters and digits, at least 4) SHALL be read; on a followed Bandcamp, its album title too. A guessed Bandcamp SHALL be matched by catalogue number only.
+- **What changes:** only the failed tracks SHALL be fixed, as an album merge fixes them (Bandcamp audio in place, Discogs record kept). Nothing SHALL be added.
+- **Afterwards:** the main window SHALL say how many were found ("Dig: 2 tracks found on Bandcamp"), and nothing when none were. A guessed Bandcamp that doesn't exist SHALL NOT be asked again that session. Retry failed tracks and Refresh label SHALL look again for the tracks they retry.
+
+#### Scenario: Found on the label's Bandcamp
+- **WHEN** the clip of "Nightcraft - Last Light" (release 1001, LT-012, label Lowtide Tapes) fails twice, and `lowtidetapes.bandcamp.com` lists `/album/glasshouse-ep-lt-012` with that track
+- **THEN** only that album and the listing are read, the entry plays from Bandcamp keeping release 1001, and the main window says "Dig: 1 track found on Bandcamp"
+
+#### Scenario: No such Bandcamp
+- **WHEN** two tracks of the record fail and `lowtidetapes.bandcamp.com` doesn't exist
+- **THEN** its listing is asked for once, nothing changes, and later failures don't ask again

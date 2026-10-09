@@ -42,7 +42,13 @@
 - [x] 6.3 `pages.js`: Bandcamp kinds and link patterns. `content.js`: the button on album and track pages (normal menu) and on label pages (Send label only), placed by the title or floating, with the "Artist - Title" suggestion; sends the page title with Bandcamp pages. `background.js`: context menu items on Bandcamp links.
 - [ ] 6.4 Load the unpacked extension and check by hand: album, track, label and merch pages, plus a link in a forum.
 
-## 7. Docs and checks
+## 7. Discogs and Bandcamp together
 
-- [x] 7.1 README: a Bandcamp section (pages, merging, badges, switching, Open on Bandcamp), the extension's new permission, and the test count.
-- [x] 7.2 Run `cargo test --workspace`, clippy `-D warnings`, `fmt --check` and the wasm check, and `openspec validate bandcamp-import --strict`.
+- [x] 7.1 A Discogs record arriving in a crate takes over its Bandcamp-only entries of the same tracks (`absorb_into_bandcamp`), keeping their Bandcamp audio and setting the YouTube clip aside. Headless test: Bandcamp album first, then the release: three entries, not five.
+- [x] 7.2 `ReadBandcamp { only }`: a label listing narrowed to the albums whose address holds a needle (`bandcamp::album_matches`). Unit and scheduler tests.
+- [x] 7.3 Fallback: "not found" and "clip failed" Discogs tracks are looked for on the followed or guessed Bandcamp, once per session, by catalogue number (and title when followed), fixing only those tracks; a missing guessed Bandcamp isn't asked again; Retry failed tracks and Refresh label look again. Headless tests: found on the guessed Bandcamp; a missing one asked once.
+
+## 8. Docs and checks
+
+- [x] 8.1 README: a Bandcamp section (pages, merging, badges, switching, Open on Bandcamp), the extension's new permission, and the test count.
+- [x] 8.2 Run `cargo test --workspace`, clippy `-D warnings`, `fmt --check` and the wasm check, and `openspec validate bandcamp-import --strict`.

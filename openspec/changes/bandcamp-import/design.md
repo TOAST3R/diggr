@@ -103,6 +103,11 @@ Neither answer has the label's display name. `uploader_id` gives only the subdom
   - **Placement:** the button goes next to `#name-section h2` / `#band-name-location`, and floats when neither is found.
   - **Links:** the context menu adds Bandcamp link patterns.
 
+### 10. Discogs and Bandcamp meeting in one crate
+- **No doubles, both ways:** an album merge matches Bandcamp tracks with Discogs entries (decision 5), and a Discogs record arriving matches its tracks with the crate's Bandcamp-only entries the same way (`absorb_into_bandcamp`), so the order of sends or refreshes doesn't matter.
+- **Bandcamp as YouTube's fallback:** a Discogs track that ends "not found" or "clip failed" is looked for on Bandcamp. The Bandcamp is the crate's followed one, else a guess from the label's name, since Bandcamp subdomains usually are the label's name squashed ("Diffuse Reality Records" → `diffusereality`). Rather than reading the whole label (1,869 albums and tracks for that one), its listing is read once and only the albums whose address holds the record's catalogue number are read: label accounts put it in the address (`…/kushkusshhh-hollowed-memories-tobas005`). On a followed Bandcamp the album title counts too; on a guessed one only the catalogue number, so a stranger's account with the same name can't put the wrong music under a record. The look fixes only the failed tracks; it adds nothing.
+- **Cost bounds:** each entry is looked for once per session (Retry and Refresh label look again); looks for one Bandcamp are batched and run one at a time; a guessed Bandcamp whose listing fails isn't asked again that session.
+
 ## Risks / Trade-offs
 
 - [Bandcamp changes its pages, and yt-dlp breaks] → reads fail with a message naming yt-dlp; updating yt-dlp fixes it. Nothing else depends on Bandcamp.

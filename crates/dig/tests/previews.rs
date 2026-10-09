@@ -678,6 +678,7 @@ fn a_label_page_is_read_album_by_album() {
         job: 7,
         page: label.clone(),
         skip: Vec::new(),
+        only: Vec::new(),
     });
     let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 7 }));
     assert!(ev.contains(&PreviewEvent::BandcampListed { job: 7, albums: 2 }));
@@ -698,10 +699,23 @@ fn a_label_page_is_read_album_by_album() {
         job: 8,
         page: label,
         skip: vec![a.into()],
+        only: Vec::new(),
     });
     let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 8 }));
     assert!(ev.contains(&PreviewEvent::BandcampListed { job: 8, albums: 1 }));
     assert_eq!(fake.pages_read().len(), 5, "the label and `b` only");
+    // Narrowed to a catalogue number no address holds: nothing is read.
+    h.send(PreviewCommand::ReadBandcamp {
+        job: 9,
+        page: bandcamp::parse("https://analogicalforce.bandcamp.com/").unwrap(),
+        skip: Vec::new(),
+        only: vec![bandcamp::squash("TOBAS 005")],
+    });
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 9 }));
+    assert!(
+        ev.contains(&PreviewEvent::BandcampListed { job: 9, albums: 0 }),
+        "{ev:?}"
+    );
 }
 
 #[test]
@@ -737,6 +751,7 @@ fn a_limited_bandcamp_waits_while_youtube_goes_on() {
         job: 1,
         page,
         skip: Vec::new(),
+        only: Vec::new(),
     });
     fake.bandcamp_limited.store(false, Ordering::SeqCst);
     h.send(PreviewCommand::TryNow);

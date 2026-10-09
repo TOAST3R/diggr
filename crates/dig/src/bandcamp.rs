@@ -412,6 +412,31 @@ pub fn name_match(a: &str, b: &str) -> NameMatch {
     }
 }
 
+/// Letters and digits only, lower case: what an album's address and a catalogue number or
+/// title are compared by ("TOBAS 005" and `…-tobas005` both give `tobas005`).
+pub fn squash(s: &str) -> String {
+    crate::discogs::matching::fold(s)
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
+/// The shortest needle an album's address is searched for: shorter ones match too much.
+pub const MIN_NEEDLE: usize = 4;
+
+/// Whether the album or track page at `url` is the one `needles` describe: its address holds
+/// one of them (see [`squash`]).
+pub fn album_matches(url: &str, needles: &[String]) -> bool {
+    let Ok(p) = parse(url) else { return false };
+    let slug = match &p.kind {
+        BandcampKind::Album(s) | BandcampKind::Track(s) => squash(s),
+        BandcampKind::Label => return false,
+    };
+    needles
+        .iter()
+        .any(|n| n.len() >= MIN_NEEDLE && slug.contains(n.as_str()))
+}
+
 /// What the app remembers about Bandcamp (`dig/bandcamp.ron`): the albums each label crate
 /// has read, so Refresh label reads only new ones, and the labels the user kept apart.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -641,6 +666,20 @@ mod tests {
             urls.iter()
                 .all(|u| u.starts_with("https://analogicalforce.bandcamp.com/"))
         );
+    }
+
+    #[test]
+    fn albums_are_found_by_catalogue_number_or_title_in_their_address() {
+        let url =
+            "https://diffusereality.bandcamp.com/album/kushkusshhh-hollowed-memories-tobas005";
+        assert!(album_matches(url, &[squash("TOBAS 005")]));
+        assert!(album_matches(url, &[squash("Hollowed Memories")]));
+        assert!(!album_matches(url, &[squash("TOBAS 006")]));
+        assert!(!album_matches(url, &[squash("EP")]), "too short to tell");
+        assert!(!album_matches(
+            "https://evil.net/album/tobas005",
+            &[squash("TOBAS 005")]
+        ));
     }
 
     #[test]

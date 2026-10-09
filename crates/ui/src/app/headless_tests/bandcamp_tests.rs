@@ -439,3 +439,169 @@ fn bandcamp_albums_group_into_records_like_discogs_releases() {
     assert_eq!(key, ::dig::cover::CoverKey::BandcampArt(161524395));
     assert!(::dig::cover::allowed(url));
 }
+
+// ---- Discogs records meeting Bandcamp ------------------------------------------------------
+
+const RELEASE: &str = "https://www.discogs.com/release/1001-Glasshouse-EP";
+const LOWTIDE: &str = "https://lowtidetapes.bandcamp.com";
+
+/// Lowtide Tapes on Bandcamp: "Glasshouse EP" (LT-012) with two of its three tracks, and
+/// another album.
+fn lowtide(fakes: &Fakes) -> String {
+    let album = format!("{LOWTIDE}/album/glasshouse-ep-lt-012");
+    let track = |id: &str, slug: &str, title: &str| BandcampTrack {
+        track_id: id.into(),
+        url: format!("{LOWTIDE}/track/{slug}"),
+        artist: "Nightcraft".into(),
+        title: title.into(),
+        duration: Some(372.0),
+        streamable: true,
+    };
+    fakes.fetcher.page(
+        &album,
+        Listing::Album(BandcampAlbum {
+            url: album.clone(),
+            title: "Glasshouse EP".into(),
+            catno: "LT-012".into(),
+            artist: "Nightcraft".into(),
+            cover: String::new(),
+            year: Some(1994),
+            tracks: vec![
+                track("5001", "glasshouse", "Glasshouse"),
+                track("5003", "last-light", "Last Light"),
+            ],
+        }),
+    );
+    fakes.fetcher.page(
+        &format!("{LOWTIDE}/music"),
+        Listing::Albums(vec![format!("{LOWTIDE}/album/other-thing"), album.clone()]),
+    );
+    album
+}
+
+fn crate_with(rig: &mut Rig, name: &str) -> CrateId {
+    let c = rig.app.crates.create(name).unwrap();
+    rig.app.crates.load(c);
+    rig.app.show_crate(c);
+    c
+}
+
+#[test]
+fn a_discogs_record_takes_over_the_bandcamp_tracks_instead_of_doubling_them() {
+    let fakes = Fakes::new();
+    let album = lowtide(&fakes);
+    let mut rig = rig("bc-no-doubles", &fakes);
+    let c = crate_with(&mut rig, "Dig");
+    rig.app.dig_paste(&album);
+    reading_done(&mut rig, c);
+    assert_eq!(rig.app.crates.get(c).unwrap().len(), 2);
+    rig.app.dig_paste(RELEASE);
+    rig.until(
+        |r| {
+            r.app.crates.get(c).is_some_and(|p| {
+                p.entries()
+                    .iter()
+                    .filter(|e| e.origin.as_ref().is_some_and(|o| o.release == Some(1001)))
+                    .count()
+                    == 3
+            })
+        },
+        "the record arrives",
+    );
+    let p = rig.app.crates.get(c).unwrap();
+    assert_eq!(p.len(), 3, "the Lumen Remix added, nothing twice");
+    let glasshouse = p
+        .entries()
+        .iter()
+        .find(|e| e.title == "Glasshouse")
+        .unwrap()
+        .origin
+        .clone()
+        .unwrap();
+    assert_eq!(
+        glasshouse.source(),
+        Some(ClipSource::Bandcamp),
+        "keeps its audio"
+    );
+    assert_eq!(
+        glasshouse.youtube_clip, "GLASShouse1",
+        "the video set aside"
+    );
+    assert_eq!(
+        (glasshouse.catno.as_str(), glasshouse.position.as_str()),
+        ("LT-012", "A1")
+    );
+}
+
+#[test]
+fn a_track_youtube_fails_is_found_on_the_labels_bandcamp() {
+    let fakes = Fakes::new();
+    lowtide(&fakes);
+    fakes.fetcher.fail("LASTlight01", u32::MAX);
+    let mut rig = rig("bc-fallback", &fakes);
+    let c = crate_with(&mut rig, "Dig");
+    rig.app.dig_paste(RELEASE);
+    rig.until(
+        |r| {
+            r.app
+                .crates
+                .get(c)
+                .is_some_and(|p| p.len() == 3 && p.entries().iter().all(|e| e.status.is_playable()))
+        },
+        "every track plays, the failed one from Bandcamp",
+    );
+    rig.until(|r| !r.app.bandcamp_looking(c), "the look is over");
+    let p = rig.app.crates.get(c).unwrap();
+    let last = p
+        .entries()
+        .iter()
+        .find(|e| e.title == "Last Light")
+        .unwrap();
+    let o = last.origin.as_ref().unwrap();
+    assert_eq!(o.source(), Some(ClipSource::Bandcamp));
+    assert_eq!(o.release, Some(1001), "still the Discogs record's");
+    assert_eq!(o.youtube_clip, "LASTlight01");
+    assert_eq!(message(&rig), "Dig: 1 track found on Bandcamp");
+    // The guessed Bandcamp's listing and the one album with LT-012 in its address.
+    let read = fakes.fetcher.pages_read();
+    assert_eq!(
+        read,
+        [
+            format!("{LOWTIDE}/music"),
+            format!("{LOWTIDE}/album/glasshouse-ep-lt-012")
+        ]
+    );
+}
+
+#[test]
+fn a_guessed_bandcamp_that_does_not_exist_is_asked_once() {
+    let fakes = Fakes::new();
+    fakes.fetcher.fail("LASTlight01", u32::MAX);
+    fakes.fetcher.fail("LUMENremix1", u32::MAX);
+    let mut rig = rig("bc-fallback-missing", &fakes);
+    let c = crate_with(&mut rig, "Dig");
+    rig.app.dig_paste(RELEASE);
+    rig.until(
+        |r| {
+            r.app.crates.get(c).is_some_and(|p| {
+                p.entries()
+                    .iter()
+                    .filter(|e| e.status == EntryStatus::Unavailable(UnavailableKind::ClipFailed))
+                    .count()
+                    == 2
+            })
+        },
+        "two clips fail",
+    );
+    rig.until(|r| !r.app.bandcamp_looking(c), "the look is over");
+    for _ in 0..20 {
+        rig.pump();
+    }
+    let read = fakes.fetcher.pages_read();
+    assert_eq!(
+        read,
+        [format!("{LOWTIDE}/music")],
+        "one listing for both, then never again"
+    );
+    assert_eq!(rig.app.crates.get(c).unwrap().len(), 3, "nothing added");
+}

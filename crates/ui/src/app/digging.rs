@@ -1171,6 +1171,11 @@ impl DiggrApp {
             return;
         }
         self.bandcamp_refresh(c);
+        // What YouTube couldn't give is looked for on Bandcamp again.
+        let failed = self.bandcamp_failed_tracks(c);
+        self.bandcamp_untry(c, &failed);
+        let hits: Vec<(CrateId, EntryId)> = failed.into_iter().map(|id| (c, id)).collect();
+        self.bandcamp_fallback(&hits);
         let Some(label) = self.crates.label_of(c) else {
             return;
         };
@@ -1451,6 +1456,8 @@ impl DiggrApp {
         if ids.is_empty() {
             return;
         }
+        // Failing again, they are looked for on Bandcamp again.
+        self.bandcamp_untry(c, &ids);
         let Some(p) = self.crates.get_mut(c) else {
             return;
         };
@@ -1665,6 +1672,7 @@ impl DiggrApp {
         for c in commands {
             self.dig_bridge_command(c);
         }
+        self.bandcamp_fallback_flush();
         self.dig_play_when_ready();
         self.dig_horizon();
         self.dig_focus();
@@ -2266,6 +2274,8 @@ impl DiggrApp {
                 }
             })
             .collect();
+        // Tracks the crate has from Bandcamp already take this record over, not added twice.
+        let new = super::bandcamp::absorb_into_bandcamp(p, new);
         let ids = p.replace(placeholder, new);
         if let Some(d) = &mut self.dig {
             d.twin_leftovers.extend(leftovers);
@@ -2441,9 +2451,10 @@ impl DiggrApp {
                 let gone = self.dig_each_searched(&key, duration, None, |e, _| {
                     e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
                 });
-                for (c, id) in gone {
+                for &(c, id) in &gone {
                     self.dig_album_fallback(c, id);
                 }
+                self.bandcamp_fallback(&gone);
             }
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {
@@ -2475,7 +2486,19 @@ impl DiggrApp {
                 }
             }
             PreviewEvent::Failed(clip, reason) => {
+                let mut failed = Vec::new();
+                for c in self.crates.loaded_ids() {
+                    if let Some(p) = self.crates.get(c) {
+                        failed.extend(
+                            p.entries()
+                                .iter()
+                                .filter(|e| clip_of(e) == Some(clip.as_str()))
+                                .map(|e| (c, e.id)),
+                        );
+                    }
+                }
                 self.dig_each_clip(&clip, |p, id| p.set_unavailable(id, reason.clone()));
+                self.bandcamp_fallback(&failed);
                 let Some(d) = &mut self.dig else { return };
                 d.fail_streak += 1;
                 if d.fail_streak == FAILS_BEFORE_UPDATE_HINT {

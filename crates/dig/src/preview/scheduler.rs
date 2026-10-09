@@ -101,11 +101,13 @@ pub enum PreviewCommand {
     /// keys are wanted; a Bandcamp key with no page is given up on.
     Locate(Vec<(String, String)>),
     /// Read a Bandcamp page for job `job`: a label's albums are then read one by one,
-    /// except those in `skip` (read before).
+    /// except those in `skip` (read before), and, when `only` has needles, only the albums
+    /// whose address holds one (see [`crate::bandcamp::album_matches`]).
     ReadBandcamp {
         job: u64,
         page: BandcampPage,
         skip: Vec<String>,
+        only: Vec<String>,
     },
 }
 
@@ -255,6 +257,8 @@ struct Scheduler {
     reads: VecDeque<(u64, BandcampPage)>,
     /// Per job: album pages its label listing leaves out.
     skips: HashMap<u64, HashSet<String>>,
+    /// Per job: the needles its label listing is narrowed to.
+    onlys: HashMap<u64, Vec<String>>,
     /// A page is being read.
     reading: bool,
     /// When the last read ended.
@@ -309,9 +313,17 @@ impl Scheduler {
                 }
             }
             PreviewCommand::Locate(urls) => self.urls.extend(urls),
-            PreviewCommand::ReadBandcamp { job, page, skip } => {
+            PreviewCommand::ReadBandcamp {
+                job,
+                page,
+                skip,
+                only,
+            } => {
                 if !skip.is_empty() {
                     self.skips.insert(job, skip.into_iter().collect());
+                }
+                if !only.is_empty() {
+                    self.onlys.insert(job, only);
                 }
                 self.reads.push_back((job, page));
             }
@@ -441,6 +453,9 @@ impl Scheduler {
                 self.answered(Source::Bandcamp);
                 if let Some(skip) = self.skips.remove(&job) {
                     urls.retain(|u| !skip.contains(u));
+                }
+                if let Some(only) = self.onlys.remove(&job) {
+                    urls.retain(|u| crate::bandcamp::album_matches(u, &only));
                 }
                 self.events.push(PreviewEvent::BandcampListed {
                     job,
@@ -840,6 +855,7 @@ impl PreviewHandle {
             urls: HashMap::new(),
             reads: VecDeque::new(),
             skips: HashMap::new(),
+            onlys: HashMap::new(),
             reading: false,
             last_read: None,
         };
@@ -949,6 +965,7 @@ mod tests {
             urls: HashMap::new(),
             reads: VecDeque::new(),
             skips: HashMap::new(),
+            onlys: HashMap::new(),
             reading: false,
             last_read: None,
         }
