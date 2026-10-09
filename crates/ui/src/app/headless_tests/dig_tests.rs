@@ -2023,6 +2023,173 @@ fn refresh_label_brings_only_whats_new_and_says_so() {
 }
 
 #[test]
+fn download_all_tracks_fills_the_cache_behind_what_plays() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-download", &fakes, |_| {});
+    let playing = play_release(&mut rig);
+    let c = followed_label(&mut rig);
+    rig.app.show_crate(playing);
+    let ctx = rig.ctx.clone();
+    rig.app
+        .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
+    assert!(rig.app.label_download().is_some_and(|(d, _, _)| d == c));
+    rig.until(
+        |r| r.app.label_download().is_none(),
+        "every preview of the label is downloaded",
+    );
+    let total = rig.app.crates.get(c).unwrap().len();
+    assert!(
+        message(&rig).starts_with(&format!(
+            "Label: Lowtide Tapes: all {total} tracks downloaded"
+        )),
+        "{}",
+        message(&rig)
+    );
+    assert!(
+        rig.app
+            .crates
+            .get(c)
+            .unwrap()
+            .entries()
+            .iter()
+            .all(|e| !matches!(e.status, EntryStatus::Waiting(_))),
+        "nothing left waiting"
+    );
+    assert_eq!(rig.app.crates.playing_id(), playing, "playback carried on");
+}
+
+#[test]
+fn a_window_shows_the_progress_and_stops_it_at_any_moment() {
+    let mut fakes = Fakes::new();
+    // Slow downloads: there is time to look and to stop.
+    fakes.fetcher = Arc::new({
+        let mut f = FakeFetcher::new(fixture("tone.m4a"));
+        f.delay = Duration::from_millis(300);
+        f
+    });
+    let mut rig = rig("dig-label-window", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let ctx = rig.ctx.clone();
+    rig.app
+        .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    let items = text_list(&out);
+    assert!(
+        items.iter().any(|t| t == "Download all tracks"),
+        "{items:?}"
+    );
+    assert!(
+        items.iter().any(|t| t == "Label: Lowtide Tapes"),
+        "{items:?}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|t| t.ends_with(" tracks") && t.contains(" of ")),
+        "a progress bar: {items:?}"
+    );
+    rig.click_text("Stop");
+    assert!(rig.app.label_download().is_none(), "stopped");
+    assert!(message(&rig).contains("stopped"), "{}", message(&rig));
+    assert!(!shows(&rig.frame(Vec::new()), "Download all tracks"));
+}
+
+#[test]
+fn a_full_cache_pauses_and_the_window_asks_to_raise_it() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-full", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let ctx = rig.ctx.clone();
+    rig.app.dig.as_mut().unwrap().settings.cache_gb = 2.0;
+    rig.app
+        .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
+    // Hidden, then the cache fills: the window comes back to ask.
+    rig.app
+        .dig
+        .as_mut()
+        .unwrap()
+        .downloading
+        .as_mut()
+        .unwrap()
+        .shown = false;
+    rig.app
+        .dig_preview_event(::dig::preview::scheduler::PreviewEvent::CacheFull);
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out)
+            .iter()
+            .any(|t| t.starts_with("Paused: the preview cache (2 GB) is full")),
+        "{:?}",
+        text_list(&out)
+    );
+    rig.click_text("Raise cache to 4 GB");
+    assert_eq!(rig.app.dig.as_ref().unwrap().settings.cache_gb, 4.0);
+    assert!(rig.app.label_download().is_some(), "goes on");
+    let out = rig.frame(Vec::new());
+    assert!(!text_list(&out).iter().any(|t| t.starts_with("Paused")));
+}
+
+#[test]
+fn a_label_crates_menu_offers_download_then_stop() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-label-dl-menu", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    rig.app.settings.playlist_width = 700;
+    let open_menu = |rig: &mut Rig| {
+        rig.frame(Vec::new());
+        let out = rig.frame(Vec::new());
+        let at = texts(&out)
+            .into_iter()
+            .find(|t| t.text == "Label: Lowtide Tapes")
+            .unwrap()
+            .rect
+            .center();
+        rig.click_with(at, PointerButton::Secondary);
+        text_list(&rig.frame(Vec::new()))
+    };
+    let items = open_menu(&mut rig);
+    assert!(
+        items.iter().any(|t| t == "Download all tracks"),
+        "{items:?}"
+    );
+    rig.click_text("Download all tracks");
+    assert!(rig.app.label_download().is_some_and(|(d, _, _)| d == c));
+    let items = open_menu(&mut rig);
+    assert!(
+        items.iter().any(|t| t.starts_with("Downloading (")),
+        "{items:?}"
+    );
+    // Closing the window hides it; the menu shows it again.
+    rig.app
+        .dig
+        .as_mut()
+        .unwrap()
+        .downloading
+        .as_mut()
+        .unwrap()
+        .shown = false;
+    let at = texts(&rig.frame(Vec::new()))
+        .into_iter()
+        .find(|t| t.text.starts_with("Downloading ("))
+        .unwrap()
+        .rect
+        .center();
+    rig.click(at);
+    assert!(
+        rig.app
+            .dig
+            .as_ref()
+            .unwrap()
+            .downloading
+            .as_ref()
+            .unwrap()
+            .shown
+    );
+}
+
+#[test]
 fn a_label_crate_takes_and_loses_nothing_by_hand_but_pass_dims() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-label-locked", &fakes, |_| {});

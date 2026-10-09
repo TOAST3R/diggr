@@ -136,6 +136,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  Discogs collection is pinned at the bottom",
             ),
             (
+                "LABELS (sidebar): right-click a label",
+                "Delete label…, Export to crate, Refresh label, Download all tracks; a label \
+                 crate fills only from its label (N passes a track)",
+            ),
+            (
                 "TOP SELLERS (sidebar): click / double-click a seller",
                 "show its crate / dig it (once a day refreshes it); right-click: Add seller…, \
                  Refresh, Narrow down, Remove",

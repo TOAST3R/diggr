@@ -4612,6 +4612,36 @@ impl DiggrApp {
                 actions.push(Action::Dig(DigAction::RefreshLabel(c)));
                 ui.close();
             }
+            match self.label_download() {
+                Some((d, done, total)) if d == c => {
+                    if ui
+                        .button(format!("Downloading ({done} of {total})…"))
+                        .on_hover_text("Show its progress, and Stop")
+                        .clicked()
+                    {
+                        actions.push(Action::Dig(DigAction::ShowDownload));
+                        ui.close();
+                    }
+                }
+                other => {
+                    let tip = match other {
+                        Some(_) => {
+                            "Downloads every preview of this label (stops the other label's)"
+                        }
+                        None => {
+                            "Downloads every preview of this label to the cache, in the background"
+                        }
+                    };
+                    if ui
+                        .button("Download all tracks")
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        actions.push(Action::Dig(DigAction::DownloadLabel(c)));
+                        ui.close();
+                    }
+                }
+            }
         }
     }
 

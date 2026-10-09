@@ -12,6 +12,8 @@ On Discogs release, master release, artist, label, wantlist, collection, list an
 
 On a seller's page (`/seller/‹name›/profile`, `/seller/‹name›`, or `/user/‹name›` with no further path), the button SHALL be shown the same way, and its menu SHALL offer only Add seller to ‹App›. Choosing it SHALL send the page to the app, which adds or refreshes that seller (see `seller-crates`).
 
+On a label's page, the button's menu SHALL offer only ‹App›: Send label. Choosing it SHALL send the page to the app, which follows that label, or refreshes it when it is already followed (see `label-crates`).
+
 New crate… SHALL open a field in the menu holding a suggested name, taken from the page's title, as editable text; Enter or Create SHALL send:
 - for a release, master release or listing, "Artist - Title";
 - for an artist, label or list, its name;
@@ -23,8 +25,12 @@ The suggestion SHALL leave out Discogs' name-variant asterisks and disambiguatio
 On other Discogs pages, no button SHALL be shown. The button SHALL follow Discogs' in-page navigation, appearing and disappearing as the address changes.
 
 #### Scenario: Label page
-- **WHEN** the user opens a Discogs label page while the app is running and paired, and chooses Enqueue in ‹App›
-- **THEN** the label's tracks are added to the app's shown crate
+- **WHEN** the user opens a Discogs label page while the app is running and paired
+- **THEN** the button's menu offers only ‹App›: Send label, and choosing it follows the label in the app without changing its shown crate
+
+#### Scenario: Followed label
+- **WHEN** the user opens the page of a label the app already follows and chooses ‹App›: Send label
+- **THEN** the label's crate is refreshed, and no second crate is made
 
 #### Scenario: Send to a new crate
 - **WHEN** the user chooses Send to crate, then New crate…, and enters "Friday"
@@ -51,15 +57,19 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 - **THEN** no button is shown
 
 #### Scenario: No vinyl only switch
-- **WHEN** the user opens the button's menu on a label page
+- **WHEN** the user opens the button's menu on an artist page
 - **THEN** it offers the skip passed switch and no vinyl only switch
 
 ### Requirement: Links anywhere
-Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›.
+Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›, except a link to a label's page, which SHALL offer only ‹App›: Send label.
 
 #### Scenario: Forum link
 - **WHEN** the user right-clicks a Discogs release link in a forum post and chooses Enqueue in ‹App›
 - **THEN** the release's tracks are added to the app's shown crate
+
+#### Scenario: Label link
+- **WHEN** the user right-clicks a Discogs label link in a forum post
+- **THEN** the menu offers only ‹App›: Send label, and choosing it follows the label in the app
 
 ### Requirement: Feedback
 After a send from a Discogs page, the page SHALL show, for 3 s, a confirmation naming the page and the crate. After a send from a link on another site, the extension's toolbar button SHALL show a mark for 3 s: success or failure. Clicking the toolbar button SHALL show whether the app is running and paired, what is playing, and sends in progress. When the app isn't running, the extension isn't paired, or the page isn't supported, the extension SHALL say so and how to fix it.

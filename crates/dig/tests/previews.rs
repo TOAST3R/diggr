@@ -403,3 +403,83 @@ fn the_real_search_finds_hidden_soul_ep() {
     }
     assert!(found > 0, "at least one track of the EP found");
 }
+
+// ---- Download all tracks: the background list ------------------------------------------------
+
+fn background(h: &PreviewHandle, clips: &[String]) {
+    h.send(PreviewCommand::Background(clips.to_vec()));
+}
+
+#[test]
+fn background_clips_take_the_slots_the_horizon_leaves() {
+    let fake = Arc::new({
+        let mut f = FakeFetcher::new(fixture());
+        f.delay = Duration::from_millis(60);
+        f
+    });
+    let (h, d) = start("background", &fake, |_| {});
+    let horizon: Vec<String> = (0..2).map(clip).collect();
+    let rest: Vec<String> = (10..14).map(clip).collect();
+    want(&h, &horizon);
+    background(&h, &rest);
+    until(&h, |ev| done_count(ev) == 6);
+    let started = fake.started();
+    let mut first: Vec<String> = started[..2].to_vec();
+    first.sort();
+    assert_eq!(first, horizon, "the horizon first: {started:?}");
+    for c in horizon.iter().chain(&rest) {
+        assert!(d.join(format!("{c}.m4a")).exists());
+    }
+    // A new horizon doesn't cancel the background list.
+    background(&h, &(20..24).map(clip).collect::<Vec<_>>());
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Progress(c, _) if *c == clip(20)))
+    });
+    want(&h, &[clip(1)]);
+    until(&h, |ev| done_count(ev) == 4);
+}
+
+#[test]
+fn a_full_cache_pauses_the_background_list_instead_of_evicting() {
+    let size = std::fs::metadata(fixture()).unwrap().len();
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    // Room for two and a half previews.
+    let (h, d) = start("bg-full", &fake, |cfg| cfg.limit = size * 5 / 2);
+    let clips: Vec<String> = (0..5).map(clip).collect();
+    background(&h, &clips);
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::CacheFull));
+    assert!(
+        !ev.iter().any(|e| matches!(e, PreviewEvent::Evicted(_))),
+        "nothing deleted: {ev:?}"
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    // Two download at once: the cache may end one preview past its limit, never more.
+    let downloaded = fake.started().len();
+    assert!((3..=4).contains(&downloaded), "{downloaded}");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fake.started().len(), downloaded, "paused");
+    // A larger cache resumes it.
+    h.send(PreviewCommand::SetLimit(size * 100));
+    let all_there = || clips.iter().all(|c| d.join(format!("{c}.m4a")).exists());
+    until(&h, |_| all_there());
+}
+
+#[test]
+fn an_empty_background_list_stops_it() {
+    let fake = Arc::new({
+        let mut f = FakeFetcher::new(fixture());
+        f.delay = Duration::from_millis(80);
+        f
+    });
+    let (h, d) = start("bg-stop", &fake, |_| {});
+    let clips: Vec<String> = (0..6).map(clip).collect();
+    background(&h, &clips);
+    until(&h, |ev| {
+        ev.iter().any(|e| matches!(e, PreviewEvent::Progress(..)))
+    });
+    background(&h, &[]);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(fake.started().len(), 2, "only the two that had started");
+    assert!(!d.join(format!("{}.m4a", clip(5))).exists());
+}

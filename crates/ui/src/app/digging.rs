@@ -134,6 +134,12 @@ pub enum DigAction {
     RefreshWantlist,
     /// Send a label crate's label page into it again: only what's new comes in.
     RefreshLabel(CrateId),
+    /// Download all tracks: every preview of a label crate, in the background.
+    DownloadLabel(CrateId),
+    /// Stop downloading the label crate's previews.
+    StopDownload,
+    /// Show Download all tracks' window again.
+    ShowDownload,
     Pass(EntryId),
     UndoPass(EntryId),
     OpenForSale(EntryId),
@@ -267,6 +273,8 @@ pub(super) struct Dig {
     refreshing_wantlist: bool,
     /// Label crates being refreshed, with the records they held before, for the summary.
     label_refresh: HashMap<CrateId, HashSet<u64>>,
+    /// Download all tracks, while it runs.
+    pub(super) downloading: Option<LabelDownload>,
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
@@ -380,6 +388,7 @@ impl Dig {
             refreshing_collection: false,
             refreshing_wantlist: false,
             label_refresh: HashMap::new(),
+            downloading: None,
             quiet: HashSet::new(),
             fail_streak: 0,
             play_when_ready: None,
@@ -816,6 +825,47 @@ pub(super) fn key_of(e: &Entry) -> String {
         .unwrap_or_else(|| e.track.0.clone())
 }
 
+/// Download all tracks: the label crate being downloaded, the background list last sent, the
+/// cache size it filled up at (paused until a larger one), and whether its window shows.
+pub(super) struct LabelDownload {
+    crate_id: CrateId,
+    sent: Vec<String>,
+    full: Option<f32>,
+    pub(super) shown: bool,
+}
+
+/// Download all tracks' progress in a crate: its Discogs tracks ready, given up on (no clip,
+/// failed) and still waiting.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DownloadCounts {
+    ready: usize,
+    skipped: usize,
+    waiting: usize,
+}
+
+/// The counts, and the number of tracks in all.
+fn download_counts(p: &crate::playlist::Playlist) -> (DownloadCounts, usize) {
+    let mut n = DownloadCounts::default();
+    for e in p.entries().iter().filter(|e| e.origin.is_some()) {
+        match e.status {
+            EntryStatus::Waiting(_) => n.waiting += 1,
+            EntryStatus::Unavailable(_) | EntryStatus::Failed => n.skipped += 1,
+            EntryStatus::Pending | EntryStatus::Ready => n.ready += 1,
+        }
+    }
+    let total = n.ready + n.skipped + n.waiting;
+    (n, total)
+}
+
+/// "2 GB", "500 MB".
+fn gb_label(gb: f32) -> String {
+    if gb >= 1.0 {
+        format!("{} GB", (gb * 10.0).round() / 10.0)
+    } else {
+        format!("{} MB", (gb * 1000.0).round())
+    }
+}
+
 fn clip_of(e: &Entry) -> Option<&str> {
     e.source.as_ref()?;
     e.origin.as_ref()?.clip.as_deref()
@@ -1087,6 +1137,182 @@ impl DiggrApp {
             d.label_refresh.insert(c, before);
         }
         self.dig_follow_label(Page::new(url::PageKind::Label(label)), label);
+    }
+
+    /// Download all tracks, each frame: how far it got, its end, and what to ask the preview
+    /// worker for. Adds the label crate's tracks to find to `searches` and returns its clips in
+    /// order (`None` when nothing is being downloaded).
+    fn dig_download_step(&mut self, searches: &mut Vec<SearchRequest>) -> Option<Vec<String>> {
+        let c = self.dig.as_ref()?.downloading.as_ref()?.crate_id;
+        let Some(p) = self.crates.get(c) else {
+            self.dig_stop_download();
+            return None;
+        };
+        let (done, total) = download_counts(p);
+        let filling = self
+            .dig
+            .as_ref()
+            .is_some_and(|d| d.jobs.values().any(|j| j.target == c));
+        if done.waiting == 0 && !filling {
+            let name = self.crates.name(c).to_owned();
+            let mut text = format!("{name}: all {total} tracks downloaded");
+            if done.skipped > 0 {
+                text += &format!(" ({} without a preview)", done.skipped);
+            }
+            self.dig_stop_download();
+            self.notify(text);
+            return None;
+        }
+        let mut clips: Vec<String> = Vec::new();
+        for e in p.entries() {
+            if let Some(clip) = clip_of(e)
+                && matches!(e.status, EntryStatus::Waiting(_))
+                && !clips.iter().any(|x| x == clip)
+            {
+                clips.push(clip.to_owned());
+            }
+            if e.status == EntryStatus::Waiting(WaitKind::Search)
+                && let Some(o) = &e.origin
+                && !o.search_key.is_empty()
+                && !searches.iter().any(|r| r.key == o.search_key)
+            {
+                searches.push(SearchRequest {
+                    key: o.search_key.clone(),
+                    artist: e.artist.clone(),
+                    record_artist: o.artist.clone(),
+                    title: e.title.clone(),
+                    duration: e.duration,
+                });
+            }
+        }
+        Some(clips)
+    }
+
+    /// Ends Download all tracks: nothing more starts; what's downloaded stays.
+    pub(super) fn dig_stop_download(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        if d.downloading.take().is_some() {
+            d.preview(PreviewCommand::Background(Vec::new()));
+        }
+    }
+
+    /// The label crate being downloaded, with how many of its tracks are done and in all.
+    pub(super) fn label_download(&self) -> Option<(CrateId, usize, usize)> {
+        let c = self.dig.as_ref()?.downloading.as_ref()?.crate_id;
+        let (done, total) = download_counts(self.crates.get(c)?);
+        Some((c, done.ready + done.skipped, total))
+    }
+
+    /// Download all tracks' window: the label, how far it got, what downloads now, and Stop at
+    /// any moment. When the cache is full it asks to raise it. Closing it only hides it: the
+    /// label's menu shows it again.
+    fn dig_download_ui(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.dig else { return };
+        let gb = d.settings.cache_gb;
+        let Some(dl) = d.downloading.as_mut() else {
+            return;
+        };
+        // A larger cache set in Options › Discogs… resumes it too.
+        if dl.full.is_some_and(|at| gb > at) {
+            dl.full = None;
+        }
+        if !dl.shown {
+            return;
+        }
+        let full = dl.full.is_some();
+        let c = dl.crate_id;
+        let Some(p) = self.crates.get(c) else { return };
+        let (counts, total) = download_counts(p);
+        let now: Vec<(String, u8)> = p
+            .entries()
+            .iter()
+            .filter_map(|e| match e.status {
+                EntryStatus::Waiting(WaitKind::Downloading(pct)) => Some((e.display_name(), pct)),
+                _ => None,
+            })
+            .collect();
+        let searching = p
+            .entries()
+            .iter()
+            .filter(|e| e.status == EntryStatus::Waiting(WaitKind::Search))
+            .count();
+        let name = self.crates.name(c).to_owned();
+        let done = counts.ready + counts.skipped;
+        let (mut open, mut raise, mut stop, mut options) = (true, false, false, false);
+        egui::Window::new("Download all tracks")
+            .id(egui::Id::new("label-download"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                ui.strong(&name);
+                let part = if total == 0 {
+                    0.0
+                } else {
+                    done as f32 / total as f32
+                };
+                ui.add(egui::ProgressBar::new(part).text(format!("{done} of {total} tracks")));
+                if full {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 170, 60),
+                        format!(
+                            "Paused: the preview cache ({}) is full. Nothing else is deleted \
+                             to make room.",
+                            gb_label(gb)
+                        ),
+                    );
+                } else if now.is_empty() && searching > 0 {
+                    ui.weak(format!("Searching for {searching} tracks with no clip…"));
+                } else if now.is_empty() {
+                    ui.weak("Waiting for what's playing to download first…");
+                }
+                for (track, pct) in &now {
+                    ui.label(format!("{track}  {pct}%"));
+                }
+                if counts.skipped > 0 {
+                    ui.weak(format!("{} without a preview", counts.skipped));
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if full {
+                        raise = ui
+                            .button(format!("Raise cache to {}", gb_label(gb * 2.0)))
+                            .clicked();
+                    }
+                    stop = ui.button("Stop").clicked();
+                    if full {
+                        options = ui.link("Options › Discogs…").clicked();
+                    }
+                });
+            });
+        let Some(d) = &mut self.dig else { return };
+        if raise {
+            d.settings.cache_gb = (gb * 2.0).min(1000.0);
+            let err = d.save_settings();
+            let bytes = d.settings.cache_bytes();
+            d.preview(PreviewCommand::SetLimit(bytes));
+            if let Some(dl) = &mut d.downloading {
+                dl.full = None;
+            }
+            self.dig_notify(err);
+        } else if stop {
+            self.dig_stop_download();
+            self.notify(format!(
+                "{name}: stopped, {done} of {total} tracks downloaded"
+            ));
+        } else if options {
+            self.dig_open_dialog();
+        } else if !open && let Some(dl) = &mut d.downloading {
+            dl.shown = false;
+        }
+    }
+
+    /// Shows Download all tracks' window again.
+    pub(super) fn dig_show_download(&mut self) {
+        if let Some(dl) = self.dig.as_mut().and_then(|d| d.downloading.as_mut()) {
+            dl.shown = true;
+        }
     }
 
     /// Whether Refresh label is running for crate `c`.
@@ -1975,7 +2201,7 @@ impl DiggrApp {
         self.mark_crate(c);
     }
 
-    fn dig_preview_event(&mut self, e: PreviewEvent) {
+    pub(super) fn dig_preview_event(&mut self, e: PreviewEvent) {
         match e {
             PreviewEvent::Found {
                 key,
@@ -2064,6 +2290,15 @@ impl DiggrApp {
                         p.set_waiting(id, WaitKind::Queued);
                     }
                 });
+            }
+            PreviewEvent::CacheFull => {
+                let Some(d) = &mut self.dig else { return };
+                let gb = d.settings.cache_gb;
+                if let Some(dl) = &mut d.downloading {
+                    // The window comes back to ask.
+                    dl.full = Some(gb);
+                    dl.shown = true;
+                }
             }
             PreviewEvent::NeedsYtDlp => {
                 let Some(d) = &mut self.dig else { return };
@@ -2214,10 +2449,22 @@ impl DiggrApp {
                 .score
                 .as_ref()
                 .is_some_and(|s| s.complete || s.downbeats.len() >= 32);
+        // Download all tracks: the label crate's tracks to find come after the window's, and
+        // its clips go to the background list.
+        let mut searches = searches;
+        let background = self.dig_download_step(&mut searches);
         let Some(d) = &mut self.dig else { return };
         if searches != d.searching {
             d.preview(PreviewCommand::Search(searches.clone()));
             d.searching = searches;
+        }
+        if let (Some(list), Some(dl)) = (background, d.downloading.as_mut())
+            && list != dl.sent
+        {
+            dl.sent = list.clone();
+            if let Some(p) = &d.previews {
+                p.send(PreviewCommand::Background(list));
+            }
         }
         if let Some(pr) = &d.prepare {
             pr.set_gate(gate);
@@ -2473,6 +2720,18 @@ impl DiggrApp {
                 d.sync_collection();
             }
             DigAction::RefreshLabel(c) => self.dig_refresh_label(c),
+            DigAction::DownloadLabel(c) => {
+                if let Some(d) = &mut self.dig {
+                    d.downloading = Some(LabelDownload {
+                        crate_id: c,
+                        sent: Vec::new(),
+                        full: None,
+                        shown: true,
+                    });
+                }
+            }
+            DigAction::StopDownload => self.dig_stop_download(),
+            DigAction::ShowDownload => self.dig_show_download(),
             DigAction::RefreshWantlist => {
                 let Some(d) = &mut self.dig else { return };
                 if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {
@@ -3632,6 +3891,7 @@ impl DiggrApp {
 
     pub(super) fn dig_dialog_ui(&mut self, ctx: &egui::Context) {
         self.dig_connect_ui(ctx);
+        self.dig_download_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };

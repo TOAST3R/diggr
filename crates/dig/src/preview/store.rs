@@ -23,6 +23,19 @@ pub fn touch(path: &Path) {
     }
 }
 
+/// The bytes the previews in `dir` take.
+pub fn total_size(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|read| {
+            read.flatten()
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
 /// Deletes the least recently played previews until the folder fits in `limit` bytes, never
 /// one whose clip is in `protected`. Returns the deleted files.
 pub fn enforce_limit(dir: &Path, limit: u64, protected: &HashSet<String>) -> Vec<PathBuf> {
