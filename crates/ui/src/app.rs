@@ -4035,7 +4035,22 @@ impl DiggrApp {
                 let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
-                    let details = format::entry_details(e, marks.clone(), unix_now());
+                    let mut details = format::entry_details(e, marks.clone(), unix_now());
+                    // While YouTube limits requests, what waits for it says so.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if self.youtube_limited()
+                        && matches!(
+                            e.status,
+                            EntryStatus::Waiting(
+                                crate::playlist::WaitKind::Queued
+                                    | crate::playlist::WaitKind::Search
+                                    | crate::playlist::WaitKind::Downloading(_)
+                            )
+                        )
+                        && let Some((_, status)) = details.iter_mut().find(|(k, _)| *k == "Status")
+                    {
+                        *status += " · waiting for YouTube";
+                    }
                     // Only what's in memory: the cover worker reads files and fetches.
                     #[cfg(not(target_arch = "wasm32"))]
                     let cover = self.dig.as_mut().and_then(|d| d.covers.slot(ui.ctx(), e));
@@ -4610,6 +4625,20 @@ impl DiggrApp {
                 .clicked()
             {
                 actions.push(Action::Dig(DigAction::RefreshLabel(c)));
+                ui.close();
+            }
+            let failed = self.retryable(c).0.len();
+            if failed > 0
+                && self.label_download().is_none_or(|(d, _, _)| d != c)
+                && ui
+                    .button(format!("Retry failed tracks ({failed})"))
+                    .on_hover_text(
+                        "Download the \"clip failed\" tracks again and search the \"not found\" \
+                         ones again",
+                    )
+                    .clicked()
+            {
+                actions.push(Action::Dig(DigAction::RetryFailed(c)));
                 ui.close();
             }
             match self.label_download() {

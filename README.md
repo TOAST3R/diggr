@@ -444,6 +444,15 @@ grouped by record. Click the heading to fold or unfold it.
     **Downloading (N of M)…** and shows it again. It never deletes other previews: when the cache
     is full it pauses, and the window asks to **Raise cache** to twice its size or stop. At the
     end the main window says "Label: Siesta Records: all 40 tracks downloaded".
+  - **Retry failed tracks (N)**: downloads the "clip failed" tracks again and searches the
+    "not found" ones again, forgetting that they weren't found. It runs as Download all tracks,
+    whose window also offers **Retry failed (N)**. "No clip" and "already in crate" tracks
+    aren't retried: nothing on YouTube can change them.
+- **When YouTube limits requests** (too many, or "confirm you're not a bot", which can happen
+  on a big label), nothing is marked failed. Downloads and searches pause, and try again after
+  10 minutes, then 20, 40 and at most 60, back to 10 once YouTube answers. The main window says
+  so once, waiting tracks say "waiting for YouTube" in their tooltip, and Download all tracks'
+  window shows the pause with **Try now**. Previews already downloaded keep playing.
 
 ### Top Sellers
 
@@ -918,7 +927,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 770 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 778 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -968,7 +977,8 @@ What's covered:
     Move to Labels, the LABELS group and its fold, the label crate menu, Export to crate,
     Delete label, Refresh label's summary, a label sent from the browser (followed, then
     refreshed, nothing doubled), and Download all tracks (all downloaded behind what plays,
-    its progress window and Stop, the cache-full question, the menu showing the window again);
+    its progress window and Stop, the cache-full question, the menu showing the window again,
+    a limited YouTube pausing it with Try now, and Retry failed tracks);
   - repaint policy;
   - headless egui click/drag tests of the skinned widgets;
   - the whole player driven headlessly against `ManualSink`: switching crates leaves playback
@@ -1000,7 +1010,9 @@ What's covered:
   The preview scheduler runs against a fake yt-dlp: the horizon, 2 slots, the armed entry
   first, cancelling, retries, the timeout, yt-dlp appearing later, the cache limit, and the
   background list of Download all tracks (after the horizon, paused instead of evicting,
-  resumed by a larger cache, stopped by an empty list). Also
+  resumed by a larger cache, stopped by an empty list), YouTube limiting (yt-dlp's 429 and
+  bot-check errors told apart from a broken video, nothing failed, waits of 10, 20, 40 and
+  60 min, Try now) and Retry (given-up clips and not-found searches tried again). Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
   - a pasted release filling the crate with playable previews;

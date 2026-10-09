@@ -483,3 +483,125 @@ fn an_empty_background_list_stops_it() {
     assert_eq!(fake.started().len(), 2, "only the two that had started");
     assert!(!d.join(format!("{}.m4a", clip(5))).exists());
 }
+
+// ---- YouTube limiting requests ------------------------------------------------------------------
+
+fn limited_events(ev: &[PreviewEvent]) -> usize {
+    ev.iter()
+        .filter(|e| matches!(e, PreviewEvent::Limited { .. }))
+        .count()
+}
+
+#[test]
+fn a_limited_youtube_pauses_everything_and_fails_nothing() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.limited.store(true, Ordering::SeqCst);
+    let (h, d) = start("limited", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_millis(400)
+    });
+    let wanted: Vec<String> = (0..3).map(clip).collect();
+    want(&h, &wanted);
+    let ev = until(&h, |ev| limited_events(ev) == 1);
+    assert!(
+        !ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..))),
+        "not a failure: {ev:?}"
+    );
+    // Within the wait, nothing more starts.
+    let tried = fake.started().len();
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fake.started().len(), tried, "waiting");
+    // After it, YouTube answers again: everything downloads, and the wait is over.
+    fake.limited.store(false, Ordering::SeqCst);
+    let ev = until(&h, |ev| done_count(ev) == 3);
+    assert!(ev.contains(&PreviewEvent::Unlimited), "{ev:?}");
+    for c in &wanted {
+        assert!(d.join(format!("{c}.m4a")).exists());
+    }
+}
+
+#[test]
+fn try_now_ends_the_wait() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.limited.store(true, Ordering::SeqCst);
+    // A wait far longer than the test.
+    let (h, _) = start("try-now", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_secs(600)
+    });
+    want(&h, &[clip(1)]);
+    until(&h, |ev| limited_events(ev) == 1);
+    fake.limited.store(false, Ordering::SeqCst);
+    h.send(PreviewCommand::TryNow);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::Unlimited));
+}
+
+#[test]
+fn a_limited_search_is_not_remembered_as_not_found() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.answer(
+        "The 89th Passenger Paper Wings",
+        vec![upload("paperwings1", "Paper Wings", 292.0)],
+    );
+    fake.limited.store(true, Ordering::SeqCst);
+    let (h, _) = start("limited-search", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_secs(600)
+    });
+    let req = track("track/89th/paper wings", "Paper Wings", 292.0);
+    h.send(PreviewCommand::Search(vec![req]));
+    let ev = until(&h, |ev| limited_events(ev) == 1);
+    assert_eq!(answers(&ev), 0, "neither found nor not found: {ev:?}");
+    fake.limited.store(false, Ordering::SeqCst);
+    h.send(PreviewCommand::TryNow);
+    let ev = until(&h, |ev| answers(ev) == 1);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Found { clip, .. } if clip == "paperwings1")),
+        "searched again after the wait: {ev:?}"
+    );
+}
+
+#[test]
+fn retry_tries_given_up_clips_and_not_found_searches_again() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.fail(&clip(7), 2);
+    let (h, d) = start("retry", &fake, |_| {});
+    want(&h, &[clip(7)]);
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Failed(c, _) if *c == clip(7)))
+    });
+    // Given up: wanting it again does nothing, until Retry.
+    want(&h, &[clip(7)]);
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fake.started().len(), 2);
+    h.send(PreviewCommand::Retry {
+        clips: vec![clip(7)],
+        searches: Vec::new(),
+    });
+    want(&h, &[]);
+    want(&h, &[clip(7)]);
+    until(&h, |ev| done_count(ev) == 1);
+    assert!(d.join(format!("{}.m4a", clip(7))).exists());
+
+    // Not found, remembered; found once YouTube has it and the search is retried.
+    let req = track("track/89th/hidden soul", "Hidden Soul", 300.0);
+    h.send(PreviewCommand::Search(vec![req.clone()]));
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::NotFound { .. }))
+    });
+    fake.answer(
+        "The 89th Passenger Hidden Soul",
+        vec![upload("hiddensoul1", "Hidden Soul", 300.0)],
+    );
+    h.send(PreviewCommand::Search(Vec::new()));
+    h.send(PreviewCommand::Retry {
+        clips: Vec::new(),
+        searches: vec![req.clone()],
+    });
+    h.send(PreviewCommand::Search(vec![req]));
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Found { clip, .. } if clip == "hiddensoul1"))
+    });
+}

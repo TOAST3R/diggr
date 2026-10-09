@@ -236,6 +236,14 @@ impl Searches {
             .or_else(|| self.results.get(&req.key).filter(|r| r.fresh(now)))
     }
 
+    /// Forgets what was found (or not) for `req`: its track at that length, and its old key.
+    pub fn forget(&mut self, req: &SearchRequest) {
+        if let Some(v) = self.tracks.get_mut(&track_key(&req.artist, &req.title)) {
+            v.retain(|old| !same_length(req.duration, old.duration()));
+        }
+        self.results.remove(&req.key);
+    }
+
     /// Remembers `r` for `req`'s track, replacing what was known for the same length.
     pub fn put(&mut self, req: &SearchRequest, r: Remembered) {
         let v = self
