@@ -419,3 +419,23 @@ fn a_discogs_label_followed_after_its_bandcamp_joins_that_crate() {
     assert_eq!(rig.app.crates.bandcamp_of(c), Some("lowtidetapes"));
     assert_eq!(rig.app.crates.labels().count(), 1);
 }
+
+#[test]
+fn bandcamp_albums_group_into_records_like_discogs_releases() {
+    let fakes = Fakes::new();
+    let mut rig = rig("bc-records", &fakes);
+    bridge_send(&mut rig, &format!("{ROOT}/music"), None);
+    let c = rig.app.crates.find_bandcamp("analogicalforce").unwrap();
+    reading_done(&mut rig, c);
+    assert!(rig.app.crates.is_grouped(c));
+    let p = rig.app.crates.get(c).unwrap();
+    // AF070's three tracks and AF012's one: two records.
+    assert_eq!(crate::crates::count_records(p), 2);
+    let keys: Vec<_> = p.entries().iter().map(|e| e.album_key()).collect();
+    assert!(keys.iter().all(Option::is_some), "{keys:?}");
+    assert_eq!(keys[0], keys[1]);
+    // Its record row's cover comes from Bandcamp's image host, keyed by the album's art.
+    let (key, url) = crate::app::covers::cover_of(&p.entries()[0]).expect("a cover");
+    assert_eq!(key, ::dig::cover::CoverKey::BandcampArt(161524395));
+    assert!(::dig::cover::allowed(url));
+}

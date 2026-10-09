@@ -389,6 +389,10 @@ impl Entry {
             Some(o) => match (o.release, o.master) {
                 (Some(r), _) => Some(AlbumKey::Release(r)),
                 (None, Some(m)) => Some(AlbumKey::Master(m)),
+                // From Bandcamp only: its album's page.
+                _ if !o.bandcamp.is_empty() && !o.page.is_empty() => {
+                    Some(AlbumKey::Bandcamp(o.page.clone()))
+                }
                 _ => None,
             },
             None if self.album.trim().is_empty() => None,
@@ -464,6 +468,8 @@ pub enum AlbumKey {
     Release(u64),
     /// A master release, for an entry that has no release.
     Master(u64),
+    /// A Bandcamp album's page, for an entry that is on Discogs neither way.
+    Bandcamp(String),
     /// A local file's artist and album tags, lower-cased, so two "Greatest Hits" stay apart.
     Local(String, String),
 }

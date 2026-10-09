@@ -485,6 +485,8 @@ your yt-dlp (nothing is downloaded until a track is about to play):
   whose Bandcamp crate exists joins them the same way. **Refresh label** reads both, and on
   Bandcamp only the albums it hasn't read before. Albums of a followed Bandcamp go to its label
   crate whatever the send's mode.
+- **Records:** a label crate (or any grouped crate) groups Bandcamp tracks by album, as it does
+  Discogs releases, with the album's cover from Bandcamp's image host.
 - **Where the sound comes from:** each row ends with **YT** or **BC** (nothing for a local
   file), and the tooltip says "Source: Bandcamp · ‹album›". An entry with both offers **Play from
   YouTube** or **Play from Bandcamp** in its menu; the choice is kept, and the other preview stays
@@ -978,7 +980,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 816 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 818 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1050,7 +1052,7 @@ What's covered:
   - token checks, wantlist changes, collection adds (one copy, and a checked retry that never
     adds a second), and wanted records found in the collection after a sync;
   - albums and covers from the cache with no request, and covers: fetched once, shrunk,
-    paced to 4 a second, only from Discogs' image hosts, a stale address looked up again.
+    paced to 4 a second, only from Discogs' and Bandcamp's image hosts, a stale address looked up again.
 
   The browser bridge (`crates/dig/tests/bridge.rs`) runs on an ephemeral loopback port:
   pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals
