@@ -1,8 +1,5 @@
-# record-filters Specification
+## MODIFIED Requirements
 
-## Purpose
-Narrows the Discogs wantlist and collection crates by who made a record and who put it out, as diggers look for them: the record's credited artist and first label, picked in searchable lists, combined with the style and BPM filters, reachable from the footer when it has room and from ☰ at any width.
-## Requirements
 ### Requirement: Artist and label filters
 In the user's Discogs wantlist crate and collection crate, the user SHALL be able to filter the crate by the records' artists and by their labels:
 - a record's artist SHALL be its credited artist as Discogs shows it ("Nightcraft", "Various", "Theo Parrish & Marcellus Pittman"), compared exactly, not split into names and not a track's own credit;
@@ -90,15 +87,3 @@ A button SHALL be lit while its filter is set and SHALL then show how many value
 #### Scenario: Seller crate with a cart
 - **WHEN** a seller crate with vinyl and CD records and 3 copies in the cart is shown 500 pixels wide
 - **THEN** the filter bar shows FORMATS, then "CART 3 · €41.20"
-
-### Requirement: Format filter
-In any crate holding entries from Discogs whose records have at least two formats (see `discogs-intake`), the user SHALL be able to filter the crate by format, in a list like the other filters' (each format with its number of records, a search field, checkboxes and Clear). With formats picked, an entry SHALL be shown when its record has any of them; an entry with no known format SHALL be shown only while the filter is off. It SHALL combine with the other filters as "Filters combine" says, and SHALL be remembered per crate across restarts.
-
-#### Scenario: Only vinyl
-- **WHEN** a label crate holds 40 vinyl records and 25 digital-only ones, and the user picks Vinyl
-- **THEN** only the 40 vinyl records are shown, and only their tracks play
-
-#### Scenario: Vinyl and CD
-- **WHEN** a record is on vinyl and CD, and the user picks CD
-- **THEN** that record is shown
-
