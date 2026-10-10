@@ -71,6 +71,10 @@ fn owned_amber() -> [u8; 3] {
     [255, 176, 32]
 }
 
+fn filter_h() -> u16 {
+    16
+}
+
 fn title_gold() -> [u8; 3] {
     [236, 204, 90]
 }
@@ -85,6 +89,9 @@ pub struct SkinDef {
     pub pl_width: u16,
     pub pl_top_h: u16,
     pub pl_bottom_h: u16,
+    /// The filter bar between the title bar and the list.
+    #[serde(default = "filter_h")]
+    pub pl_filter_h: u16,
     pub pl_row_h: u16,
     pub sprites: BTreeMap<String, R>,
     /// Widget rectangles, relative to their section's top-left.
@@ -105,6 +112,12 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "pl_bottom_r",
     "pl_left",
     "pl_right",
+    "pl_filter_l",
+    "pl_filter_fill",
+    "pl_filter_r",
+    "pl_field_l",
+    "pl_field_fill",
+    "pl_field_r",
     "btn_min",
     "btn_min_p",
     "btn_close",
@@ -243,7 +256,6 @@ pub const REQUIRED_LAYOUT: &[&str] = &[
     "pl_plus",
     "pl_menu",
     "pl_opts",
-    "pl_bpm",
     "pl_info",
     "pl_resize",
 ];
@@ -413,6 +425,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.lcd, [0, 236, 0]);
+    }
+
+    #[test]
+    fn a_skin_file_without_a_filter_bar_height_gets_the_default() {
+        let text = ron::to_string(&LoadedSkin::default_skin().def).unwrap();
+        let old = text.replace("pl_filter_h:16,", "");
+        assert_ne!(old, text);
+        assert_eq!(ron::from_str::<SkinDef>(&old).unwrap().pl_filter_h, 16);
     }
 
     #[test]

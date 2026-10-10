@@ -1376,6 +1376,8 @@ fn without_a_token_the_cart_asks_to_connect() {
 fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
     let fakes = Fakes::new();
     let (mut rig, logon) = dug("cart-switch", &fakes);
+    // Wide enough for the switch in the filter bar.
+    rig.app.settings.playlist_width = 500;
     rig.frame(Vec::new());
     assert_eq!(rig.app.cart_drawn, None, "nothing in the cart yet");
     let mut snap = cart_with(&[(11, 1001, "logon", "€9.00")]);
@@ -1398,7 +1400,7 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
         "only the record in the cart"
     );
 
-    // ☰ offers the same switch and the cart's page.
+    // ☰ offers the cart's page.
     rig.click(footer_button(&rig, "pl_menu"));
     rig.click_text("Open cart on discogs.com");
     assert_eq!(
@@ -1411,9 +1413,21 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
             .map(String::as_str),
         Some("https://www.discogs.com/sell/cart")
     );
-    rig.click(footer_button(&rig, "pl_menu"));
-    rig.click_text("Show all records");
+    // The bar's × turns the switch off.
+    rig.click(bar_clear(&rig));
     assert!(!rig.app.crates.get(logon).unwrap().cart_only());
+
+    // At the classic width, beside a BPM control, the switch is in the panel FILTERS opens.
+    for (i, e) in rig.app.crates.shown_mut().entries_mut().enumerate() {
+        e.bpm = Some(120 + i as u16);
+    }
+    rig.app.settings.playlist_width = 275;
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.cart_drawn, None, "no room in the bar");
+    let (x, _) = rig.app.filters_drawn.expect("FILTERS is drawn");
+    rig.click(pos2(PL_LEFT + x + 4.0, BAR_Y));
+    rig.click_text("CART 1 · €9.00");
+    assert!(rig.app.crates.get(logon).unwrap().cart_only());
 }
 
 #[test]

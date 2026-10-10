@@ -145,19 +145,30 @@ and Home/End jump), and Enter plays the entry under it.
     and the title bar's crate menu does the same job.
 - **Playlist window:**
   - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
-    menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Show all
-    tempos, the record filters (see below) and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
+    menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Group by
+    record and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
     Browser…). The "selected/total" time sits on the right, beside the grip;
-  - **BPM filter:** once the crate on screen has two different known tempos, the footer shows
-    `BPM ◂━●━━●━▸ 124-139` between the gear and the time. Drag a handle to keep only the tracks in that
-    range: they're the only ones shown and the only ones played (next, previous, shuffle, and
-    the previews downloaded ahead), while the playing track finishes even if it's hidden.
-    Tracks without a known BPM are hidden while a range is set; the slider's tooltip says how
-    many (and shows the range when the footer is too tight for its text). Entries keep their
-    crate numbers and the title bar reads `NAME · 42/301`. **×** after the range, a
-    double-click on the slider, or ≡ ▸ Show all tempos shows everything again. The range is
-    remembered per crate. `P` on a hidden playing track turns the filter off. Sorting and M3U
-    export always take the whole crate;
+  - **The filter bar**, under the title bar, holds everything that narrows the crate on
+    screen: the search field, the BPM filter, the record filters and the CART switch. It is
+    part of the frame, so it takes no row of the list. **×** at its end clears the search and
+    every filter. Whatever narrows the crate, only what's shown plays (next, previous,
+    shuffle, the previews downloaded ahead), the playing track finishes even if it's hidden,
+    entries keep their crate numbers, and the title bar reads `NAME · 42/301`. `P` on a
+    hidden playing track clears the search and every filter. Sorting and M3U export always
+    take the whole crate;
+  - **Search:** type in the bar's field (**Cmd+F** gets there from the keyboard) and the list
+    narrows as you type to the entries whose artist, title, record, record artist, label or
+    catalog number hold every word, in any order, ignoring case and accents ("ame" finds
+    Âme; "lowtide 012" finds LT-012 on Lowtide Tapes). Matches are lit in the rows. Enter
+    plays the first match, ↓ moves to the list, **Esc** clears the search (the filters stay).
+    Letters typed there never act as shortcuts. The search is forgotten when another crate is
+    shown and on restart;
+  - **BPM filter:** once the crate on screen has two different known tempos, the bar shows
+    `BPM ◂━●━━●━▸ 124-139` after the search field. Drag a handle to keep only the tracks in
+    that range. Tracks without a known BPM are hidden while a range is set; the slider's
+    tooltip says how many (and shows the range when the bar is too tight for its text). A
+    double-click on the slider, or the bar's **×**, shows everything again. The range is
+    remembered per crate;
   - **Style, artist and label filters:** in your Discogs wantlist and collection crates you
     can keep only the records of some styles, artists or labels. Pick several and any of them
     shows (Deep House and Minimal show both). A record's artist is its credit as Discogs shows
@@ -165,16 +176,18 @@ and Home/End jump), and Enter plays the entry under it.
     its label is its first label. Each list has a search box and each value's number of
     records, the most first. The filters add up with each other and with the BPM range (a
     track must pass them all), play follows what's shown, and each crate remembers them.
-    - In the footer, after the BPM filter: the style chips (lit ones are on), then
+    - In the filter bar, after the BPM filter: the style chips (lit ones are on), then
       **ARTISTS** and **LABELS**, when all of it fits. Otherwise **STYLES**, **ARTISTS** and
-      **LABELS** buttons, when they fit; otherwise nothing. A button is lit while its filter is
-      on and counts its picks ("LABELS 2"); a double-click on it, or on a chip, turns that
-      filter off.
+      **LABELS** buttons, when they fit; otherwise one **FILTERS** button ("FILTERS 2" while
+      two are set). A button is lit while its filter is on and counts its picks ("LABELS 2");
+      a double-click on it, or on a chip, turns that filter off.
+    - Every button opens the **filter panel**, one tab per filter (STYLE, ARTIST, LABEL,
+      FORMAT) and, in a seller crate with a cart, the CART switch.
     - A **format** filter (Vinyl, File, CD, Cassette, Other) works the same way, in every crate
-      dug from Discogs, not only those two: its **FORMATS** button follows the others in the
-      footer.
-    - At any width, ≡ ▸ Filter by style… / artist… / label… / format… opens the same lists, and
-      ≡ ▸ Show all records turns them all off (the BPM range stays);
+      dug from Discogs, not only those two: its **FORMATS** button follows the others.
+    - Right-click a record: **Only this artist**, **Only this label** and **Only this style ▸**
+      keep just that value in its filter. In other crates it offers **Search ‹label›** and
+      **Search ‹catalog number›** instead;
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -283,7 +296,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | `Shift+P` | maximize the playlist (again: restore) | | `Shift+G` | group the crate by record (again: flat) |
-| `Space` | open or close the record under the cursor (grouped) | | | |
+| `Space` | open or close the record under the cursor (grouped) | | `Cmd+F` | search the crate on screen |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -552,8 +565,8 @@ the heading to fold or unfold it; right-click it for **Add seller…**.
   after each dig and cart change, and kept in the cache, so badges show at once and follow
   what you change on discogs.com. The app never empties your cart, and you always pay on
   discogs.com.
-- **CART n · subtotal:** in a seller crate with copies in your cart, this footer switch (and
-  ☰ › Show cart only) shows and plays only those records, so you can listen to the order once
+- **CART n · subtotal:** in a seller crate with copies in your cart, this switch in the filter
+  bar (or in its filter panel when the bar is too narrow) shows and plays only those records, so you can listen to the order once
   more before paying; ☰ › Open cart on discogs.com goes to the cart. The subtotal is Discogs',
   in the seller's currency.
 
@@ -989,7 +1002,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 822 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 834 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1026,6 +1039,10 @@ What's covered:
 - **`crates/ui`** (unit tests):
   - playlist selection, reordering and totals;
   - shuffle order, and a play order that skips entries waiting for their audio;
+  - the crate search: every word in some field, folded case and accents, the play order
+    following it, lit matches, and a 5,000-entry search within 16 ms; headless, typed letters
+    never acting as shortcuts, Cmd+F, Enter, Esc, a search forgotten with its crate, the
+    filter bar's tiers, its FILTERS panel and ×, and the row menu's Only this… / Search…;
   - folder scanning and M3U round trip (remote entries exported as their source URL);
   - settings, crate and preset persistence;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
@@ -1033,7 +1050,7 @@ What's covered:
   - spectrum bars following the *audible* frame;
   - EQ curve;
   - skin validation, that the committed skin matches its generator, and that a skin without
-    an LCD colour keeps green;
+    an LCD colour keeps green (and one without a filter bar height gets the default);
   - the empty crate hint and the verdict flash wording (and, headless, which verdicts flash);
   - label crates: the label field and `is_locked`, every refused edit while pass still works,
     Move to Labels, the LABELS group and its fold, the label crate menu, Export to crate,

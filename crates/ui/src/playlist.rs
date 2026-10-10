@@ -613,6 +613,42 @@ pub struct Playlist {
     cart_only: bool,
     /// Releases with a copy in the user's cart (kept up to date by the app).
     in_cart: BTreeSet<u64>,
+    /// The search's words, folded as the skin font draws them (see [`fold_words`]). Not
+    /// saved: a search lasts while its crate is shown.
+    search: Vec<Vec<char>>,
+}
+
+/// `text` split on whitespace, each word folded with [`crate::skin::fold`] (upper case,
+/// accents stripped, char for char).
+pub fn fold_words(text: &str) -> Vec<Vec<char>> {
+    text.split_whitespace()
+        .map(|w| w.chars().map(crate::skin::fold).collect())
+        .collect()
+}
+
+/// Whether `rest` starts with `word`, comparing folded chars.
+fn starts_folded(rest: &str, word: &[char]) -> bool {
+    let mut chars = rest.chars().map(crate::skin::fold);
+    word.iter().all(|&w| chars.next() == Some(w))
+}
+
+/// Whether `hay` contains `word` (folded); no allocation, as it runs over every entry while a
+/// search is typed.
+fn contains_folded(hay: &str, word: &[char]) -> bool {
+    hay.char_indices()
+        .any(|(i, _)| starts_folded(&hay[i..], word))
+}
+
+/// Which chars of `text` a search word covers, for highlighting a row (folding keeps one char
+/// per char, so the marks line up with what is drawn).
+pub fn search_marks(text: &str, words: &[Vec<char>]) -> Vec<bool> {
+    let mut marks = vec![false; text.chars().count()];
+    for (ci, (bi, _)) in text.char_indices().enumerate() {
+        for w in words.iter().filter(|w| starts_folded(&text[bi..], w)) {
+            marks[ci..ci + w.len()].fill(true);
+        }
+    }
+    marks
 }
 
 /// What the filters show: an entry whose tempo is in the BPM range (when one is set) and that
@@ -624,6 +660,8 @@ pub struct Shown<'a> {
     picks: [Option<&'a BTreeSet<String>>; 4],
     /// The CART switch: the releases in the cart.
     cart: Option<&'a BTreeSet<u64>>,
+    /// The search's folded words, every one of which an entry must contain.
+    search: &'a [Vec<char>],
 }
 
 impl Shown<'_> {
@@ -639,10 +677,26 @@ impl Shown<'_> {
                     .and_then(|o| o.release)
                     .is_some_and(|r| releases.contains(&r))
             })
+            && self.search.iter().all(|w| {
+                let o = e.origin.as_ref();
+                [
+                    e.artist.as_str(),
+                    &e.title,
+                    e.album(),
+                    o.map_or("", |o| &o.artist),
+                    o.map_or("", |o| &o.label),
+                    o.map_or("", |o| &o.catno),
+                ]
+                .into_iter()
+                .any(|field| contains_folded(field, w))
+            })
     }
 
     pub fn is_filtered(&self) -> bool {
-        self.bpm.is_some() || self.picks.iter().any(Option::is_some) || self.cart.is_some()
+        self.bpm.is_some()
+            || self.picks.iter().any(Option::is_some)
+            || self.cart.is_some()
+            || !self.search.is_empty()
     }
 }
 
@@ -1481,7 +1535,24 @@ impl Playlist {
             bpm: self.bpm_filter(),
             picks: Facet::ALL.map(|f| self.filter(f)),
             cart: self.cart_only.then_some(&self.in_cart),
+            search: &self.search,
         }
+    }
+
+    /// The search's folded words (empty: no search).
+    pub fn search(&self) -> &[Vec<char>] {
+        &self.search
+    }
+
+    /// Sets the search from the typed text. Returns whether what it matches changed.
+    pub fn set_search(&mut self, text: &str) -> bool {
+        let words = fold_words(text);
+        if words == self.search {
+            return false;
+        }
+        self.search = words;
+        self.changed();
+        true
     }
 
     /// Whether a filter (BPM, style, artist or label) hides anything.
@@ -1489,10 +1560,11 @@ impl Playlist {
         self.shown().is_filtered()
     }
 
-    /// Turns every filter off. Returns whether that shows more.
+    /// Turns every filter and the search off. Returns whether that shows more.
     pub fn clear_filters(&mut self) -> bool {
         let bpm = self.set_bpm_filter(None);
-        self.clear_picks(None) || bpm
+        let search = self.set_search("");
+        self.clear_picks(None) || bpm || search
     }
 
     /// The crate indices of the entries the filters show, in order: row `r` of the list is
@@ -2960,6 +3032,148 @@ mod tests {
         let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
         assert!(restored.picked(Facet::Style, "Deep House"));
         assert_eq!(restored.shown_rows(), [0]);
+    }
+
+    /// A crate of one entry per record: (record artist, label, catalogue number, track title).
+    fn searchable(records: &[(&str, &str, &str, &str)]) -> Playlist {
+        let mut p = Playlist::default();
+        for (i, (artist, label, catno, title)) in records.iter().enumerate() {
+            let o = Origin {
+                artist: (*artist).into(),
+                label: (*label).into(),
+                catno: (*catno).into(),
+                ..origin(i as u64 + 1, &format!("c{i}"))
+            };
+            p.add_waiting(*artist, *title, None, Some(o), "listed");
+        }
+        p
+    }
+
+    #[test]
+    fn the_search_needs_every_word_in_some_field() {
+        let mut p = searchable(&[
+            (
+                "Theo Parrish",
+                "Sound Signature",
+                "SS-001",
+                "Summertime Is Here",
+            ),
+            ("Nightcraft", "Lowtide Tapes", "LT-012", "Night Moves"),
+            ("Nightcraft", "Lowtide Tapes", "LT-007", "Dawn"),
+            ("Âme", "Innervisions", "IV-09", "Rej"),
+        ]);
+        assert!(p.set_search("parrish"));
+        assert_eq!(p.shown_rows(), [0]);
+        assert!(p.is_filtered());
+        // Words in different fields, all of them needed.
+        p.set_search("lowtide 012");
+        assert_eq!(p.shown_rows(), [1]);
+        p.set_search("  night   ");
+        assert_eq!(p.shown_rows(), [1, 2], "artist or title");
+        // Case and accents are folded as the skin font draws them.
+        p.set_search("AME");
+        assert_eq!(p.shown_rows(), [3]);
+        p.set_search("innervisions rej");
+        assert_eq!(p.shown_rows(), [3]);
+        assert!(!p.set_search("innervisions  rej"), "the same words");
+        // Nothing matches; then the empty search shows every entry.
+        p.set_search("electro");
+        assert!(p.shown_rows().is_empty());
+        p.set_search("");
+        assert_eq!(p.shown_rows(), [0, 1, 2, 3]);
+        assert!(!p.is_filtered());
+    }
+
+    #[test]
+    fn the_search_finds_a_local_file_by_its_album_and_is_not_saved() {
+        let mut p = Playlist::default();
+        p.add([TrackRef::new("/m/a.flac"), TrackRef::new("/m/b.flac")]);
+        p.entries[1].album = "Dub Housing".into();
+        p.set_search("housing");
+        assert_eq!(p.shown_rows(), [1]);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(restored.shown_rows(), [0, 1], "a search isn't saved");
+        // Clearing the filters clears the search too.
+        assert!(p.clear_filters());
+        assert_eq!(p.shown_rows(), [0, 1]);
+    }
+
+    #[test]
+    fn search_marks_cover_the_matched_chars() {
+        let words = fold_words("par ère");
+        let marks = search_marks("Théo Parrish · Père", &words);
+        let lit: String = "Théo Parrish · Père"
+            .chars()
+            .zip(&marks)
+            .map(|(c, &m)| if m { c } else { '.' })
+            .collect();
+        assert_eq!(lit, ".....Par........ère");
+        assert!(search_marks("abc", &[]).iter().all(|&m| !m));
+    }
+
+    #[test]
+    fn next_follows_the_search_and_the_playing_entry_stays() {
+        let mut p = searchable(&[
+            ("Theo Parrish", "Sound Signature", "SS-001", "A"),
+            ("Nightcraft", "Lowtide Tapes", "LT-012", "B"),
+            ("Theo Parrish", "Sound Signature", "SS-002", "C"),
+        ]);
+        let ids: Vec<EntryId> = p.entries().iter().map(|e| e.id).collect();
+        p.set_current(Some(ids[1]));
+        p.set_search("parrish");
+        assert_eq!(p.shown_rows(), [0, 2]);
+        // The hidden playing entry plays on, and the next shown one follows it.
+        assert_eq!(p.play_order(false, None, 0), [ids[0], ids[1], ids[2]]);
+        p.set_current(Some(ids[0]));
+        assert_eq!(p.play_order(false, None, 0), [ids[0], ids[2]]);
+    }
+
+    #[test]
+    fn searching_a_big_crate_is_quick() {
+        let names = [
+            "Theo Parrish",
+            "Nightcraft",
+            "Âme",
+            "Moodymann",
+            "DJ Sprinkles",
+        ];
+        let mut p = Playlist::default();
+        for i in 0..5000u64 {
+            let o = Origin {
+                artist: names[i as usize % 5].into(),
+                label: format!("Label {}", i % 120),
+                catno: format!("CAT-{i:04}"),
+                ..origin(i + 1, &format!("c{i}"))
+            };
+            p.add_waiting(
+                names[i as usize % 5],
+                format!("Track number {i}"),
+                None,
+                Some(o),
+                "listed",
+            );
+        }
+        let best = |f: &mut dyn FnMut()| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        // The target is for release builds; debug ones are several times slower.
+        let budget = if cfg!(debug_assertions) { 150 } else { 16 };
+        let took = best(&mut || {
+            p.set_search("");
+            p.set_search("sprinkles label 7");
+            let rows = p.shown_rows();
+            let order = p.play_order(false, None, 0);
+            assert!(!rows.is_empty() && !order.is_empty());
+        });
+        assert!(took < std::time::Duration::from_millis(budget), "{took:?}");
     }
 
     #[test]

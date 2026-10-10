@@ -472,6 +472,10 @@ impl Crates {
             return false;
         }
         if self.index.shown != id {
+            // A search lasts while its crate is shown.
+            if let Some(p) = self.loaded.get_mut(&self.index.shown) {
+                p.set_search("");
+            }
             self.index.shown = id;
             self.mark_index();
         }

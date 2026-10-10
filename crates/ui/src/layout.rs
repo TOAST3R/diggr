@@ -23,10 +23,15 @@ pub fn wave_title_h(d: &SkinDef) -> u16 {
     d.sprite("wave_title").h
 }
 
+/// The playlist's frame above and below its rows: the title bar, the filter bar and the footer.
+pub fn playlist_chrome(d: &SkinDef) -> u16 {
+    d.pl_top_h + d.pl_filter_h + d.pl_bottom_h
+}
+
 /// Rows the playlist shows: the chosen number, or more, so it is never shorter than the player
 /// column beside it.
 pub fn playlist_rows(settings: &Settings, d: &SkinDef) -> u16 {
-    let chrome = d.pl_top_h + d.pl_bottom_h;
+    let chrome = playlist_chrome(d);
     let min = player_height(settings, d)
         .saturating_sub(chrome)
         .div_ceil(d.pl_row_h);
@@ -34,7 +39,7 @@ pub fn playlist_rows(settings: &Settings, d: &SkinDef) -> u16 {
 }
 
 pub fn playlist_height(settings: &Settings, d: &SkinDef) -> u16 {
-    d.pl_top_h + d.pl_bottom_h + playlist_rows(settings, d) * d.pl_row_h
+    playlist_chrome(d) + playlist_rows(settings, d) * d.pl_row_h
 }
 
 /// The window: the player column, plus the playlist to its right when it shows.
@@ -60,7 +65,7 @@ pub fn maximized(settings: &Settings, d: &SkinDef, w: f32, h: f32) -> (u16, u16)
     } else {
         0.0
     };
-    let free = h - band - (d.pl_top_h + d.pl_bottom_h) as f32;
+    let free = h - band - playlist_chrome(d) as f32;
     let rows = (free / d.pl_row_h as f32).floor().max(4.0) as u16;
     (width, rows)
 }
@@ -74,6 +79,7 @@ pub fn fit_playlist_width(width: u16, d: &SkinDef, scale: f32, screen_w: f32) ->
 
 /// The skin's playlist layout stretched to `width`: the list and title bar grow, and what sits
 /// on the right (close button, scrollbar, info, OPT, resize grip) moves with the right edge.
+/// The list and scrollbar start under the filter bar.
 pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
     let width = width.max(d.pl_width);
     let extra = width - d.pl_width;
@@ -82,6 +88,11 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
     for name in ["pl_titlebar", "pl_list"] {
         if let Some(r) = out.layout.get_mut(name) {
             r.w += extra;
+        }
+    }
+    for name in ["pl_list", "pl_scroll"] {
+        if let Some(r) = out.layout.get_mut(name) {
+            r.y += d.pl_filter_h;
         }
     }
     for name in [
@@ -123,21 +134,31 @@ mod tests {
         assert_eq!(window_size(&settings(false, false, false), &d), (275, 116));
         assert_eq!(window_size(&settings(true, false, false), &d), (275, 232));
         assert_eq!(window_size(&settings(true, true, false), &d), (275, 304));
-        // 10 rows are 188 tall: taller than the main window alone.
+        // 10 rows are 204 tall with the filter bar: taller than the main window alone.
         assert_eq!(
             window_size(&settings(false, false, true), &d),
-            (675, 20 + 130 + 38)
+            (675, 20 + 16 + 130 + 38)
         );
         // Shorter than main + EQ + waveform (304): the playlist grows whole rows to match.
         let s = settings(true, true, true);
-        assert_eq!(playlist_rows(&s, &d), 19);
-        assert_eq!(window_size(&s, &d), (675, 20 + 19 * 13 + 38));
+        assert_eq!(playlist_rows(&s, &d), 18);
+        assert_eq!(window_size(&s, &d), (675, 20 + 16 + 18 * 13 + 38));
         // More rows than that are kept.
         let tall = Settings {
             playlist_rows: 30,
             ..s
         };
-        assert_eq!(window_size(&tall, &d), (675, 20 + 30 * 13 + 38));
+        assert_eq!(window_size(&tall, &d), (675, 20 + 16 + 30 * 13 + 38));
+    }
+
+    #[test]
+    fn the_filter_bar_adds_height_and_keeps_the_rows() {
+        let d = LoadedSkin::default_skin().def;
+        let s = settings(false, false, true);
+        assert_eq!(playlist_rows(&s, &d), 10, "no row given up for the bar");
+        let w = playlist_def(&d, 275);
+        assert_eq!(w.at("pl_list").y, d.pl_top_h + d.pl_filter_h);
+        assert_eq!(w.at("pl_scroll").y, d.pl_top_h + d.pl_filter_h);
     }
 
     #[test]
@@ -150,7 +171,7 @@ mod tests {
         for name in ["pl_close", "pl_scroll", "pl_info", "pl_resize"] {
             assert_eq!(w.at(name).x, d.at(name).x + 125, "{name}");
         }
-        for name in ["pl_plus", "pl_menu", "pl_opts", "pl_bpm"] {
+        for name in ["pl_plus", "pl_menu", "pl_opts"] {
             assert_eq!(w.at(name), d.at(name), "{name} stays on the left");
         }
         assert_eq!(
@@ -165,9 +186,9 @@ mod tests {
         let d = LoadedSkin::default_skin().def;
         // 1440 × 870 points at 2×: 720 × 435 skin pixels.
         let mut s = settings(true, false, true);
-        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 58) / 13));
+        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 74) / 13));
         s.show_waveform = true;
-        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 58 - 58) / 13));
+        assert_eq!(maximized(&s, &d, 720.0, 435.0), (693, (435 - 58 - 74) / 13));
         // A tiny window still gets the minimum playlist.
         assert_eq!(maximized(&s, &d, 100.0, 50.0), (275, 4));
     }

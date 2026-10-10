@@ -151,6 +151,12 @@ pub struct DiggrApp {
     #[cfg(test)]
     cart_drawn: Option<(String, Pos2)>,
     pl_resize_acc: egui::Vec2,
+    /// The filter bar's search text as typed (the shown crate holds its folded words).
+    pl_search: String,
+    /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
+    search_focus: bool,
+    /// The filter panel's tab.
+    panel_tab: Facet,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
     /// The window's content size in skin pixels (the maximized layout follows it).
@@ -335,6 +341,9 @@ impl DiggrApp {
             #[cfg(test)]
             cart_drawn: None,
             pl_resize_acc: egui::Vec2::ZERO,
+            pl_search: String::new(),
+            search_focus: false,
+            panel_tab: Facet::Style,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
             max_seen: false,
@@ -1102,6 +1111,13 @@ impl DiggrApp {
             (keys, i.modifiers)
         });
         for key in pressed {
+            // Cmd+F (Ctrl+F) finds in the shown crate, never fullscreen.
+            if key == Key::F && mods.command {
+                if self.fullscreen.is_none() && self.settings.show_playlist {
+                    self.search_focus = true;
+                }
+                continue;
+            }
             // The help panel takes its own close keys first (Esc must not leave fullscreen).
             if matches!(key, Key::H | Key::F1) && !mods.command {
                 self.help = !self.help;
@@ -2600,9 +2616,9 @@ impl DiggrApp {
         target
     }
 
-    /// The footer's BPM filter control, from `x` to `x_end` (skin pixels, in the footer at
-    /// `y`, `h` tall): "BPM", a two-handle range over the crate's tempos, the range as text and
-    /// × while a range is set. Nothing when the crate has fewer than two different tempos.
+    /// The filter bar's BPM control, from `x` to `x_end` (skin pixels, in the bar at `y`, `h`
+    /// tall): "BPM", a two-handle range over the crate's tempos and the range as text (the
+    /// bar's × clears it). Nothing when the crate has fewer than two different tempos.
     /// Returns where it ends (`x` when nothing is drawn).
     fn bpm_control(
         &mut self,
@@ -2621,12 +2637,10 @@ impl DiggrApp {
         let lcd = color(colors.lcd);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
 
-        // A short slider of a fixed width, then the range and ×: "BPM" goes in front when
-        // there's room for it too. The slider starts at a fixed place, so it never moves under
-        // a dragged handle.
-        let clear_w = sk.def.sprite("bpm_clear").w as f32;
-        let core = BPM_SLIDER_W + 3.0 + sk.text_width("000-000") + 3.0 + clear_w;
-        let label = sk.text_width("BPM") + 4.0;
+        // A short slider of a fixed width, then the range: "BPM" goes in front when there's
+        // room for it too. The slider starts at a fixed place, so it never moves under a
+        // dragged handle.
+        let (label, core) = bpm_widths(sk);
         let with_label = x_end - x >= label + core;
         if with_label {
             sk.text(x, ty, "BPM", lcd);
@@ -2642,28 +2656,10 @@ impl DiggrApp {
             self.bpm_slider = Some((x0, x1, with_text));
         }
         let range = format!("{a}-{b}");
-        let mut right = x1 + 3.0;
+        let mut end = x1;
         if with_text {
-            sk.text(right, ty, &range, lcd);
-            right += sk.text_width(&range) + 3.0;
-        }
-        let end = if filter.is_some() {
-            right + clear_w
-        } else {
-            right - 3.0
-        };
-        if filter.is_some() {
-            let cy = y + ((h - clear_w) / 2.0).round();
-            sk.sprite("bpm_clear", right, cy);
-            let clear = ui.interact(
-                sk.rect(right - 2.0, y, clear_w + 4.0, h),
-                Id::new("bpm_clear"),
-                Sense::click(),
-            );
-            if clear.clicked() {
-                actions.push(Action::SetBpmFilter(None));
-            }
-            clear.on_hover_text("Show all tempos");
+            sk.text(x1 + 3.0, ty, &range, lcd);
+            end = x1 + 3.0 + sk.text_width(&range);
         }
 
         // The track, its selected part, and the two handles.
@@ -2763,46 +2759,22 @@ impl DiggrApp {
             .collect()
     }
 
-    /// The footer's style, artist and label filters, from `x` to `x_end` (skin pixels, like
-    /// [`Self::bpm_control`]), in the Discogs wantlist and collection crates: the style chips
-    /// (at most [`STYLE_CHIPS_MAX`]) then ARTISTS and LABELS when all of it fits, else STYLES,
-    /// ARTISTS and LABELS when they fit, else nothing (☰ still opens every list). Returns the
-    /// filters drawn as buttons or chips, whose lists open from the footer.
-    fn filter_controls(
-        &mut self,
-        ui: &mut Ui,
-        sk: &Skinned,
-        (x, y, x_end, h): (f32, f32, f32, f32),
-        actions: &mut Vec<Action>,
-    ) -> (Vec<Facet>, f32) {
+    /// The widths the filter buttons want: with style chips (when the styles are few enough)
+    /// and as buttons only; `None` when the crate offers no filter.
+    fn filter_widths(&mut self, sk: &Skinned) -> Option<(Option<f32>, f32)> {
         let facets = self.offered_facets();
         if facets.is_empty() {
-            return (Vec::new(), x);
+            return None;
         }
         let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
         let shown = self.crates.shown();
-        let lcd = color(sk.def.colors.lcd);
-        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
-        let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
-        let x = x + STYLE_GAP;
-        let room = x_end - x;
-        let label = |f: Facet| {
-            let name = match f {
-                Facet::Style => "STYLES",
-                Facet::Artist => "ARTISTS",
-                Facet::Label => "LABELS",
-                Facet::Format => "FORMATS",
-            };
-            match shown.filter(f).map(|p| p.len()) {
-                Some(n) => format!("{name} {n}"),
-                None => name.to_owned(),
-            }
-        };
         let width = |items: &[f32]| {
             items.iter().sum::<f32>() + STYLE_GAP * items.len().saturating_sub(1) as f32
         };
-        let buttons: Vec<f32> = facets.iter().map(|&f| sk.text_width(&label(f))).collect();
-        // Chips for the styles, when there are few enough, then the other buttons.
+        let buttons: Vec<f32> = facets
+            .iter()
+            .map(|&f| sk.text_width(&facet_button_label(shown, f)))
+            .collect();
         let chips: Option<Vec<f32>> = facets
             .iter()
             .position(|&f| f == Facet::Style)
@@ -2820,11 +2792,53 @@ impl DiggrApp {
                     )
                     .collect()
             });
-        let with_chips = chips.is_some_and(|c| width(&c) <= room);
-        let tier = if with_chips {
+        Some((chips.map(|c| width(&c)), width(&buttons)))
+    }
+
+    /// The filter bar's style, artist, label and format filters, from `x` to `x_end` (skin
+    /// pixels, like [`Self::bpm_control`]): the style chips (at most [`STYLE_CHIPS_MAX`]) then
+    /// the other buttons when all of it fits, else one button per filter when they fit, else
+    /// one FILTERS button. Each opens the filter panel. Returns where they end.
+    fn filter_controls(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        (x, y, x_end, h): (f32, f32, f32, f32),
+        actions: &mut Vec<Action>,
+    ) -> f32 {
+        // With no filter but a CART switch that doesn't fit, FILTERS still opens the panel.
+        let cart_w = self
+            .cart_label()
+            .map(|l| 2.0 * STYLE_GAP + sk.text_width(&l));
+        let (chips_w, buttons_w) = match self.filter_widths(sk) {
+            Some(w) => w,
+            None if cart_w.is_some_and(|w| x + w > x_end) => (None, f32::INFINITY),
+            None => return x,
+        };
+        let facets = self.offered_facets();
+        let counts: Vec<FacetCounts> = facets.iter().map(|&f| self.facet_counts(f)).collect();
+        let shown = self.crates.shown();
+        let lcd = color(sk.def.colors.lcd);
+        let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
+        let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
+        let x = x + STYLE_GAP;
+        let room = x_end - x;
+        let set = facets
+            .iter()
+            .filter(|&&f| shown.filter(f).is_some())
+            .count()
+            + shown.cart_only() as usize;
+        let folded = if set > 0 {
+            format!("FILTERS {set}")
+        } else {
+            "FILTERS".to_owned()
+        };
+        let tier = if chips_w.is_some_and(|w| w <= room) {
             FooterFilters::Chips
-        } else if width(&buttons) <= room {
+        } else if buttons_w <= room {
             FooterFilters::Buttons
+        } else if sk.text_width(&folded) <= room {
+            FooterFilters::Folded
         } else {
             FooterFilters::None
         };
@@ -2833,12 +2847,36 @@ impl DiggrApp {
             self.filters_drawn = Some((x, tier));
         }
         if tier == FooterFilters::None {
-            return (Vec::new(), x);
+            return x;
+        }
+        if tier == FooterFilters::Folded {
+            let w = sk.text_width(&folded);
+            sk.text(x, ty, &folded, if set > 0 { lcd } else { dim });
+            let button = ui.interact(
+                sk.rect(x - 1.0, y, w + 2.0, h),
+                Id::new("filters_button"),
+                Sense::click(),
+            );
+            if button.clicked() {
+                // On the first tab with a set filter, or the first tab.
+                self.panel_tab = facets
+                    .iter()
+                    .copied()
+                    .find(|&f| self.crates.shown().filter(f).is_some())
+                    .or(facets.first().copied())
+                    .unwrap_or(self.panel_tab);
+            }
+            egui::Popup::from_toggle_button_response(&button)
+                .id(filters_popup_id())
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| self.filter_panel(ui, actions));
+            button.on_hover_text("Filters: click to choose which records show");
+            return x + w;
         }
         // What to draw, worked out before the lists borrow the app.
         let texts: Vec<(String, bool)> = facets
             .iter()
-            .map(|&f| (label(f), shown.filter(f).is_some()))
+            .map(|&f| (facet_button_label(shown, f), shown.filter(f).is_some()))
             .collect();
         let styles_on: Vec<bool> = facets
             .iter()
@@ -2851,8 +2889,9 @@ impl DiggrApp {
             })
             .unwrap_or_default();
         let mut cx = x;
-        for ((&f, list), (text, on)) in facets.iter().zip(&counts).zip(texts) {
+        for ((&f, _), (text, on)) in facets.iter().zip(&counts).zip(texts) {
             if f == Facet::Style && tier == FooterFilters::Chips {
+                let list = &counts[facets.iter().position(|&g| g == f).unwrap_or(0)];
                 for ((style, n), &on) in list.iter().zip(&styles_on) {
                     let name = style.to_uppercase();
                     let w = sk.text_width(&name);
@@ -2885,28 +2924,63 @@ impl DiggrApp {
             );
             if button.double_clicked() {
                 actions.push(Action::ClearPicks(Some(f)));
+            } else if button.clicked() {
+                self.panel_tab = f;
             }
+            let n = self.facet_counts(f).len();
             let popup = egui::Popup::from_toggle_button_response(&button)
                 .id(facet_popup_id(f))
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-            popup.show(|ui| self.facet_list(ui, f, list, actions));
+            popup.show(|ui| self.filter_panel(ui, actions));
             button.on_hover_text(format!(
-                "{} {}s: click to choose which records show; double-click shows them all",
-                list.len(),
+                "{n} {}s: click to choose which records show; double-click shows them all",
                 f.name()
             ));
             cx += w + STYLE_GAP;
         }
-        let drawn = facets
-            .into_iter()
-            .filter(|&f| !(f == Facet::Style && tier == FooterFilters::Chips))
-            .collect();
-        (drawn, cx)
+        cx - STYLE_GAP
     }
 
-    /// The footer's CART switch, from `x` (skin pixels, like [`Self::filter_controls`]), in a
-    /// seller crate with copies in the cart: "CART 3 · €41.20", lit while on. Nothing when
-    /// it doesn't fit (☰ › Show cart only does the same).
+    /// The filter panel: a tab per filter the crate offers (its list: search, checkboxes with
+    /// record counts, Clear) and, in a seller crate with a cart, the CART switch.
+    fn filter_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let facets = self.offered_facets();
+        let tab = if facets.contains(&self.panel_tab) {
+            Some(self.panel_tab)
+        } else {
+            facets.first().copied()
+        };
+        let cart = self.cart_label();
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            for &f in &facets {
+                if ui
+                    .selectable_label(tab == Some(f), f.name().to_uppercase())
+                    .clicked()
+                {
+                    chosen = Some(f);
+                }
+            }
+            if let Some(label) = &cart {
+                let mut on = self.crates.shown().cart_only();
+                if ui.checkbox(&mut on, label.as_str()).clicked() {
+                    actions.push(Action::ToggleCartOnly);
+                }
+            }
+        });
+        if let Some(f) = chosen {
+            self.panel_tab = f;
+        }
+        if let Some(f) = chosen.or(tab) {
+            ui.separator();
+            let list = self.facet_counts(f);
+            self.facet_list(ui, f, &list, actions);
+        }
+    }
+
+    /// The filter bar's CART switch, from `x` (skin pixels, like [`Self::filter_controls`]),
+    /// in a seller crate with copies in the cart: "CART 3 · €41.20", lit while on. Nothing
+    /// when it doesn't fit (the filter panel holds it too).
     fn cart_switch(
         &mut self,
         ui: &mut Ui,
@@ -3207,6 +3281,7 @@ impl DiggrApp {
                 ui.close();
             }
         }
+        self.filter_items(ui, e, actions);
         ui.separator();
         ui.menu_button("Send to crate", |ui| {
             for (id, name) in self.send_targets() {
@@ -3224,6 +3299,60 @@ impl DiggrApp {
         });
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_entry_menu(ui, e, actions);
+    }
+
+    /// The entry menu's filter shortcuts: in the Discogs crates, keep only this record's
+    /// artist, label or a style; elsewhere, search its label or catalogue number.
+    fn filter_items(&self, ui: &mut Ui, e: &crate::playlist::Entry, actions: &mut Vec<Action>) {
+        let Some(o) = e.origin.as_ref() else {
+            return;
+        };
+        let mut items = Vec::new();
+        if self.crates.is_discogs(self.crates.shown_id()) {
+            for (f, what) in [(Facet::Artist, "artist"), (Facet::Label, "label")] {
+                if let Some(v) = e.values(f).next() {
+                    items.push((
+                        format!("Only this {what}"),
+                        Action::OnlyPick(f, v.to_owned()),
+                    ));
+                }
+            }
+            let styles: Vec<&str> = e.values(Facet::Style).collect();
+            if !items.is_empty() || !styles.is_empty() {
+                ui.separator();
+            }
+            for (label, a) in items {
+                if ui.button(label).clicked() {
+                    actions.push(a);
+                    ui.close();
+                }
+            }
+            if !styles.is_empty() {
+                ui.menu_button("Only this style", |ui| {
+                    for st in styles {
+                        if ui.button(st).clicked() {
+                            actions.push(Action::OnlyPick(Facet::Style, st.to_owned()));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            return;
+        }
+        for text in [o.label.trim(), o.catno.trim()] {
+            if !text.is_empty() {
+                items.push((format!("Search {text}"), Action::SearchFor(text.to_owned())));
+            }
+        }
+        if !items.is_empty() {
+            ui.separator();
+        }
+        for (label, a) in items {
+            if ui.button(label).clicked() {
+                actions.push(a);
+                ui.close();
+            }
+        }
     }
 
     /// Whether a listing is in the user's Discogs cart.
@@ -3571,7 +3700,8 @@ impl DiggrApp {
             pos2(x0, rr.top()),
             pos2(name_right.max(at.x), rr.bottom()),
         ));
-        name_clip.text(at, egui::Align2::LEFT_CENTER, name, font.clone(), col);
+        let hl = color(colors.pl_current);
+        text_marked(&name_clip, at, name, font, col, hl, shown.search());
         let second = match playing_here {
             Some(p) => {
                 let sign = if self.position.state == PlayState::Paused {
@@ -3636,6 +3766,138 @@ impl DiggrApp {
         resp
     }
 
+    /// The filter bar's search field, `w` skin pixels wide from `x`: an invisible egui text
+    /// field takes the typing (so no shortcut fires), and the text is drawn in the skin font in
+    /// its sunken box.
+    fn search_field(
+        &mut self,
+        ui: &mut Ui,
+        fsk: &Skinned,
+        x: f32,
+        w: f32,
+        actions: &mut Vec<Action>,
+    ) {
+        let h = fsk.def.sprite("pl_field_fill").h as f32;
+        let y = ((fsk.def.pl_filter_h as f32 - h) / 2.0).floor();
+        fsk.sprite("pl_field_l", x, y);
+        fsk.sprite_in("pl_field_fill", fsk.rect(x + 1.0, y, w - 2.0, h));
+        fsk.sprite("pl_field_r", x + w - 1.0, y);
+        // Cleared elsewhere (another crate shown, P, ×): the field follows.
+        if !crate::playlist::fold_words(&self.pl_search).is_empty()
+            && self.crates.shown().search().is_empty()
+        {
+            self.pl_search.clear();
+        }
+        let before = self.pl_search.clone();
+        let rect = fsk.rect(x, y, w, h);
+        let out = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                let v = ui.visuals_mut();
+                v.selection.bg_fill = Color32::TRANSPARENT;
+                v.text_cursor.stroke = egui::Stroke::NONE;
+                egui::TextEdit::singleline(&mut self.pl_search)
+                    .id(Id::new("pl_search"))
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::ZERO)
+                    .text_color(Color32::TRANSPARENT)
+                    .desired_width(rect.width())
+                    .show(ui)
+            })
+            .inner;
+        let resp = &out.response;
+        if std::mem::take(&mut self.search_focus) {
+            resp.request_focus();
+        }
+        let (enter, esc, down) = ui.input(|i| {
+            (
+                i.key_pressed(Key::Enter),
+                i.key_pressed(Key::Escape),
+                i.key_pressed(Key::ArrowDown),
+            )
+        });
+        if resp.lost_focus() && esc {
+            self.pl_search.clear();
+        }
+        if resp.has_focus() && down {
+            resp.surrender_focus();
+            actions.push(Action::SearchToList);
+        }
+        if self.pl_search != before {
+            actions.push(Action::SetSearch(self.pl_search.clone()));
+        }
+        if resp.lost_focus() && enter {
+            actions.push(Action::PlayFirstShown);
+        }
+
+        // The text (its tail, when longer than the box) and the caret, in the LCD colour.
+        let colors = &fsk.def.colors;
+        let adv = fsk.def.font.advance as f32;
+        let ty = y + ((h - fsk.def.font.glyph_h as f32) / 2.0).round();
+        let fits = ((w - 6.0) / adv).floor().max(1.0) as usize;
+        let focused = resp.has_focus();
+        if self.pl_search.is_empty() && !focused {
+            let hint = format!("SEARCH · {PASTE_MODIFIER}+F");
+            let hint: String = hint.chars().take(fits).collect();
+            fsk.text(x + 3.0, ty, &hint, lerp_color(colors.lcd, [0, 0, 0], 0.6));
+            return;
+        }
+        let chars: Vec<char> = self.pl_search.chars().collect();
+        let caret = out
+            .cursor_range
+            .map_or(chars.len(), |r| r.primary.index.0.min(chars.len()));
+        let start = caret.saturating_sub(fits.saturating_sub(1));
+        let shown: String = chars[start..].iter().take(fits).collect();
+        fsk.text(x + 3.0, ty, &shown, color(colors.lcd));
+        if focused {
+            let cx = x + 3.0 + (caret - start) as f32 * adv - 1.0;
+            fsk.fill(fsk.rect(cx, y + 2.0, 1.0, h - 4.0), color(colors.lcd));
+        }
+    }
+
+    /// The filter bar's contents across `width` skin pixels: the search field, taking what the
+    /// others leave (at least [`SEARCH_MIN_W`], at most [`SEARCH_MAX_SHARE`]), the BPM control, the filter buttons, the CART
+    /// switch, and × while the search or a filter is set.
+    fn filter_bar(&mut self, ui: &mut Ui, fsk: &Skinned, width: f32, actions: &mut Vec<Action>) {
+        let h = fsk.def.pl_filter_h as f32;
+        let shown = self.crates.shown();
+        // ×'s place is kept while it is hidden, so nothing moves under a dragged handle.
+        let clear_w = fsk.def.sprite("bpm_clear").w as f32;
+        let (x0, x_end) = (4.0, width - 8.0 - clear_w);
+        if shown.is_filtered() {
+            let cy = ((h - clear_w) / 2.0).round();
+            fsk.sprite("bpm_clear", x_end + 4.0, cy);
+            let clear = ui.interact(
+                fsk.rect(x_end + 2.0, 0.0, clear_w + 4.0, h),
+                Id::new("filters_clear"),
+                Sense::click(),
+            );
+            if clear.clicked() {
+                actions.push(Action::ClearFilters);
+            }
+            clear.on_hover_text("Clear the search and every filter");
+        }
+        // What the controls want, so the search field takes only the rest.
+        let mut want = 0.0;
+        if shown.tempo_span().is_some() {
+            let (label, core) = bpm_widths(fsk);
+            want += label + core;
+        }
+        if let Some((chips, buttons)) = self.filter_widths(fsk) {
+            want += STYLE_GAP + chips.unwrap_or(buttons);
+        }
+        if let Some(cart) = self.cart_label() {
+            want += STYLE_GAP + fsk.text_width(&cart);
+        }
+        let search_w = (x_end - x0 - 4.0 - want)
+            .min(width * SEARCH_MAX_SHARE)
+            .max(SEARCH_MIN_W);
+        self.search_field(ui, fsk, x0, search_w, actions);
+        let x = x0 + search_w + 4.0;
+        let bpm_end = self.bpm_control(ui, fsk, (x, 0.0, x_end, h), actions);
+        let filters_end = self.filter_controls(ui, fsk, (bpm_end, 0.0, x_end, h), actions);
+        self.cart_switch(ui, fsk, (filters_end, 0.0, x_end, h), actions);
+    }
+
     fn playlist_section(&mut self, ui: &mut Ui, origin: Pos2) {
         self.follow_playing_entry();
         let rows = self.pl_rows();
@@ -3645,6 +3907,9 @@ impl DiggrApp {
         let mut actions = Vec::new();
         // The rows the BPM filter shows: row r is crate entry `row_map[r]`.
         let row_map = self.crates.shown().shown_rows();
+        // The search's words, lit in the rows.
+        let words = self.crates.shown().search().to_vec();
+        let hl = color(self.def.colors.pl_current);
         // Wide enough: columns under a header row, which takes the first row.
         let columns = self.pl_columns();
         let visible = self.pl_visible_rows();
@@ -3693,7 +3958,14 @@ impl DiggrApp {
             {
                 actions.push(Action::ToggleGrouped);
             }
-            let top = d.pl_top_h as f32;
+            // The filter bar, between the title bar and the list.
+            let fsk = Skinned {
+                origin: sk.origin + vec2(0.0, d.pl_top_h as f32 * scale),
+                ..self.skinned(&def, ui, origin)
+            };
+            draw_stretched_bar(&fsk, "pl_filter", 0.0, width, d.pl_filter_h as f32);
+            self.filter_bar(ui, &fsk, width, &mut actions);
+            let top = (d.pl_top_h + d.pl_filter_h) as f32;
             sk.sprite_in("pl_left", sk.rect(0.0, top, 12.0, list_h));
             sk.sprite_in(
                 "pl_right",
@@ -3987,24 +4259,28 @@ impl DiggrApp {
                                     &d.colors,
                                     scale,
                                 );
-                                cell_clip.text(
+                                text_marked(
+                                    &cell_clip,
                                     at + vec2(w, 0.0),
-                                    egui::Align2::LEFT_CENTER,
                                     marked(e.title.clone()),
-                                    font.clone(),
+                                    &font,
                                     col,
+                                    hl,
+                                    &words,
                                 );
                                 continue;
                             }
                             Col::Field(Field::Title) => marked(e.title.clone()),
                             Col::Field(f) => crate::columns::cell_text(e, f),
                         };
-                        cell_clip.text(
+                        text_marked(
+                            &cell_clip,
                             pos2(cell.left() + 3.0 * scale, cell.center().y),
-                            egui::Align2::LEFT_CENTER,
                             text,
-                            font.clone(),
+                            &font,
                             col,
+                            hl,
+                            &words,
                         );
                     }
                 } else {
@@ -4039,20 +4315,24 @@ impl DiggrApp {
                             &d.colors,
                             scale,
                         );
-                        name_clip.text(
+                        text_marked(
+                            &name_clip,
                             at + vec2(w, 0.0),
-                            egui::Align2::LEFT_CENTER,
                             marked(e.row_name()),
-                            font.clone(),
+                            &font,
                             col,
+                            hl,
+                            &words,
                         );
                     } else {
-                        name_clip.text(
+                        text_marked(
+                            &name_clip,
                             at,
-                            egui::Align2::LEFT_CENTER,
                             format!("{}. {}", idx + 1, marked(e.row_name())),
-                            font.clone(),
+                            &font,
                             col,
+                            hl,
+                            &words,
                         );
                     }
                 }
@@ -4218,13 +4498,9 @@ impl DiggrApp {
                 }
             });
             plus.on_hover_text("Add");
-            let filtered = self.crates.shown().bpm_filter().is_some();
-            let picks = self.crates.shown().picks_filter();
-            let offered = self.offered_facets();
             let discogs = self.crates.is_locked(self.crates.shown_id());
             let seller_crate = self.crates.seller_of(self.crates.shown_id()).is_some();
             let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
-            let menu_rect = menu.rect;
             egui::Popup::menu(&menu).show(|ui| {
                 if ui.button("Select all").clicked() {
                     actions.push(Action::SelectAll);
@@ -4252,34 +4528,12 @@ impl DiggrApp {
                         }
                     }
                 });
-                if filtered && ui.button("Show all tempos").clicked() {
-                    actions.push(Action::SetBpmFilter(None));
-                }
-                for &f in &offered {
-                    if ui.button(format!("Filter by {}…", f.name())).clicked() {
-                        actions.push(Action::OpenFacet(f));
-                    }
-                }
-                if seller_crate {
-                    let mut cart_only = self.crates.shown().cart_only();
-                    if ui
-                        .checkbox(&mut cart_only, "Show cart only")
-                        .on_hover_text("Only the records with a copy in your Discogs cart")
-                        .clicked()
-                    {
-                        actions.push(Action::ToggleCartOnly);
-                        ui.close();
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if ui.button("Open cart on discogs.com").clicked() {
-                        actions.push(Action::Dig(DigAction::Seller(
-                            crate::app::sellers::SellerAction::OpenCart,
-                        )));
-                        ui.close();
-                    }
-                }
-                if picks && ui.button("Show all records").clicked() {
-                    actions.push(Action::ClearPicks(None));
+                #[cfg(not(target_arch = "wasm32"))]
+                if seller_crate && ui.button("Open cart on discogs.com").clicked() {
+                    actions.push(Action::Dig(DigAction::Seller(
+                        crate::app::sellers::SellerAction::OpenCart,
+                    )));
+                    ui.close();
                 }
                 let mut grouped = self.crates.shown().is_grouped();
                 if ui
@@ -4324,46 +4578,6 @@ impl DiggrApp {
             };
             let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
             bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
-
-            // The BPM filter, between the buttons and the time.
-            let pb = d.at("pl_bpm");
-            // Up to the LCD box (which starts 2 pixels left of the readout's slot).
-            let x_end = pi.x as f32 - 6.0;
-            let bpm_end = self.bpm_control(
-                ui,
-                &bsk,
-                (pb.x as f32, pb.y as f32, x_end, pb.h as f32),
-                &mut actions,
-            );
-            // Then the style, artist and label filters, in the Discogs crates; the lists that
-            // have no footer button open from ☰.
-            let (in_footer, filters_end) = self.filter_controls(
-                ui,
-                &bsk,
-                (bpm_end, pb.y as f32, x_end, pb.h as f32),
-                &mut actions,
-            );
-            self.cart_switch(
-                ui,
-                &bsk,
-                (filters_end, pb.y as f32, x_end, pb.h as f32),
-                &mut actions,
-            );
-            for f in self.offered_facets() {
-                if in_footer.contains(&f) {
-                    continue;
-                }
-                let list = self.facet_counts(f);
-                egui::Popup::new(
-                    facet_popup_id(f),
-                    ui.ctx().clone(),
-                    menu_rect,
-                    ui.layer_id(),
-                )
-                .open_memory(None)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| self.facet_list(ui, f, &list, &mut actions));
-            }
 
             // The resize grip: whole rows down, any width sideways.
             let rz = bsk.at("pl_resize");
@@ -4906,13 +5120,50 @@ impl DiggrApp {
                     self.filter_changed();
                 }
             }
+            Action::SetSearch(text) => {
+                if self.crates.shown_mut().set_search(&text) {
+                    self.filter_changed();
+                }
+            }
+            Action::PlayFirstShown | Action::SearchToList => {
+                let p = self.crates.shown();
+                let first = p
+                    .shown_rows()
+                    .into_iter()
+                    .map(|i| &p.entries()[i])
+                    .find(|e| e.status.in_play_order())
+                    .map(|e| e.id);
+                if matches!(a, Action::SearchToList) {
+                    self.focus = Focus::Playlist;
+                    self.crates.shown_mut().set_cursor(first);
+                } else if let Some(id) = first {
+                    self.apply(Action::PlayEntry(id), ctx);
+                }
+            }
             Action::ToggleCartOnly => {
                 let p = self.crates.shown_mut();
                 let on = !p.cart_only();
                 p.set_cart_only(on);
                 self.filter_changed();
             }
-            Action::OpenFacet(f) => egui::Popup::open_id(ctx, facet_popup_id(f)),
+            Action::OnlyPick(f, v) => {
+                let p = self.crates.shown_mut();
+                p.clear_picks(Some(f));
+                p.set_pick(f, &v, true);
+                self.filter_changed();
+            }
+            Action::SearchFor(text) => {
+                self.pl_search = text;
+                self.search_focus = true;
+                if self.crates.shown_mut().set_search(&self.pl_search) {
+                    self.filter_changed();
+                }
+            }
+            Action::ClearFilters => {
+                if self.crates.shown_mut().clear_filters() {
+                    self.filter_changed();
+                }
+            }
             Action::Sort(field) => {
                 // The same field again sorts the other way.
                 let p = self.crates.shown_mut();
@@ -5088,8 +5339,18 @@ enum Action {
     ClearPicks(Option<Facet>),
     /// The CART switch of the shown (seller) crate.
     ToggleCartOnly,
-    /// Opens a filter's list (from ☰, at any width).
-    OpenFacet(Facet),
+    /// The filter bar's search text changed.
+    SetSearch(String),
+    /// Enter in the search field: play the first shown entry.
+    PlayFirstShown,
+    /// ↓ in the search field: the list takes the keyboard, its cursor on the first shown entry.
+    SearchToList,
+    /// The filter bar's ×: the search and every filter off.
+    ClearFilters,
+    /// Only this value in its filter (the entry menu).
+    OnlyPick(Facet, String),
+    /// Search this text, the field taking the keyboard (the entry menu).
+    SearchFor(String),
     ToggleColumn(Field),
     /// Widen a column by a share of the list's width.
     ResizeColumn(Field, f32),
@@ -5844,8 +6105,21 @@ fn empty_crate_hint(modifier: &str) -> [String; 4] {
     ]
 }
 
-/// The footer's BPM slider is this wide, whatever the playlist's width (skin pixels).
+/// The BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;
+
+/// The BPM control's "BPM" label (with its gap) and the rest (slider, gap, widest range).
+fn bpm_widths(sk: &Skinned) -> (f32, f32) {
+    (
+        sk.text_width("BPM") + 4.0,
+        BPM_SLIDER_W + 3.0 + sk.text_width("000-000"),
+    )
+}
+
+/// The narrowest the filter bar's search field gets (skin pixels).
+const SEARCH_MIN_W: f32 = 60.0;
+/// The widest it gets, as a share of the bar: a maximized playlist doesn't need more.
+const SEARCH_MAX_SHARE: f32 = 0.5;
 /// A crate's values for a filter, each with its number of records, the most first.
 type FacetCounts = Rc<Vec<(String, usize)>>;
 
@@ -5856,13 +6130,34 @@ enum FooterFilters {
     Chips,
     /// STYLES, ARTISTS and LABELS.
     Buttons,
-    /// No room: ☰ opens the lists.
+    /// One FILTERS button, opening the panel.
+    Folded,
+    /// Not even that fits.
     None,
 }
 
-/// The list of a filter, open from its footer button or from ☰.
+/// The filter panel, open from a filter's button in the bar.
 fn facet_popup_id(f: Facet) -> Id {
     Id::new(("facet_list", f.name()))
+}
+
+/// A filter's button in the bar: "ARTISTS", or "ARTISTS 2" while two are picked.
+fn facet_button_label(shown: &crate::playlist::Playlist, f: Facet) -> String {
+    let name = match f {
+        Facet::Style => "STYLES",
+        Facet::Artist => "ARTISTS",
+        Facet::Label => "LABELS",
+        Facet::Format => "FORMATS",
+    };
+    match shown.filter(f).map(|p| p.len()) {
+        Some(n) => format!("{name} {n}"),
+        None => name.to_owned(),
+    }
+}
+
+/// The filter panel, open from the FILTERS button.
+fn filters_popup_id() -> Id {
+    Id::new("filters_panel")
 }
 /// Past this many styles, the footer shows the STYLES button and its list instead of chips.
 const STYLE_CHIPS_MAX: usize = 20;
@@ -5882,6 +6177,43 @@ fn row_id(idx: usize) -> Id {
 /// The id of a playlist row's context menu (egui's default for a response's popup).
 fn row_menu_id(idx: usize) -> Id {
     row_id(idx).with("popup")
+}
+
+/// Text drawn left-centred at `at` as `Painter::text` draws it, with the chars a search word
+/// covers (see [`crate::playlist::search_marks`]) in `hl`. Returns where it went.
+fn text_marked(
+    p: &egui::Painter,
+    at: Pos2,
+    text: String,
+    font: &egui::FontId,
+    col: Color32,
+    hl: Color32,
+    words: &[Vec<char>],
+) -> Rect {
+    let marks = crate::playlist::search_marks(&text, words);
+    if !marks.contains(&true) {
+        return p.text(at, egui::Align2::LEFT_CENTER, text, font.clone(), col);
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let mut run = String::new();
+    let mut lit = marks[0];
+    let mut push = |run: &str, lit: bool| {
+        let c = if lit { hl } else { col };
+        job.append(run, 0.0, egui::TextFormat::simple(font.clone(), c));
+    };
+    for (c, &m) in text.chars().zip(&marks) {
+        if m != lit {
+            push(&run, lit);
+            run.clear();
+            lit = m;
+        }
+        run.push(c);
+    }
+    push(&run, lit);
+    let galley = p.layout_job(job);
+    let rect = egui::Align2::LEFT_CENTER.anchor_size(at, galley.size());
+    p.galley(rect.min, galley, col);
+    rect
 }
 
 fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
@@ -6634,7 +6966,7 @@ mod tests {
         };
         assert_eq!(
             DiggrApp::window_size(&s, &skin),
-            vec2(575.0, 20.0 + 260.0 + 38.0) * 2.0
+            vec2(575.0, 20.0 + 16.0 + 260.0 + 38.0) * 2.0
         );
     }
 }
@@ -6657,6 +6989,8 @@ mod headless_tests {
     /// The playlist's top-left at 1×: right of the player column.
     const PL_LEFT: f32 = 275.0;
     const PL_TOP: f32 = 0.0;
+    /// The list's top below the playlist's: the title bar, then the filter bar.
+    const LIST_TOP: f32 = 36.0;
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(format!(
@@ -6912,7 +7246,10 @@ mod headless_tests {
         }
 
         fn row(&self, index: usize) -> Pos2 {
-            pos2(PL_LEFT + 60.0, PL_TOP + 20.0 + index as f32 * 13.0 + 6.5)
+            pos2(
+                PL_LEFT + 60.0,
+                PL_TOP + LIST_TOP + index as f32 * 13.0 + 6.5,
+            )
         }
 
         fn ids(&self, crate_id: CrateId) -> Vec<EntryId> {
@@ -7715,9 +8052,9 @@ mod headless_tests {
         assert!(!rig.app.settings.show_waveform);
         rig.click(at);
         assert!(rig.app.settings.show_waveform);
-        // Main + waveform (174) still fits beside the playlist's 10 rows (188).
+        // Main + waveform (174) still fits beside the playlist's 10 rows (204).
         let size = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
-        assert_eq!(size, vec2(550.0, 188.0));
+        assert_eq!(size, vec2(550.0, 204.0));
         rig.click(at);
         assert!(!rig.app.settings.show_waveform);
     }
@@ -8031,14 +8368,17 @@ mod headless_tests {
 
     /// Row `i` of the crate sidebar (a playlist at least 600 pixels wide).
     fn side_row(i: usize) -> Pos2 {
-        pos2(PL_LEFT + 12.0 + 40.0, PL_TOP + 20.0 + i as f32 * 13.0 + 6.5)
+        pos2(
+            PL_LEFT + 12.0 + 40.0,
+            PL_TOP + LIST_TOP + i as f32 * 13.0 + 6.5,
+        )
     }
 
     /// Row `i` of the list beside the sidebar, under the column header.
     fn side_list_row(i: usize) -> Pos2 {
         pos2(
             PL_LEFT + 12.0 + 110.0 + 100.0,
-            PL_TOP + 20.0 + (i + 1) as f32 * 13.0 + 6.5,
+            PL_TOP + LIST_TOP + (i + 1) as f32 * 13.0 + 6.5,
         )
     }
 
@@ -8210,7 +8550,7 @@ mod headless_tests {
         let last = rig.app.pl_rows() - 1;
         let bottom = pos2(
             PL_LEFT + 12.0 + 40.0,
-            PL_TOP + 20.0 + last as f32 * 13.0 + 6.5,
+            PL_TOP + LIST_TOP + last as f32 * 13.0 + 6.5,
         );
         rig.click(bottom);
         assert_eq!(rig.app.crates.shown_id(), coll);
@@ -8274,9 +8614,19 @@ mod headless_tests {
     }
 
     /// The centre of footer button `name` (`pl_plus`, `pl_menu`, `pl_opts`).
+    /// The middle of the filter bar, top to bottom.
+    const BAR_Y: f32 = PL_TOP + 20.0 + 8.0;
+
+    /// The filter bar's ×, at its right end.
+    fn bar_clear(rig: &Rig) -> Pos2 {
+        let w = rig.app.pl_geometry().0 as f32;
+        let clear_w = rig.app.def.sprite("bpm_clear").w as f32;
+        pos2(PL_LEFT + w - 4.0 - clear_w / 2.0, BAR_Y)
+    }
+
     fn footer_button(rig: &Rig, name: &str) -> Pos2 {
         let r = rig.app.def.at(name);
-        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
+        let bottom = PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0;
         pos2(
             PL_LEFT + r.x as f32 + r.w as f32 / 2.0,
             bottom + r.y as f32 + r.h as f32 / 2.0,
@@ -8314,16 +8664,10 @@ mod headless_tests {
         ] {
             assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
         }
-        assert!(!shows(&out, "Show all tempos"), "only while a range is set");
+        assert!(!shows(&out, "Show all tempos"), "the filter bar clears it");
         rig.click_text("Sort");
         rig.click_text("BPM");
         assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
-
-        let ctx = rig.ctx.clone();
-        rig.app.apply(Action::SetBpmFilter(Some((125, 135))), &ctx);
-        rig.click(footer_button(&rig, "pl_menu"));
-        rig.click_text("Show all tempos");
-        assert_eq!(rig.app.crates.shown().bpm_filter(), None);
 
         rig.click(footer_button(&rig, "pl_opts"));
         let out = rig.frame(Vec::new());
@@ -8375,8 +8719,8 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_footer_bpm_control_sets_and_clears_the_range_without_taking_a_row() {
-        let mut rig = Rig::new("bpm-footer", Vec::new(), |_| {});
+    fn the_bar_bpm_control_sets_the_range_and_the_bar_x_clears_it() {
+        let mut rig = Rig::new("bpm-bar", Vec::new(), |_| {});
         let ids = rig.fill_playlist(7);
         rig.frame(Vec::new());
         assert_eq!(rig.app.bpm_slider, None, "no tempo: no control");
@@ -8388,9 +8732,7 @@ mod headless_tests {
         assert_eq!(rig.app.pl_visible_rows(), rig.app.pl_rows(), "no row taken");
 
         // Drag the right handle to the middle of the track.
-        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
-        let y = bottom + 12.0 + 9.0;
-        let at = |x: f32| pos2(PL_LEFT + x, y);
+        let at = |x: f32| pos2(PL_LEFT + x, BAR_Y);
         rig.frame(vec![Event::PointerMoved(at(x1))]);
         rig.press(at(x1), PointerButton::Primary, true);
         let mid = (x0 + x1) / 2.0;
@@ -8406,10 +8748,8 @@ mod headless_tests {
         assert_eq!(shown.shown_rows(), [0, 1]);
         assert_eq!(rig.app.crates.shown().cursor(), None);
 
-        // × after the range clears it; a double-click on the slider does too.
-        // × sits after the 7-character range ("124-131") and a 3-pixel gap.
-        let clear = at(x1 + 3.0 + rig.app.def.font.advance as f32 * 7.0 + 2.0 + 3.0);
-        rig.click(clear);
+        // The bar's × clears it; a double-click on the slider does too.
+        rig.click(bar_clear(&rig));
         assert_eq!(rig.app.crates.shown().bpm_filter(), None, "× clears");
         let ctx = rig.ctx.clone();
         rig.app.apply(Action::SetBpmFilter(Some((130, 135))), &ctx);
@@ -8429,8 +8769,8 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_bpm_slider_is_short_and_fixed_and_the_time_stays_in_its_box() {
-        let mut rig = Rig::new("bpm-footer-narrow", Vec::new(), |_| {});
+    fn the_bpm_slider_is_short_and_fixed_and_the_search_keeps_its_room() {
+        let mut rig = Rig::new("bpm-bar-narrow", Vec::new(), |_| {});
         rig.fill_playlist(3);
         set_tempos(&mut rig, &[124, 128, 139]);
         let p = rig.app.crates.shown_mut();
@@ -8441,10 +8781,9 @@ mod headless_tests {
         let (x0, x1, text) = rig.app.bpm_slider.expect("the control is drawn");
         assert_eq!(x1 - x0, BPM_SLIDER_W);
         assert!(text, "the range text fits at the classic width");
-        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0;
         assert!(
-            x1 + 3.0 + 41.0 + 3.0 + 7.0 <= box_left,
-            "clear of the time's box"
+            x0 >= 4.0 + SEARCH_MIN_W + 4.0,
+            "the search field keeps its room: {x0}"
         );
 
         // Wider, the slider keeps its width.
@@ -8492,8 +8831,7 @@ mod headless_tests {
         );
         assert_eq!(rig.app.pl_visible_rows(), rig.app.pl_rows(), "no row taken");
         // The first chip is the style of most records: DEEP HOUSE.
-        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
-        let chip = pos2(PL_LEFT + x + 4.0, bottom + 12.0 + 9.0);
+        let chip = pos2(PL_LEFT + x + 4.0, BAR_Y);
         rig.click(chip);
         let shown = rig.app.crates.shown();
         assert!(shown.picked(Facet::Style, "Deep House"));
@@ -8526,12 +8864,7 @@ mod headless_tests {
             FooterFilters::Buttons,
             "the chips don't fit at the classic width"
         );
-        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0;
-        let label = rig.app.def.font.advance as f32 * "STYLES 1".len() as f32;
-        assert!(x + label <= box_left, "clear of the time's box");
-
-        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
-        rig.click(pos2(PL_LEFT + x + 4.0, bottom + 12.0 + 9.0));
+        rig.click(pos2(PL_LEFT + x + 4.0, BAR_Y));
         let out = rig.frame(Vec::new());
         assert!(
             shows(&out, "Minimal") && shows(&out, "Electro"),
@@ -8606,39 +8939,43 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_footer_shows_chips_then_buttons_then_nothing_as_it_narrows() {
+    fn the_bar_shows_chips_then_buttons_then_filters_as_it_narrows() {
         let mut rig = credited_rig("filter-tiers");
         rig.app.settings.playlist_width = 700;
         rig.frame(Vec::new());
-        let (_, tier) = rig.app.filters_drawn.unwrap();
+        let (x, tier) = rig.app.filters_drawn.unwrap();
         assert_eq!(tier, FooterFilters::Chips);
-        rig.app.settings.playlist_width = 380;
+        // The search field takes at most half the bar; the filters follow it.
+        assert!(x <= 4.0 + 350.0 + 4.0 + STYLE_GAP, "{x}");
+        rig.app.settings.playlist_width = 300;
         rig.frame(Vec::new());
         let (x, tier) = rig.app.filters_drawn.unwrap();
         assert_eq!(tier, FooterFilters::Buttons);
-        // The time box moves right with the playlist's width (380 is 105 past 275).
-        let box_left = rig.app.def.at("pl_info").x as f32 - 2.0 + 105.0;
-        let advance = rig.app.def.font.advance as f32;
-        let need = advance * "STYLES ARTISTS LABELS".len() as f32;
-        assert!(x + need <= box_left, "clear of the time's box");
-        // Classic width with tempos: the BPM control takes the room.
+        assert!(x >= 4.0 + SEARCH_MIN_W, "after the search field: {x}");
+        // Classic width with tempos: one FILTERS button after the BPM control.
         rig.app.settings.playlist_width = 275;
         set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
         rig.frame(Vec::new());
-        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::None);
+        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::Folded);
+        assert!(rig.app.bpm_slider.is_some());
     }
 
     #[test]
-    fn the_menu_opens_any_list_at_classic_width() {
-        let mut rig = credited_rig("filter-menu");
+    fn the_filters_button_opens_the_panel_at_classic_width() {
+        let mut rig = credited_rig("filter-panel");
         set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
         rig.frame(Vec::new());
-        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::None);
-        rig.click(footer_button(&rig, "pl_menu"));
-        rig.click_text("Filter by artist…");
+        let (x, tier) = rig.app.filters_drawn.unwrap();
+        assert_eq!(tier, FooterFilters::Folded);
+        rig.click(pos2(PL_LEFT + x + 4.0, BAR_Y));
+        let out = rig.frame(Vec::new());
+        for t in ["STYLE", "ARTIST", "LABEL"] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
+        // The ARTIST tab: search, then pick.
+        rig.click_text("ARTIST");
         let out = rig.frame(Vec::new());
         assert!(shows(&out, "Nightcraft"), "{:?}", text_list(&out));
-        // Search, then pick.
         rig.click_text("Filter artists…");
         rig.frame(vec![Event::Text("parrish".into())]);
         let out = rig.frame(Vec::new());
@@ -8654,20 +8991,31 @@ mod headless_tests {
             2,
             "not the joint record"
         );
-        // Show all records keeps the BPM range.
-        let ctx = rig.ctx.clone();
-        rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
-        rig.app.apply(
-            Action::TogglePick(Facet::Label, "Lowtide Tapes".into()),
-            &ctx,
+        // The LABEL tab keeps the artist picked.
+        rig.click_text("LABEL");
+        rig.click_text("Sound Signature");
+        assert!(rig.app.crates.shown().picked(Facet::Artist, "Theo Parrish"));
+        assert!(
+            rig.app
+                .crates
+                .shown()
+                .picked(Facet::Label, "Sound Signature")
         );
-        egui::Popup::close_all(&ctx);
+        // FILTERS counts the set filters; ☰ has no filter items.
+        egui::Popup::close_all(&rig.ctx.clone());
         rig.frame(Vec::new());
         rig.click(footer_button(&rig, "pl_menu"));
-        rig.click_text("Show all records");
+        let out = rig.frame(Vec::new());
+        assert!(!text_list(&out).iter().any(|t| t.starts_with("Filter by")));
+        assert!(!shows(&out, "Show all records"));
+        // The bar's × turns them all off, the BPM range too.
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);
+        egui::Popup::close_all(&ctx);
+        rig.frame(Vec::new());
+        rig.click(bar_clear(&rig));
         let p = rig.app.crates.shown();
-        assert!(!p.picks_filter());
-        assert!(p.bpm_filter().is_some(), "the BPM range stays");
+        assert!(!p.is_filtered(), "everything off");
     }
 
     #[test]
@@ -8688,8 +9036,7 @@ mod headless_tests {
         let advance = rig.app.def.font.advance as f32;
         let before = "DEEP HOUSE MINIMAL TECHNO ARTISTS ".len() as f32 * advance - 4.0 * advance
             + 4.0 * STYLE_GAP;
-        let bottom = PL_TOP + 20.0 + rig.app.pl_rows() as f32 * 13.0;
-        let labels = pos2(PL_LEFT + x + before + 6.0, bottom + 12.0 + 9.0);
+        let labels = pos2(PL_LEFT + x + before + 6.0, BAR_Y);
         rig.double_click(labels);
         assert_eq!(rig.app.crates.shown().filter(Facet::Label), None);
         assert_eq!(rig.app.crates.shown().shown_rows().len(), 6);
@@ -8720,14 +9067,16 @@ mod headless_tests {
         rig.app.settings.playlist_width = 400;
         rig.frame(Vec::new());
         assert_eq!(rig.app.offered_facets(), [Facet::Format]);
-        // No styles here: just the FORMATS button.
-        assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::Buttons);
-        rig.click(footer_button(&rig, "pl_menu"));
+        // No styles here: just the FORMATS button, opening the panel's only tab.
+        let (x, tier) = rig.app.filters_drawn.unwrap();
+        assert_eq!(tier, FooterFilters::Buttons);
+        rig.click(pos2(PL_LEFT + x + 4.0, BAR_Y));
         let out = rig.frame(Vec::new());
-        assert!(shows(&out, "Filter by format…"), "{:?}", text_list(&out));
-        assert!(!shows(&out, "Filter by style…"));
-        rig.click_text("Filter by format…");
-        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "FORMAT") && !shows(&out, "STYLE"),
+            "{:?}",
+            text_list(&out)
+        );
         assert!(
             shows(&out, "Vinyl") && shows(&out, "File"),
             "{:?}",
@@ -8742,6 +9091,212 @@ mod headless_tests {
         let ctx = rig.ctx.clone();
         rig.app.apply(Action::ClearPicks(None), &ctx);
         assert!(!rig.app.crates.shown().is_filtered());
+    }
+
+    #[test]
+    fn a_row_menu_keeps_only_its_label_or_searches_it() {
+        // The collection crate: Only this label picks it, and LABELS counts it.
+        let mut rig = credited_rig("row-only");
+        rig.frame(Vec::new());
+        rig.click_with(rig.row(0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Only this artist"), "{:?}", text_list(&out));
+        rig.click_text("Only this label");
+        let p = rig.app.crates.shown();
+        let picked: Vec<&String> = p.filter(Facet::Label).unwrap().iter().collect();
+        assert_eq!(picked, ["Sound Signature"]);
+        assert_eq!(p.shown_rows().len(), 2);
+
+        // Another crate: Search ‹label› puts it in the search field, which takes the keyboard.
+        let mut rig = Rig::new("row-search", Vec::new(), |_| {});
+        rig.fill_playlist(3);
+        set_records(
+            &mut rig,
+            &[
+                ("Techno", "A", "Lowtide Tapes"),
+                ("Techno", "B", "Other"),
+                ("Techno", "C", "Lowtide Tapes"),
+            ],
+        );
+        rig.frame(Vec::new());
+        rig.click_with(rig.row(0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Only this label"), "not offered here");
+        rig.click_text("Search Lowtide Tapes");
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.pl_search, "Lowtide Tapes");
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 2]);
+        assert!(rig.ctx.memory(|m| m.has_focus(Id::new("pl_search"))));
+    }
+
+    /// The middle of the filter bar's search field.
+    fn search_at() -> Pos2 {
+        pos2(PL_LEFT + 40.0, PL_TOP + 20.0 + 8.0)
+    }
+
+    /// Typing `text` as a keyboard does: each letter's key press and its text.
+    fn type_keys(rig: &mut Rig, text: &str) {
+        for c in text.chars() {
+            let key = Key::from_name(&c.to_uppercase().to_string()).expect("a letter key");
+            rig.frame(vec![
+                Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                },
+                Event::Text(c.to_string()),
+            ]);
+        }
+    }
+
+    /// Three files playing, credited to A, B and C, the first and last on Lowtide Tapes.
+    fn search_rig(name: &str) -> (Rig, Vec<EntryId>) {
+        let mut rig = Rig::new(
+            name,
+            vec![
+                fixture("tone.flac"),
+                fixture("tone.wav"),
+                fixture("tone.ogg"),
+            ],
+            |_| {},
+        );
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first file plays",
+        );
+        let ids = rig.ids(PLAYLIST);
+        set_records(
+            &mut rig,
+            &[
+                ("Techno", "A", "Lowtide Tapes"),
+                ("Techno", "B", "Other"),
+                ("Techno", "C", "Lowtide Tapes"),
+            ],
+        );
+        (rig, ids)
+    }
+
+    #[test]
+    fn typing_in_the_search_bar_never_triggers_the_letter_shortcuts() {
+        let (mut rig, _) = search_rig("search-keys");
+        rig.click(search_at());
+        type_keys(&mut rig, "xcvfnih");
+        assert_eq!(rig.app.pl_search, "xcvfnih");
+        assert_eq!(
+            rig.app.position.state,
+            PlayState::Playing,
+            "not paused or stopped"
+        );
+        assert!(rig.app.fullscreen.is_none(), "no fullscreen");
+        assert!(!rig.app.help, "no help");
+        assert!(
+            rig.app.crates.shown().shown_rows().is_empty(),
+            "nothing matches"
+        );
+    }
+
+    #[test]
+    fn the_search_filters_as_typed_and_its_keys_work() {
+        let (mut rig, ids) = search_rig("search-live");
+        // Cmd+F gives the field the keyboard.
+        rig.key(Key::F, Modifiers::COMMAND);
+        rig.frame(Vec::new());
+        assert!(rig.ctx.memory(|m| m.has_focus(Id::new("pl_search"))));
+        assert!(rig.app.fullscreen.is_none());
+        type_keys(&mut rig, "lowtide");
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 2]);
+        assert_eq!(rig.app.queue, [ids[0], ids[2]], "next follows the search");
+        // Esc clears only the search; the label filter stays.
+        let ctx = rig.ctx.clone();
+        rig.app
+            .apply(Action::TogglePick(Facet::Artist, "C".into()), &ctx);
+        rig.key(Key::Escape, Modifiers::NONE);
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_search.is_empty());
+        assert!(rig.app.crates.shown().search().is_empty());
+        assert_eq!(
+            rig.app.crates.shown().shown_rows(),
+            [2],
+            "the artist filter stays"
+        );
+        rig.app.apply(Action::ClearPicks(None), &ctx);
+        // Enter plays the first shown entry.
+        rig.click(search_at());
+        type_keys(&mut rig, "other");
+        rig.key(Key::Enter, Modifiers::NONE);
+        rig.until(
+            |r| r.app.crates.shown().current() == Some(ids[1]),
+            "the first shown entry plays",
+        );
+        // P on the hidden playing entry clears the search and the filters.
+        rig.click(search_at());
+        type_keys(&mut rig, " zzz");
+        rig.key(Key::Escape, Modifiers::NONE);
+        rig.click(search_at());
+        type_keys(&mut rig, "lowtide");
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 2]);
+        rig.app.show_playing_entry();
+        rig.frame(Vec::new());
+        assert!(!rig.app.crates.shown().is_filtered());
+        assert!(rig.app.pl_search.is_empty(), "the field follows");
+    }
+
+    #[test]
+    fn the_rows_light_what_the_search_matches() {
+        let (mut rig, _) = search_rig("search-light");
+        rig.app
+            .crates
+            .shown_mut()
+            .entries_mut()
+            .nth(1)
+            .unwrap()
+            .title = "Night Moves".into();
+        rig.click(search_at());
+        type_keys(&mut rig, "moves");
+        let out = rig.frame(Vec::new());
+        let hl = color(rig.app.def.colors.pl_current);
+        // The row's text in runs: the matched one in the current-entry colour.
+        let mut lit = Vec::new();
+        fn walk(shape: &egui::Shape, hl: Color32, lit: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.job.sections.len() > 1 => {
+                    let job = &t.galley.job;
+                    for sec in job.sections.iter().filter(|s| s.format.color == hl) {
+                        lit.push(job.text[sec.byte_range.start.0..sec.byte_range.end.0].to_owned());
+                    }
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, hl, lit)),
+                _ => {}
+            }
+        }
+        for s in &out.shapes {
+            walk(&s.shape, hl, &mut lit);
+        }
+        assert_eq!(lit, ["Moves"], "{:?}", text_list(&out));
+    }
+
+    #[test]
+    fn showing_another_crate_clears_the_search() {
+        let (mut rig, _) = search_rig("search-switch");
+        rig.click(search_at());
+        type_keys(&mut rig, "lowtide");
+        rig.frame(Vec::new());
+        assert!(rig.app.crates.shown().is_filtered());
+        let other = rig.app.crates.create("Keepers").unwrap();
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::ShowCrate(other), &ctx);
+        rig.frame(Vec::new());
+        assert!(rig.app.pl_search.is_empty());
+        rig.app.apply(Action::ShowCrate(PLAYLIST), &ctx);
+        rig.frame(Vec::new());
+        assert!(
+            !rig.app.crates.shown().is_filtered(),
+            "not narrowed when shown again"
+        );
     }
 
     #[test]

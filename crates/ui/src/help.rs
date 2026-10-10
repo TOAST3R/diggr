@@ -73,6 +73,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
+            ("Cmd+F", "search the crate (Esc: clear the search)"),
         ],
     ),
     (
