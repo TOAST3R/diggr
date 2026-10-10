@@ -1,30 +1,4 @@
-# playlist-filters Specification
-
-## Purpose
-Narrows a crate to a tempo range in one move: a BPM range in the playlist footer decides which entries are shown and which play, remembered per crate, without fetching anything to learn a tempo.
-## Requirements
-### Requirement: What plays under a filter
-Next, previous, shuffle, the pre-warmed next track and the previews downloaded ahead SHALL use only the entries the filter shows. The playing track SHALL finish even if the filter hides it, and SHALL be followed by the next shown entry after it in crate order. Changing the filter SHALL NOT interrupt playback and SHALL cause zero underruns. Keyboard navigation, the cursor, Select all and Invert selection SHALL work over the shown entries. Entries SHALL keep their crate numbers. Pressing P while the filter hides the playing entry SHALL turn the filter off and show the playing entry. Sorting and M3U export SHALL act on the whole crate.
-
-#### Scenario: Next under a filter
-- **WHEN** the range is 130–140, entry 12 (134 BPM) plays, entries 13 and 14 are at 124 BPM and entry 15 is at 138 BPM
-- **THEN** entry 15 plays after entry 12
-
-#### Scenario: Hidden while playing
-- **WHEN** a range change hides the playing entry
-- **THEN** it keeps playing without interruption, and the next shown entry after it plays next
-
-#### Scenario: P on a hidden entry
-- **WHEN** the filter hides the playing entry and the user presses P
-- **THEN** the filter is turned off, and the list scrolls to the playing entry
-
-#### Scenario: Previews follow the filter
-- **WHEN** a dig crate is filtered to 130–140 BPM while entry 5 plays
-- **THEN** the previews downloaded ahead are those of the next shown entries, not of hidden ones
-
-#### Scenario: Export ignores the filter
-- **WHEN** a filtered crate of 301 entries showing 42 is exported as M3U8
-- **THEN** the file lists all 301 entries
+## MODIFIED Requirements
 
 ### Requirement: BPM filter control
 When the shown crate has at least two different known tempos, the filter bar (see `filter-bar`) SHALL show a BPM filter control after the search field, with:
@@ -65,4 +39,3 @@ The control SHALL NOT take a row of the list. An entry SHALL be shown when its B
 #### Scenario: Not enough tempos
 - **WHEN** the shown crate has no known tempo, or only one
 - **THEN** the filter bar shows no BPM control
-

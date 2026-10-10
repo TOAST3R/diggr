@@ -486,6 +486,9 @@ pub const PL_TOP_L: u16 = 6;
 pub const PL_TOP_R: u16 = 34;
 pub const PL_BOTTOM_L: u16 = 125;
 pub const PL_BOTTOM_R: u16 = 150;
+/// Heights of the filter bar and of its search field's sunken box.
+pub const PL_FILTER_H: u16 = 16;
+pub const PL_FIELD_H: u16 = 12;
 
 /// One column of a plain title bar (its gradient and top/bottom bevel), to stretch behind text.
 fn title_fill(c: &mut Canvas, x: i32, y: i32, h: i32) {
@@ -636,6 +639,62 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         // The time readout's LCD, just left of the resize grip.
         c.inset(x + 50, y + 12, 84, 11, LCD_BG);
     });
+    // The filter bar under the playlist's title bar: a panel strip stretched like the
+    // bottom bar, and a sunken LCD field (left edge, a column to tile, right edge) the app
+    // stretches to the search field's width.
+    b.sprite("pl_filter_l", 2, PL_FILTER_H, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            2,
+            PL_FILTER_H as i32,
+            PANEL_TOP,
+            PANEL_BOT,
+            (true, false),
+        );
+    });
+    b.sprite("pl_filter_fill", 1, PL_FILTER_H, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            1,
+            PL_FILTER_H as i32,
+            PANEL_TOP,
+            PANEL_BOT,
+            (false, false),
+        );
+    });
+    b.sprite("pl_filter_r", 2, PL_FILTER_H, |c, x, y| {
+        bar_piece(
+            c,
+            x,
+            y,
+            2,
+            PL_FILTER_H as i32,
+            PANEL_TOP,
+            PANEL_BOT,
+            (false, true),
+        );
+    });
+    for (name, left, right) in [
+        ("pl_field_l", true, false),
+        ("pl_field_fill", false, false),
+        ("pl_field_r", false, true),
+    ] {
+        b.sprite(name, 1, PL_FIELD_H, |c, x, y| {
+            c.fill(x, y, 1, PL_FIELD_H as i32, LCD_BG);
+            c.px(x, y, LO);
+            c.px(x, y + PL_FIELD_H as i32 - 1, HI);
+            if left {
+                c.fill(x, y, 1, PL_FIELD_H as i32 - 1, LO);
+            }
+            if right {
+                c.fill(x, y + 1, 1, PL_FIELD_H as i32 - 1, HI);
+            }
+        });
+    }
     b.sprite("pl_left", 12, 1, |c, x, y| {
         c.grad_h(x, y, 12, 1, &[HI, PANEL_TOP, PANEL_BOT]);
         c.px(x + 11, y, LO);
@@ -1073,6 +1132,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         pl_width: 275,
         pl_top_h: 20,
         pl_bottom_h: 38,
+        pl_filter_h: PL_FILTER_H,
         pl_row_h: 13,
         sprites: b.sprites,
         layout: layout(),
@@ -1152,9 +1212,7 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_plus", R::new(11, 12, 18, 18)),
         ("pl_menu", R::new(32, 12, 18, 18)),
         ("pl_opts", R::new(53, 12, 18, 18)),
-        // The BPM control starts here and runs to the time readout (its width is worked out
-        // at runtime); the readout is right-aligned in `pl_info`.
-        ("pl_bpm", R::new(77, 12, 0, 18)),
+        // The time readout is right-aligned in `pl_info`.
         ("pl_info", R::new(177, 14, 80, 7)),
         ("pl_resize", R::new(263, 26, 11, 11)),
     ];

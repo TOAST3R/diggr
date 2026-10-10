@@ -46,12 +46,15 @@ fn records_rig(name: &str, releases: &[u64]) -> (Rig, Vec<EntryId>) {
 
 /// The middle of the record row that starts at list row `unit` (record rows are two high).
 fn record_at(unit: usize) -> Pos2 {
-    pos2(PL_LEFT + 120.0, PL_TOP + 20.0 + (unit as f32 + 1.0) * 13.0)
+    pos2(
+        PL_LEFT + 120.0,
+        PL_TOP + LIST_TOP + (unit as f32 + 1.0) * 13.0,
+    )
 }
 
 /// The record row's ▸ / ▾ mark, starting at list row `unit`.
 fn open_mark_at(unit: usize) -> Pos2 {
-    pos2(PL_LEFT + 42.0, PL_TOP + 20.0 + unit as f32 * 13.0 + 6.5)
+    pos2(PL_LEFT + 42.0, PL_TOP + LIST_TOP + unit as f32 * 13.0 + 6.5)
 }
 
 fn titles(rig: &Rig) -> Vec<String> {
