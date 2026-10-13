@@ -2,7 +2,7 @@
 //! window, plus fullscreen visual mode.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -143,9 +143,9 @@ pub struct DiggrApp {
     bpm_slider: Option<(f32, f32, bool)>,
     /// The shown crate's values per filter (style, artist, label) with their record counts,
     /// and what they were counted from.
-    facet_cache: [Option<(CrateId, u64, FacetCounts)>; 4],
+    facet_cache: [Option<(CrateId, u64, FacetCounts)>; 5],
     /// What each filter's list is narrowed to.
-    facet_search: [String; 4],
+    facet_search: [String; 5],
     /// "Records leave this crate with…" was said this session.
     discogs_hint_shown: bool,
     /// Where the footer's filters were last drawn, and how, for tests.
@@ -161,6 +161,8 @@ pub struct DiggrApp {
     search_focus: bool,
     /// The filter panel's tab.
     panel_tab: Facet,
+    /// The year last clicked in the YEAR grid: a Shift-click picks the run from it.
+    year_anchor: Option<u16>,
     /// Scrolling not yet enough for a whole row, in points.
     pl_scroll_acc: f32,
     /// The window's content size in skin pixels (the maximized layout follows it).
@@ -337,7 +339,7 @@ impl DiggrApp {
             side_crate: None,
             #[cfg(test)]
             bpm_slider: None,
-            facet_cache: [None, None, None, None],
+            facet_cache: Default::default(),
             facet_search: Default::default(),
             discogs_hint_shown: false,
             #[cfg(test)]
@@ -348,6 +350,7 @@ impl DiggrApp {
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
+            year_anchor: None,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
             max_seen: false,
@@ -2824,22 +2827,25 @@ impl DiggrApp {
         }
     }
 
-    /// The filters the shown crate offers, of those with at least two values: style, artist
-    /// and label in the Discogs crates, format in any crate with entries from Discogs.
+    /// The filters the shown crate offers: those its records have at least two values of (a
+    /// local file has none, so a crate of them offers none).
     fn offered_facets(&mut self) -> Vec<Facet> {
-        let discogs = self.crates.is_discogs(self.crates.shown_id());
-        let dug = discogs
-            || self
-                .crates
-                .shown()
-                .entries()
-                .iter()
-                .any(|e| e.origin.is_some());
         Facet::ALL
             .into_iter()
-            .filter(|&f| if f == Facet::Format { dug } else { discogs })
             .filter(|&f| self.facet_counts(f).len() >= 2)
             .collect()
+    }
+
+    /// Whether the shown crate offers `facet` (see [`Self::offered_facets`]), from the counts
+    /// the filter bar keeps when they are current.
+    fn offers(&self, facet: Facet) -> bool {
+        let shown = self.crates.shown();
+        match &self.facet_cache[facet as usize] {
+            Some((c, rev, list)) if (*c, *rev) == (self.crates.shown_id(), shown.rev()) => {
+                list.len() >= 2
+            }
+            _ => shown.counts(facet).len() >= 2,
+        }
     }
 
     /// The widths the filter buttons want: with style chips (when the styles are few enough)
@@ -3057,7 +3063,68 @@ impl DiggrApp {
         if let Some(f) = chosen.or(tab) {
             ui.separator();
             let list = self.facet_counts(f);
-            self.facet_list(ui, f, &list, actions);
+            if f == Facet::Year {
+                self.year_grid(ui, &list, actions);
+            } else {
+                self.facet_list(ui, f, &list, actions);
+            }
+        }
+    }
+
+    /// The YEAR tab: every year from the crate's first to its last, five a row, each with its
+    /// number of records (years without any are dimmed). A click picks or unpicks a year; a
+    /// Shift-click picks the run from the year clicked before.
+    fn year_grid(&mut self, ui: &mut Ui, list: &FacetCounts, actions: &mut Vec<Action>) {
+        ui.set_min_width(220.0);
+        let counts: BTreeMap<u16, usize> = list
+            .iter()
+            .filter_map(|(y, n)| Some((y.parse().ok()?, *n)))
+            .collect();
+        let (Some(&lo), Some(&hi)) = (counts.keys().next(), counts.keys().next_back()) else {
+            return;
+        };
+        let shown = self.crates.shown();
+        let shift = ui.input(|i| i.modifiers.shift);
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                egui::Grid::new("year_grid").num_columns(5).show(ui, |ui| {
+                    // Rows start on a year ending in 0 or 5, so decades line up.
+                    for y in lo - lo % 5..=hi {
+                        let n = counts.get(&y).copied().unwrap_or(0);
+                        let text =
+                            format!("{y}\n{}", if n > 0 { n.to_string() } else { "·".into() });
+                        let on = shown.picked(Facet::Year, &y.to_string());
+                        let cell =
+                            ui.add_enabled(n > 0 && y >= lo, egui::Button::selectable(on, text));
+                        if cell.clicked() {
+                            let run = match self.year_anchor.filter(|_| shift) {
+                                Some(a) => a.min(y)..=a.max(y),
+                                None => y..=y,
+                            };
+                            for r in run.filter(|r| counts.contains_key(r)) {
+                                // A Shift-click only adds; a plain click toggles.
+                                if !shift || !shown.picked(Facet::Year, &r.to_string()) {
+                                    actions.push(Action::TogglePick(Facet::Year, r.to_string()));
+                                }
+                            }
+                            self.year_anchor = Some(y);
+                        }
+                        if (y + 1) % 5 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            });
+        ui.separator();
+        if ui
+            .add_enabled(
+                shown.filter(Facet::Year).is_some(),
+                egui::Button::new("Clear"),
+            )
+            .clicked()
+        {
+            actions.push(Action::ClearPicks(Some(Facet::Year)));
         }
     }
 
@@ -3384,50 +3451,35 @@ impl DiggrApp {
         self.dig_entry_menu(ui, e, actions);
     }
 
-    /// The entry menu's filter shortcuts: in the Discogs crates, keep only this record's
-    /// artist, label or a style; elsewhere, search its label or catalogue number.
+    /// The entry menu's filter shortcuts: keep only this record's artist, label or a style,
+    /// where the crate offers that filter; where it offers no label filter (a label crate),
+    /// search its label or catalogue number.
     fn filter_items(&self, ui: &mut Ui, e: &crate::playlist::Entry, actions: &mut Vec<Action>) {
         let Some(o) = e.origin.as_ref() else {
             return;
         };
         let mut items = Vec::new();
-        if self.crates.is_discogs(self.crates.shown_id()) {
-            for (f, what) in [(Facet::Artist, "artist"), (Facet::Label, "label")] {
-                if let Some(v) = e.values(f).next() {
-                    items.push((
-                        format!("Only this {what}"),
-                        Action::OnlyPick(f, v.to_owned()),
-                    ));
-                }
-            }
-            let styles: Vec<&str> = e.values(Facet::Style).collect();
-            if !items.is_empty() || !styles.is_empty() {
-                ui.separator();
-            }
-            for (label, a) in items {
-                if ui.button(label).clicked() {
-                    actions.push(a);
-                    ui.close();
-                }
-            }
-            if !styles.is_empty() {
-                ui.menu_button("Only this style", |ui| {
-                    for st in styles {
-                        if ui.button(st).clicked() {
-                            actions.push(Action::OnlyPick(Facet::Style, st.to_owned()));
-                            ui.close();
-                        }
-                    }
-                });
-            }
-            return;
-        }
-        for text in [o.label.trim(), o.catno.trim()] {
-            if !text.is_empty() {
-                items.push((format!("Search {text}"), Action::SearchFor(text.to_owned())));
+        for (f, what) in [(Facet::Artist, "artist"), (Facet::Label, "label")] {
+            if let Some(v) = e.values(f).next().filter(|_| self.offers(f)) {
+                items.push((
+                    format!("Only this {what}"),
+                    Action::OnlyPick(f, v.to_owned()),
+                ));
             }
         }
-        if !items.is_empty() {
+        if !self.offers(Facet::Label) {
+            for text in [o.label.trim(), o.catno.trim()] {
+                if !text.is_empty() {
+                    items.push((format!("Search {text}"), Action::SearchFor(text.to_owned())));
+                }
+            }
+        }
+        let styles: Vec<&str> = if self.offers(Facet::Style) {
+            e.values(Facet::Style).collect()
+        } else {
+            Vec::new()
+        };
+        if !items.is_empty() || !styles.is_empty() {
             ui.separator();
         }
         for (label, a) in items {
@@ -3435,6 +3487,16 @@ impl DiggrApp {
                 actions.push(a);
                 ui.close();
             }
+        }
+        if !styles.is_empty() {
+            ui.menu_button("Only this style", |ui| {
+                for st in styles {
+                    if ui.button(st).clicked() {
+                        actions.push(Action::OnlyPick(Facet::Style, st.to_owned()));
+                        ui.close();
+                    }
+                }
+            });
         }
     }
 
@@ -6277,6 +6339,7 @@ fn facet_button_label(shown: &crate::playlist::Playlist, f: Facet) -> String {
         Facet::Style => "STYLES",
         Facet::Artist => "ARTISTS",
         Facet::Label => "LABELS",
+        Facet::Year => "YEARS",
         Facet::Format => "FORMATS",
     };
     match shown.filter(f).map(|p| p.len()) {
@@ -8992,7 +9055,7 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_style_filter_shows_chips_in_the_discogs_crates_only() {
+    fn the_style_filter_shows_chips_in_any_crate_with_records() {
         let mut rig = Rig::new("style-chips", Vec::new(), |_| {});
         rig.fill_playlist(4);
         set_styles(
@@ -9000,11 +9063,9 @@ mod headless_tests {
             &["Deep House", "Minimal, Techno", "Electro", "Deep House"],
         );
         rig.app.settings.playlist_width = 700;
+        // Not a Discogs crate: the control is drawn all the same.
         rig.frame(Vec::new());
-        assert_eq!(
-            rig.app.filters_drawn, None,
-            "not a Discogs crate: no control"
-        );
+        assert!(rig.app.filters_drawn.is_some(), "drawn in any crate");
 
         rig.app.crates.set_collection(PLAYLIST);
         rig.frame(Vec::new());
@@ -9228,18 +9289,90 @@ mod headless_tests {
     }
 
     #[test]
-    fn a_dig_crate_offers_only_the_format_filter() {
-        let mut rig = Rig::new("format-filter", Vec::new(), |_| {});
+    fn styles_that_arrive_later_join_the_list_and_the_counts() {
+        // A seller crate: the last record's details haven't come yet, so it has no style.
+        let mut rig = Rig::new("late-styles", Vec::new(), |_| {});
+        rig.fill_playlist(4);
+        set_styles(&mut rig, &["Electro", "Electro", "Techno", ""]);
+        rig.frame(Vec::new());
+        let ctx = rig.ctx.clone();
+        rig.app
+            .apply(Action::OnlyPick(Facet::Style, "Electro".into()), &ctx);
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 1]);
+
+        // Its details arrive: it shows, and Electro counts it.
+        let last = rig.app.crates.shown_mut().entries_mut().last().unwrap();
+        last.origin.as_mut().unwrap().styles = "Electro".into();
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 1, 3]);
+        let counts = rig.app.facet_counts(Facet::Style);
+        assert_eq!(counts.first(), Some(&("Electro".to_owned(), 3)));
+    }
+
+    #[test]
+    fn the_year_grid_picks_years_and_shift_picks_a_run() {
+        let mut rig = Rig::new("year-grid", Vec::new(), |_| {});
+        rig.fill_playlist(5);
+        set_records(&mut rig, &[("Electro", "A", "Analogical Force"); 5]);
+        for (e, y) in rig
+            .app
+            .crates
+            .shown_mut()
+            .entries_mut()
+            .zip([1991, 1994, 1994, 1997, 2003])
+        {
+            e.origin.as_mut().unwrap().year = Some(y);
+        }
+        rig.app.settings.playlist_width = 400;
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.offered_facets(), [Facet::Year]);
+        // YEARS opens the panel on its grid: a cell per year, with its records ("·": none).
+        let (x, _) = rig.app.filters_drawn.unwrap();
+        rig.click(pos2(PL_LEFT + x + 4.0, BAR_Y));
+        let out = rig.frame(Vec::new());
+        assert!(
+            shows(&out, "1994\n2") && shows(&out, "1992\n·"),
+            "{:?}",
+            text_list(&out)
+        );
+        rig.click_text("1991\n1");
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0]);
+        // Shift-click 1997: 1991 to 1997 (the years with records in it).
+        let cell = texts(&rig.frame(Vec::new()))
+            .into_iter()
+            .find(|t| t.text == "1997\n1")
+            .unwrap()
+            .rect;
+        rig.click_with_mods(cell.center(), Modifiers::SHIFT);
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0, 1, 2, 3]);
+        assert!(rig.app.crates.shown().picked(Facet::Year, "1994"));
+        // The bar's × clears it.
+        rig.click(bar_clear(&rig));
+        assert_eq!(rig.app.crates.shown().filter(Facet::Year), None);
+    }
+
+    #[test]
+    fn a_label_crate_offers_every_filter_but_label() {
+        let mut rig = Rig::new("label-facets", Vec::new(), |_| {});
         rig.fill_playlist(4);
         set_records(
             &mut rig,
             &[
                 ("Electro", "A", "Analogical Force"),
                 ("Electro", "B", "Analogical Force"),
-                ("Techno", "C", "Other"),
-                ("Techno", "D", "Other"),
+                ("Techno", "C", "Analogical Force"),
+                ("Techno", "D", "Analogical Force"),
             ],
         );
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.offered_facets(), [Facet::Style, Facet::Artist]);
+    }
+
+    #[test]
+    fn a_crate_of_one_style_artist_and_label_offers_only_the_format_filter() {
+        let mut rig = Rig::new("format-filter", Vec::new(), |_| {});
+        rig.fill_playlist(4);
+        set_records(&mut rig, &[("Electro", "A", "Analogical Force"); 4]);
         for (e, f) in
             rig.app
                 .crates
@@ -9292,8 +9425,8 @@ mod headless_tests {
         assert_eq!(picked, ["Sound Signature"]);
         assert_eq!(p.shown_rows().len(), 2);
 
-        // Another crate: Search ‹label› puts it in the search field, which takes the keyboard.
-        let mut rig = Rig::new("row-search", Vec::new(), |_| {});
+        // Any crate with two labels, not only a Discogs one: Only this label.
+        let mut rig = Rig::new("row-seller", Vec::new(), |_| {});
         rig.fill_playlist(3);
         set_records(
             &mut rig,
@@ -9306,11 +9439,37 @@ mod headless_tests {
         rig.frame(Vec::new());
         rig.click_with(rig.row(0), PointerButton::Secondary);
         let out = rig.frame(Vec::new());
-        assert!(!shows(&out, "Only this label"), "not offered here");
-        rig.click_text("Search Lowtide Tapes");
-        rig.frame(Vec::new());
-        assert_eq!(rig.app.pl_search, "Lowtide Tapes");
+        assert!(
+            !shows(&out, "Search Lowtide Tapes"),
+            "{:?}",
+            text_list(&out)
+        );
+        rig.click_text("Only this label");
         assert_eq!(rig.app.crates.shown().shown_rows(), [0, 2]);
+
+        // A label crate offers no label filter: Search ‹catno› puts it in the search field,
+        // which takes the keyboard.
+        let mut rig = Rig::new("row-search", Vec::new(), |_| {});
+        rig.fill_playlist(3);
+        set_records(&mut rig, &[("Techno", "A", "Lowtide Tapes"); 3]);
+        rig.app
+            .crates
+            .shown_mut()
+            .entries_mut()
+            .next()
+            .unwrap()
+            .origin
+            .as_mut()
+            .unwrap()
+            .catno = "AF014".into();
+        rig.frame(Vec::new());
+        rig.click_with(rig.row(0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Only this label"), "not offered here");
+        rig.click_text("Search AF014");
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.pl_search, "AF014");
+        assert_eq!(rig.app.crates.shown().shown_rows(), [0]);
         assert!(rig.ctx.memory(|m| m.has_focus(Id::new("pl_search"))));
     }
 

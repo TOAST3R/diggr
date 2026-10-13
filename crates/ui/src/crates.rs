@@ -581,7 +581,7 @@ impl Crates {
     }
 
     /// The user's Discogs wantlist or collection crate: it mirrors the account, so it takes
-    /// no hand edits and offers the style filter.
+    /// no hand edits.
     pub fn is_discogs(&self, id: CrateId) -> bool {
         self.is_wantlist(id) || self.is_collection(id)
     }

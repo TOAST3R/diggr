@@ -404,13 +404,14 @@ impl Entry {
     }
 
     /// The record's values for a filter (see [`Facet`]), none for a local file: its styles
-    /// ("Deep House", "Minimal"), its credited artist, or its first label.
+    /// ("Deep House", "Minimal"), its credited artist, its first label, or its year.
     pub fn values(&self, facet: Facet) -> impl Iterator<Item = &str> {
         let o = self.origin.as_ref();
         let (text, list) = match facet {
             Facet::Style => (o.map_or("", |o| o.styles.as_str()), true),
             Facet::Artist => (o.map_or("", |o| o.artist.as_str()), false),
             Facet::Label => (o.map_or("", |o| o.label.as_str()), false),
+            Facet::Year => (o.and_then(|o| year_text(o.year?)).unwrap_or(""), false),
             Facet::Format => (o.map_or("", |o| o.formats.as_str()), true),
         };
         text.split(move |c| list && c == ',')
@@ -497,6 +498,9 @@ pub struct SavedPlaylist {
     /// The labels the label filter shows, when any is picked.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub labels: BTreeSet<String>,
+    /// The years the year filter shows, when any is picked ("1994").
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub years: BTreeSet<String>,
     /// The formats the format filter shows, when any is picked.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub formats: BTreeSet<String>,
@@ -517,12 +521,20 @@ pub enum Facet {
     Artist,
     /// Its first label.
     Label,
+    /// Its year, as Discogs gives it (the pressing's, or a master's original).
+    Year,
     /// Its formats (Vinyl, File, CD, Cassette, Other; any of them).
     Format,
 }
 
 impl Facet {
-    pub const ALL: [Facet; 4] = [Facet::Style, Facet::Artist, Facet::Label, Facet::Format];
+    pub const ALL: [Facet; 5] = [
+        Facet::Style,
+        Facet::Artist,
+        Facet::Label,
+        Facet::Year,
+        Facet::Format,
+    ];
 
     fn index(self) -> usize {
         self as usize
@@ -534,9 +546,20 @@ impl Facet {
             Facet::Style => "style",
             Facet::Artist => "artist",
             Facet::Label => "label",
+            Facet::Year => "year",
             Facet::Format => "format",
         }
     }
+}
+
+/// A year as text, borrowed so that filtering allocates nothing ("1994"); `None` outside
+/// 1000–2999.
+fn year_text(year: u16) -> Option<&'static str> {
+    static YEARS: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| (1000..3000).map(|y: u16| y.to_string()).collect());
+    YEARS
+        .get(year.checked_sub(1000)? as usize)
+        .map(String::as_str)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -596,7 +619,7 @@ pub struct Playlist {
     bpm_range: Option<(u16, u16)>,
     /// The style, artist and label filters, as set (see [`Playlist::filter`] for what
     /// applies), by [`Facet`].
-    picked: [BTreeSet<String>; 4],
+    picked: [BTreeSet<String>; 5],
     next_id: EntryId,
     /// Shown grouped by record: each album's entries are kept together (see
     /// [`Playlist::gather`]).
@@ -657,7 +680,7 @@ pub fn search_marks(text: &str, words: &[Vec<char>]) -> Vec<bool> {
 #[derive(Debug, Clone, Copy)]
 pub struct Shown<'a> {
     bpm: Option<(u16, u16)>,
-    picks: [Option<&'a BTreeSet<String>>; 4],
+    picks: [Option<&'a BTreeSet<String>>; 5],
     /// The CART switch: the releases in the cart.
     cart: Option<&'a BTreeSet<u64>>,
     /// The search's folded words, every one of which an entry must contain.
@@ -1414,6 +1437,7 @@ impl Playlist {
             styles: self.saved_picks(Facet::Style),
             artists: self.saved_picks(Facet::Artist),
             labels: self.saved_picks(Facet::Label),
+            years: self.saved_picks(Facet::Year),
             formats: self.saved_picks(Facet::Format),
             copies: self.copies.clone(),
             cart_only: self.cart_only,
@@ -1435,7 +1459,13 @@ impl Playlist {
         let pending = pl.add_saved(saved.entries);
         pl.current = saved.current.and_then(|i| pl.entries.get(i)).map(|e| e.id);
         pl.bpm_range = saved.bpm_range;
-        pl.picked = [saved.styles, saved.artists, saved.labels, saved.formats];
+        pl.picked = [
+            saved.styles,
+            saved.artists,
+            saved.labels,
+            saved.years,
+            saved.formats,
+        ];
         pl.copies = saved.copies;
         pl.cart_only = saved.cart_only;
         (pl, pending)
@@ -2927,6 +2957,50 @@ mod tests {
         p.set_pick(Facet::Artist, "Track 0", true);
         assert_eq!(p.filter(Facet::Artist), None, "no record is credited so");
         assert_eq!(p.shown_rows(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn years_are_picked_like_labels_and_saved() {
+        let mut p = pl(5);
+        let years = [Some(1991), None, Some(1999), Some(2008), Some(1991)];
+        for (i, (e, y)) in p.entries.iter_mut().zip(years).enumerate() {
+            e.origin = Some(Origin {
+                year: y,
+                ..origin(i as u64 + 1, &format!("c{i}"))
+            });
+        }
+        let mut counts = p.counts(Facet::Year);
+        counts.sort();
+        assert_eq!(
+            counts,
+            [
+                ("1991".to_owned(), 2),
+                ("1999".to_owned(), 1),
+                ("2008".to_owned(), 1)
+            ]
+        );
+        // Any picked year shows; a record without a year shows only while the filter is off.
+        p.set_pick(Facet::Year, "1991", true);
+        p.set_pick(Facet::Year, "2008", true);
+        assert_eq!(p.shown_rows(), [0, 3, 4]);
+        let text = ron::to_string(&p.to_saved()).unwrap();
+        assert!(text.contains("years:"), "{text}");
+        let (restored, _) = Playlist::from_saved(ron::from_str(&text).unwrap());
+        assert_eq!(restored.shown_rows(), [0, 3, 4]);
+        // A crate saved before the year filter loads unfiltered.
+        let mut saved = p.to_saved();
+        saved.years.clear();
+        let old = ron::to_string(&saved).unwrap();
+        assert!(!old.contains("years"));
+        assert_eq!(
+            Playlist::from_saved(ron::from_str(&old).unwrap())
+                .0
+                .shown_rows()
+                .len(),
+            5
+        );
+        assert_eq!(year_text(999), None);
+        assert_eq!(year_text(2024), Some("2024"));
     }
 
     #[test]

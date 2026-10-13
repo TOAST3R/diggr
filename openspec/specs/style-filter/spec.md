@@ -1,15 +1,15 @@
 # style-filter Specification
 
 ## Purpose
-Narrows the Discogs wantlist and collection crates to the records of chosen styles, as diggers look for them: footer chips (or a searchable list when there are many), any of the chosen styles, on top of the BPM filter, remembered per crate, with play following what's shown.
+Narrows any crate of records (wantlist, collection, friend, seller, label, dig) to the records of chosen styles, as diggers look for them: footer chips (or a searchable list when there are many), any of the chosen styles, on top of the BPM filter, remembered per crate, with play following what's shown.
 ## Requirements
 ### Requirement: Style filter control
-When the shown crate is the user's Discogs wantlist crate or collection crate, and its entries have at least two different styles, the filter bar (see `filter-bar`) SHALL offer a style filter after the BPM filter control, laid out with the artist and label filters as `record-filters` says. An entry's styles SHALL be the record's Discogs styles (its genres when it has none). Styles SHALL be listed by the number of records that have them, most first, then by name, counted over the whole crate. The control SHALL be either:
+When the shown crate holds entries with record data (see `record-filters`), and its entries have at least two different styles, the filter bar (see `filter-bar`) SHALL offer a style filter after the BPM filter control, laid out with the artist and label filters as `record-filters` says. An entry's styles SHALL be the record's Discogs styles (its genres when it has none). Styles SHALL be listed by the number of records that have them, most first, then by name, counted over the whole crate. The control SHALL be either:
 - one chip per style, in the skin's font, lit when selected and dimmed otherwise, when there are at most 20 styles and the chips fit together with the ARTISTS and LABELS buttons; or
 - a "STYLES" button showing how many styles are selected, which opens the filter panel on its STYLE tab (a search field, one checkbox per style with its number of records, and Clear), when the buttons fit; or
 - the FILTERS button (see `record-filters` "Filter controls"), when they don't fit.
 
-Clicking a chip or a checkbox SHALL select or unselect that style. Typing in the tab's search field SHALL narrow the list to styles containing the text, ignoring case. Clear, a double-click on the control, and the bar's × SHALL unselect every style. Other crates SHALL NOT show the control.
+Clicking a chip or a checkbox SHALL select or unselect that style. Typing in the tab's search field SHALL narrow the list to styles containing the text, ignoring case. Clear, a double-click on the control, and the bar's × SHALL unselect every style. Outside the wantlist and collection crates, a record's styles SHALL come with its details (fetched nearest the playhead first, see `discogs-intake`): until then it has no style, and the styles and their counts SHALL grow as details arrive.
 
 #### Scenario: Chips
 - **WHEN** the collection crate is shown in a 700-pixel-wide playlist, and its records have 6 styles
@@ -27,9 +27,13 @@ Clicking a chip or a checkbox SHALL select or unselect that style. Typing in the
 - **WHEN** the STYLE tab is open and the user types "house"
 - **THEN** only styles containing "house" are listed, such as "Deep House" and "Tech House"
 
-#### Scenario: Other crates
-- **WHEN** a dig crate whose records have 8 styles is shown
-- **THEN** the filter bar shows no style filter
+#### Scenario: Seller crate
+- **WHEN** a seller crate whose fetched records have 8 styles is shown
+- **THEN** the filter bar offers the style filter with those 8 styles
+
+#### Scenario: Details still coming
+- **WHEN** in a seller crate of 400 records only 120 have their details, and the user selects Electro
+- **THEN** only the fetched Electro records are shown, and an Electro record whose details arrive later appears in the list and in Electro's count
 
 ### Requirement: What the style filter shows
 With no style selected, the style filter SHALL show every entry. With styles selected, an entry SHALL be shown when it has any of them. An entry with no style SHALL be shown only when no style is selected. An entry SHALL be shown only when both the BPM filter and the style filter show it. Everything the playlist-filters capability says of entries shown by the BPM filter SHALL hold for entries shown by both filters: what plays next, shuffle, the pre-warmed track, the previews downloaded ahead, keyboard navigation, the title bar's shown/all count, record rows and "k of N tracks". While a style is selected, the title bar SHALL show the shown and total counts. Changing the selection SHALL update the list within one frame (16 ms) for a crate of 5,000 entries, SHALL NOT interrupt playback, and SHALL cause zero underruns.

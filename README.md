@@ -172,25 +172,35 @@ and Home/End jump), and Enter plays the entry under it.
     tooltip says how many (and shows the range when the bar is too tight for its text). A
     double-click on the slider, or the bar's **×**, shows everything again. The range is
     remembered per crate;
-  - **Style, artist and label filters:** in your Discogs wantlist and collection crates you
-    can keep only the records of some styles, artists or labels. Pick several and any of them
+  - **Style, artist and label filters:** in any crate of records (your wantlist and
+    collection, a friend's, a seller's, a label's, any dig) you can keep only the records of
+    some styles, artists or labels; a filter shows once the crate has two values of it, so a
+    label's crate has no label filter. Records can also be kept by **year**: YEARS opens a grid
+    of every year from the crate's first to its last, each with its number of records; click
+    years to pick them (any of them shows), Shift-click to pick a run. A record's year is the
+    one Discogs gives: the pressing's for a release (a 2016 reissue is 2016), the original's
+    for a master. Records without a year are hidden while years are picked. Pick several and any of them
     shows (Deep House and Minimal show both). A record's artist is its credit as Discogs shows
     it ("Theo Parrish", "Various", "Theo Parrish & Marcellus Pittman" are three artists), and
     its label is its first label. Each list has a search box and each value's number of
     records, the most first. The filters add up with each other and with the BPM range (a
     track must pass them all), play follows what's shown, and each crate remembers them.
+    Outside the wantlist and collection, a record's styles come with its details, fetched
+    nearest the playhead first: until then it has no style, so it's hidden while a style is
+    picked, and the style list grows as details arrive.
     - In the filter bar, after the BPM filter: the style chips (lit ones are on), then
-      **ARTISTS** and **LABELS**, when all of it fits. Otherwise **STYLES**, **ARTISTS** and
-      **LABELS** buttons, when they fit; otherwise one **FILTERS** button ("FILTERS 2" while
+      **ARTISTS**, **LABELS** and **YEARS**, when all of it fits. Otherwise **STYLES**,
+      **ARTISTS**, **LABELS** and **YEARS** buttons, when they fit; otherwise one **FILTERS** button ("FILTERS 2" while
       two are set). A button is lit while its filter is on and counts its picks ("LABELS 2");
       a double-click on it, or on a chip, turns that filter off.
-    - Every button opens the **filter panel**, one tab per filter (STYLE, ARTIST, LABEL,
+    - Every button opens the **filter panel**, one tab per filter (STYLE, ARTIST, LABEL, YEAR,
       FORMAT) and, in a seller crate with a cart, the CART switch.
-    - A **format** filter (Vinyl, File, CD, Cassette, Other) works the same way, in every crate
-      dug from Discogs, not only those two: its **FORMATS** button follows the others.
+    - A **format** filter (Vinyl, File, CD, Cassette, Other) works the same way: its
+      **FORMATS** button follows the others.
     - Right-click a record: **Only this artist**, **Only this label** and **Only this style ▸**
-      keep just that value in its filter. In other crates it offers **Search ‹label›** and
-      **Search ‹catalog number›** instead;
+      keep just that value in its filter, where the crate offers it. Where there's no label
+      filter (a label's crate) it offers **Search ‹label›** and **Search ‹catalog number›**
+      instead;
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
@@ -1062,7 +1072,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 892 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 896 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1102,7 +1112,8 @@ What's covered:
   - the crate search: every word in some field, folded case and accents, the play order
     following it, lit matches, and a 5,000-entry search within 16 ms; headless, typed letters
     never acting as shortcuts, Cmd+F, Enter, Esc, a search forgotten with its crate, the
-    filter bar's tiers, its FILTERS panel and ×, and the row menu's Only this… / Search…;
+    filter bar's tiers, its FILTERS panel, the year grid (Shift-click runs) and ×, record
+    filters in any crate (styles arriving late), and the row menu's Only this… / Search…;
   - folder scanning and M3U round trip (remote entries exported as their source URL);
   - settings, crate and preset persistence;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
