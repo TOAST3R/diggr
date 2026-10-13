@@ -36,6 +36,8 @@ mod covers;
 #[cfg(not(target_arch = "wasm32"))]
 mod digging;
 #[cfg(not(target_arch = "wasm32"))]
+mod fan;
+#[cfg(not(target_arch = "wasm32"))]
 mod friends;
 #[cfg(not(target_arch = "wasm32"))]
 mod sellers;
@@ -4858,7 +4860,9 @@ impl DiggrApp {
         }
         // Refresh wantlist / collection, for the Discogs crates (with a token).
         #[cfg(not(target_arch = "wasm32"))]
-        if self.dig.as_ref().is_some_and(|d| d.has_token()) && !discogs.is_empty() {
+        if (self.dig.as_ref().is_some_and(|d| d.has_token()) || self.fan_imported())
+            && !discogs.is_empty()
+        {
             ui.separator();
             for c in discogs {
                 self.dig_refresh_item(ui, c, actions);
@@ -7454,6 +7458,8 @@ mod headless_tests {
     mod record_tests;
     // Friends' collections, with a fake Discogs.
     mod friend_tests;
+    // A Bandcamp fan's collection and wishlist, with fake pages and a fake Discogs.
+    mod fan_tests;
     // Top Sellers and the cart, with a fake Discogs.
     mod seller_tests;
 

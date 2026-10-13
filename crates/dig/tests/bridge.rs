@@ -716,3 +716,36 @@ fn bandcamp_look_alikes_and_long_titles_are_refused() {
     assert_eq!(r.send(&key, &body).status, 422);
     assert!(r.bridge.poll().is_empty(), "nothing was sent on");
 }
+
+#[test]
+fn a_bandcamp_fan_page_imports_the_fan() {
+    let r = rig("bandcamp-fan");
+    let key = r.pair();
+    r.bridge.poll();
+    let a = r.send(
+        &key,
+        &send_body("https://bandcamp.com/toast3r/wishlist?x=1", "play"),
+    );
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(
+        a.json["message"],
+        "Importing toast3r's Bandcamp collection & wishlist"
+    );
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::ImportFan(page)] => {
+            assert_eq!(page.url(), "https://bandcamp.com/toast3r/wishlist")
+        }
+        other => panic!("{other:?}"),
+    }
+    for url in [
+        "https://bandcamp.com/discover",
+        "https://bandcamp.com/toast3r;rm",
+    ] {
+        assert_eq!(
+            r.send(&key, &send_body(url, "enqueue")).status,
+            422,
+            "{url}"
+        );
+    }
+    assert!(r.bridge.poll().is_empty());
+}

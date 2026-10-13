@@ -6,7 +6,9 @@
 //!   week costs one request; only when the collection's total shows records were removed
 //!   (sold, deleted) is everything read again;
 //! - other pressings are never looked up: the match uses master ids that the collection items
-//!   and already-fetched release data carry.
+//!   and already-fetched release data carry;
+//! - a digital release (format File only) is owned only as itself: owning the files is not
+//!   owning the record, so it never makes the physical pressings of its master owned.
 //!
 //! A sync that fails part-way returns an error and the previous collection stays in use.
 
@@ -23,6 +25,8 @@ pub const FILE: &str = "collection.ron";
 /// A collection older than this is synced again, when there is something to mark.
 pub const MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 const PER_PAGE: u32 = 100;
+/// The cache's shape: older ones (no `digital` flag) are read whole again on their next sync.
+const VERSION: u32 = 1;
 
 /// One owned release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +34,9 @@ pub struct Pressing {
     pub master: Option<u64>,
     pub catno: String,
     pub year: Option<u16>,
+    /// Format File only.
+    #[serde(default)]
+    pub digital: bool,
 }
 
 /// Whether a record is owned, and which pressing.
@@ -44,6 +51,7 @@ pub enum Owned {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Collection {
+    pub version: u32,
     pub username: String,
     /// Seconds since the Unix epoch.
     pub fetched_at: u64,
@@ -62,6 +70,7 @@ impl Collection {
     /// An empty collection for `username`, as of `now` (filled by syncs and adds).
     pub fn new(username: &str, now: u64) -> Self {
         Self {
+            version: VERSION,
             username: username.to_owned(),
             fetched_at: now,
             ..Default::default()
@@ -89,7 +98,7 @@ impl Collection {
     fn index(&mut self) {
         self.by_master.clear();
         for (&id, p) in &self.releases {
-            if let Some(m) = p.master {
+            if let Some(m) = p.master.filter(|_| !p.digital) {
                 self.by_master.entry(m).or_default().push(id);
             }
         }
@@ -109,7 +118,7 @@ impl Collection {
         self.username != username || now.saturating_sub(self.fetched_at) >= MAX_AGE_SECS
     }
 
-    /// Is the record owned: this release, or another release of its master?
+    /// Is the record owned: this release, or another physical release of its master?
     pub fn owned(&self, release: Option<u64>, master: Option<u64>) -> Option<Owned> {
         if release.is_some_and(|r| self.releases.contains_key(&r)) {
             return Some(Owned::ThisPressing);
@@ -181,6 +190,9 @@ fn item(v: &Value) -> Option<Item> {
                 .as_u64()
                 .filter(|&y| y > 0)
                 .and_then(|y| u16::try_from(y).ok()),
+            digital: b["formats"].as_array().is_some_and(|f| {
+                !f.is_empty() && f.iter().all(|f| f["name"].as_str() == Some("File"))
+            }),
         },
     })
 }
@@ -235,7 +247,7 @@ pub struct Syncer {
 impl Syncer {
     pub fn new(user: &str, cached: Option<&Collection>, now: u64) -> Self {
         let newer = cached
-            .filter(|c| c.username == user && !c.instances.is_empty())
+            .filter(|c| c.username == user && !c.instances.is_empty() && c.version >= VERSION)
             .map(|c| (c.clone(), 0));
         Self {
             user: user.to_owned(),
@@ -291,6 +303,7 @@ impl Syncer {
             return Ok(None);
         }
         let mut c = std::mem::take(&mut self.full);
+        c.version = VERSION;
         c.username = self.user.clone();
         c.fetched_at = self.now;
         c.index();
@@ -467,6 +480,7 @@ mod tests {
             master: Some(903),
             catno: "AF103".into(),
             year: Some(2019),
+            digital: false,
         };
         c.insert(3, 103, pressing.clone());
         c.insert(3, 103, pressing);
@@ -541,6 +555,7 @@ mod tests {
                 master: None,
                 catno: String::new(),
                 year: None,
+                digital: false,
             },
         );
         let t = Arc::new(FakeTransport::new());
@@ -573,5 +588,45 @@ mod tests {
         assert!(!back.is_stale("digger", 1_000 + MAX_AGE_SECS - 1));
         assert!(back.is_stale("digger", 1_000 + MAX_AGE_SECS));
         assert!(back.is_stale("someone-else", 1_000));
+    }
+
+    #[test]
+    fn a_digital_release_is_owned_only_as_itself() {
+        let t = Arc::new(FakeTransport::new());
+        let mut file = it(1, 333, 900);
+        file["basic_information"]["formats"] = json!([{"name": "File", "qty": "4"}]);
+        route_pages(&t, &[vec![file]], 1);
+        let c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        assert!(c.releases[&333].digital);
+        assert_eq!(c.owned(Some(333), Some(900)), Some(Owned::ThisPressing));
+        assert_eq!(c.owned(Some(111), Some(900)), None, "the vinyl isn't owned");
+        // A vinyl owned still marks the File release of its master.
+        let t = Arc::new(FakeTransport::new());
+        let mut vinyl = it(2, 222, 900);
+        vinyl["basic_information"]["formats"] = json!([{"name": "Vinyl"}, {"name": "File"}]);
+        route_pages(&t, &[vec![vinyl]], 1);
+        let c = sync(&mut client(&t), "digger", None, 0).unwrap();
+        assert!(
+            !c.releases[&222].digital,
+            "a vinyl with a download is a record"
+        );
+        assert!(matches!(
+            c.owned(Some(333), Some(900)),
+            Some(Owned::Another { .. })
+        ));
+    }
+
+    #[test]
+    fn a_cache_from_before_formats_is_read_whole_once() {
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(1, 101, 901)]], 1);
+        let mut old = sync(&mut client(&t), "digger", None, 0).unwrap();
+        assert_eq!(old.version, VERSION);
+        old.version = 0;
+        let t = Arc::new(FakeTransport::new());
+        route_pages(&t, &[vec![it(2, 102, 902)], vec![it(1, 101, 901)]], 2);
+        let next = sync(&mut client(&t), "digger", Some(&old), 100).unwrap();
+        assert_eq!(collection_calls(&t), 2, "every page, not just the newest");
+        assert_eq!((next.version, next.len()), (VERSION, 2));
     }
 }

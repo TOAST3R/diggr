@@ -1232,3 +1232,61 @@ fn friends_are_read_with_private_ones_checked_again_and_a_friends_collection_pag
         .expect("the collection");
     assert_eq!(c, 2);
 }
+
+#[test]
+fn bandcamp_items_are_looked_up_between_the_sends() {
+    use dig::bandcamp::fan::DiscogsMatch;
+    use dig::discogs::search::{Wanted, path};
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let ooze = Wanted::new("Patricia", "The Ooze EP", "AF070", true);
+    let none = Wanted::new("Nobody", "Nothing", "", false);
+    t.route(
+        path(&ooze),
+        200,
+        r#"{"results":[{"id":1001,"title":"Patricia - The Ooze EP","format":["Vinyl"],"catno":"AF070"}]}"#,
+    );
+    t.route(path(&none), 200, r#"{"results":[]}"#);
+    let mut i = intake(&t, true, None);
+    send(&mut i, "https://www.discogs.com/label/12345");
+    i.handle(Command::FindReleases(vec![
+        ("a1".into(), ooze),
+        ("a2".into(), none),
+    ]));
+    t.set_offline(true);
+    let mut ev = run(&mut i, 2);
+    assert!(
+        !ev.iter().any(|e| matches!(e, Event::Found(..))),
+        "offline: waits"
+    );
+    t.set_offline(false);
+    ev.extend(run(&mut i, 4));
+    let found: Vec<&Event> = ev
+        .iter()
+        .filter(|e| matches!(e, Event::Found(..)))
+        .collect();
+    assert_eq!(found.len(), 2, "{ev:?}");
+    assert!(matches!(found[0], Event::Found(k, Ok(DiscogsMatch::Found(1001))) if k == "a1"));
+    assert!(matches!(found[1], Event::Found(k, Ok(DiscogsMatch::NoMatch)) if k == "a2"));
+    let paths = t.paths();
+    let searches: Vec<usize> = (0..paths.len())
+        .filter(|&n| paths[n].starts_with("/database/search"))
+        .collect();
+    let (first, last) = (searches[0], *searches.last().unwrap());
+    assert!(
+        paths[first..last].iter().any(|p| p.starts_with("/labels/")),
+        "the send took turns with the lookups: {paths:?}"
+    );
+    // Without a token, nothing is asked.
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let mut i = intake(&t, false, None);
+    i.handle(Command::FindReleases(vec![(
+        "a3".into(),
+        Wanted::new("Patricia", "The Ooze EP", "", true),
+    )]));
+    let ev = run(&mut i, 3);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, Event::Found(_, Err(ApiError::TokenNeeded))))
+    );
+    assert!(!t.paths().iter().any(|p| p.starts_with("/database")));
+}

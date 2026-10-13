@@ -14,6 +14,8 @@ use serde_json::Value;
 
 use crate::discogs::url::Refused;
 
+pub mod fan;
+
 /// What `‹name›.bandcamp.com` holds at a path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BandcampKind {
@@ -31,8 +33,8 @@ pub struct BandcampPage {
     pub kind: BandcampKind,
 }
 
-pub const SUPPORTED: &str =
-    "Supported Bandcamp pages: a label or artist (‹name›.bandcamp.com), an album or a track";
+pub const SUPPORTED: &str = "Supported Bandcamp pages: a label or artist (‹name›.bandcamp.com), \
+     an album, a track, or a fan's collection or wishlist (bandcamp.com/‹user›)";
 
 /// The longest page title used to name a label.
 pub const MAX_TITLE: usize = 200;
@@ -438,7 +440,8 @@ pub fn album_matches(url: &str, needles: &[String]) -> bool {
 }
 
 /// What the app remembers about Bandcamp (`dig/bandcamp.ron`): the albums each label crate
-/// has read, so Refresh label reads only new ones, and the labels the user kept apart.
+/// has read, so Refresh label reads only new ones, the labels the user kept apart, and the
+/// imported fan.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BandcampMemory {
@@ -446,6 +449,9 @@ pub struct BandcampMemory {
     pub albums: BTreeMap<u64, BTreeSet<String>>,
     /// (Bandcamp name, crate id): "Separate" was answered, so they are never asked again.
     pub separate: BTreeSet<(String, u64)>,
+    /// The imported fan's collection and wishlist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fan: Option<fan::FanMemory>,
 }
 
 impl BandcampMemory {

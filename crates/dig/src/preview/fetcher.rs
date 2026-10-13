@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use super::clip::{Clip, Source, source_of, valid_key};
 use super::search::{self, SearchResult};
+use crate::bandcamp::fan::{self, FanList, FanLists, FanPage};
 use crate::bandcamp::{self, BandcampPage, Listing};
 use crate::discogs::model::valid_clip_id;
 
@@ -86,7 +87,19 @@ pub trait Fetcher: Send + Sync {
 
     /// Reads a Bandcamp page: a label's albums, or an album's tracks; downloads nothing.
     fn read_bandcamp(&self, page: &BandcampPage) -> Result<Listing, FetchError>;
+
+    /// Reads a Bandcamp fan's collection and wishlist whole (see [`crate::bandcamp::fan`]),
+    /// telling `progress` (list, items read, items listed), until done or `stop`.
+    fn read_fan(
+        &self,
+        page: &FanPage,
+        progress: &mut dyn FnMut(FanList, usize, usize),
+        stop: &AtomicBool,
+    ) -> Result<FanLists, FetchError>;
 }
+
+/// The least time between two requests of a fan read.
+const FAN_GAP: Duration = Duration::from_secs(1);
 
 /// The file extension of a clip's preview, by its key.
 pub fn ext_of(clip: &str) -> &'static str {
@@ -337,6 +350,21 @@ impl Fetcher for YtDlp {
         let out = self.run(bandcamp::read_args(page), READ_TIMEOUT, "Bandcamp read")?;
         bandcamp::parse_listing(page, &out).map_err(FetchError::Failed)
     }
+
+    /// Not through yt-dlp, which doesn't read fan pages: over HTTP, as Bandcamp's site does.
+    fn read_fan(
+        &self,
+        page: &FanPage,
+        progress: &mut dyn FnMut(FanList, usize, usize),
+        stop: &AtomicBool,
+    ) -> Result<FanLists, FetchError> {
+        fan::read_lists(&fan::UreqFanHttp::default(), page, FAN_GAP, stop, progress).map_err(|e| {
+            match e.as_str() {
+                fan::STOPPED => FetchError::Cancelled,
+                _ => FetchError::Failed(e),
+            }
+        })
+    }
 }
 
 /// Deletes what an unfinished download leaves behind (`<id>.*.part`, `<id>.*.ytdl`, …).
@@ -380,6 +408,8 @@ pub struct FakeFetcher {
     pub pages: std::sync::Mutex<std::collections::HashMap<String, Listing>>,
     /// Every Bandcamp page read, in order.
     pub read: std::sync::Mutex<Vec<String>>,
+    /// Canned fans' lists, by username (none listed: the read fails).
+    pub fans: std::sync::Mutex<std::collections::HashMap<String, FanLists>>,
 }
 
 impl FakeFetcher {
@@ -398,12 +428,18 @@ impl FakeFetcher {
             bandcamp_limited: AtomicBool::new(false),
             pages: Default::default(),
             read: Default::default(),
+            fans: Default::default(),
         }
     }
 
     /// What reading the Bandcamp page at `url` gives.
     pub fn page(&self, url: &str, listing: Listing) {
         self.pages.lock().unwrap().insert(url.to_owned(), listing);
+    }
+
+    /// What reading fan `user`'s lists gives.
+    pub fn fan(&self, user: &str, lists: FanLists) {
+        self.fans.lock().unwrap().insert(user.to_owned(), lists);
     }
 
     pub fn pages_read(&self) -> Vec<String> {
@@ -543,6 +579,32 @@ impl Fetcher for FakeFetcher {
             .get(&url)
             .cloned()
             .ok_or_else(|| FetchError::Failed("ERROR: Unable to download webpage: 404".into()))
+    }
+
+    fn read_fan(
+        &self,
+        page: &FanPage,
+        progress: &mut dyn FnMut(FanList, usize, usize),
+        stop: &AtomicBool,
+    ) -> Result<FanLists, FetchError> {
+        self.read.lock().unwrap().push(page.url());
+        std::thread::sleep(self.delay / 4);
+        if stop.load(Ordering::SeqCst) {
+            return Err(FetchError::Cancelled);
+        }
+        let lists = self.fans.lock().unwrap().get(&page.user).cloned();
+        let lists = lists.ok_or_else(|| FetchError::Failed("Bandcamp answered 404".into()))?;
+        progress(
+            FanList::Collection,
+            lists.collection.len(),
+            lists.collection.len(),
+        );
+        progress(
+            FanList::Wishlist,
+            lists.wishlist.len(),
+            lists.wishlist.len(),
+        );
+        Ok(lists)
     }
 }
 

@@ -399,7 +399,8 @@ ahead of what plays. Other pasted text is ignored.
 - **Records you already own:** with a token, entries whose record is in your Discogs
   collection get an amber **OWNED** badge before the title. That covers the same release and
   also another pressing of the same master; the tooltip says which ("Owned: another pressing
-  (AF014, 2018)").
+  (AF014, 2018)"). A digital release (format File only) counts only for itself: owning the
+  files doesn't mark the vinyl owned, nor take it off your wantlist.
   - Saving a token also sends your whole collection into a crate "Collection: ‹you›" and
     shows it (once; it isn't made again while it exists). Its entries carry no OWNED badge.
     It can be sent again from your collection page with the browser extension. It's a
@@ -525,6 +526,32 @@ your yt-dlp (nothing is downloaded until a track is about to play):
   for-sale page greyed out; Y and I say it isn't from Discogs. N passes it as usual.
 - **Limits:** when Bandcamp limits requests, it waits like YouTube does (10, 20, 40, 60 min),
   separately: one source waiting never stops the other. Tooltips say "waiting for Bandcamp".
+- **Your Bandcamp collection and wishlist:** paste your fan page (`bandcamp.com/‹you›`, or
+  `/wishlist`), or use the extension's **Import collection & wishlist** on it. Either page
+  imports both lists, without logging in: the page gives your fan id and first items, and the
+  rest comes from the endpoint Bandcamp's own page uses (undocumented, so it may change; a
+  failed read changes nothing and says why).
+  - **Where it goes:** the collection into the collection crate, the wishlist into the wantlist
+    crate (made as "Collection: ‹you›" and "Wantlist: ‹you›" when there are none, token or not),
+    merged as above, so nothing comes in twice. A track already there from a Discogs record gets
+    the Bandcamp track too (it keeps playing what it played, and can switch).
+  - **Onto Discogs, exact matches only:** with a token, each item is looked up once (artist,
+    title, catalogue number, and format: File for a digital purchase, a record for a package or
+    any wish). Exactly one release that you don't already own (or want) is added to your Discogs
+    collection (or wantlist), and its record takes the Bandcamp entries over. No match or several
+    candidates write nothing; nothing is ever removed from Discogs.
+  - **Two sources:** an entry stays in the wantlist crate while your Discogs wantlist **or** your
+    Bandcamp wishlist holds it (the collection crate likewise).
+  - **Refresh:** once imported, **Refresh collection** also reads your Bandcamp collection and
+    **Refresh wantlist** your Bandcamp wishlist (each only its own list, offered even without a
+    token). Only new items are read and looked up; items gone from the list leave unless
+    Discogs still holds them.
+  - **Progress and report:** a "Bandcamp import" window shows the lists being read, the albums
+    ("Reading albums… 40 of 99") and the Discogs lookups, with **Stop** (what was read stays; the
+    rest comes with the next refresh). At the end a report lists what came into each crate, what
+    went to Discogs or was there already, and the items not added (with links to Bandcamp and a
+    Discogs search) or not readable. **Copy** puts it on the clipboard; **Last Bandcamp
+    import…** in the crates' menus opens it again.
 
 ### Top Sellers
 
@@ -653,7 +680,9 @@ that the player starts once its window is up.
    Tapes → Playlist").
    On a Bandcamp album or track page, the button (after the album's or track's name) offers
    the same as on a release; on a Bandcamp label or artist page, only **Diggr: Send label**,
-   which sends the page's title too, to name the label (see [Bandcamp](#bandcamp)).
+   which sends the page's title too, to name the label (see [Bandcamp](#bandcamp)). On a
+   Bandcamp fan's page (`bandcamp.com/‹user›` or `/wishlist`), only **Diggr: Import collection
+   & wishlist**, which sends the address alone.
 4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr or Enqueue in Diggr (a
    label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -682,6 +711,9 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       Send to crate (New crate… suggests "Artist - Album"); a label page (`/` and `/music`) shows
       only Diggr: Send label, which follows it as "Label: ‹its name›"; a merch page shows none.
       Right-clicking a Bandcamp album link offers Play and Enqueue.
+- [ ] A Bandcamp fan's page (`bandcamp.com/‹you›`, `/wishlist`) shows the button with only Diggr:
+      Import collection & wishlist, and the player starts the import; `bandcamp.com/discover`
+      shows none.
 - [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
@@ -1001,7 +1033,8 @@ Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, 
 yt-dlp path, the Wantlist crate, whether the Connect to Discogs dialog was turned off), `token`
 (readable only by you), `memory.ron` (wanted records, passed tracks, and wantlist changes still
 to be sent, with their retries), `jobs.ron` (sends still in progress), `bandcamp.ron` (the
-Bandcamp albums each label crate has read, and the labels you kept separate), `sellers.ron` (Top
+Bandcamp albums each label crate has read, the labels you kept separate, and the imported fan's
+collection and wishlist items with what Discogs said about each, and the last import's report), `sellers.ron` (Top
 Sellers: their order, each one's dig criteria, when it was last dug, and whether the first list
 was made), `friends.ron` (your Discogs friends, when the list was read, which collections are
 private and which crates were dug) and
@@ -1029,7 +1062,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 852 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 892 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1146,6 +1179,16 @@ What's covered:
   other way round), Merge or Separate asked once, the YT/BC badges, switching sources and Open on
   Bandcamp, and the Discogs items off on a Bandcamp-only entry. Merging, name matching and
   switching are also unit-tested.
+- **A Bandcamp fan** (`crates/ui`, headless, `fan_tests.rs`, with fake pages and a fake Discogs;
+  and `crates/dig`): both lists into crates made without a token and nothing sent to Discogs; an
+  exact match added to the Discogs collection and taking the Bandcamp entries over, the rest
+  reported (not on Discogs, 2 candidates) and never looked up again; a refresh reading only its
+  own list's new items and letting go of the gone; the two-wantlists rule; a Discogs entry linked
+  to its Bandcamp track without switching; Stop and the rest read on refresh; a token saved later
+  reusing the crate; playback with no underruns. In `crates/dig`: fan addresses, the page's blob
+  and the endpoint's pages (from trimmed real answers), exact Discogs matching, File releases
+  owned only as themselves, the lookups taking turns with the sends, and the bridge. A real read
+  runs by hand: `cargo test -p dig real_fan -- --ignored`.
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (search text, newest N,

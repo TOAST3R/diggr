@@ -62,6 +62,8 @@ pub enum BridgeCommand {
         filters: Filters,
         title: Option<String>,
     },
+    /// A Bandcamp fan's page: import (or refresh) their collection and wishlist.
+    ImportFan(bandcamp::fan::FanPage),
     /// A browser was paired.
     Paired,
     /// The browser asked about a marketplace item whose release isn't known yet: look it up
@@ -424,6 +426,15 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
     let Ok(b) = serde_json::from_slice::<SendBody>(body) else {
         return error(422, "invalid body");
     };
+    // A fan's page imports their collection and wishlist, whatever the mode.
+    if let Ok(page) = bandcamp::fan::parse(&b.url) {
+        let answer = json!({
+            "page": format!("Bandcamp: {}", page.user),
+            "crate": "Collection & Wantlist",
+            "message": format!("Importing {}'s Bandcamp collection & wishlist", page.user),
+        });
+        return (202, answer, Some(BridgeCommand::ImportFan(page)));
+    }
     if let Ok(page) = bandcamp::parse(&b.url) {
         return send_bandcamp(page, b, shared);
     }
