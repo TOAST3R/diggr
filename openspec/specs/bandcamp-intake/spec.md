@@ -4,7 +4,7 @@
 Bandcamp album, track and label pages as a second source beside Discogs: read through the user's yt-dlp, merged into crates without doubles, a fallback for tracks YouTube can't give, and each entry showing where its sound comes from.
 ## Requirements
 ### Requirement: Bandcamp pages
-The app SHALL accept Bandcamp addresses of a label or artist (`https://‹name›.bandcamp.com/` or `/music`), an album (`/album/‹slug›`) and a track (`/track/‹slug›`), where ‹name› is 1 to 63 lowercase letters, digits or `-`, and ‹slug› is 1 to 200 of the same. A query string or fragment SHALL be ignored. Any other address on `bandcamp.com`, or on any other host, SHALL be refused as Discogs addresses are, and nothing SHALL be added. They SHALL be accepted by paste (Cmd+V, or Ctrl+V on Linux and Windows) and from the browser extension.
+The app SHALL accept Bandcamp addresses of a label or artist (`https://‹name›.bandcamp.com/` or `/music`), an album (`/album/‹slug›`) and a track (`/track/‹slug›`), where ‹name› is 1 to 63 lowercase letters, digits or `-`, and ‹slug› is 1 to 200 of the same. It SHALL also accept a fan's collection and wishlist pages on `bandcamp.com` (see `bandcamp-collection`). A query string or fragment SHALL be ignored. Any other address on `bandcamp.com`, or on any other host, SHALL be refused as Discogs addresses are, and nothing SHALL be added. They SHALL be accepted by paste (Cmd+V, or Ctrl+V on Linux and Windows) and from the browser extension.
 
 #### Scenario: Album with a query
 - **WHEN** the address is `https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep?from=search`
@@ -17,6 +17,10 @@ The app SHALL accept Bandcamp addresses of a label or artist (`https://‹name�
 #### Scenario: A hostile address
 - **WHEN** the address is `https://evil.bandcamp.com.attacker.net/album/x` or `https://a.bandcamp.com/album/x;rm`
 - **THEN** it is refused, and yt-dlp is not run
+
+#### Scenario: A fan page
+- **WHEN** the address is `https://bandcamp.com/toast3r`
+- **THEN** it is recognised as fan "toast3r"'s collection, not refused
 
 ### Requirement: Reading a Bandcamp page
 An album or track page SHALL be read with one yt-dlp request that downloads nothing. It SHALL give each track's artist, title, length, album, Bandcamp track id and cover. A label page SHALL list its albums with one request, then read them one at a time, at least 1 s apart. Progress SHALL be shown as for Discogs sends ("Analogical Force: 40 of 78 albums"). The catalogue number SHALL be taken from a bracket holding a digit at the start or end of the album title ("[AF070] The Ooze EP" → catalogue AF070, album "The Ooze EP"; "Advance [TOBAS 006]" → TOBAS 006), and a trailing bracket that only names a format ("[Vinyl]") SHALL be dropped. When yt-dlp credits the tracks to the account itself (a label's account), an album titled "Artist - Album" SHALL credit its tracks to that artist, and a track titled "Artist - Track" to its own artist. A track that Bandcamp doesn't stream (a pre-order, for example) SHALL be added unavailable with "no clip (not streamable)". Reading SHALL run off the UI thread and the audio path.
