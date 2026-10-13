@@ -9,7 +9,7 @@ A crate SHALL be shown either flat (one row per entry, as before) or grouped by 
 - an album with one entry SHALL be a record row that acts as that entry, with nothing to open;
 - an entry that belongs to no album SHALL be an ordinary row.
 
-The choice SHALL be made with the ▤ button in the playlist title bar (lit while grouped) or with "Group by record" in the ≡ menu. It SHALL be remembered per crate across launches. A crate that has never been toggled SHALL be grouped when it is the user's Discogs wantlist or collection crate, and flat otherwise. Toggling SHALL NOT interrupt playback.
+The choice SHALL be made with the ▤ button in the playlist title bar (lit while grouped) or with "Group by record" in the list menu (see `playlist` "List menu"). It SHALL be remembered per crate across launches. A crate that has never been toggled SHALL be grouped when it is the user's Discogs wantlist or collection crate, and flat otherwise. Toggling SHALL NOT interrupt playback.
 
 #### Scenario: Toggle
 - **WHEN** a flat crate of 12 entries from 4 releases is shown and the user clicks ▤

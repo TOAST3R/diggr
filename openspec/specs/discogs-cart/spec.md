@@ -77,7 +77,7 @@ A copy whose listing is in the cart SHALL show it, in a colour distinct from OWN
 - **THEN** those copies show IN CART or CART in the first frame, before any request
 
 ### Requirement: Cart filter
-In a seller crate with at least one copy in the cart, the filter bar (see `filter-bar`) SHALL show a CART switch labelled with the number of copies in the cart from that seller and their subtotal in the seller's currency ("CART 3 · €41.20"), or, when it doesn't fit, the filter panel SHALL hold it. While it is on, only records with a copy in the cart SHALL be shown and played, combined with the search and the other filters (see `record-filters`). The ☰ menu SHALL offer Open cart on discogs.com, which opens `https://www.discogs.com/sell/cart` in the default browser. The switch SHALL be remembered per crate across restarts.
+In a seller crate with at least one copy in the cart, the filter bar (see `filter-bar`) SHALL show a CART switch labelled with the number of copies in the cart from that seller and their subtotal in the seller's currency ("CART 3 · €41.20"), or, when it doesn't fit, the filter panel SHALL hold it. While it is on, only records with a copy in the cart SHALL be shown and played, combined with the search and the other filters (see `record-filters`). The list menu (see `playlist` "List menu") SHALL offer Open cart on discogs.com, which opens `https://www.discogs.com/sell/cart` in the default browser. The switch SHALL be remembered per crate across restarts.
 
 #### Scenario: Check the cart
 - **WHEN** "Seller: decks.de" holds 400 records, 3 of them with a copy in the cart, and the user turns CART on
