@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use dig::bandcamp::fan::FanList;
 use dig::bandcamp::{
     self, BandcampAlbum, BandcampKind, BandcampMemory, BandcampPage, MIN_NEEDLE, NameMatch,
     name_key, name_match, squash,
@@ -57,6 +58,8 @@ struct Job {
     failed: Vec<String>,
     /// Looking for failed tracks: only they are fixed, nothing is added.
     fallback: Option<Fallback>,
+    /// Reading a fan's items into this list's crate (see `fan.rs`).
+    fan: Option<FanList>,
 }
 
 /// A look on Bandcamp for a crate's tracks YouTube couldn't give.
@@ -96,6 +99,8 @@ pub(super) struct BandcampState {
     tried: HashSet<(CrateId, EntryId)>,
     /// Guessed Bandcamps that don't exist, this session.
     missing: HashSet<String>,
+    /// A fan's import, and its report window.
+    pub(super) fan: super::fan::FanUi,
 }
 
 /// How a Bandcamp track meets a crate.
@@ -413,10 +418,11 @@ impl DiggrApp {
             .as_ref()
             .map(|f| f.needles.clone())
             .unwrap_or_default();
+        let Some(job) = self.bandcamp_next_job() else {
+            return;
+        };
         let Some(d) = &mut self.dig else { return };
         let bc = &mut d.bandcamp;
-        bc.next = bc.next.max(FIRST_JOB) + 1;
-        let job = bc.next;
         bc.jobs.insert(
             job,
             Job {
@@ -431,6 +437,7 @@ impl DiggrApp {
                 new_records: 0,
                 failed: Vec::new(),
                 fallback,
+                fan: None,
             },
         );
         d.jobs.insert(
@@ -448,6 +455,53 @@ impl DiggrApp {
             skip,
             only,
         });
+    }
+
+    /// A new Bandcamp job id.
+    pub(super) fn bandcamp_next_job(&mut self) -> Option<JobId> {
+        let bc = &mut self.dig.as_mut()?.bandcamp;
+        bc.next = bc.next.max(FIRST_JOB) + 1;
+        Some(bc.next)
+    }
+
+    /// Reads a fan's item `pages` of `list` into `target` as one send; returns its job.
+    pub(super) fn bandcamp_pages_job(
+        &mut self,
+        pages: Vec<BandcampPage>,
+        target: CrateId,
+        list: FanList,
+    ) -> Option<JobId> {
+        let job = self.bandcamp_next_job()?;
+        let name = self.crates.name(target).to_owned();
+        let d = self.dig.as_mut()?;
+        d.bandcamp.jobs.insert(
+            job,
+            Job {
+                target,
+                label_name: String::new(),
+                name: name.clone(),
+                label: false,
+                skip_passed: false,
+                added: 0,
+                fixed: 0,
+                skipped: 0,
+                new_records: 0,
+                failed: Vec::new(),
+                fallback: None,
+                fan: Some(list),
+            },
+        );
+        d.jobs.insert(
+            job,
+            JobView {
+                name: format!("Bandcamp: {name}"),
+                target,
+                done: 0,
+                total: pages.len(),
+            },
+        );
+        d.preview(PreviewCommand::ReadBandcampPages { job, pages });
+        Some(job)
     }
 
     /// The album pages a label crate has read.
@@ -591,6 +645,7 @@ impl DiggrApp {
             return;
         };
         j.failed.push(format!("{page}: {error}"));
+        let fan = j.fan;
         if let Some(f) = j.fallback.as_ref().filter(|f| f.guessed)
             && page.ends_with("/music")
         {
@@ -602,6 +657,9 @@ impl DiggrApp {
         if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&job)) {
             v.done += 1;
         }
+        if let Some(list) = fan {
+            self.fan_page_failed(list, page, error);
+        }
     }
 
     /// An album read: merged into its job's crate.
@@ -610,13 +668,20 @@ impl DiggrApp {
         let Some(j) = d.bandcamp.jobs.get(&job) else {
             return;
         };
-        let (target, skip_passed, label) = (j.target, j.skip_passed, j.label_name.clone());
+        let (target, skip_passed, fan) = (j.target, j.skip_passed, j.fan);
+        // A fan's albums come from many accounts: each is credited to its own.
+        let label = match fan {
+            Some(_) => bandcamp::parse(&album.url)
+                .map(|p| p.name)
+                .unwrap_or_default(),
+            None => j.label_name.clone(),
+        };
         // Looking for failed tracks: only those are fixed, and the album isn't counted read.
         let fix_only = j.fallback.is_some();
         if let Some(v) = d.jobs.get_mut(&job) {
             v.done += 1;
         }
-        if !fix_only {
+        if !fix_only && fan.is_none() {
             d.bandcamp
                 .memory
                 .albums
@@ -753,6 +818,9 @@ impl DiggrApp {
                 self.set_audio(target, id, TrackRef::new(path.to_string_lossy()));
             }
         }
+        if let Some(list) = fan {
+            self.fan_album_read(list, &album, added);
+        }
     }
 
     /// Every page of a job read: the summary.
@@ -762,6 +830,9 @@ impl DiggrApp {
         let Some(j) = d.bandcamp.jobs.remove(&job) else {
             return;
         };
+        if j.fan.is_some() {
+            return self.fan_pages_done(job);
+        }
         if j.fallback.is_some() {
             if j.fixed > 0 {
                 let name = self.crates.name(j.target).to_owned();

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audio::PlayState;
+use dig::bandcamp::fan::FanList;
 use dig::bridge::{
     self, BridgeCommand, BridgeHandle, CrateState, Mode, Pairing, SendState, Shared, Snapshot,
 };
@@ -154,6 +155,8 @@ pub enum DigAction {
     OpenBandcamp(EntryId),
     /// Play the entry from its other source (Bandcamp or YouTube).
     SwitchSource(EntryId, crate::playlist::ClipSource),
+    /// The last Bandcamp import's report.
+    ShowFanReport,
     OpenDialog,
     OpenBrowserDialog,
     /// Top Sellers and the cart.
@@ -271,9 +274,9 @@ pub(super) struct Dig {
     /// Remove from collection…, asking.
     pub(super) confirm_discard: Option<DiscardConfirm>,
     /// Collection adds on their way: release → the crate they were asked from.
-    collecting: HashMap<u64, CrateId>,
+    pub(super) collecting: HashMap<u64, CrateId>,
     /// Collection adds that failed this session: release → (its crate, why).
-    collect_failed: HashMap<u64, (CrateId, String)>,
+    pub(super) collect_failed: HashMap<u64, (CrateId, String)>,
     /// The account the wantlist crate follows this session.
     connected: Option<String>,
     /// Whose token it is was asked for this session (when no dig asked first).
@@ -650,7 +653,7 @@ impl Dig {
             .map(|e| format!("Could not save the dig memory: {e}"))
     }
 
-    fn save_settings(&self) -> Option<String> {
+    pub(super) fn save_settings(&self) -> Option<String> {
         let c = self.config.as_deref()?;
         digconf::save_settings(c, &self.settings)
             .err()
@@ -1139,6 +1142,11 @@ impl DiggrApp {
     /// Cmd+V / Ctrl+V: a Discogs or Bandcamp address goes to the shown crate; other text is
     /// ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
+        match dig::bandcamp::fan::parse(text) {
+            Ok(page) => return self.fan_import(page),
+            Err(Refused::Unsupported) => return self.notify(dig::bandcamp::SUPPORTED),
+            Err(Refused::NotDiscogs) => {}
+        }
         match dig::bandcamp::parse(text) {
             Ok(page) => return self.bandcamp_send(page, SendMode::Enqueue, None, None, false),
             Err(Refused::Unsupported) => return self.notify(dig::bandcamp::SUPPORTED),
@@ -1311,7 +1319,9 @@ impl DiggrApp {
                 .filter(|j| j.target == c)
                 .fold((0, 0), |(done, total), j| (done + j.done, total + j.total))
         });
-        let (text, part) = if d.refreshing_collection {
+        let (text, part) = if d.refreshing_wantlist {
+            ("Reading your wantlist…".to_owned(), 0.0)
+        } else if d.refreshing_collection {
             match d.sync_progress {
                 Some((read, pages)) if pages > 0 => (
                     format!("Reading your collection… page {read} of {pages}"),
@@ -1343,11 +1353,14 @@ impl DiggrApp {
         };
         let Some(d) = &self.dig else { return };
         // Named after the crate being refreshed, unless it's the user's own collection.
+        let wantlist = d.settings.wantlist;
         let title = match d
             .friend_refresh
             .map(|(c, _)| c)
             .or(d.refilling.map(|(c, _)| c))
         {
+            _ if d.refreshing_wantlist => "Refresh wantlist".to_owned(),
+            Some(c) if Some(c) == wantlist => "Refresh wantlist".to_owned(),
             Some(c) if !d.refreshing_collection && Some(c) != self.collection_crate() => {
                 format!("Refresh {}", self.crates.name(c))
             }
@@ -1372,12 +1385,16 @@ impl DiggrApp {
     /// fill ends, keeping the records that arrived and dropping those still only listed.
     pub(super) fn dig_stop_refresh(&mut self) {
         let Some(d) = &mut self.dig else { return };
+        let mut what = "Refresh collection".to_owned();
+        // The wantlist read is one request: its answer still comes, without a summary.
+        if std::mem::take(&mut d.refreshing_wantlist) {
+            what = "Refresh wantlist".to_owned();
+        }
         if std::mem::take(&mut d.refreshing_collection) {
             d.send(Command::CancelCollectionSync);
             d.collection_syncing = false;
             d.sync_progress = None;
         }
-        let mut what = "Refresh collection".to_owned();
         if let Some((c, _)) = d.friend_refresh.take() {
             d.send(Command::CancelCollectionSync);
             what = format!("Refresh {}", self.crates.name(c));
@@ -1386,7 +1403,9 @@ impl DiggrApp {
         if let Some((c, _)) = d.refilling.take() {
             d.send(Command::StopJobs(c));
             d.stopped_fill.insert(c);
-            if Some(c) != self.collection_crate() {
+            if Some(c) == self.dig.as_ref().and_then(|d| d.settings.wantlist) {
+                what = "Refresh wantlist".to_owned();
+            } else if Some(c) != self.collection_crate() {
                 what = format!("Refresh {}", self.crates.name(c));
             }
             self.drop_listed(c);
@@ -1890,6 +1909,7 @@ impl DiggrApp {
                     true,
                 );
             }
+            BridgeCommand::ImportFan(page) => self.fan_import(page),
             BridgeCommand::ResolveShopItem(id) => {
                 if let Some(d) = &self.dig {
                     d.send(Command::ResolveShopItem(id));
@@ -1978,6 +1998,7 @@ impl DiggrApp {
 
     pub(super) fn dig_intake_event(&mut self, e: Event) {
         match e {
+            Event::Found(key, result) => self.fan_found(&key, result),
             Event::Copies(j, copies) => self.seller_copies(j.target, copies),
             Event::FirstSellers(result) => self.dig_first_sellers(result),
             Event::Cart(result) => self.dig_cart_read(result),
@@ -2722,6 +2743,13 @@ impl DiggrApp {
                 self.bandcamp_failed(job, &page, &error)
             }
             PreviewEvent::BandcampDone { job } => self.bandcamp_done(job),
+            PreviewEvent::FanProgress {
+                job,
+                list,
+                done,
+                total,
+            } => self.fan_progress(job, list, done, total),
+            PreviewEvent::FanRead { job, result } => self.fan_lists_read(job, result),
             PreviewEvent::CacheFull => {
                 let Some(d) = &mut self.dig else { return };
                 let gb = d.settings.cache_gb;
@@ -3019,7 +3047,7 @@ impl DiggrApp {
         }
     }
 
-    fn dig_retry_wantlist(&mut self) {
+    pub(super) fn dig_retry_wantlist(&mut self) {
         let Some(d) = &mut self.dig else { return };
         if d.token.is_none() || !d.started() || d.memory.wantlist_pending.is_empty() {
             return;
@@ -3164,7 +3192,11 @@ impl DiggrApp {
                     self.notify(format!("Could not open the browser: {err}"));
                 }
             }
+            DigAction::ShowFanReport => self.fan_show_report(),
             DigAction::RefreshCollection => {
+                if self.fan_imported() && !self.fan_running(FanList::Collection) {
+                    self.fan_refresh(FanList::Collection);
+                }
                 let Some(d) = &mut self.dig else { return };
                 if d.token.is_none() || d.refreshing_collection {
                     return;
@@ -3193,6 +3225,9 @@ impl DiggrApp {
                 }
             }
             DigAction::RefreshWantlist => {
+                if self.fan_imported() && !self.fan_running(FanList::Wishlist) {
+                    self.fan_refresh(FanList::Wishlist);
+                }
                 let Some(d) = &mut self.dig else { return };
                 if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {
                     return;
@@ -3206,35 +3241,45 @@ impl DiggrApp {
     }
 
     /// Refresh wantlist / Refresh collection for one of the user's Discogs crates, in a crate
-    /// menu (only with a token; disabled while it runs).
+    /// menu (with a token, or once a Bandcamp fan was imported; disabled while it runs), and
+    /// the last Bandcamp import's report.
     pub(super) fn dig_refresh_item(
         &self,
         ui: &mut egui::Ui,
         c: &crate::crates::CrateInfo,
         actions: &mut Vec<Action>,
     ) {
-        let Some(d) = self.dig.as_ref().filter(|d| d.token.is_some()) else {
+        let fan = self.fan_imported();
+        let Some(d) = self.dig.as_ref().filter(|d| d.token.is_some() || fan) else {
             return;
         };
         let (label, running, action) = if c.wantlist {
             (
                 "Refresh wantlist",
-                d.refreshing_wantlist,
+                d.refreshing_wantlist || self.fan_running(FanList::Wishlist),
                 DigAction::RefreshWantlist,
             )
         } else if c.collection {
             (
                 "Refresh collection",
-                d.refreshing_collection,
+                d.refreshing_collection || self.fan_running(FanList::Collection),
                 DigAction::RefreshCollection,
             )
         } else {
             return;
         };
+        if self.fan_has_report() && ui.button("Last Bandcamp import…").clicked() {
+            actions.push(Action::Dig(DigAction::ShowFanReport));
+            ui.close();
+        }
         let label = if running { "Refreshing…" } else { label };
         if ui
             .add_enabled(!running, egui::Button::new(label))
-            .on_hover_text("Make this crate match Discogs")
+            .on_hover_text(if fan {
+                "Make this crate match Discogs and Bandcamp"
+            } else {
+                "Make this crate match Discogs"
+            })
             .clicked()
         {
             actions.push(Action::Dig(action));
@@ -3288,7 +3333,11 @@ impl DiggrApp {
             .unwrap_or_default();
         let gone: HashSet<u64> = present.difference(releases).copied().collect();
         let new: Vec<u64> = releases.difference(&present).copied().collect();
-        let ids = self.entries_of(c, &gone);
+        let mut ids = self.entries_of(c, &gone);
+        // The Bandcamp collection holds them too.
+        if Some(c) == self.collection_crate() {
+            self.keep_fan_entries(c, FanList::Collection, &mut ids);
+        }
         if let Some(p) = self.crates.get_mut(c)
             && p.remove_ids(&ids) > 0
         {
@@ -3397,12 +3446,28 @@ impl DiggrApp {
             .unwrap_or_default()
     }
 
-    /// Takes the entries of `releases` out of the wantlist crate.
+    /// Leaves out of `ids` the entries of crate `c` that the fan's Bandcamp `list` holds.
+    fn keep_fan_entries(&self, c: CrateId, list: FanList, ids: &mut Vec<EntryId>) {
+        let tracks = self.fan_tracks(list);
+        if tracks.is_empty() {
+            return;
+        }
+        let Some(p) = self.crates.get(c) else { return };
+        ids.retain(|id| {
+            p.get(*id)
+                .and_then(|e| e.origin.as_ref())
+                .is_none_or(|o| !tracks.contains(&o.bandcamp))
+        });
+    }
+
+    /// Takes the entries of `releases` out of the wantlist crate, except those the Bandcamp
+    /// wishlist still holds.
     fn leave_wantlist_crate(&mut self, releases: &HashSet<u64>) {
         let Some(wl) = self.dig.as_ref().and_then(|d| d.settings.wantlist) else {
             return;
         };
-        let ids = self.entries_of(wl, releases);
+        let mut ids = self.entries_of(wl, releases);
+        self.keep_fan_entries(wl, FanList::Wishlist, &mut ids);
         if let Some(p) = self.crates.get_mut(wl)
             && p.remove_ids(&ids) > 0
         {
@@ -3688,6 +3753,14 @@ impl DiggrApp {
         }
         self.leave_wantlist_crate(&set);
         self.dig_forget_wanted(&set);
+        // A Bandcamp import's adds go to its report instead.
+        if self
+            .dig
+            .as_mut()
+            .is_some_and(|d| d.bandcamp.fan.quiet.remove(&release))
+        {
+            return;
+        }
         self.flash(Verdict::Owned, 1);
         self.notify(format!("Added {name} to your collection"));
     }
@@ -4026,6 +4099,14 @@ impl DiggrApp {
                 self.dig_fill(Page::new(url::PageKind::Release(r)), wl);
             }
         }
+        // A refresh's fill shows in its window, with Stop.
+        if refresh
+            && new > 0
+            && let Some(d) = &mut self.dig
+            && d.refilling.is_none()
+        {
+            d.refilling = Some((wl, false));
+        }
         self.dig_retry_wantlist();
         if refresh {
             self.notify(changes_line("Wantlist", new, gone.len()));
@@ -4268,8 +4349,11 @@ impl DiggrApp {
         if let Some(user) = user {
             let page = Page::new(dig::discogs::url::PageKind::Collection(user));
             let name = page.provisional_name();
-            if self.crates.find(&name).is_none() {
-                self.dig_send(page, SendMode::Crate(name.clone()), None);
+            match (self.crates.find(&name), self.collection_crate()) {
+                // Made by a Bandcamp import: the Discogs collection joins it.
+                (None, Some(c)) => self.dig_fill(page, c),
+                (None, None) => self.dig_send(page, SendMode::Crate(name.clone()), None),
+                (Some(_), _) => {}
             }
             if let Some(c) = self.crates.find(&name) {
                 self.crates.set_collection(c);
@@ -4398,6 +4482,8 @@ impl DiggrApp {
         self.bandcamp_dialog_ui(ctx);
         self.dig_download_ui(ctx);
         self.dig_refresh_ui(ctx);
+        self.fan_progress_ui(ctx);
+        self.fan_report_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };

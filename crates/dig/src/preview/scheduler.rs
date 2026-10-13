@@ -28,6 +28,7 @@ use super::clip::{Clip, Source, source_of, track_id_of};
 use super::fetcher::{FetchError, Fetcher, preview_path};
 use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
+use crate::bandcamp::fan::{FanList, FanLists, FanPage};
 use crate::bandcamp::{BandcampAlbum, BandcampPage, Listing};
 
 /// Entries kept ready after the playing one.
@@ -109,6 +110,14 @@ pub enum PreviewCommand {
         skip: Vec<String>,
         only: Vec<String>,
     },
+    /// Read these album and track pages for job `job`, in order (a fan's items).
+    ReadBandcampPages { job: u64, pages: Vec<BandcampPage> },
+    /// Read a Bandcamp fan's collection and wishlist for job `job` (see
+    /// [`crate::bandcamp::fan`]).
+    ReadFan { job: u64, page: FanPage },
+    /// Stop job `job`: its fan read ends after the current request, and its pages not read
+    /// yet are dropped.
+    StopBandcamp(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,6 +171,18 @@ pub enum PreviewEvent {
     BandcampDone {
         job: u64,
     },
+    /// A fan read of job `job` has `done` of the `total` items of `list`.
+    FanProgress {
+        job: u64,
+        list: FanList,
+        done: usize,
+        total: usize,
+    },
+    /// A fan read of job `job` ended: both lists, or why not.
+    FanRead {
+        job: u64,
+        result: Result<FanLists, String>,
+    },
     /// A search found nothing usable for the entries under `key` of length `duration`.
     NotFound {
         key: String,
@@ -204,6 +225,8 @@ enum Msg {
     Result(String, Result<PathBuf, FetchError>),
     Searched(SearchRequest, Result<Vec<SearchResult>, FetchError>),
     Read(u64, BandcampPage, Result<Listing, FetchError>),
+    FanProgress(u64, FanList, usize, usize),
+    FanRead(u64, Result<FanLists, FetchError>),
 }
 
 /// One source's wait while it limits requests.
@@ -259,8 +282,10 @@ struct Scheduler {
     skips: HashMap<u64, HashSet<String>>,
     /// Per job: the needles its label listing is narrowed to.
     onlys: HashMap<u64, Vec<String>>,
-    /// A page is being read.
-    reading: bool,
+    /// A page is being read, for this job.
+    reading: Option<u64>,
+    /// Fan reads running, by job: what stops them.
+    fan_stops: HashMap<u64, Arc<AtomicBool>>,
     /// When the last read ended.
     last_read: Option<Instant>,
 }
@@ -326,6 +351,27 @@ impl Scheduler {
                     self.onlys.insert(job, only);
                 }
                 self.reads.push_back((job, page));
+            }
+            PreviewCommand::ReadBandcampPages { job, pages } => {
+                self.events.push(PreviewEvent::BandcampListed {
+                    job,
+                    albums: pages.len(),
+                });
+                if pages.is_empty() {
+                    self.events.push(PreviewEvent::BandcampDone { job });
+                }
+                self.reads.extend(pages.into_iter().map(|p| (job, p)));
+            }
+            PreviewCommand::ReadFan { job, page } => self.read_fan(job, page),
+            PreviewCommand::StopBandcamp(job) => {
+                if let Some(stop) = self.fan_stops.get(&job) {
+                    stop.store(true, Ordering::Release);
+                }
+                let before = self.reads.len();
+                self.reads.retain(|(j, _)| *j != job);
+                if self.reads.len() != before && self.reading != Some(job) {
+                    self.events.push(PreviewEvent::BandcampDone { job });
+                }
             }
             PreviewCommand::Retry { clips, searches } => {
                 for c in &clips {
@@ -407,7 +453,7 @@ impl Scheduler {
     /// Reads the next Bandcamp page, when none is being read and the gap since the last is
     /// over.
     fn read_next(&mut self) {
-        if self.reading
+        if self.reading.is_some()
             || self.reads.is_empty()
             || self.waiting(Source::Bandcamp)
             || self
@@ -429,7 +475,7 @@ impl Scheduler {
         };
         let fetcher = self.fetcher.clone().expect("checked");
         let inbox = self.inbox.clone();
-        self.reading = true;
+        self.reading = Some(job);
         let (p2, j2) = (page.clone(), job);
         let spawned = self.spawner.spawn(
             "dig-bandcamp",
@@ -440,13 +486,63 @@ impl Scheduler {
             }),
         );
         if spawned.is_err() {
-            self.reading = false;
+            self.reading = None;
             self.reads.push_front((job, page));
         }
     }
 
+    /// Reads a fan's lists on a thread of its own: it's a handful of requests, paced by the
+    /// reader itself, and it must not wait behind a label's album reads.
+    fn read_fan(&mut self, job: u64, page: FanPage) {
+        if self.fetcher.is_none() {
+            self.look();
+        }
+        let Some(fetcher) = self.fetcher.clone() else {
+            self.events.push(PreviewEvent::FanRead {
+                job,
+                result: Err("yt-dlp is needed to read Bandcamp".into()),
+            });
+            return;
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        self.fan_stops.insert(job, stop.clone());
+        let inbox = self.inbox.clone();
+        let spawned = self.spawner.spawn(
+            "dig-bandcamp-fan",
+            Priority::Low,
+            Box::new(move || {
+                let progress_inbox = inbox.clone();
+                let result = fetcher.read_fan(
+                    &page,
+                    &mut |list, done, total| {
+                        let _ = progress_inbox.send(Msg::FanProgress(job, list, done, total));
+                    },
+                    &stop,
+                );
+                let _ = inbox.send(Msg::FanRead(job, result));
+            }),
+        );
+        if spawned.is_err() {
+            self.fan_stops.remove(&job);
+            self.events.push(PreviewEvent::FanRead {
+                job,
+                result: Err("Bandcamp couldn't be read".into()),
+            });
+        }
+    }
+
+    fn fan_read(&mut self, job: u64, result: Result<FanLists, FetchError>) {
+        self.fan_stops.remove(&job);
+        let result = result.map_err(|e| match e {
+            FetchError::Failed(t) | FetchError::Limited(t) => t,
+            FetchError::Cancelled => crate::bandcamp::fan::STOPPED.to_owned(),
+            other => format!("{other:?}"),
+        });
+        self.events.push(PreviewEvent::FanRead { job, result });
+    }
+
     fn read_done(&mut self, job: u64, page: BandcampPage, result: Result<Listing, FetchError>) {
-        self.reading = false;
+        self.reading = None;
         self.last_read = Some(Instant::now());
         match result {
             Ok(Listing::Albums(mut urls)) => {
@@ -856,7 +952,8 @@ impl PreviewHandle {
             reads: VecDeque::new(),
             skips: HashMap::new(),
             onlys: HashMap::new(),
-            reading: false,
+            reading: None,
+            fan_stops: HashMap::new(),
             last_read: None,
         };
         spawner.spawn(
@@ -886,6 +983,15 @@ impl PreviewHandle {
                         Ok(Msg::Result(clip, r)) => s.finished(clip, r),
                         Ok(Msg::Searched(req, r)) => s.searched(req, r),
                         Ok(Msg::Read(job, page, r)) => s.read_done(job, page, r),
+                        Ok(Msg::FanProgress(job, list, done, total)) => {
+                            s.events.push(PreviewEvent::FanProgress {
+                                job,
+                                list,
+                                done,
+                                total,
+                            });
+                        }
+                        Ok(Msg::FanRead(job, r)) => s.fan_read(job, r),
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
@@ -966,7 +1072,8 @@ mod tests {
             reads: VecDeque::new(),
             skips: HashMap::new(),
             onlys: HashMap::new(),
-            reading: false,
+            reading: None,
+            fan_stops: HashMap::new(),
             last_read: None,
         }
     }

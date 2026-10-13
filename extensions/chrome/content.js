@@ -1,6 +1,7 @@
 // On discogs.com and Bandcamp: a button next to the page's title (floating in a corner when
 // there is none) with Play in ‹App›, Enqueue in ‹App›, Send to crate (with a New crate… field)
-// and the switch; a label's page has only Send label. Only the address, the title's position
+// and the switch; a label's page has only Send label, a Bandcamp fan's page only Import
+// collection & wishlist. Only the address, the title's position
 // and the document title (for New crate…'s suggested name, and a Bandcamp label's name) are
 // read from the page; everything goes to the player through the service worker.
 
@@ -142,7 +143,9 @@
           ? `Add this seller to ${appName}'s Top Sellers`
           : kind === "Label" || kind === "BandcampLabel"
             ? `Follow this label in ${appName}: it goes under LABELS`
-            : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
+            : kind === "BandcampFan"
+              ? `Import this fan's Bandcamp collection & wishlist into ${appName}`
+              : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
@@ -203,6 +206,14 @@
     // A seller's page only adds the seller (or refreshes it): no tracks, no crate to pick.
     if (WR.pageKind(location.href) === "Seller") {
       menu.append(item(`Add seller to ${appName}`, () => sendPage("enqueue")));
+      wrap.append(menu);
+      return;
+    }
+    // A fan's page imports their collection and wishlist (only the address is sent).
+    if (WR.pageKind(location.href) === "BandcampFan") {
+      menu.append(
+        item(`${appName}: Import collection & wishlist`, () => sendPage("enqueue")),
+      );
       wrap.append(menu);
       return;
     }

@@ -35,9 +35,19 @@ var WR = (() => {
     [/^\/track\/[a-z0-9-]+\/?$/, "BandcampTrack"],
   ];
 
+  // A Bandcamp fan's collection or wishlist: bandcamp.com/‹user› and /‹user›/wishlist, except
+  // Bandcamp's own pages (the player checks the name strictly).
+  const FAN_HOST = /^(?:www\.)?bandcamp\.com$/;
+  const FAN_PATH = /^\/([a-z0-9_-]{1,64})(?:\/wishlist)?\/?$/;
+  const NOT_FANS = new Set([
+    "about", "album", "api", "artists", "contact", "cookies", "discover", "download", "fans",
+    "feed", "gift_cards", "guide", "help", "login", "logout", "privacy", "search", "settings",
+    "signup", "tag", "terms_of_use", "track", "yum", "pricing",
+  ]);
+
   /**
-   * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum" or
-   * "BandcampTrack" for a Bandcamp one; else null.
+   * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum",
+   * "BandcampTrack" or "BandcampFan" for a Bandcamp one; else null.
    */
   function pageKind(address) {
     let u;
@@ -45,6 +55,10 @@ var WR = (() => {
       u = new URL(address);
     } catch {
       return null;
+    }
+    if (u.protocol === "https:" && FAN_HOST.test(u.hostname)) {
+      const m = u.pathname.match(FAN_PATH);
+      return m && !NOT_FANS.has(m[1]) ? "BandcampFan" : null;
     }
     if (u.protocol === "https:" && BANDCAMP_HOST.test(u.hostname)) {
       for (const [re, kind] of BANDCAMP_KINDS) if (re.test(u.pathname)) return kind;
@@ -79,7 +93,8 @@ var WR = (() => {
 
   const SUPPORTED =
     "a release, master release, artist, label, wantlist, collection, list, marketplace item " +
-    "or seller on Discogs; a label, album or track on Bandcamp";
+    "or seller on Discogs; a label, album or track on Bandcamp, or a fan's collection or " +
+    "wishlist (bandcamp.com/‹user›)";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 

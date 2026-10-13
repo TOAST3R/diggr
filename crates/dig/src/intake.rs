@@ -86,6 +86,11 @@ pub enum Command {
     /// Read the user's friends list (at a moment with no send), checking whether each
     /// friend's collection is private. Answered with [`Event::Friends`].
     ReadFriends,
+    /// Look these Bandcamp items up on Discogs (by their key), one per step, taking turns
+    /// with the sends (see [`crate::discogs::search`]).
+    FindReleases(Vec<(String, crate::discogs::search::Wanted)>),
+    /// Drop the lookups not done yet.
+    CancelFind,
     /// Read `user`'s whole collection, a page per step, for crate `target` (Refresh friend).
     /// Answered with [`Event::FriendProgress`] and then [`Event::FriendCollection`].
     ReadFriendCollection {
@@ -252,6 +257,8 @@ pub enum Event {
     /// The friends list, each with whether their collection is private; or why it couldn't
     /// be read (the last list stays).
     Friends(Result<Vec<(String, bool)>, ApiError>),
+    /// A Bandcamp item (by key) looked up on Discogs.
+    Found(String, Result<crate::bandcamp::fan::DiscogsMatch, ApiError>),
     /// A friend's collection read for crate `target` got through `read` of `pages` pages.
     FriendProgress {
         target: u64,
@@ -376,6 +383,10 @@ pub struct Intake {
     /// The cart is to be read at a moment with no send (`false`), or ahead of sends (`true`).
     cart_read: Option<bool>,
     scan: Option<Scan>,
+    /// Bandcamp items to look up on Discogs, in order.
+    finds: std::collections::VecDeque<(String, crate::discogs::search::Wanted)>,
+    /// The next step is a lookup's turn (they alternate with the sends).
+    find_turn: bool,
 }
 
 impl Intake {
@@ -403,6 +414,8 @@ impl Intake {
             first_sellers: false,
             cart_read: None,
             scan: None,
+            finds: std::collections::VecDeque::new(),
+            find_turn: true,
         }
     }
 
@@ -542,6 +555,8 @@ impl Intake {
                 self.friend_read = None;
             }
             Command::ReadFriends => self.friends_read = true,
+            Command::FindReleases(items) => self.finds.extend(items),
+            Command::CancelFind => self.finds.clear(),
             Command::ReadFriendCollection { target, user } => {
                 let now = (self.now)();
                 self.friend_read = Some((target, collection::Syncer::new(&user, None, now)));
@@ -856,7 +871,14 @@ impl Intake {
             self.read_cart();
             return true;
         }
-        let Some(i) = self.next_job() else {
+        let next = self.next_job();
+        if !self.finds.is_empty() && (self.find_turn || next.is_none()) {
+            self.find_turn = false;
+            self.find_next();
+            return true;
+        }
+        self.find_turn = true;
+        let Some(i) = next else {
             self.save_if_due(true);
             return self.background_step();
         };
@@ -889,6 +911,22 @@ impl Intake {
         }
         self.save_if_due(false);
         true
+    }
+
+    /// Looks the next Bandcamp item up; offline, it waits and is tried again.
+    fn find_next(&mut self) {
+        let Some((key, wanted)) = self.finds.pop_front() else {
+            return;
+        };
+        let result = crate::discogs::search::find_release(&mut self.client, &wanted);
+        if result == Err(ApiError::Offline) {
+            self.went_offline();
+            self.finds.push_front((key, wanted));
+            self.client.sleep(OFFLINE_RETRY);
+            return;
+        }
+        self.track(&result);
+        self.events.push(Event::Found(key, result));
     }
 
     /// Unfinished active jobs: the focused crate's first, then the oldest.
@@ -1095,6 +1133,7 @@ impl Intake {
         let user = self.user()?;
         let pressing = expand::cached_record(&self.client.cache, RecordKey::Release(release))
             .map(|r| Pressing {
+                digital: r.formats.iter().all(|f| *f == Format::File) && !r.formats.is_empty(),
                 master: r.master,
                 catno: r.catno,
                 year: r.year,
@@ -1103,6 +1142,7 @@ impl Intake {
                 master: None,
                 catno: String::new(),
                 year: None,
+                digital: false,
             });
         if check {
             let v = self.client.get_json(&format!(

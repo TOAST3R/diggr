@@ -719,6 +719,93 @@ fn a_label_page_is_read_album_by_album() {
 }
 
 #[test]
+fn a_fan_is_read_then_the_items_pages() {
+    use dig::bandcamp::fan::{self, FanItem, FanList, FanLists, ItemKind};
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let a = "https://analogicalforce.bandcamp.com/album/a";
+    let b = "https://analogicalforce.bandcamp.com/album/b";
+    fake.page(a, Listing::Album(bc_album("a", vec![bc_track("1", "One")])));
+    fake.page(b, Listing::Album(bc_album("b", vec![bc_track("2", "Two")])));
+    let item = |key: &str, page: &str| FanItem {
+        key: key.into(),
+        page: page.into(),
+        artist: "Patricia".into(),
+        title: key.into(),
+        catno: String::new(),
+        kind: ItemKind::Digital,
+    };
+    fake.fan(
+        "toast3r",
+        FanLists {
+            fan_id: 1,
+            collection: vec![item("a1", a), item("a2", b)],
+            wishlist: vec![item("a3", a)],
+        },
+    );
+    let (h, _) = start("bandcamp-fan", &fake, |cfg| {
+        cfg.read_gap = Duration::from_millis(10)
+    });
+    h.send(PreviewCommand::ReadFan {
+        job: 3,
+        page: fan::parse("https://bandcamp.com/toast3r/wishlist").unwrap(),
+    });
+    let ev = until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::FanRead { job: 3, .. }))
+    });
+    assert!(ev.contains(&PreviewEvent::FanProgress {
+        job: 3,
+        list: FanList::Collection,
+        done: 2,
+        total: 2
+    }));
+    let Some(PreviewEvent::FanRead {
+        result: Ok(lists), ..
+    }) = ev
+        .iter()
+        .find(|e| matches!(e, PreviewEvent::FanRead { .. }))
+    else {
+        panic!("{ev:?}");
+    };
+    assert_eq!((lists.collection.len(), lists.wishlist.len()), (2, 1));
+    // Its items' pages, as one job.
+    let pages: Vec<_> = [a, b].iter().map(|u| bandcamp::parse(u).unwrap()).collect();
+    h.send(PreviewCommand::ReadBandcampPages { job: 4, pages });
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 4 }));
+    assert!(ev.contains(&PreviewEvent::BandcampListed { job: 4, albums: 2 }));
+    let albums = ev
+        .iter()
+        .filter(|e| matches!(e, PreviewEvent::BandcampAlbum { job: 4, .. }))
+        .count();
+    assert_eq!(albums, 2);
+    // An unknown fan fails; a stopped job drops the pages it hadn't read.
+    h.send(PreviewCommand::ReadFan {
+        job: 5,
+        page: fan::parse("https://bandcamp.com/nobody").unwrap(),
+    });
+    let ev = until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::FanRead { job: 5, .. }))
+    });
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        PreviewEvent::FanRead {
+            job: 5,
+            result: Err(_)
+        }
+    )));
+    let pages: Vec<_> = (0..20).map(|_| bandcamp::parse(a).unwrap()).collect();
+    h.send(PreviewCommand::ReadBandcampPages { job: 6, pages });
+    h.send(PreviewCommand::StopBandcamp(6));
+    let ev = until(&h, |ev| ev.contains(&PreviewEvent::BandcampDone { job: 6 }));
+    let read = ev
+        .iter()
+        .filter(|e| matches!(e, PreviewEvent::BandcampAlbum { job: 6, .. }))
+        .count();
+    assert!(read <= 1, "{read} read after the stop");
+}
+
+#[test]
 fn a_limited_bandcamp_waits_while_youtube_goes_on() {
     let fake = Arc::new(FakeFetcher::new(fixture()));
     fake.bandcamp_limited.store(true, Ordering::SeqCst);

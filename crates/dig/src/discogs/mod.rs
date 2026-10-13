@@ -8,6 +8,7 @@ pub mod expand;
 pub mod matching;
 pub mod model;
 pub mod ratelimit;
+pub mod search;
 pub mod seller;
 pub mod transport;
 pub mod url;
