@@ -3449,6 +3449,58 @@ impl DiggrApp {
         });
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_entry_menu(ui, e, actions);
+        ui.separator();
+        ui.menu_button("Crate", |ui| self.crate_items(ui, actions));
+    }
+
+    /// The shown crate's own actions, from a row's Crate ▸ or a right-click below the rows.
+    fn crate_items(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        if ui.button("Select all").clicked() {
+            actions.push(Action::SelectAll);
+        }
+        if ui.button("Select none").clicked() {
+            actions.push(Action::SelectNone);
+        }
+        if ui.button("Invert selection").clicked() {
+            actions.push(Action::InvertSelection);
+        }
+        // The Discogs crates lose records only through the Discogs items.
+        if !self.crates.is_locked(self.crates.shown_id()) {
+            ui.separator();
+            if ui.button("Remove selected").clicked() {
+                actions.push(Action::RemoveSelected);
+            }
+            if ui.button("Clear crate").clicked() {
+                actions.push(Action::Clear);
+            }
+        }
+        ui.separator();
+        ui.menu_button("Sort", |ui| {
+            for f in Field::ALL {
+                if ui.button(f.label()).clicked() {
+                    actions.push(Action::Sort(f));
+                    ui.close();
+                }
+            }
+        });
+        let mut grouped = self.crates.shown().is_grouped();
+        if ui
+            .checkbox(&mut grouped, "Group by record")
+            .on_hover_text("One row per record, opening to its tracks (Shift+G)")
+            .clicked()
+        {
+            actions.push(Action::ToggleGrouped);
+            ui.close();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.crates.seller_of(self.crates.shown_id()).is_some()
+            && ui.button("Open cart on discogs.com").clicked()
+        {
+            actions.push(Action::Dig(DigAction::Seller(
+                crate::app::sellers::SellerAction::OpenCart,
+            )));
+            ui.close();
+        }
     }
 
     /// The entry menu's filter shortcuts: keep only this record's artist, label or a style,
@@ -4571,6 +4623,21 @@ impl DiggrApp {
                     );
                 }
             }
+            // Below the last row (all of an empty crate's list): the crate's own menu.
+            let below = rows_top + y as f32 * row_h;
+            if below < top + list_h {
+                let rect = sk.rect(l.x as f32, below, l.w as f32, top + list_h - below);
+                let resp = ui.interact(rect, Id::new("pl_below"), Sense::click());
+                let open = opens_context_menu(
+                    resp.secondary_clicked(),
+                    resp.clicked(),
+                    ui.input(|i| i.modifiers),
+                )
+                .then_some(egui::SetOpenCommand::Bool(true));
+                egui::Popup::context_menu(&resp)
+                    .open_memory(open)
+                    .show(|ui| self.crate_items(ui, &mut actions));
+            }
             if let Some(from) = self.pl_drag_from
                 && ui.input(|i| i.pointer.any_released())
             {
@@ -4650,7 +4717,7 @@ impl DiggrApp {
                 ..self.skinned(&def, ui, origin)
             };
             draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
-            // + adds to the crate; ≡ is the crate's menu.
+            // + adds to the crate and holds its M3U in and out.
             let plus = widgets::button(ui, &bsk, "pl_plus", "pl_plus", "pl_plus");
             egui::Popup::menu(&plus).show(|ui| {
                 if ui.button("Add files…").clicked() {
@@ -4663,60 +4730,11 @@ impl DiggrApp {
                 if ui.button("Import M3U…").clicked() {
                     actions.push(Action::AddFiles);
                 }
-            });
-            plus.on_hover_text("Add");
-            let discogs = self.crates.is_locked(self.crates.shown_id());
-            let seller_crate = self.crates.seller_of(self.crates.shown_id()).is_some();
-            let menu = widgets::button(ui, &bsk, "pl_menu", "pl_menu", "pl_menu");
-            egui::Popup::menu(&menu).show(|ui| {
-                if ui.button("Select all").clicked() {
-                    actions.push(Action::SelectAll);
-                }
-                if ui.button("Select none").clicked() {
-                    actions.push(Action::SelectNone);
-                }
-                if ui.button("Invert selection").clicked() {
-                    actions.push(Action::InvertSelection);
-                }
-                ui.separator();
-                // The Discogs crates lose records only through the Discogs items.
-                if !discogs && ui.button("Remove selected").clicked() {
-                    actions.push(Action::RemoveSelected);
-                }
-                if !discogs && ui.button("Clear crate").clicked() {
-                    actions.push(Action::Clear);
-                }
-                ui.separator();
-                ui.menu_button("Sort", |ui| {
-                    for f in Field::ALL {
-                        if ui.button(f.label()).clicked() {
-                            actions.push(Action::Sort(f));
-                            ui.close();
-                        }
-                    }
-                });
-                #[cfg(not(target_arch = "wasm32"))]
-                if seller_crate && ui.button("Open cart on discogs.com").clicked() {
-                    actions.push(Action::Dig(DigAction::Seller(
-                        crate::app::sellers::SellerAction::OpenCart,
-                    )));
-                    ui.close();
-                }
-                let mut grouped = self.crates.shown().is_grouped();
-                if ui
-                    .checkbox(&mut grouped, "Group by record")
-                    .on_hover_text("One row per record, opening to its tracks (Shift+G)")
-                    .clicked()
-                {
-                    actions.push(Action::ToggleGrouped);
-                    ui.close();
-                }
-                ui.separator();
                 if ui.button("Export M3U…").clicked() {
                     actions.push(Action::ExportM3u);
                 }
             });
-            menu.on_hover_text("Crate");
+            plus.on_hover_text("Add · M3U");
             // The gear: the same Options as a right-click on the player.
             let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
             egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
@@ -8861,7 +8879,6 @@ mod headless_tests {
         assert_eq!(rig.ids(friday).len(), 3);
     }
 
-    /// The centre of footer button `name` (`pl_plus`, `pl_menu`, `pl_opts`).
     /// The middle of the filter bar, top to bottom.
     const BAR_Y: f32 = PL_TOP + 20.0 + 8.0;
 
@@ -8872,6 +8889,15 @@ mod headless_tests {
         pos2(PL_LEFT + w - 4.0 - clear_w / 2.0, BAR_Y)
     }
 
+    /// Just above the list's bottom edge, below the last row of a short crate.
+    fn below_rows(rig: &Rig) -> Pos2 {
+        pos2(
+            PL_LEFT + 40.0,
+            PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0 - 4.0,
+        )
+    }
+
+    /// The centre of footer button `name` (`pl_plus`, `pl_opts`).
     fn footer_button(rig: &Rig, name: &str) -> Pos2 {
         let r = rig.app.def.at(name);
         let bottom = PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0;
@@ -8882,37 +8908,47 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_footer_has_an_add_and_a_crate_menu() {
+    fn the_footer_has_an_add_and_a_gear_and_the_list_has_the_crate_menu() {
         let mut rig = Rig::new("footer", Vec::new(), |_| {});
         let ids = rig.fill_playlist(3);
         set_tempos(&mut rig, &[128, 122, 140]);
         rig.frame(Vec::new());
         assert!(
-            rig.app.def.sprite("pl_add").w == 0,
-            "no ADD/REM/SEL/MISC/OPT any more"
+            rig.app.def.sprite("pl_add").w == 0 && rig.app.def.sprite("pl_menu").w == 0,
+            "no ADD/REM/SEL/MISC/OPT or ≡ any more"
         );
 
         rig.click(footer_button(&rig, "pl_plus"));
         let out = rig.frame(Vec::new());
-        for t in ["Add files…", "Add folder…", "Import M3U…"] {
+        for t in ["Add files…", "Add folder…", "Import M3U…", "Export M3U…"] {
             assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
         }
         assert!(!shows(&out, "Discogs…"), "no app setting in it");
         rig.click(footer_button(&rig, "pl_plus"));
 
-        rig.click(footer_button(&rig, "pl_menu"));
+        // A right-click below the rows opens the crate's menu.
+        rig.click_with(below_rows(&rig), PointerButton::Secondary);
         let out = rig.frame(Vec::new());
         for t in [
             "Select all",
+            "Select none",
             "Invert selection",
             "Remove selected",
             "Clear crate",
             "Sort",
-            "Export M3U…",
+            "Group by record",
         ] {
             assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
         }
+        assert!(!shows(&out, "Play"), "not a row's menu");
         assert!(!shows(&out, "Show all tempos"), "the filter bar clears it");
+        let before = rig.app.crates.shown().selected_ids().len();
+        rig.click_text("Invert selection");
+        assert_eq!(rig.app.crates.shown().selected_ids().len(), 3 - before);
+
+        // A row's menu ends with the same items under Crate ▸.
+        rig.click_with(rig.row(0), PointerButton::Secondary);
+        rig.click_text("Crate");
         rig.click_text("Sort");
         rig.click_text("BPM");
         assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
@@ -9052,6 +9088,26 @@ mod headless_tests {
                 ..Default::default()
             });
         }
+    }
+
+    #[test]
+    fn a_locked_grouped_crate_still_sorts_from_its_crate_menu() {
+        let mut rig = Rig::new("crate-menu-locked", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(3);
+        set_tempos(&mut rig, &[128, 122, 140]);
+        rig.app.crates.set_collection(PLAYLIST);
+        rig.app.apply(Action::ToggleGrouped, &rig.ctx.clone());
+        rig.frame(Vec::new());
+        assert!(!rig.app.pl_header(), "grouped: no column header to click");
+
+        rig.click_with(below_rows(&rig), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        for t in ["Remove selected", "Clear crate"] {
+            assert!(!shows(&out, t), "{t} in a locked crate");
+        }
+        rig.click_text("Sort");
+        rig.click_text("BPM");
+        assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
     }
 
     #[test]
@@ -9247,13 +9303,6 @@ mod headless_tests {
                 .shown()
                 .picked(Facet::Label, "Sound Signature")
         );
-        // FILTERS counts the set filters; ☰ has no filter items.
-        egui::Popup::close_all(&rig.ctx.clone());
-        rig.frame(Vec::new());
-        rig.click(footer_button(&rig, "pl_menu"));
-        let out = rig.frame(Vec::new());
-        assert!(!text_list(&out).iter().any(|t| t.starts_with("Filter by")));
-        assert!(!shows(&out, "Show all records"));
         // The bar's × turns them all off, the BPM range too.
         let ctx = rig.ctx.clone();
         rig.app.apply(Action::SetBpmFilter(Some((130, 140))), &ctx);

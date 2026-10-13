@@ -91,10 +91,11 @@ fn grouping_makes_record_rows_and_shift_g_does_nothing() {
         "no track rows while closed"
     );
     assert_eq!(rig.app.pl_list().len(), 3);
-    // Shift+G is no shortcut: the ▤ button and the ≡ menu group.
+    // Shift+G is no shortcut: the ▤ button and the crate menu group, here from a record row.
     rig.key(Key::G, Modifiers::SHIFT);
     assert!(rig.app.crates.shown().is_grouped());
-    rig.click(footer_button(&rig, "pl_menu"));
+    rig.click_with(rig.row(0), PointerButton::Secondary);
+    rig.click_text("Crate");
     rig.click_text("Group by record");
     assert!(!rig.app.crates.shown().is_grouped());
     assert_eq!(rig.app.pl_list().len(), 6);
