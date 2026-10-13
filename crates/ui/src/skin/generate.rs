@@ -865,27 +865,15 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     text_button(&mut b, "eq_presets", 44, 12, "PRESETS", false, false);
     text_button(&mut b, "eq_presets_p", 44, 12, "PRESETS", false, true);
-    // The playlist footer's buttons: + (add) and ≡ (the crate's menu); the gear is below.
-    for (name, plus) in [("pl_plus", true), ("pl_menu", false)] {
-        for pressed in [false, true] {
-            let n = if pressed {
-                format!("{name}_p")
-            } else {
-                name.to_owned()
-            };
-            b.sprite(&n, 18, 18, |c, x, y| {
-                button_face(c, x, y, 18, 18, pressed);
-                let o = pressed as i32;
-                if plus {
-                    c.fill(x + 5 + o, y + 8 + o, 8, 2, ICON);
-                    c.fill(x + 8 + o, y + 5 + o, 2, 8, ICON);
-                } else {
-                    for ly in [5, 8, 11] {
-                        c.fill(x + 5 + o, y + ly + o, 8, 2, ICON);
-                    }
-                }
-            });
-        }
+    // The playlist footer's + (add and M3U); the gear is below.
+    for pressed in [false, true] {
+        let n = if pressed { "pl_plus_p" } else { "pl_plus" };
+        b.sprite(n, 18, 18, |c, x, y| {
+            button_face(c, x, y, 18, 18, pressed);
+            let o = pressed as i32;
+            c.fill(x + 5 + o, y + 8 + o, 8, 2, ICON);
+            c.fill(x + 8 + o, y + 5 + o, 2, 8, ICON);
+        });
     }
     // The footer's gear: the Options menu.
     const GEAR: [&str; 10] = [
@@ -1210,8 +1198,7 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_plus", R::new(11, 12, 18, 18)),
-        ("pl_menu", R::new(32, 12, 18, 18)),
-        ("pl_opts", R::new(53, 12, 18, 18)),
+        ("pl_opts", R::new(32, 12, 18, 18)),
         // The time readout is right-aligned in `pl_info`.
         ("pl_info", R::new(177, 14, 80, 7)),
         ("pl_resize", R::new(263, 26, 11, 11)),

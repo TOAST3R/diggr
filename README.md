@@ -145,10 +145,11 @@ and Home/End jump), and Enter plays the entry under it.
     a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
     and the title bar's crate menu does the same job.
 - **Playlist window:**
-  - **The footer:** **+** adds (files, a folder, or an M3U playlist), and **≡** is the crate's
-    menu: select all / none / invert, remove selected, clear the crate, **Sort ▸**, Group by
-    record and Export M3U…; the gear ⚙ opens **Options** (size, spectrogram, Discogs…,
-    Browser…). The "selected/total" time sits on the right, beside the grip;
+  - **The footer:** **+** adds files or a folder and imports or exports an M3U playlist; the
+    gear ⚙ opens **Options** (size, spectrogram, Discogs…, Browser…). The "selected/total" time sits on the right, beside the grip.
+    **The list menu** is a right-click below the last row (or **Crate ▸** at the end of a
+    row's right-click): select all / none / invert, remove selected, clear the crate, **Sort
+    ▸**, Group by record, and Open cart on discogs.com in a seller crate;
   - **The filter bar**, under the title bar, holds everything that narrows the crate on
     screen: the search field, the BPM filter, the record filters and the CART switch. It is
     part of the frame, so it takes no row of the list. **×** at its end clears the search and
@@ -218,7 +219,7 @@ and Home/End jump), and Enter plays the entry under it.
     a record's first style). Drag a divider in the header to
     resize a column, and right-click the header to show or hide columns (#, Title and Time
     always show); both are remembered. Click a column's name to **sort** the crate by it, and
-    click again for the other way (**≡ ▸ Sort** in the footer does the same at any width). A sort reorders
+    click again for the other way (the list menu's **Sort ▸** does the same at any width). A sort reorders
     the crate itself, as in classic players: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
@@ -229,11 +230,11 @@ and Home/End jump), and Enter plays the entry under it.
     and the playlist takes the full width under the band. Press
     ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
     app opens maximized next time;
-  - **▤** in the title bar (or **≡ ▸ Group by record**) shows the crate one row
+  - **▤** in the title bar (or the list menu's **Group by record**) shows the crate one row
     per record: its cover, "Artist – Album" (the record's credit, so a compilation reads
     "Various – …") with its Discogs styles at the right, the catalog
     number, year, number of tracks and what's for sale (or, while one of its tracks plays, that
-    track). The column header is hidden while grouped (☰ › Sort still sorts). **⏵** (or `Space` on it)
+    track). The column header is hidden while grouped (the list menu's Sort ▸ still sorts). **⏵** (or `Space` on it)
     opens a record to show its tracks. A click selects the whole record, a double-click (or
     `Enter`) plays it from its first playable track, its menu acts on all of it, and dragging
     it moves it whole (a track moves only within its record). The arrows step over records.
@@ -246,7 +247,7 @@ and Home/End jump), and Enter plays the entry under it.
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
-  - **+ ▸ Import M3U…** and **≡ ▸ Export M3U…** read and write M3U/M3U8 (of the crate on
+  - **+ ▸ Import M3U…** and **+ ▸ Export M3U…** read and write M3U/M3U8 (of the crate on
     screen).
   - Entries can wait for their audio or be unavailable. Both are dimmed, with an icon where the
     duration goes: a hollow dot (listed), a clock (queued), a bar that fills as it downloads, a
@@ -612,7 +613,7 @@ the heading to fold or unfold it; right-click it for **Add seller…**.
   discogs.com.
 - **CART n · subtotal:** in a seller crate with copies in your cart, this switch in the filter
   bar (or in its filter panel when the bar is too narrow) shows and plays only those records, so you can listen to the order once
-  more before paying; ☰ › Open cart on discogs.com goes to the cart. The subtotal is Discogs',
+  more before paying; the list menu's Open cart on discogs.com goes to the cart. The subtotal is Discogs',
   in the seller's currency.
 
 The cart and purchases calls aren't part of Discogs' published API (they are what discogs.com
@@ -1072,7 +1073,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 896 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 897 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

@@ -1411,8 +1411,8 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
         "only the record in the cart"
     );
 
-    // ☰ offers the cart's page.
-    rig.click(footer_button(&rig, "pl_menu"));
+    // The crate menu, below the rows, offers the cart's page.
+    rig.click_with(below_rows(&rig), PointerButton::Secondary);
     rig.click_text("Open cart on discogs.com");
     assert_eq!(
         fakes
