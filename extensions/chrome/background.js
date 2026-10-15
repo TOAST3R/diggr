@@ -66,6 +66,14 @@ async function send(url, mode, crate, title) {
   return bridge("send", { method: "POST", body });
 }
 
+/** The records read from a Juno page (the player checks each one again). */
+async function sendJuno(page, records, mode, crate) {
+  const s = await settings();
+  const body = { juno: { page, records }, mode, skip_passed: s.skipPassed };
+  if (mode === "crate") body.crate = crate;
+  return bridge("send", { method: "POST", body });
+}
+
 async function pair(code, port) {
   await chrome.storage.local.set({ port });
   const r = await bridge("pair", { method: "POST", body: { code }, auth: false });
@@ -90,6 +98,12 @@ async function handle(msg) {
     }
     case "send": {
       const r = await send(msg.url, msg.mode, msg.crate, msg.title);
+      if (r.error === "not-paired") chrome.runtime.openOptionsPage();
+      return r;
+    }
+    case "sendJuno": {
+      if (!WR.isJuno(WR.pageKind(msg.page))) return { ok: false, error: "unsupported" };
+      const r = await sendJuno(msg.page, msg.records, msg.mode, msg.crate);
       if (r.error === "not-paired") chrome.runtime.openOptionsPage();
       return r;
     }

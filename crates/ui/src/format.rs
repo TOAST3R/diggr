@@ -226,6 +226,8 @@ pub struct DigMarks {
     pub cart: Option<String>,
     /// In a seller crate, the record's copies: "€9.00 VG+ / VG, €12.00 VG+ / VG+".
     pub copies: Option<String>,
+    /// What a Juno page last said of the record: "in stock, €14.78 (seen 14 Oct)".
+    pub juno: Option<String>,
 }
 
 /// For a Discogs record with tracks searched for: how many entries it has, how many have a
@@ -297,10 +299,13 @@ pub fn entry_details(
     if let Some(o) = &e.origin
         && let Some(source) = o.source()
     {
-        let on_bandcamp = source == crate::playlist::ClipSource::Bandcamp && !o.album.is_empty();
-        let text = match on_bandcamp {
-            true => format!("{} · {}", source.name(), o.album),
-            false => source.name().to_owned(),
+        use crate::playlist::ClipSource;
+        let text = match source {
+            ClipSource::Bandcamp if !o.album.is_empty() => {
+                format!("{} · {}", source.name(), o.album)
+            }
+            ClipSource::Juno => "Juno sample (2 min)".to_owned(),
+            _ => source.name().to_owned(),
         };
         add("Source", &text);
     }
@@ -343,6 +348,9 @@ pub fn entry_details(
     }
     if let Some(c) = &marks.copies {
         add("Copies", c);
+    }
+    if let Some(j) = &marks.juno {
+        add("Juno", j);
     }
     if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
         let what = match (fs.count, fs.lowest_cents) {

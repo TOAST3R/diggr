@@ -5,7 +5,8 @@
 //! rebuilt from that id, or a checked Bandcamp track address (see [`crate::bandcamp`]),
 //! `--ignore-config` so a user config can't change paths or formats, and an output template
 //! inside the preview folder. It writes `.part` files and renames them when complete, so a
-//! half-downloaded preview is never played.
+//! half-downloaded preview is never played. Juno samples don't use yt-dlp at all (see
+//! [`super::sample`]).
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -105,7 +106,7 @@ const FAN_GAP: Duration = Duration::from_secs(1);
 pub fn ext_of(clip: &str) -> &'static str {
     match source_of(clip) {
         Source::YouTube => EXT,
-        Source::Bandcamp => BANDCAMP_EXT,
+        Source::Bandcamp | Source::Juno => BANDCAMP_EXT,
     }
 }
 
@@ -154,6 +155,8 @@ impl YtDlp {
         let (format, url) = match clip {
             Clip::YouTube(id) => (FORMAT, clip_url(id)),
             Clip::Bandcamp { url, .. } => (BANDCAMP_FORMAT, url.clone()),
+            // Never given to yt-dlp (see `fetch`): an empty address makes it fail.
+            Clip::Juno { .. } => (BANDCAMP_FORMAT, String::new()),
         };
         let key = clip.key();
         vec![
@@ -252,6 +255,8 @@ impl Fetcher for YtDlp {
                         matches!(p.kind, bandcamp::BandcampKind::Track(_)) && p.url() == *url
                     })
             }
+            // Samples are fetched over plain HTTPS, never through yt-dlp.
+            Clip::Juno { .. } => false,
         };
         if !valid {
             return Err(FetchError::InvalidId);
@@ -404,6 +409,8 @@ pub struct FakeFetcher {
     pub limited: AtomicBool,
     /// Bandcamp limits every read and download while this is set.
     pub bandcamp_limited: AtomicBool,
+    /// Juno refuses every sample while this is set.
+    pub juno_limited: AtomicBool,
     /// Canned Bandcamp pages, by checked address (none listed: the read fails).
     pub pages: std::sync::Mutex<std::collections::HashMap<String, Listing>>,
     /// Every Bandcamp page read, in order.
@@ -426,6 +433,7 @@ impl FakeFetcher {
             search_fails: AtomicBool::new(false),
             limited: AtomicBool::new(false),
             bandcamp_limited: AtomicBool::new(false),
+            juno_limited: AtomicBool::new(false),
             pages: Default::default(),
             read: Default::default(),
             fans: Default::default(),
@@ -471,26 +479,28 @@ impl FakeFetcher {
     }
 }
 
-impl Fetcher for FakeFetcher {
-    fn fetch(
+impl FakeFetcher {
+    fn fetch_any(
         &self,
         clip: &Clip,
         dir: &Path,
         progress: &dyn Fn(u8),
         cancel: &AtomicBool,
+        needs_program: bool,
     ) -> Result<PathBuf, FetchError> {
         let key = clip.key();
         let clip = key.as_str();
         if !valid_key(clip) {
             return Err(FetchError::InvalidId);
         }
-        if !self.available.load(Ordering::SeqCst) {
+        if needs_program && !self.available.load(Ordering::SeqCst) {
             return Err(FetchError::NoProgram);
         }
         self.started.lock().unwrap().push(clip.to_owned());
         let limited = match source_of(clip) {
             Source::YouTube => &self.limited,
             Source::Bandcamp => &self.bandcamp_limited,
+            Source::Juno => &self.juno_limited,
         };
         if limited.load(Ordering::SeqCst) {
             return Err(FetchError::Limited(
@@ -525,12 +535,24 @@ impl Fetcher for FakeFetcher {
         let dest = preview_path(dir, clip);
         let mp3 = self.source.with_extension(BANDCAMP_EXT);
         let source = match source_of(clip) {
-            Source::Bandcamp if mp3.exists() => mp3,
+            Source::Bandcamp | Source::Juno if mp3.exists() => mp3,
             _ => self.source.clone(),
         };
         std::fs::copy(&source, &dest).map_err(|e| FetchError::Failed(e.to_string()))?;
         let _ = std::fs::remove_file(part);
         Ok(dest)
+    }
+}
+
+impl Fetcher for FakeFetcher {
+    fn fetch(
+        &self,
+        clip: &Clip,
+        dir: &Path,
+        progress: &dyn Fn(u8),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, FetchError> {
+        self.fetch_any(clip, dir, progress, cancel, true)
     }
 
     fn version(&self) -> Option<String> {
@@ -605,6 +627,28 @@ impl Fetcher for FakeFetcher {
             lists.wishlist.len(),
         );
         Ok(lists)
+    }
+}
+
+/// The fake fetches samples as it fetches clips: from the fixture, with the same scripting.
+impl super::sample::SampleFetcher for FakeFetcher {
+    fn fetch(
+        &self,
+        key: &str,
+        dir: &Path,
+        progress: &dyn Fn(u8),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, FetchError> {
+        // Unlike a clip, a sample doesn't need yt-dlp.
+        self.fetch_any(
+            &Clip::Juno {
+                key: key.to_owned(),
+            },
+            dir,
+            progress,
+            cancel,
+            false,
+        )
     }
 }
 

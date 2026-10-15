@@ -11,8 +11,9 @@
 //! anything. When the cache is full, the list pauses and [`PreviewEvent::CacheFull`] says so;
 //! a new limit resumes it.
 //!
-//! Clips come from YouTube or Bandcamp (see [`super::clip`]); each source has its own wait
-//! when it limits requests, so one limiting never stops the other. Bandcamp pages are read
+//! Clips come from YouTube, Bandcamp or Juno (see [`super::clip`]); each source has its own
+//! wait when it limits requests, so one limiting never stops the other. Juno samples are
+//! fetched without yt-dlp, so they never wait for it. Bandcamp pages are read
 //! here too, one at a time and at least [`READ_GAP`] apart, as they run the same yt-dlp.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -26,6 +27,7 @@ use platform::{Priority, Spawner};
 
 use super::clip::{Clip, Source, source_of, track_id_of};
 use super::fetcher::{FetchError, Fetcher, preview_path};
+use super::sample::{JunoHttp, SampleFetcher};
 use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
 use crate::bandcamp::fan::{FanList, FanLists, FanPage};
@@ -202,6 +204,8 @@ pub struct Config {
     pub limited_wait: Duration,
     /// The least time between two Bandcamp page reads.
     pub read_gap: Duration,
+    /// What downloads Juno samples.
+    pub samples: Arc<dyn SampleFetcher>,
 }
 
 impl Config {
@@ -215,6 +219,7 @@ impl Config {
             recheck: RECHECK,
             limited_wait: LIMITED_WAIT,
             read_gap: READ_GAP,
+            samples: Arc::new(JunoHttp::default()),
         }
     }
 }
@@ -803,13 +808,8 @@ impl Scheduler {
             if self.running.len() >= SLOTS {
                 continue;
             }
-            if self.fetcher.is_none() {
-                if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
-                    self.look();
-                }
-                if self.fetcher.is_none() {
-                    return;
-                }
+            if !self.can_start(&clip) {
+                continue;
             }
             self.start(clip);
         }
@@ -846,13 +846,8 @@ impl Scheduler {
             if self.running.len() >= SLOTS {
                 return;
             }
-            if self.fetcher.is_none() {
-                if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
-                    self.look();
-                }
-                if self.fetcher.is_none() {
-                    return;
-                }
+            if !self.can_start(&clip) {
+                continue;
             }
             if store::total_size(&self.cfg.dir) >= self.cfg.limit {
                 return self.pause();
@@ -861,7 +856,22 @@ impl Scheduler {
         }
     }
 
+    /// Whether `clip` can start now: a Juno sample always, a clip once yt-dlp is found
+    /// (looked for again at most every [`RECHECK`]).
+    fn can_start(&mut self, clip: &str) -> bool {
+        if source_of(clip) == Source::Juno || self.fetcher.is_some() {
+            return true;
+        }
+        if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
+            self.look();
+        }
+        self.fetcher.is_some()
+    }
+
     fn start(&mut self, clip: String) {
+        if source_of(&clip) == Source::Juno {
+            return self.start_sample(clip);
+        }
         let target = match track_id_of(&clip) {
             None => Clip::YouTube(clip.clone()),
             Some(track_id) => match self.urls.get(&clip) {
@@ -888,6 +898,47 @@ impl Scheduler {
                 let progress_id = id.clone();
                 let result = fetcher.fetch(
                     &target,
+                    &dir,
+                    &move |p| {
+                        let _ = progress_inbox.send(Msg::Progress(progress_id.clone(), p));
+                    },
+                    &c2,
+                );
+                let _ = inbox.send(Msg::Result(id, result));
+            }),
+        );
+        if spawned.is_ok() {
+            self.running.insert(
+                clip,
+                Running {
+                    cancel,
+                    started: Instant::now(),
+                    timed_out: false,
+                },
+            );
+        }
+    }
+}
+
+impl Scheduler {
+    /// Downloads a Juno sample, like a clip but without yt-dlp.
+    fn start_sample(&mut self, clip: String) {
+        let samples = self.cfg.samples.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (c2, dir, inbox, id) = (
+            cancel.clone(),
+            self.cfg.dir.clone(),
+            self.inbox.clone(),
+            clip.clone(),
+        );
+        let spawned = self.spawner.spawn(
+            "dig-sample",
+            Priority::Low,
+            Box::new(move || {
+                let progress_inbox = inbox.clone();
+                let progress_id = id.clone();
+                let result = samples.fetch(
+                    &id,
                     &dir,
                     &move |p| {
                         let _ = progress_inbox.send(Msg::Progress(progress_id.clone(), p));

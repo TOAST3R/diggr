@@ -40,6 +40,8 @@ mod fan;
 #[cfg(not(target_arch = "wasm32"))]
 mod friends;
 #[cfg(not(target_arch = "wasm32"))]
+mod juno;
+#[cfg(not(target_arch = "wasm32"))]
 mod sellers;
 #[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
@@ -982,6 +984,7 @@ impl DiggrApp {
                         .collect();
                     (!text.is_empty()).then(|| text.join(", "))
                 }),
+                juno: self.juno_note(e),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -7541,6 +7544,8 @@ mod headless_tests {
     mod friend_tests;
     // A Bandcamp fan's collection and wishlist, with fake pages and a fake Discogs.
     mod fan_tests;
+    // Juno records sent by the extension, with a fake Discogs and fake previews.
+    mod juno_tests;
     // Top Sellers and the cart, with a fake Discogs.
     mod seller_tests;
 

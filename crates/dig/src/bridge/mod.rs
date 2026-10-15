@@ -1,11 +1,13 @@
 //! The browser bridge: a tiny HTTP server on 127.0.0.1 through which a paired browser
-//! extension sends Discogs and Bandcamp pages to the player.
+//! extension sends Discogs and Bandcamp pages, and Juno records, to the player.
 //!
 //! It is the app's only network listener, so it accepts as little as it can: loopback only,
 //! requests addressed to 127.0.0.1 or localhost (against DNS rebinding), no web-page origins,
 //! no preflight and no cross-origin headers (so no web page can use it), a key from pairing on
 //! every request that does anything, bodies of at most 16 KB with no unknown fields, and only
-//! supported Discogs addresses and checked Bandcamp ones (see [`crate::bandcamp`]).
+//! supported Discogs addresses and checked Bandcamp ones (see [`crate::bandcamp`]). A Juno
+//! send is the one exception to the size: it carries the records of the page the user has
+//! open (the app can't read Juno itself), up to 1 MiB, each checked by [`crate::juno`].
 //!
 //! Every request is answered on the bridge thread without waiting for the UI or Discogs: a
 //! send is checked, answered `202` at once, and handed to the UI as a [`BridgeCommand`]; the
@@ -27,12 +29,15 @@ use crate::collection::{Collection, Owned};
 use crate::discogs::cache::{DiskCache, Kind};
 use crate::discogs::url::{self, Page, PageKind};
 use crate::jobs::Filters;
+use crate::juno::{self, JunoRecord};
 pub use pairing::{DEFAULT_PORT, PairError, Pairing};
 
 /// The bridge's protocol version, reported by `/v1/hello`.
 pub const API: u32 = 1;
 /// Largest request body accepted.
 pub const MAX_BODY: usize = 16 * 1024;
+/// Largest Juno send accepted (500 records with their tracks fit with room to spare).
+pub const MAX_JUNO_BODY: usize = 1 << 20;
 /// Crate names: 1 to 40 characters (the crates' own limit).
 pub const MAX_CRATE_NAME: usize = 40;
 pub const KEY_HEADER: &str = "X-Bridge-Key";
@@ -61,6 +66,12 @@ pub enum BridgeCommand {
         mode: Mode,
         filters: Filters,
         title: Option<String>,
+    },
+    /// Records read by the extension from a Juno page, already checked.
+    SendJuno {
+        records: Vec<JunoRecord>,
+        mode: Mode,
+        filters: Filters,
     },
     /// A Bandcamp fan's page: import (or refresh) their collection and wishlist.
     ImportFan(bandcamp::fan::FanPage),
@@ -95,6 +106,9 @@ pub struct Snapshot {
 pub struct CrateState {
     pub name: String,
     pub shown: bool,
+    /// Where Enqueue goes: the shown crate, or the Playlist when the shown one is special.
+    #[serde(skip)]
+    pub enqueue: bool,
     pub playing: bool,
 }
 
@@ -305,19 +319,25 @@ fn answer(
         (Post, "/v1/owned") => "owned",
         _ => return error(404, "not found"),
     };
-    if req.body_length().is_some_and(|n| n > MAX_BODY) {
+    // A send may be a Juno one, which is larger; anything else over 16 KB is refused once
+    // the key is checked (below).
+    let max = match route {
+        "send" => MAX_JUNO_BODY,
+        _ => MAX_BODY,
+    };
+    if req.body_length().is_some_and(|n| n > max) {
         return error(413, "too large");
     }
     let mut body = Vec::new();
     if req
         .as_reader()
-        .take(MAX_BODY as u64 + 1)
+        .take(max as u64 + 1)
         .read_to_end(&mut body)
         .is_err()
     {
         return error(422, "unreadable body");
     }
-    if body.len() > MAX_BODY {
+    if body.len() > max {
         return error(413, "too large");
     }
     // 4. The key, except to say hello and to pair.
@@ -356,6 +376,8 @@ fn answer(
             )
         }
         "owned" => owned(&body, shared),
+        _ if is_juno(&body) => send_juno(&body, shared),
+        _ if body.len() > MAX_BODY => error(413, "too large"),
         _ => send(&body, shared),
     }
 }
@@ -454,7 +476,7 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             .load()
             .crates
             .iter()
-            .find(|c| c.shown)
+            .find(|c| c.enqueue)
             .map(|c| c.name.clone())
             .unwrap_or_default(),
         Mode::Play => page
@@ -601,7 +623,7 @@ fn send_bandcamp(
         Mode::Enqueue => snapshot
             .crates
             .iter()
-            .find(|c| c.shown)
+            .find(|c| c.enqueue)
             .map(|c| c.name.clone())
             .unwrap_or_default(),
         Mode::Play => page
@@ -619,4 +641,85 @@ fn send_bandcamp(
         title: b.title,
     };
     (202, answer, Some(cmd))
+}
+
+/// Whether a send's body is a Juno send: a JSON object with a `juno` member.
+fn is_juno(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Map<String, Value>>(body)
+        .is_ok_and(|m| m.contains_key("juno"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JunoBody {
+    juno: Value,
+    mode: ModeName,
+    #[serde(rename = "crate", default)]
+    crate_name: Option<String>,
+    skip_passed: bool,
+}
+
+/// Records from a Juno page: each checked on its own (see [`crate::juno::check`]); the
+/// answer says how many were taken and how many refused. Never brings the app to the front.
+fn send_juno(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
+    let Ok(b) = serde_json::from_slice::<JunoBody>(body) else {
+        return error(422, "invalid body");
+    };
+    let mode = match mode_of(b.mode, b.crate_name) {
+        Ok(m) => m,
+        Err(why) => return error(422, why),
+    };
+    let checked = match juno::check(&b.juno) {
+        Ok(c) => c,
+        Err(juno::SendError::NotJuno) => return error(422, "unsupported"),
+        Err(e) => return error(422, &e.to_string()),
+    };
+    let name = juno_name(&checked.records);
+    let target = match &mode {
+        Mode::Enqueue => shared
+            .snapshot
+            .load()
+            .crates
+            .iter()
+            .find(|c| c.enqueue)
+            .map(|c| c.name.clone())
+            .unwrap_or_default(),
+        Mode::Play => name.chars().take(MAX_CRATE_NAME).collect(),
+        Mode::Crate(n) => n.clone(),
+    };
+    let records = checked.records.len();
+    let message = match checked.refused {
+        0 => format!("Sent {}", plural(records, "record")),
+        n => format!("Sent {}, {} refused", plural(records, "record"), n),
+    };
+    let answer = json!({
+        "page": name,
+        "crate": target,
+        "records": records,
+        "refused": checked.refused,
+        "message": message,
+    });
+    let cmd = BridgeCommand::SendJuno {
+        records: checked.records,
+        mode,
+        filters: Filters {
+            skip_passed: b.skip_passed,
+        },
+    };
+    (202, answer, Some(cmd))
+}
+
+/// What a Juno send is called: "Artist - Title" for one record, else "Juno: 20 records".
+pub fn juno_name(records: &[JunoRecord]) -> String {
+    match records {
+        [r] => format!("{} - {}", r.artist, r.title),
+        rs => format!("Juno: {}", plural(rs.len(), "record")),
+    }
+}
+
+fn plural(n: usize, what: &str) -> String {
+    match n {
+        1 => format!("1 {what}"),
+        n => format!("{n} {what}s"),
+    }
 }

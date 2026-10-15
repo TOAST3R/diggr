@@ -200,9 +200,18 @@ pub struct Origin {
     /// Its Bandcamp clip (`bc.‹track id›`): the clip in use, or the one to switch to.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub bandcamp_clip: String,
-    /// Its YouTube clip, set aside while the Bandcamp one is in use.
+    /// Its YouTube clip, set aside while another source's is in use.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub youtube_clip: String,
+    /// The record on Juno (`1178909-01`), when it was sent from a Juno page.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub juno: String,
+    /// The Juno product page's name part (`0-mika-vainio-rontgen-vinyl`), to open it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub juno_slug: String,
+    /// Its Juno sample (`jn.‹product›-‹side›-‹track›`): the clip in use, or one to switch to.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub juno_clip: String,
 }
 
 /// Where an entry's audio comes from.
@@ -210,13 +219,18 @@ pub struct Origin {
 pub enum ClipSource {
     YouTube,
     Bandcamp,
+    Juno,
 }
 
 impl ClipSource {
-    /// Bandcamp clips are `bc.‹track id›`; a YouTube id never has a dot.
+    pub const ALL: [ClipSource; 3] = [ClipSource::YouTube, ClipSource::Bandcamp, ClipSource::Juno];
+
+    /// Bandcamp clips are `bc.‹track id›`, Juno samples `jn.…`; a YouTube id never has a dot.
     pub fn of(clip: &str) -> Self {
         if clip.starts_with("bc.") {
             ClipSource::Bandcamp
+        } else if clip.starts_with("jn.") {
+            ClipSource::Juno
         } else {
             ClipSource::YouTube
         }
@@ -226,6 +240,7 @@ impl ClipSource {
         match self {
             ClipSource::YouTube => "YouTube",
             ClipSource::Bandcamp => "Bandcamp",
+            ClipSource::Juno => "Juno",
         }
     }
 
@@ -234,6 +249,7 @@ impl ClipSource {
         match self {
             ClipSource::YouTube => "YT",
             ClipSource::Bandcamp => "BC",
+            ClipSource::Juno => "JN",
         }
     }
 }
@@ -252,28 +268,41 @@ impl Origin {
         }
     }
 
-    /// The source the entry could switch to: the other one, when it has both.
-    pub fn other_source(&self) -> Option<ClipSource> {
-        match self.source()? {
-            ClipSource::YouTube => (!self.bandcamp_clip.is_empty()).then_some(ClipSource::Bandcamp),
-            ClipSource::Bandcamp => self.youtube().map(|_| ClipSource::YouTube),
-        }
+    /// The entry's clip from `source`, in use or not.
+    pub fn clip_of(&self, source: ClipSource) -> Option<&str> {
+        let c = match source {
+            ClipSource::YouTube => return self.youtube(),
+            ClipSource::Bandcamp => &self.bandcamp_clip,
+            ClipSource::Juno => &self.juno_clip,
+        };
+        Some(c.as_str()).filter(|c| !c.is_empty())
     }
 
-    /// Switches the clip in use to `to`; true if it changed.
+    /// The sources the entry could switch to: every other one it has a clip from.
+    pub fn other_sources(&self) -> Vec<ClipSource> {
+        let Some(now) = self.source() else {
+            return Vec::new();
+        };
+        ClipSource::ALL
+            .into_iter()
+            .filter(|s| *s != now && self.clip_of(*s).is_some())
+            .collect()
+    }
+
+    /// Switches the clip in use to `to`; true if it changed. A YouTube clip left is set
+    /// aside (the others keep their own fields).
     pub fn switch_to(&mut self, to: ClipSource) -> bool {
-        if self.other_source() != Some(to) {
+        if !self.other_sources().contains(&to) {
             return false;
         }
-        match to {
-            ClipSource::Bandcamp => {
-                self.youtube_clip = self.clip.take().unwrap_or_default();
-                self.clip = Some(self.bandcamp_clip.clone());
-            }
-            ClipSource::YouTube => {
-                self.clip = Some(std::mem::take(&mut self.youtube_clip));
-            }
+        if self.source() == Some(ClipSource::YouTube) {
+            self.youtube_clip = self.clip.take().unwrap_or_default();
         }
+        self.clip = Some(match to {
+            ClipSource::YouTube => std::mem::take(&mut self.youtube_clip),
+            ClipSource::Bandcamp => self.bandcamp_clip.clone(),
+            ClipSource::Juno => self.juno_clip.clone(),
+        });
         true
     }
 }
@@ -870,8 +899,9 @@ impl Playlist {
         }
     }
 
+    /// From the end: new entries go in near it, so that's where they're looked for most.
     pub fn index_of(&self, id: EntryId) -> Option<usize> {
-        self.entries.iter().position(|e| e.id == id)
+        self.entries.iter().rposition(|e| e.id == id)
     }
 
     pub fn get(&self, id: EntryId) -> Option<&Entry> {
