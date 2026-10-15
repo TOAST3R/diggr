@@ -1,13 +1,14 @@
-//! Where a preview's audio comes from: a YouTube video or a Bandcamp track.
+//! Where a preview's audio comes from: a YouTube video, a Bandcamp track or a Juno sample.
 //!
 //! The preview worker and the crates know a clip by a key that is also its file name: a
-//! YouTube clip by its 11-character id, a Bandcamp track by `bc.‹track id›`. The dot can't
-//! be in a YouTube id, so the two never collide.
+//! YouTube clip by its 11-character id, a Bandcamp track by `bc.‹track id›`, a Juno sample by
+//! `jn.‹product›-‹side›-‹track›`. The dot can't be in a YouTube id, so they never collide.
 
 use serde::{Deserialize, Serialize};
 
 use crate::bandcamp::valid_track_id;
 use crate::discogs::model::valid_clip_id;
+use crate::juno;
 
 const BANDCAMP_PREFIX: &str = "bc.";
 
@@ -16,6 +17,7 @@ pub enum Source {
     #[default]
     YouTube,
     Bandcamp,
+    Juno,
 }
 
 impl Source {
@@ -23,14 +25,16 @@ impl Source {
         match self {
             Source::YouTube => "YouTube",
             Source::Bandcamp => "Bandcamp",
+            Source::Juno => "Juno",
         }
     }
 
-    /// The row's badge: "YT", "BC".
+    /// The row's badge: "YT", "BC", "JN".
     pub fn badge(self) -> &'static str {
         match self {
             Source::YouTube => "YT",
             Source::Bandcamp => "BC",
+            Source::Juno => "JN",
         }
     }
 }
@@ -44,6 +48,10 @@ pub enum Clip {
         /// The track's page, checked (see [`crate::bandcamp::parse`]).
         url: String,
     },
+    /// A sample fetched over plain HTTPS, its address rebuilt from the key.
+    Juno {
+        key: String,
+    },
 }
 
 /// A Bandcamp track's key: `bc.3020153053`.
@@ -55,15 +63,19 @@ pub fn bandcamp_key(track_id: &str) -> String {
 pub fn source_of(key: &str) -> Source {
     if key.starts_with(BANDCAMP_PREFIX) {
         Source::Bandcamp
+    } else if juno::is_key(key) {
+        Source::Juno
     } else {
         Source::YouTube
     }
 }
 
-/// A key the worker may fetch: a valid YouTube id or `bc.` and a valid track id.
+/// A key the worker may fetch: a valid YouTube id, `bc.` and a valid track id, or a valid
+/// Juno key.
 pub fn valid_key(key: &str) -> bool {
     match key.strip_prefix(BANDCAMP_PREFIX) {
         Some(id) => valid_track_id(id),
+        None if juno::is_key(key) => juno::parse_key(key).is_some(),
         None => valid_clip_id(key),
     }
 }
@@ -78,6 +90,7 @@ impl Clip {
         match self {
             Clip::YouTube(id) => id.clone(),
             Clip::Bandcamp { track_id, .. } => bandcamp_key(track_id),
+            Clip::Juno { key } => key.clone(),
         }
     }
 
@@ -85,6 +98,7 @@ impl Clip {
         match self {
             Clip::YouTube(_) => Source::YouTube,
             Clip::Bandcamp { .. } => Source::Bandcamp,
+            Clip::Juno { .. } => Source::Juno,
         }
     }
 }
@@ -110,5 +124,16 @@ mod tests {
         ] {
             assert!(!valid_key(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn juno_keys_are_their_own_source() {
+        assert_eq!(source_of("jn.1178909-01-01-01"), Source::Juno);
+        assert!(valid_key("jn.1178909-01-01-01"));
+        assert!(!valid_key("jn.1178909-01-01"));
+        assert!(!valid_key("jn.1178909-01-01-0x"));
+        assert_eq!(source_of("bc.3020153053"), Source::Bandcamp);
+        assert_eq!(source_of("dQw4w9WgXcQ"), Source::YouTube);
+        assert_eq!(Source::Juno.badge(), "JN");
     }
 }

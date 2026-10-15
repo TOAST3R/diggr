@@ -307,7 +307,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
 | `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
-| `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen |
+| `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen (the Playlist when that's a wantlist, collection, label, seller or friend crate) |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | `Shift+P` | maximize the playlist (again: restore) | | | |
@@ -564,6 +564,37 @@ your yt-dlp (nothing is downloaded until a track is about to play):
     Discogs search) or not readable. **Copy** puts it on the clipboard; **Last Bandcamp
     import…** in the crates' menus opens it again.
 
+### Juno
+
+Juno Records stocks most new electronic vinyl, with a 2-minute sample of every track. Juno pages
+go into Diggr only **from the browser extension**: they sit behind a bot check that Diggr
+doesn't try to get past, so the extension reads the page you have open and sends its records.
+Diggr never opens a Juno page or searches Juno, and a pasted Juno address is refused ("Juno pages
+are sent from the browser extension").
+
+- **Which pages:** on www.juno.co.uk or a regional site (es., de.…), a product page, and pages listing records (label, artist, genre, chart,
+  search, new releases). Only what the page shows is sent, so raise Juno's items per page to send
+  more. A listing gives one sample per record unless Juno's **Show tracks** is set to All, and the
+  button's menu says so.
+- **Merged like Bandcamp:** tracks are matched by artist and title, narrowed by catalogue number
+  ("SAHKO 00012"): a track that plays is skipped, one without a preview gets the Juno sample in
+  place, and the rest are added ("Rontgen: 1 added, 1 fixed, 1 skipped"). A Discogs record sent
+  later takes Juno-only entries of its catalogue number over, and they keep playing from Juno.
+- **Samples:** a Juno entry plays its 120 s sample, fetched with one HTTPS request to
+  `mp3.juno.co.uk` (no yt-dlp), and only when it's about to play, like any preview. Download all
+  tracks leaves Juno entries out. When Juno refuses (429, 403, or a web page instead of audio),
+  Juno downloads wait 10, 20, 40, then 60 min ("Juno is refusing downloads"), and the other
+  sources go on.
+- **Linked to Discogs:** with a token, each record is looked up once on Discogs by artist, title
+  and catalogue number, and linked only when exactly one release fits. A linked entry gets Y, I,
+  ★ and owned marks. An unlinked one has them greyed out, and Y says it "isn't linked to Discogs".
+- **Where the sound comes from:** rows show **JN**, and the tooltip says "Source: Juno sample
+  (2 min)". An entry with several sources offers **Play from ‹source›** for each other one.
+- **Stock note:** the tooltip shows what the page said when you sent it, "Juno: in stock, €14.78
+  (seen 14 Oct)", adding "may have changed" after 30 days. A Discogs entry of a linked release
+  shows it too. Diggr never checks stock itself. **Open on Juno** in the menu opens the product
+  page.
+
 ### Top Sellers
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
@@ -640,7 +671,7 @@ hovering **FRIENDS** says when it was read and why it couldn't be read again.
 
 ### From the browser
 
-A Chrome extension (in `extensions/chrome/`) adds a button to Discogs and Bandcamp pages: Play
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs, Bandcamp and Juno pages: Play
 in Diggr, Enqueue in Diggr and Send to crate. It talks to the player through a small **browser bridge**
 that the player starts once its window is up.
 
@@ -656,7 +687,10 @@ that the player starts once its window is up.
 - **What it accepts:** only a Discogs or Bandcamp page address (the pages that paste accepts),
   a mode (Play, Enqueue, or a crate of 1 to 40 characters), the skip-passed switch, and for a
   Bandcamp page its title (at most 200 characters, to name a label), in a body of at most 16 KB
-  (a vinyl-only switch from an older extension is accepted and ignored).
+  (a vinyl-only switch from an older extension is accepted and ignored). A Juno send carries
+  the page's records instead of an address, in up to 1 MiB: at most 500 records and 5,000
+  tracks, each field checked, and every address rebuilt by the player from the ids. A bad record
+  is refused alone, and the answer counts it.
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
   playing, and the progress of sends.
@@ -666,9 +700,9 @@ that the player starts once its window is up.
 **Install the extension** (Chrome, or any Chromium browser: Brave, Edge, Arc):
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
-   the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com and
-   127.0.0.1 only. (An older copy needs reloading in `chrome://extensions` for Bandcamp, and Chrome
-   asks you to accept the new site access.)
+   the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com,
+   juno.co.uk and 127.0.0.1 only. (An older copy needs reloading in `chrome://extensions`
+   for Bandcamp and Juno, and Chrome asks you to accept the new site access.)
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
 3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
@@ -694,6 +728,10 @@ that the player starts once its window is up.
    which sends the page's title too, to name the label (see [Bandcamp](#bandcamp)). On a
    Bandcamp fan's page (`bandcamp.com/‹user›` or `/wishlist`), only **Diggr: Import collection
    & wishlist**, which sends the address alone.
+   On a Juno product or listing page, the button offers the same as on a release, and its menu
+   says how many records the page shows. The page is read only when the menu opens, and the
+   extension makes no request to Juno (see [Juno](#juno)). There's no button on other Juno pages,
+   and no link menu for Juno links.
 4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr or Enqueue in Diggr (a
    label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -1029,7 +1067,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
 \* `DIGGR_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -1073,7 +1111,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ## Tests
 
 ```sh
-cargo test --workspace            # 897 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 924 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1191,6 +1229,13 @@ What's covered:
   other way round), Merge or Separate asked once, the YT/BC badges, switching sources and Open on
   Bandcamp, and the Discogs items off on a Bandcamp-only entry. Merging, name matching and
   switching are also unit-tested.
+- **Juno in the player** (`crates/ui`, headless, `juno_tests.rs`, with a fake Discogs and fake
+  previews; and `crates/dig`): a product page into a crate playing its samples, a track without
+  a preview fixed in place, a one-sample listing item, a 500-record send, Discogs links (one
+  release, two, none, no token, never twice), the stock note and Open on Juno, a Discogs record
+  taking Juno entries over, a pasted Juno address refused, and three sources on one entry. The
+  payload checks, keys, the bridge's Juno send, sample downloads against a local server, Juno
+  limiting, and Download all tracks leaving Juno out are tested in `crates/dig` and `crates/ui`.
 - **A Bandcamp fan** (`crates/ui`, headless, `fan_tests.rs`, with fake pages and a fake Discogs;
   and `crates/dig`): both lists into crates made without a token and nothing sent to Discogs; an
   exact match added to the Discogs collection and taking the Bandcamp entries over, the rest

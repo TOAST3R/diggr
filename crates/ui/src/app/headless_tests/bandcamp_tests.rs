@@ -78,6 +78,7 @@ impl Fakes {
             images: FakeImages::new(Ok(test_jpeg(300, 300))),
             clock: Arc::new(RealClock::default()),
             finder,
+            samples: self.fetcher.clone(),
             browser: self.browser.clone(),
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,

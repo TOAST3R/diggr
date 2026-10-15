@@ -3,13 +3,15 @@
 // and the switch; a label's page has only Send label, a Bandcamp fan's page only Import
 // collection & wishlist. Only the address, the title's position
 // and the document title (for New crate…'s suggested name, and a Bandcamp label's name) are
-// read from the page; everything goes to the player through the service worker.
+// read from the page; everything goes to the player through the service worker. On Juno, the
+// records the page shows are read too (juno.js), and only when the menu opens.
 
 (() => {
   const STYLE = `
     :host { all: initial; }
     * { box-sizing: border-box; font: 12px/1.3 "Trebuchet MS", Tahoma, sans-serif; }
     .wrap { position: relative; display: inline-block; vertical-align: middle; margin: 6px 0; }
+    :host(.beside) .wrap { margin: 0 0 0 10px; }
     .wrap.floating { position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; margin: 0; }
     button.main {
       background: #1b1b24; color: #2fe45a; border: 1px solid #4a4a5e; border-radius: 3px;
@@ -103,6 +105,22 @@
 
   /** The page's title: Discogs' main heading, or Bandcamp's album, track or label name. */
   function heading() {
+    // Juno: after the record's Play / Add to playlist buttons; its first h1 is the breadcrumb,
+    // whose bar would clip the menu.
+    if (WR.isJuno(WR.pageKind(location.href))) {
+      // Visible ones only: the page holds hidden copies (other layouts, per-track menus).
+      const buttons = [...document.querySelectorAll("button, a, [role=button]")].filter(
+        (b) => b.getClientRects().length > 0 && b.offsetWidth > 0,
+      );
+      const text = (b) => b.textContent.replace(/\s+/g, " ").trim();
+      const at = buttons.findIndex((b) => /^play$/i.test(text(b)));
+      if (at >= 0) {
+        // Its Add to playlist is the next visible button.
+        const next = buttons[at + 1];
+        return next && /^add to playlist$/i.test(text(next)) ? next : buttons[at];
+      }
+      return document.querySelector("h1");
+    }
     if (WR.isBandcamp(WR.pageKind(location.href))) {
       return (
         document.querySelector("#name-section .trackTitle") ||
@@ -119,6 +137,7 @@
     const wrap = root.querySelector(".wrap");
     if (h1) {
       if (host.previousElementSibling !== h1 || !host.isConnected) h1.after(host);
+      host.classList.toggle("beside", h1.tagName !== "H1" && WR.isJuno(WR.pageKind(location.href)));
       wrap?.classList.remove("floating");
     } else {
       if (host.parentElement !== document.body) document.body.append(host);
@@ -145,7 +164,9 @@
             ? `Follow this label in ${appName}: it goes under LABELS`
             : kind === "BandcampFan"
               ? `Import this fan's Bandcamp collection & wishlist into ${appName}`
-              : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
+              : WR.isJuno(kind)
+                ? `Send the records on this Juno page to ${appName}`
+                : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
     root.append(wrap);
@@ -223,9 +244,27 @@
       wrap.append(menu);
       return;
     }
+    // A Juno page is read now, and what was read is what gets sent.
+    let juno = null;
+    if (WR.isJuno(WR.pageKind(location.href))) {
+      juno = WRJuno.read(document, location.href, WR.pageKind(location.href));
+      if (!juno) {
+        menu.append(el("div", { className: "note", textContent: "Couldn't read this Juno page" }));
+        wrap.append(menu);
+        return;
+      }
+      const n = juno.records.length;
+      menu.append(el("div", { className: "note", textContent: n === 1 ? "1 record" : `${n} records` }));
+      if (juno.single && n > 1) {
+        const hint = "1 track per record: set Show tracks to All for more";
+        menu.append(el("div", { className: "note", textContent: hint }));
+      }
+      menu.append(el("div", { className: "sep" }));
+    }
+    const sendThis = (mode, crate) => send(mode, crate, juno);
     menu.append(
-      item(`Play in ${appName}`, () => sendPage("play")),
-      item(`Enqueue in ${appName}`, () => sendPage("enqueue")),
+      item(`Play in ${appName}`, () => sendThis("play")),
+      item(`Enqueue in ${appName}`, () => sendThis("enqueue")),
       el("div", { className: "sep" }),
       el("div", { className: "note", textContent: "Send to crate ▸" }),
     );
@@ -255,9 +294,13 @@
     }
     for (const c of r.json.crates) {
       const mark = c.playing ? " ▶" : c.shown ? " ●" : "";
-      crates.append(item(c.name + mark, () => sendPage("crate", c.name), "item sub"));
+      crates.append(item(c.name + mark, () => sendThis("crate", c.name), "item sub"));
     }
-    const newCrate = item("New crate…", () => newCrate.replaceWith(newCrateField()), "item sub");
+    const newCrate = item(
+      "New crate…",
+      () => newCrate.replaceWith(newCrateField(sendThis, juno)),
+      "item sub",
+    );
     crates.append(newCrate);
   }
 
@@ -265,12 +308,19 @@
    * New crate…: a field in the menu holding the suggested name as real, editable text (the
    * cursor at its end). Enter or Create sends; Esc closes the menu.
    */
-  function newCrateField() {
+  function newCrateField(sendThis, juno) {
     const kind = WR.pageKind(location.href);
+    // Juno: "Artist - Title" for a product, else the page's heading.
+    const r = juno?.records[0];
+    const value = !WR.isJuno(kind)
+      ? WR.suggestName(document.title, kind, location.href)
+      : kind === "JunoProduct" && r
+        ? WR.fit(`${r.artist} - ${r.title}`)
+        : WR.fit((document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim());
     const input = el("input", {
       type: "text",
       className: "name",
-      value: WR.suggestName(document.title, kind, location.href),
+      value,
       maxLength: 200,
       spellcheck: false,
     });
@@ -284,7 +334,7 @@
         input.focus();
         return;
       }
-      sendPage("crate", name);
+      sendThis("crate", name);
     };
     input.addEventListener("keydown", (e) => {
       e.stopPropagation(); // Discogs' own shortcuts stay out of the typing
@@ -302,8 +352,16 @@
     return box;
   }
 
-  async function sendPage(mode, crate) {
+  const sendPage = (mode, crate) => send(mode, crate, null);
+
+  async function send(mode, crate, juno) {
     closeMenus();
+    if (juno) {
+      const r = await ask({ type: "sendJuno", page: juno.page, records: juno.records, mode, crate });
+      if (!r.ok) return toast(WR.problem(r.error, appName), false);
+      const refused = r.json.refused ? ` (${r.json.refused} refused)` : "";
+      return toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}${refused}`);
+    }
     // A Bandcamp label is named after its page's title ("Music | Analogical Force").
     const title = WR.pageKind(location.href) === "BandcampLabel" ? document.title : undefined;
     const r = await ask({ type: "send", url: location.href, mode, crate, title });

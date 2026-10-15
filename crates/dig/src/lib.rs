@@ -8,6 +8,7 @@
 //! - [`bridge`]: a loopback server through which a paired browser extension sends pages;
 //! - [`cover`]: record covers for the entry tooltip, from Discogs' image host.
 //! - [`bandcamp`]: Bandcamp pages, checked and read through yt-dlp.
+//! - [`juno`]: Juno records, sent as checked data by the browser extension.
 //!
 //! Native only: the web build leaves this crate out.
 
@@ -22,6 +23,7 @@ pub mod discogs;
 pub mod friends;
 pub mod intake;
 pub mod jobs;
+pub mod juno;
 pub mod memory;
 pub mod prepare;
 pub mod preview;

@@ -1,5 +1,5 @@
 // Shared by the service worker, the content script, the options page and the popup: which
-// Discogs and Bandcamp pages the player can dig, and the messages shown when something is
+// Discogs, Bandcamp and Juno pages the player can dig, and the messages shown when something is
 // missing.
 //
 // The check here is coarse, only to decide where the button appears: the player parses the
@@ -45,9 +45,21 @@ var WR = (() => {
     "signup", "tag", "terms_of_use", "track", "yum", "pricing",
   ]);
 
+  // Juno: a product page, or a page listing records (label, artist, genre, chart, search, new
+  // releases). Its first path part tells; equipment, the cart and the account have no records.
+  // www and the regional sites (es., de.…), which share product ids.
+  const JUNO_HOST = /^(?:www|[a-z]{2})\.juno\.co\.uk$/;
+  const JUNO_PRODUCT = /^\/products\/[a-z0-9-]+\/\d{1,9}-\d{2}\/?$/;
+  const JUNO_LISTING = /^\/(?:[a-z0-9-]+\/)*$/;
+  const NOT_JUNO_LISTINGS = new Set([
+    "", "products", "dj-equipment", "equipment", "cart", "basket", "checkout", "account",
+    "login", "register", "help", "about", "contact", "merchandise", "gift-vouchers", "wishlist",
+  ]);
+
   /**
    * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum",
-   * "BandcampTrack" or "BandcampFan" for a Bandcamp one; else null.
+   * "BandcampTrack" or "BandcampFan" for a Bandcamp one; "JunoProduct" or "JunoListing" for a
+   * Juno one; else null.
    */
   function pageKind(address) {
     let u;
@@ -55,6 +67,11 @@ var WR = (() => {
       u = new URL(address);
     } catch {
       return null;
+    }
+    if (u.protocol === "https:" && JUNO_HOST.test(u.hostname)) {
+      if (JUNO_PRODUCT.test(u.pathname)) return "JunoProduct";
+      const first = u.pathname.split("/")[1];
+      return JUNO_LISTING.test(u.pathname) && !NOT_JUNO_LISTINGS.has(first) ? "JunoListing" : null;
     }
     if (u.protocol === "https:" && FAN_HOST.test(u.hostname)) {
       const m = u.pathname.match(FAN_PATH);
@@ -94,7 +111,8 @@ var WR = (() => {
   const SUPPORTED =
     "a release, master release, artist, label, wantlist, collection, list, marketplace item " +
     "or seller on Discogs; a label, album or track on Bandcamp, or a fan's collection or " +
-    "wishlist (bandcamp.com/‹user›)";
+    "wishlist (bandcamp.com/‹user›); a product, label, artist, genre, chart or search page " +
+    "on Juno (from this button only)";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -187,9 +205,15 @@ var WR = (() => {
     return typeof kind === "string" && kind.startsWith("Bandcamp");
   }
 
+  /** A Juno page's kind (see pageKind). */
+  function isJuno(kind) {
+    return typeof kind === "string" && kind.startsWith("Juno");
+  }
+
   return {
     PLACEHOLDER,
     isBandcamp,
+    isJuno,
     DEFAULT_PORT,
     pageKind,
     LINK_PATTERNS,
@@ -197,6 +221,7 @@ var WR = (() => {
     SUPPORTED,
     MAX_NAME,
     suggestName,
+    fit,
     problem,
   };
 })();

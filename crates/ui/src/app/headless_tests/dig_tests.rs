@@ -50,6 +50,7 @@ impl Fakes {
             images: self.images.clone(),
             clock: Arc::new(RealClock::default()),
             finder,
+            samples: self.fetcher.clone(),
             browser: self.browser.clone(),
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
@@ -1882,18 +1883,11 @@ fn the_collection_crate_takes_nothing_by_hand_but_lets_records_out() {
         "{}",
         message(&rig)
     );
-    rig.app.notify("");
+    // A paste is an Enqueue, which goes to the Playlist instead.
     rig.app
         .dig_paste("https://www.discogs.com/release/1003-Undertow");
-    assert!(
-        message(&rig).contains("Add to collection"),
-        "{}",
-        message(&rig)
-    );
-    for _ in 0..20 {
-        rig.pump();
-    }
-    assert!(!holds(&rig, coll, 1003), "no send started");
+    rig.until(|r| holds(r, PLAYLIST, 1003), "pasted into the Playlist");
+    assert!(!holds(&rig, coll, 1003));
     rig.app.show_crate(PLAYLIST);
     rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
     let local = rig.app.crates.shown().entries()[0].id;
@@ -1907,8 +1901,9 @@ fn the_collection_crate_takes_nothing_by_hand_but_lets_records_out() {
     // Out of it is fine.
     rig.app.show_crate(coll);
     let first = rig.app.crates.shown().entries()[0].id;
+    let had = rig.app.crates.get(PLAYLIST).unwrap().len();
     rig.app.apply(Action::SendTo(first, Some(PLAYLIST)), &ctx);
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 2);
+    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), had + 1);
     assert_eq!(rig.app.crates.get(coll).unwrap().len(), before);
 }
 
@@ -2375,14 +2370,11 @@ fn a_label_crate_takes_and_loses_nothing_by_hand_but_pass_dims() {
     // In: files, a paste, a drop or a send from another crate.
     rig.app.add_paths(vec![fixture("tone.wav")], Open::Add);
     assert!(says(&rig), "{}", message(&rig));
-    rig.app.notify("");
+    // A paste is an Enqueue, which goes to the Playlist instead.
     rig.app
         .dig_paste("https://www.discogs.com/release/1003-Undertow");
-    assert!(says(&rig), "{}", message(&rig));
-    for _ in 0..20 {
-        rig.pump();
-    }
-    assert!(!holds(&rig, c, 1003), "no send started");
+    rig.until(|r| holds(r, PLAYLIST, 1003), "pasted into the Playlist");
+    assert!(!holds(&rig, c, 1003));
     assert!(
         !rig.app.send_targets().iter().any(|(t, _)| *t == c),
         "Send to crate doesn't list it"

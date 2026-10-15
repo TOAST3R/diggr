@@ -1,5 +1,6 @@
 //! The preview scheduler with a fake fetcher: the horizon, 2 slots, the armed entry first,
-//! cancelling, retrying, the timeout, a yt-dlp that appears later, and the cache limit.
+//! cancelling, retrying, the timeout, a yt-dlp that appears later, the cache limit, and Juno
+//! samples (fetched without yt-dlp).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use dig::bandcamp::{self, BandcampAlbum, BandcampTrack, Listing};
 use dig::preview::clip::Source;
 use dig::preview::fetcher::{FakeFetcher, Fetcher};
+use dig::preview::sample::SampleFetcher;
 use dig::preview::scheduler::{Config, Finder, PreviewCommand, PreviewEvent, PreviewHandle};
 use platform::native::NativeSpawner;
 use platform::testing::TestDir;
@@ -849,4 +851,81 @@ fn a_limited_bandcamp_waits_while_youtube_goes_on() {
         source: Source::Bandcamp
     }));
     assert!(d.join("bc.3020153053.mp3").exists());
+}
+
+const JN: &str = "jn.1178909-01-01-01";
+
+/// Like [`start`], with the fake downloading Juno samples too.
+fn start_with_samples(
+    name: &str,
+    fake: &Arc<FakeFetcher>,
+    tweak: impl FnOnce(&mut Config),
+) -> (PreviewHandle, TestDir) {
+    let f = fake.clone();
+    start(name, fake, move |cfg| {
+        cfg.samples = f as Arc<dyn SampleFetcher>;
+        tweak(cfg);
+    })
+}
+
+#[test]
+fn a_juno_sample_downloads_without_yt_dlp() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.available.store(false, Ordering::SeqCst);
+    let (h, d) = start_with_samples("juno", &fake, |_| {});
+    want(&h, &[JN.to_owned(), clip(1)]);
+    let ev = until(&h, |ev| {
+        done_count(ev) == 1 && ev.contains(&PreviewEvent::NeedsYtDlp)
+    });
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Done(c, _) if c == JN))
+    );
+    assert!(d.join(format!("{JN}.mp3")).exists());
+    assert!(
+        !d.join(format!("{}.m4a", clip(1))).exists(),
+        "the clip waits for yt-dlp"
+    );
+}
+
+#[test]
+fn a_refusing_juno_waits_while_youtube_goes_on() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.juno_limited.store(true, Ordering::SeqCst);
+    let (h, d) = start_with_samples("juno-limited", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_secs(600)
+    });
+    want(&h, &[JN.to_owned(), clip(1)]);
+    let ev = until(&h, |ev| limited_events(ev) == 1 && done_count(ev) == 1);
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        PreviewEvent::Limited {
+            source: Source::Juno,
+            ..
+        }
+    )));
+    assert!(
+        d.join(format!("{}.m4a", clip(1))).exists(),
+        "YouTube went on"
+    );
+    assert!(!ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..))));
+    fake.juno_limited.store(false, Ordering::SeqCst);
+    h.send(PreviewCommand::TryNow);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::Unlimited {
+        source: Source::Juno
+    }));
+}
+
+#[test]
+fn a_missing_juno_sample_fails_after_two_tries() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.fail(JN, u32::MAX);
+    let (h, _) = start_with_samples("juno-gone", &fake, |_| {});
+    want(&h, &[JN.to_owned()]);
+    let ev = until(&h, |ev| {
+        ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..)))
+    });
+    assert!(ev.contains(&PreviewEvent::Failed(JN.into(), "clip failed".into())));
+    assert_eq!(fake.started(), [JN, JN]);
 }

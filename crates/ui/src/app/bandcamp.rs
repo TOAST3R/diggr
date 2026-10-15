@@ -214,15 +214,17 @@ pub(super) fn plan_merge(entries: &[Entry], album: &BandcampAlbum) -> Vec<Step> 
         .collect()
 }
 
-/// A Discogs record's new entries meeting the crate's Bandcamp-only entries: the same track
-/// (by artist and title, among the same catalogue number when Bandcamp has it) takes the
-/// record over in place, keeping its Bandcamp audio (the record's YouTube clip set aside),
-/// and isn't added again. Returns what is left to add.
+/// A Discogs record's new entries meeting the crate's Bandcamp-only or Juno-only entries:
+/// the same track (by artist and title, among the same catalogue number when they have it)
+/// takes the record over in place, keeping its Bandcamp or Juno audio (the record's YouTube
+/// clip set aside), and isn't added again. Returns what is left to add.
 pub(super) fn absorb_into_bandcamp(p: &mut Playlist, new: Vec<NewEntry>) -> Vec<NewEntry> {
     let bandcamp_only = |e: &Entry| {
-        e.origin
-            .as_ref()
-            .is_some_and(|o| !o.bandcamp.is_empty() && o.release.is_none() && o.master.is_none())
+        e.origin.as_ref().is_some_and(|o| {
+            (!o.bandcamp.is_empty() || !o.juno.is_empty())
+                && o.release.is_none()
+                && o.master.is_none()
+        })
     };
     if !p.entries().iter().any(bandcamp_only) {
         return new;
@@ -275,6 +277,9 @@ pub(super) fn absorb_into_bandcamp(p: &mut Playlist, new: Vec<NewEntry>) -> Vec<
             },
             bandcamp: bc.bandcamp,
             bandcamp_clip: bc.bandcamp_clip,
+            juno: bc.juno,
+            juno_slug: bc.juno_slug,
+            juno_clip: bc.juno_clip,
             ..o
         });
         e.artist = n.artist;
@@ -331,46 +336,52 @@ impl DiggrApp {
             }
             return self.bandcamp_start(page, c, name, false, skip_passed);
         }
-        let target = match &mode {
-            SendMode::Enqueue => {
-                let c = self.crates.shown_id();
-                if self.refuse_discogs_insert(c) {
-                    return;
-                }
-                c
-            }
+        let Some(target) = self.send_target(&mode, &name) else {
+            return;
+        };
+        self.bandcamp_start(page, target, name, false, skip_passed);
+    }
+
+    /// Where a send's tracks go: the shown crate (Enqueue, see `enqueue_target`), or the crate named after the page
+    /// (Play) or by the user (Crate), made if needed and shown when new. Play also plays it
+    /// once ready. `None`, said why, when it can't take them.
+    pub(super) fn send_target(&mut self, mode: &SendMode, name: &str) -> Option<CrateId> {
+        match mode {
+            SendMode::Enqueue => Some(self.enqueue_target()),
             SendMode::Play | SendMode::Crate(_) => {
-                let crate_name = match &mode {
-                    SendMode::Crate(n) => n.clone(),
-                    _ => name.clone(),
+                let crate_name = match mode {
+                    SendMode::Crate(n) => n.as_str(),
+                    _ => name,
                 };
                 let crate_name: String = crate_name.trim().chars().take(MAX_NAME).collect();
                 let (id, created) = match self.crates.find(&crate_name) {
                     Some(id) => (id, false),
                     None => match self.crates.create(&crate_name) {
                         Ok(id) => (id, true),
-                        Err(e) => return self.notify(e),
+                        Err(e) => {
+                            self.notify(e);
+                            return None;
+                        }
                     },
                 };
                 if self.refuse_discogs_insert(id) || !self.crates.load(id) {
-                    return;
+                    return None;
                 }
-                if mode == SendMode::Play || created {
+                if *mode == SendMode::Play || created {
                     self.show_crate(id);
                     if !self.settings.show_playlist {
                         self.settings.show_playlist = true;
                         self.mark_settings();
                     }
                 }
-                if mode == SendMode::Play
+                if *mode == SendMode::Play
                     && let Some(d) = &mut self.dig
                 {
                     d.play_when_ready = Some(id);
                 }
-                id
+                Some(id)
             }
-        };
-        self.bandcamp_start(page, target, name, false, skip_passed);
+        }
     }
 
     /// Reads `page` into `target`.
@@ -1053,8 +1064,8 @@ impl DiggrApp {
 
     // ---- the entry ----------------------------------------------------------------------
 
-    /// Play from Bandcamp / Play from YouTube: the entry's clip switches, and its preview is
-    /// downloaded (the other stays in the cache).
+    /// Play from ‹source›: the entry's clip switches, and its preview is downloaded (the
+    /// others stay in the cache).
     pub(super) fn bandcamp_switch(&mut self, c: CrateId, id: EntryId, to: ClipSource) {
         let Some(p) = self.crates.get_mut(c) else {
             return;
@@ -1071,6 +1082,7 @@ impl DiggrApp {
         e.source = match to {
             ClipSource::Bandcamp => Some(o.bandcamp.clone()),
             ClipSource::YouTube => Some(dig::preview::fetcher::clip_url(&new)),
+            ClipSource::Juno => dig::juno::product_url(&o.juno_slug, &o.juno),
         };
         let playing = self.crates.playing_id() == c && self.crates.playing().current() == Some(id);
         let Some(p) = self.crates.get_mut(c) else {
@@ -1307,7 +1319,7 @@ mod tests {
     fn an_origin_saved_before_bandcamp_is_youtube_and_switches_both_ways() {
         let old: Origin = ron::from_str(r#"(page: "p", clip: Some("OOZEclip001"))"#).unwrap();
         assert_eq!(old.source(), Some(ClipSource::YouTube));
-        assert_eq!(old.other_source(), None, "nothing to switch to");
+        assert_eq!(old.other_sources(), [], "nothing to switch to");
         let mut o = Origin {
             bandcamp: "https://a.bandcamp.com/track/x".into(),
             bandcamp_clip: "bc.12".into(),
@@ -1328,6 +1340,6 @@ mod tests {
         assert!(!o.switch_to(ClipSource::Bandcamp));
         assert!(o.switch_to(ClipSource::YouTube));
         assert_eq!(o.clip.as_deref(), Some("OOZEclip001"));
-        assert_eq!(o.other_source(), Some(ClipSource::Bandcamp));
+        assert_eq!(o.other_sources(), [ClipSource::Bandcamp]);
     }
 }

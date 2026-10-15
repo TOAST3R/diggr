@@ -1,7 +1,7 @@
 //! The browser bridge over real loopback HTTP on an ephemeral port: hello, pairing (expiry,
 //! lockout, single use), keys and Forget browsers, every refusal (host, origin, preflight,
-//! size, unknown fields, addresses that aren't Discogs pages), the snapshot answers, and a send
-//! answered at once while Discogs is slow.
+//! size, unknown fields, addresses that aren't Discogs pages), the snapshot answers, a send
+//! answered at once while Discogs is slow, and Juno sends (records, not addresses).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -355,11 +355,13 @@ fn crates_and_status_come_from_the_snapshot() {
             CrateState {
                 name: "Playlist".into(),
                 shown: false,
+                enqueue: false,
                 playing: true,
             },
             CrateState {
                 name: "Friday".into(),
                 shown: true,
+                enqueue: true,
                 playing: false,
             },
         ],
@@ -748,4 +750,118 @@ fn a_bandcamp_fan_page_imports_the_fan() {
         );
     }
     assert!(r.bridge.poll().is_empty());
+}
+
+fn juno_record(product: &str) -> Value {
+    serde_json::json!({
+        "product": product,
+        "slug": "0-mika-vainio-rontgen-vinyl",
+        "artist": "0 aka Mika Vainio",
+        "title": "Rontgen (reissue)",
+        "label": "Sahko Finland",
+        "catno": "SAHKO 00012",
+        "stock": "in",
+        "price": "€14.78",
+        "tracks": [
+            { "side": "1", "n": 1, "title": "Rontgen", "secs": 301, "sample": "01-01" },
+            { "side": "2", "n": 1, "title": "Track 2", "secs": 450, "sample": "02-01" }
+        ]
+    })
+}
+
+fn juno_body(records: Vec<Value>, mode: &str) -> String {
+    serde_json::json!({
+        "juno": { "page": "https://www.juno.co.uk/labels/Sahko+Finland/", "records": records },
+        "mode": mode,
+        "skip_passed": true,
+    })
+    .to_string()
+}
+
+#[test]
+fn a_juno_product_page_is_sent_as_records() {
+    let r = rig("juno-product");
+    let key = r.pair();
+    r.bridge.poll();
+    let started = Instant::now();
+    let a = r.send(&key, &juno_body(vec![juno_record("1178909-01")], "enqueue"));
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["page"], "0 aka Mika Vainio - Rontgen (reissue)");
+    assert_eq!(
+        (a.json["records"].as_u64(), a.json["refused"].as_u64()),
+        (Some(1), Some(0))
+    );
+    match &r.bridge.poll()[..] {
+        [
+            BridgeCommand::SendJuno {
+                records,
+                mode,
+                filters,
+            },
+        ] => {
+            assert_eq!(records[0].tracks.len(), 2);
+            assert_eq!(*mode, Mode::Enqueue);
+            assert!(filters.skip_passed);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn bad_juno_records_are_refused_alone() {
+    let r = rig("juno-refused");
+    let key = r.pair();
+    r.bridge.poll();
+    let mut records = vec![juno_record("1178909-01"); 19];
+    records.push(juno_record("1178909-01/../x"));
+    let a = r.send(&key, &juno_body(records, "enqueue"));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(
+        (a.json["records"].as_u64(), a.json["refused"].as_u64()),
+        (Some(19), Some(1))
+    );
+    assert_eq!(a.json["message"], "Sent 19 records, 1 refused");
+}
+
+#[test]
+fn juno_sends_are_limited_in_size_and_shape() {
+    let r = rig("juno-size");
+    let key = r.pair();
+    r.bridge.poll();
+    // 600 KB of records is fine; over 1 MiB is not.
+    let big: Vec<Value> = (0..500)
+        .map(|i| juno_record(&format!("{}-01", 1_000_000 + i)))
+        .collect();
+    let body = juno_body(big, "enqueue");
+    assert!(body.len() > MAX_BODY);
+    assert_eq!(r.send(&key, &body).status, 202);
+    let mut huge = juno_record("1178909-01");
+    huge["pad"] = Value::String("x".repeat(1_600_000));
+    assert_eq!(r.send(&key, &juno_body(vec![huge], "enqueue")).status, 413);
+    // An unknown field beside `juno`, or a page that isn't Juno's.
+    let extra =
+        juno_body(vec![juno_record("1178909-01")], "enqueue").replacen('{', r#"{"x":1,"#, 1);
+    assert_eq!(r.send(&key, &extra).status, 422);
+    let elsewhere = juno_body(vec![juno_record("1178909-01")], "enqueue")
+        .replace("https://www.juno.co.uk/", "https://evil.net/");
+    assert_eq!(r.send(&key, &elsewhere).status, 422);
+    // Not paired: refused before anything is read.
+    let a = r.call(
+        "POST",
+        "/v1/send",
+        None,
+        &juno_body(vec![juno_record("1178909-01")], "play"),
+    );
+    assert_eq!(a.status, 401);
+    // A large body that isn't Juno's is still refused at 16 KB.
+    let url = format!("{LABEL}?x={}", "a".repeat(40_000));
+    assert_eq!(r.send(&key, &send_body(&url, "enqueue")).status, 413);
+    let cmds = r.bridge.poll();
+    assert_eq!(
+        cmds.len(),
+        1,
+        "only the 500 records went through: {}",
+        cmds.len()
+    );
 }
