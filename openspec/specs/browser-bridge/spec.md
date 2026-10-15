@@ -38,13 +38,13 @@ Every request other than pairing and a minimal introduction (the app's name and 
 
 ### Requirement: Discogs references only
 A send request SHALL contain exactly:
-- a Discogs or Bandcamp page address;
+- a Discogs or Bandcamp page address, or a Juno send (see `juno-intake`);
 - a mode (Play, Enqueue or Crate);
 - a crate name of 1 to 40 characters when the mode is Crate;
 - the skip passed switch;
 - for a Bandcamp page only, optionally, the page's title, at most 200 characters, used only to name the label.
 
-A `vinyl_only` field, which older extensions send, SHALL be accepted and ignored. Its body SHALL be at most 16 KB. The address SHALL be checked as a supported Discogs page, or as a Bandcamp page passing the check in `bandcamp-intake`, before anything happens. A request with anything else (a file path, another kind of address, an unknown field) SHALL be refused, and nothing SHALL be added.
+A `vinyl_only` field, which older extensions send, SHALL be accepted and ignored. Its body SHALL be at most 16 KB, except a Juno send's, which SHALL be at most 1 MiB. A Juno send SHALL be checked as `juno-intake` says before anything happens, and SHALL be answered within 100 ms like any send. The address SHALL be checked as a supported Discogs page, or as a Bandcamp page passing the check in `bandcamp-intake`, before anything happens. A request with anything else (a file path, another kind of address, an unknown field) SHALL be refused, and nothing SHALL be added.
 
 Seller pages:
 - A request whose address is a seller's page SHALL add or refresh that seller (see `seller-crates`), whatever its mode.
@@ -56,7 +56,7 @@ Label pages, Discogs or Bandcamp:
 - Its answer SHALL name the label and say whether it was added, merged into a followed label, or refreshed.
 - The app SHALL NOT come to the front.
 
-A Bandcamp album or track SHALL be handled like a Discogs release (see `bandcamp-intake`).
+A Bandcamp album or track SHALL be handled like a Discogs release (see `bandcamp-intake`). A Juno send SHALL be handled like a Discogs release, whatever page it came from, and SHALL NOT bring the app to the front.
 
 #### Scenario: Not a Discogs page
 - **WHEN** a paired extension sends https://example.com/track.mp3
@@ -85,6 +85,18 @@ A Bandcamp album or track SHALL be handled like a Discogs release (see `bandcamp
 #### Scenario: Look-alike host
 - **WHEN** a paired extension sends `https://bandcamp.com.evil.net/album/x`
 - **THEN** the request is refused as unsupported, and yt-dlp is not run
+
+#### Scenario: Juno send
+- **WHEN** a paired extension sends a Juno send of 20 records with mode Enqueue
+- **THEN** the answer arrives within 100 ms saying 20 records were added, and their tracks are merged into the shown crate
+
+#### Scenario: Juno send too big
+- **WHEN** a paired extension sends a Juno send of 1.5 MiB
+- **THEN** it is refused, and no crate changes
+
+#### Scenario: Large body that isn't Juno
+- **WHEN** a paired extension sends a Discogs address in a 40 KB body
+- **THEN** it is refused as too large
 
 ### Requirement: Fast answers
 The bridge SHALL answer every request within 100 ms, without waiting for Discogs. A send SHALL be accepted and queued, and its expansion SHALL continue in the background.

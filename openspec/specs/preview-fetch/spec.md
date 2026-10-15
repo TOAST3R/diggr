@@ -42,6 +42,11 @@ How it is run:
 - The user's yt-dlp configuration SHALL be ignored.
 - Output SHALL be confined to the preview folder, named after the YouTube id or `bc.‹track id›`.
 
+Plain downloads: the only request the app SHALL make for a preview without yt-dlp is a Juno sample (see `juno-intake`):
+- its address SHALL be `https://mp3.juno.co.uk/MP3/SF‹product›-‹sample›.mp3`, rebuilt from a key that passes the `juno-intake` checks, never taken from a page or the extension;
+- it SHALL follow redirects only to `mp3.juno.co.uk` or `www.juno.co.uk` over HTTPS;
+- it SHALL be written only to the preview folder, named `jn.‹product›-‹sample›.mp3`.
+
 Failures:
 - A clip whose id or address doesn't match SHALL be treated as unusable.
 - A download that hasn't finished after 120 s SHALL be stopped and retried once.
@@ -62,6 +67,14 @@ Failures:
 #### Scenario: A Bandcamp track
 - **WHEN** an entry plays from Bandcamp track 3020153053 at `https://analogicalforce.bandcamp.com/track/the-ooze`
 - **THEN** yt-dlp receives exactly that address after `--`, and writes `bc.3020153053.mp3` in the preview folder
+
+#### Scenario: A Juno sample
+- **WHEN** an entry plays from Juno key `jn.1178909-01-01-01`
+- **THEN** the app requests exactly `https://mp3.juno.co.uk/MP3/SF1178909-01-01-01.mp3`, runs no yt-dlp, and writes `jn.1178909-01-01-01.mp3` in the preview folder
+
+#### Scenario: A redirect elsewhere
+- **WHEN** a Juno sample request is redirected to `https://example.net/x.mp3`
+- **THEN** the redirect is not followed, and the try fails
 
 ### Requirement: Preview cache
 Previews SHALL be stored in `previews/` in the cache folder. They SHALL use at most the preview cache size, which is 2 GB by default and set in Options ▸ Discogs…. When a new preview doesn't fit, the previews played least recently SHALL be deleted first. A preview downloaded for Download all tracks SHALL never cause a deletion: downloading pauses instead (see `label-crates`). The previews of the playing entry, the armed entry and the next 3 entries SHALL never be deleted. A deleted preview SHALL be downloaded again when it is needed, whether or not its crate was open when it was deleted, and also when its file is missing for any other reason (such as a cache folder from an older version). Such an entry SHALL go back to waiting for its download, never to failed. When the downloaded file is identical, its cached analysis and waveform SHALL be reused.
