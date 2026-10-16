@@ -46,6 +46,10 @@ const ATTEMPTS: u32 = 2;
 /// up to [`MAX_LIMITED_WAITS`] times this.
 pub const LIMITED_WAIT: Duration = Duration::from_secs(10 * 60);
 const MAX_LIMITED_WAITS: u32 = 6;
+/// The first wait when a source can't be reached; doubling up to [`MAX_UNREACHABLE_WAITS`]
+/// times this, since a network comes back sooner than a limit lifts.
+pub const UNREACHABLE_WAIT: Duration = Duration::from_secs(60);
+const MAX_UNREACHABLE_WAITS: u32 = 10;
 /// A search that failed (offline, yt-dlp error) is tried again after this long.
 const SEARCH_RETRY: Duration = Duration::from_secs(60);
 /// The least time between two Bandcamp page reads.
@@ -154,10 +158,12 @@ pub enum PreviewEvent {
     },
     /// The background list paused: the cache is at its limit. A new limit resumes it.
     CacheFull,
-    /// The source is limiting requests: nothing from it starts until `until` (Unix seconds).
+    /// The source is limiting requests, or can't be reached (`reason`, the line that said
+    /// so): nothing from it starts until `until` (Unix seconds).
     Limited {
         source: Source,
         until: u64,
+        reason: Option<String>,
     },
     /// The source answers normally again.
     Unlimited {
@@ -212,6 +218,8 @@ pub struct Config {
     pub recheck: Duration,
     /// The first wait when a source limits requests.
     pub limited_wait: Duration,
+    /// The first wait when a source can't be reached.
+    pub unreachable_wait: Duration,
     /// The least time between two Bandcamp page reads.
     pub read_gap: Duration,
     /// What downloads Juno samples.
@@ -237,6 +245,7 @@ impl Config {
             timeout: TIMEOUT,
             recheck: RECHECK,
             limited_wait: LIMITED_WAIT,
+            unreachable_wait: UNREACHABLE_WAIT,
             read_gap: READ_GAP,
             samples: Arc::new(JunoHttp::default()),
             tools: None,
@@ -259,13 +268,23 @@ enum Msg {
     Updated(bool),
 }
 
-/// One source's wait while it limits requests.
+/// One source's wait while it limits requests or can't be reached.
 #[derive(Debug, Default)]
 struct Limit {
     /// Nothing from the source starts before this; past it, the next start is a try.
     until: Option<Instant>,
     /// The wait after the next limited answer.
     backoff: Duration,
+    /// Why it can't be reached; `None` while it limits requests.
+    reason: Option<String>,
+}
+
+/// Why a pausing error's source can't be reached; `None` when it limits requests.
+fn unreachable_reason(e: &FetchError) -> Option<String> {
+    match e {
+        FetchError::Unreachable(t) => Some(t.clone()),
+        _ => None,
+    }
 }
 
 struct Running {
@@ -426,6 +445,8 @@ impl Scheduler {
                 for c in &clips {
                     self.given_up.remove(c);
                     self.failures.remove(c);
+                    // Reported again even when its file is there: the player marked it dead.
+                    self.delivered.remove(c);
                 }
                 for req in &searches {
                     self.remembered.forget(req);
@@ -472,22 +493,32 @@ impl Scheduler {
         self.limits.values().any(|l| l.until.is_some())
     }
 
-    /// A limited answer: wait, longer each time a try after a wait is limited too. Answers
-    /// for requests already under way when the wait began change nothing.
-    fn limited(&mut self, source: Source) {
+    /// A limited (or unreachable, with `reason`) answer: wait, longer each time a try after
+    /// a wait gets the same answer. Answers for requests already under way when the wait
+    /// began change nothing.
+    fn limited(&mut self, source: Source, reason: Option<String>) {
         if self.waiting(source) {
             return;
         }
-        let base = self.cfg.limited_wait;
+        let (base, max) = match reason {
+            None => (self.cfg.limited_wait, MAX_LIMITED_WAITS),
+            Some(_) => (self.cfg.unreachable_wait, MAX_UNREACHABLE_WAITS),
+        };
         let l = self.limits.entry(source).or_default();
-        l.backoff = if l.until.is_some() {
-            (l.backoff * 2).min(base * MAX_LIMITED_WAITS)
+        let same = l.until.is_some() && l.reason.is_some() == reason.is_some();
+        l.backoff = if same {
+            (l.backoff * 2).min(base * max)
         } else {
             base
         };
         l.until = Some(Instant::now() + l.backoff);
+        l.reason = reason.clone();
         let until = crate::now_secs() + l.backoff.as_secs();
-        self.events.push(PreviewEvent::Limited { source, until });
+        self.events.push(PreviewEvent::Limited {
+            source,
+            until,
+            reason,
+        });
     }
 
     /// A request to the source went through: it answers normally.
@@ -584,7 +615,7 @@ impl Scheduler {
     fn fan_read(&mut self, job: u64, result: Result<FanLists, FetchError>) {
         self.fan_stops.remove(&job);
         let result = result.map_err(|e| match e {
-            FetchError::Failed(t) | FetchError::Limited(t) => t,
+            FetchError::Failed(t) | FetchError::Limited(t) | FetchError::Unreachable(t) => t,
             FetchError::Cancelled => crate::bandcamp::fan::STOPPED.to_owned(),
             other => format!("{other:?}"),
         });
@@ -619,9 +650,9 @@ impl Scheduler {
                 self.events.push(PreviewEvent::BandcampAlbum { job, album });
             }
             // Not the page's fault: read again once the wait is over.
-            Err(FetchError::Limited(_)) => {
+            Err(e @ (FetchError::Limited(_) | FetchError::Unreachable(_))) => {
                 self.reads.push_front((job, page));
-                return self.limited(Source::Bandcamp);
+                return self.limited(Source::Bandcamp, unreachable_reason(&e));
             }
             Err(FetchError::NoProgram) => {
                 self.reads.push_front((job, page));
@@ -715,12 +746,12 @@ impl Scheduler {
                 self.answered(Source::YouTube);
                 search::best(&req, &results).cloned()
             }
-            Err(FetchError::Limited(_)) => {
+            Err(e @ (FetchError::Limited(_) | FetchError::Unreachable(_))) => {
                 // Not the track's fault: it is searched again once the wait is over.
                 if !self.to_search.iter().any(|r| r.key == req.key) {
                     self.to_search.insert(0, req);
                 }
-                return self.limited(Source::YouTube);
+                return self.limited(Source::YouTube, unreachable_reason(&e));
             }
             Err(FetchError::NoProgram) => {
                 self.fetcher = None;
@@ -793,7 +824,9 @@ impl Scheduler {
             }
             Err(FetchError::InvalidId) => self.give_up(clip),
             // Not the clip's fault: it stays wanted, and starts again once the wait is over.
-            Err(FetchError::Limited(_)) => self.limited(source_of(&clip)),
+            Err(e @ (FetchError::Limited(_) | FetchError::Unreachable(_))) => {
+                self.limited(source_of(&clip), unreachable_reason(&e))
+            }
             Err(_) => {
                 let n = self.failures.entry(clip.clone()).or_default();
                 *n += 1;
@@ -1251,10 +1284,10 @@ mod tests {
         let yt = Source::YouTube;
         let backoff = |s: &Scheduler| s.limits[&yt].backoff;
         for _ in 0..5 {
-            s.limited(yt);
+            s.limited(yt, None);
             waits.push(backoff(&s));
             // A second limited answer within the wait (the other slot) changes nothing.
-            s.limited(yt);
+            s.limited(yt, None);
             assert_eq!(backoff(&s), *waits.last().unwrap());
             // The wait is over: the next answer is the try.
             s.limits.get_mut(&yt).unwrap().until = Some(Instant::now() - Duration::from_secs(1));
@@ -1273,21 +1306,47 @@ mod tests {
             s.events.last(),
             Some(&PreviewEvent::Unlimited { source: yt })
         );
-        s.limited(yt);
+        s.limited(yt, None);
         assert_eq!(backoff(&s), min(10), "starts again at 10 minutes");
+    }
+
+    #[test]
+    fn unreachable_waits_are_shorter_and_switch_with_limiting() {
+        let mut s = scheduler(Duration::from_secs(600));
+        let yt = Source::YouTube;
+        let off = || Some("certificate verify failed".to_owned());
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            s.limited(yt, off());
+            waits.push(s.limits[&yt].backoff);
+            s.limits.get_mut(&yt).unwrap().until = Some(Instant::now() - Duration::from_secs(1));
+        }
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(waits, [min(1), min(2), min(4), min(8), min(10), min(10)]);
+        assert!(matches!(
+            s.events.last(),
+            Some(PreviewEvent::Limited { reason: Some(r), .. }) if r.contains("certificate")
+        ));
+        // Reached again, but limiting: the limit's own wait starts.
+        s.limited(yt, None);
+        assert_eq!(s.limits[&yt].backoff, min(10));
+        s.limits.get_mut(&yt).unwrap().until = Some(Instant::now() - Duration::from_secs(1));
+        s.limited(yt, off());
+        assert_eq!(s.limits[&yt].backoff, min(1));
     }
 
     #[test]
     fn each_source_waits_on_its_own() {
         let mut s = scheduler(Duration::from_secs(600));
-        s.limited(Source::Bandcamp);
+        s.limited(Source::Bandcamp, None);
         assert!(s.waiting(Source::Bandcamp));
         assert!(!s.waiting(Source::YouTube));
         assert_eq!(
             s.events,
             [PreviewEvent::Limited {
                 source: Source::Bandcamp,
-                until: crate::now_secs() + 600
+                until: crate::now_secs() + 600,
+                reason: None,
             }]
         );
         s.answered(Source::YouTube);

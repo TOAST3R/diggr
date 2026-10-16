@@ -124,7 +124,7 @@ impl SampleFetcher for JunoHttp {
                 .get(&url)
                 .header("User-Agent", USER_AGENT)
                 .call()
-                .map_err(|e| FetchError::Failed(e.to_string()))?;
+                .map_err(request_error)?;
             let status = resp.status().as_u16();
             match status {
                 301 | 302 | 303 | 307 | 308 if redirects < MAX_REDIRECTS => {
@@ -212,6 +212,17 @@ impl SampleFetcher for JunoHttp {
     }
 }
 
+/// A request that got no answer is the network's fault, not the sample's.
+fn request_error(e: ureq::Error) -> FetchError {
+    use ureq::Error::*;
+    match e {
+        Io(_) | Timeout(_) | HostNotFound | ConnectionFailed | Tls(_) => {
+            FetchError::Unreachable(e.to_string())
+        }
+        e => FetchError::Failed(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +307,19 @@ mod tests {
             1,
             "no .part left"
         );
+    }
+
+    #[test]
+    fn no_answer_is_unreachable() {
+        let dir = crate::test_dir("sample-refused");
+        let base = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", l.local_addr().unwrap())
+        }; // closed again: connections are refused
+        assert!(matches!(
+            fetch(&http(&base), &dir),
+            Err(FetchError::Unreachable(_))
+        ));
     }
 
     #[test]

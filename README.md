@@ -263,7 +263,9 @@ and Home/End jump), and Enter plays the entry under it.
     search, or already in crate). Both are
     skipped by next, previous and shuffle. Double-clicking a waiting entry arms it: the current
     track plays on, the main window says it is waiting, and the entry starts as soon as its
-    audio arrives. Only files that can't be opened are drawn in red.
+    audio arrives. Double-clicking a "clip failed" or "not found" entry, in any crate, tries
+    it again first and arms it; a "no clip" one only says why. Only files that can't be opened
+    are drawn in red.
   - Hover an entry to see everything known about it: its full name, album, label, catalog
     number, side, year, BPM, duration, status, wanted or passed (and how a wantlist or
     collection change is going), and what's for sale (with how
@@ -501,6 +503,11 @@ grouped by record. Click the heading to fold or unfold it.
   10 minutes, then 20, 40 and at most 60, back to 10 once YouTube answers. The main window says
   so once, waiting tracks say "waiting for YouTube" in their tooltip, and Download all tracks'
   window shows the pause with **Try now**. Previews already downloaded keep playing.
+- **When YouTube can't be reached** (no network, a refused connection, or a certificate that
+  fails to verify because a proxy, VPN or security tool intercepts secure connections), nothing
+  is marked failed either. The same pause applies with shorter waits: 1 minute, then 2, 4, 8
+  and at most 10. The main window says "Can't reach YouTube: trying again in 1 min", adding the
+  interception hint for a certificate error. Bandcamp and Juno pause the same way on their own.
 
 ### Bandcamp
 
@@ -1154,7 +1161,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 940 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 947 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1211,12 +1218,15 @@ What's covered:
     Delete label, Refresh label's summary, a label sent from the browser (followed, then
     refreshed, nothing doubled), and Download all tracks (all downloaded behind what plays,
     its progress window and Stop, the cache-full question, the menu showing the window again,
-    a limited YouTube pausing it with Try now, and Retry failed tracks);
+    a limited YouTube pausing it with Try now, an unreachable one saying why once, and Retry
+    failed tracks);
   - repaint policy;
   - headless egui click/drag tests of the skinned widgets;
   - the whole player driven headlessly against `ManualSink`: switching crates leaves playback
     alone, starting a track re-targets next/previous, an armed entry is audible within 100 ms
-    of its audio arriving, Eject replaces only the Playlist crate, dimmed rows, the title bar's
+    of its audio arriving (and searched first even from a crate that isn't playing), a
+    double-click retrying a "clip failed" or "not found" entry in any crate, Eject replaces
+    only the Playlist crate, dimmed rows, the title bar's
     click (crate menu) versus drag (move), and the crate and entry menus.
 - **`crates/dig`**: the Discogs client against recorded JSON (`crates/dig/tests/fixtures/`),
   covering:
@@ -1250,7 +1260,9 @@ What's covered:
   background list of Download all tracks (after the horizon, paused instead of evicting,
   resumed by a larger cache, stopped by an empty list), YouTube limiting (yt-dlp's 429 and
   bot-check errors told apart from a broken video, nothing failed, waits of 10, 20, 40 and
-  60 min, Try now), Retry (given-up clips and not-found searches tried again), and Bandcamp:
+  60 min, Try now), an unreachable YouTube (connection and certificate errors told apart from
+  an HTTP error, nothing failed or remembered, waits of 1, 2, 4, 8 and 10 min, Juno going on),
+  Retry (given-up clips and not-found searches tried again), and Bandcamp:
   a track downloaded as MP3 by its located page, a label read album by album (leaving out
   albums read before), and a Bandcamp limit that leaves YouTube going. `crates/dig` also checks
   Bandcamp addresses, reads yt-dlp's answers from fixtures, and runs a real read and download by

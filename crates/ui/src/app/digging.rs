@@ -315,9 +315,9 @@ pub(super) struct Dig {
     label_refresh: HashMap<CrateId, HashSet<u64>>,
     /// Download all tracks, while it runs.
     pub(super) downloading: Option<LabelDownload>,
-    /// Sources limiting requests, until when (Unix seconds): nothing from them downloads (or,
-    /// for YouTube, searches).
-    pub(super) limited: HashMap<Source, u64>,
+    /// Sources limiting requests or out of reach (with why), until when (Unix seconds):
+    /// nothing from them downloads (or, for YouTube, searches).
+    pub(super) limited: HashMap<Source, (u64, Option<String>)>,
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
@@ -747,7 +747,7 @@ impl Dig {
         if self.offline {
             return Some("Discogs offline: waiting for it to answer".into());
         }
-        let parts: Vec<String> = self
+        let mut parts: Vec<String> = self
             .jobs
             .values()
             .filter(|j| j.total > 0)
@@ -762,6 +762,16 @@ impl Dig {
                 format!("{name}: {} of {} {what}", j.done, j.total)
             })
             .collect();
+        // With nothing else going on, a paused source stays said after its message.
+        if parts.is_empty() {
+            let mut paused: Vec<_> = self.limited.iter().collect();
+            paused.sort_by_key(|(s, _)| s.name());
+            parts.extend(
+                paused
+                    .into_iter()
+                    .map(|(s, (until, reason))| pause_message(*s, reason.as_deref(), *until)),
+            );
+        }
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
 
@@ -999,10 +1009,32 @@ struct DownloadCounts {
     waiting: usize,
 }
 
+/// What retrying an entry runs again: its clip to download (`Ok`) or its search (`Err`);
+/// `None` unless it is "clip failed" or "not found".
+fn retry_of(e: &Entry) -> Option<Result<String, SearchRequest>> {
+    match &e.status {
+        EntryStatus::Unavailable(UnavailableKind::ClipFailed) => {
+            clip_of(e).map(|c| Ok(c.to_owned()))
+        }
+        EntryStatus::Unavailable(UnavailableKind::NotFound) => {
+            let o = e.origin.as_ref().filter(|o| !o.search_key.is_empty())?;
+            Some(Err(SearchRequest {
+                key: o.search_key.clone(),
+                artist: e.artist.clone(),
+                record_artist: o.artist.clone(),
+                title: e.title.clone(),
+                duration: e.duration,
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// "YouTube is limiting requests", or "Juno is refusing downloads" (a refusal is what Juno
-/// says, not a rate).
-fn limited_text(source: Source) -> String {
+/// says, not a rate); "Can't reach YouTube" when the pause is for an unreachable source.
+fn limited_text(source: Source, unreachable: Option<&str>) -> String {
     match source {
+        s if unreachable.is_some() => format!("Can't reach {}", s.name()),
         Source::Juno => "Juno is refusing downloads".to_owned(),
         s => format!("{} is limiting requests", s.name()),
     }
@@ -1030,6 +1062,22 @@ fn download_counts(p: &crate::playlist::Playlist) -> (DownloadCounts, usize) {
 }
 
 /// "in 9 min", "in 1 min", "now".
+/// "Can't reach YouTube: trying again in 1 min", with the interception hint after a
+/// certificate error; "YouTube is limiting requests: trying again in 10 min".
+fn pause_message(source: Source, unreachable: Option<&str>, until: u64) -> String {
+    let hint = unreachable.is_some_and(|r| r.to_lowercase().contains("certificate"));
+    format!(
+        "{}: trying again {}{}",
+        limited_text(source, unreachable),
+        in_minutes(until.saturating_sub(now_secs())),
+        if hint {
+            ". A proxy, VPN or security tool may be intercepting secure connections."
+        } else {
+            ""
+        }
+    )
+}
+
 fn in_minutes(secs: u64) -> String {
     match secs {
         0 => "now".into(),
@@ -1593,10 +1641,10 @@ impl DiggrApp {
             .count();
         let name = self.crates.name(c).to_owned();
         let done = counts.ready + counts.skipped;
-        let mut limited: Vec<(Source, u64)> = self
+        let mut limited: Vec<(Source, (u64, Option<String>))> = self
             .dig
             .as_ref()
-            .map(|d| d.limited.iter().map(|(s, u)| (*s, *u)).collect())
+            .map(|d| d.limited.iter().map(|(s, u)| (*s, u.clone())).collect())
             .unwrap_or_default();
         limited.sort_by_key(|(s, _)| s.name());
         let retry = self.retryable(c).0.len();
@@ -1616,12 +1664,12 @@ impl DiggrApp {
                     done as f32 / total as f32
                 };
                 ui.add(egui::ProgressBar::new(part).text(format!("{done} of {total} tracks")));
-                for (source, until) in &limited {
+                for (source, (until, reason)) in &limited {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 170, 60),
                         format!(
                             "Paused: {}. Trying again {}.",
-                            limited_text(*source),
+                            limited_text(*source, reason.as_deref()),
                             in_minutes(until.saturating_sub(now_secs()))
                         ),
                     );
@@ -1707,6 +1755,14 @@ impl DiggrApp {
 
     /// The limiting source a waiting entry waits for, if any: its clip's source, or YouTube
     /// for a track still to be searched for.
+    /// Why an entry waiting for a paused source waits: "Can't reach YouTube: trying again in
+    /// 1 min…", for the status line.
+    pub(super) fn waiting_why(&self, e: &Entry) -> Option<String> {
+        let source = self.waiting_for(e)?;
+        let (until, reason) = self.dig.as_ref()?.limited.get(&source)?;
+        Some(pause_message(source, reason.as_deref(), *until))
+    }
+
     pub(super) fn waiting_for(&self, e: &Entry) -> Option<Source> {
         let d = self.dig.as_ref()?;
         let source = match &e.status {
@@ -1727,29 +1783,40 @@ impl DiggrApp {
             return (ids, clips, searches);
         };
         for e in p.entries() {
-            match &e.status {
-                EntryStatus::Unavailable(UnavailableKind::ClipFailed) => {
-                    if let Some(clip) = clip_of(e) {
-                        ids.push(e.id);
-                        clips.push(clip.to_owned());
-                    }
-                }
-                EntryStatus::Unavailable(UnavailableKind::NotFound) => {
-                    if let Some(o) = e.origin.as_ref().filter(|o| !o.search_key.is_empty()) {
-                        ids.push(e.id);
-                        searches.push(SearchRequest {
-                            key: o.search_key.clone(),
-                            artist: e.artist.clone(),
-                            record_artist: o.artist.clone(),
-                            title: e.title.clone(),
-                            duration: e.duration,
-                        });
-                    }
-                }
-                _ => {}
+            match retry_of(e) {
+                Some(Ok(clip)) => clips.push(clip),
+                Some(Err(search)) => searches.push(search),
+                None => continue,
             }
+            ids.push(e.id);
         }
         (ids, clips, searches)
+    }
+
+    /// A double-click on a "clip failed" or "not found" entry, in any crate: back to waiting,
+    /// forgotten as failed by the preview worker, and tried first. False when it can't be.
+    pub(super) fn dig_retry_entry(&mut self, c: CrateId, id: EntryId) -> bool {
+        let Some(retry) = self
+            .crates
+            .get(c)
+            .and_then(|p| p.get(id))
+            .and_then(retry_of)
+        else {
+            return false;
+        };
+        self.bandcamp_untry(c, &[id]);
+        let (wait, clips, searches) = match retry {
+            Ok(clip) => (WaitKind::Queued, vec![clip], Vec::new()),
+            Err(search) => (WaitKind::Search, Vec::new(), vec![search]),
+        };
+        if let Some(p) = self.crates.get_mut(c) {
+            p.set_waiting(id, wait);
+        }
+        self.crates.touch(c);
+        if let Some(d) = &mut self.dig {
+            d.preview(PreviewCommand::Retry { clips, searches });
+        }
+        true
     }
 
     /// Retry failed tracks: back to waiting, forgotten as failed by the preview worker, and
@@ -2862,18 +2929,21 @@ impl DiggrApp {
                     }
                 });
             }
-            PreviewEvent::Limited { source, until } => {
+            PreviewEvent::Limited {
+                source,
+                until,
+                reason,
+            } => {
                 let Some(d) = &mut self.dig else { return };
-                let first = d.limited.insert(source, until).is_none();
+                let text = pause_message(source, reason.as_deref(), until);
+                let before = d.limited.insert(source, (until, reason.clone()));
+                // Once per period, and again when the cause changes.
+                let first = before.is_none_or(|(_, r)| r.is_some() != reason.is_some());
                 if let Some(dl) = &mut d.downloading {
                     dl.shown = true;
                 }
                 if first {
-                    self.notify(format!(
-                        "{}: trying again {}",
-                        limited_text(source),
-                        in_minutes(until.saturating_sub(now_secs()))
-                    ));
+                    self.notify(text);
                 }
             }
             PreviewEvent::Unlimited { source } => {
@@ -3029,11 +3099,17 @@ impl DiggrApp {
             .map(str::to_owned);
         let wanted = scheduler::horizon(&clips, at, armed.as_deref());
         // Tracks of records with no clip, in the same window: searched for, best first.
-        let armed_entry = self.armed.filter(|(c, _)| *c == cid).map(|(_, id)| id);
+        // The armed entry first, whichever crate it is in.
+        let armed_entry = self.armed.and_then(|(c, id)| self.crates.get(c)?.get(id));
         let searches: Vec<SearchRequest> = armed_entry
             .into_iter()
-            .chain(order.iter().skip(at).take(scheduler::AHEAD + 1).copied())
-            .filter_map(|id| p.get(id))
+            .chain(
+                order
+                    .iter()
+                    .skip(at)
+                    .take(scheduler::AHEAD + 1)
+                    .filter_map(|&id| p.get(id)),
+            )
             .filter(|e| e.status == EntryStatus::Waiting(WaitKind::Search))
             .filter_map(|e| {
                 let o = e.origin.as_ref()?;

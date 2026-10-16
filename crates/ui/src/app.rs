@@ -546,7 +546,19 @@ impl DiggrApp {
                 self.armed = Some((crate_id, id));
                 return;
             }
-            EntryStatus::Unavailable(reason) => {
+            EntryStatus::Unavailable(_) => {
+                // A clip that failed or a track not found may work now: try it again first.
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.dig_retry_entry(crate_id, id) {
+                    self.armed = Some((crate_id, id));
+                    return;
+                }
+                let Some(entry) = self.crates.get(crate_id).and_then(|p| p.get(id)) else {
+                    return;
+                };
+                let EntryStatus::Unavailable(reason) = &entry.status else {
+                    return;
+                };
                 let text = format!("{}: {reason}", entry.display_name());
                 self.notify(text);
                 return;
@@ -997,6 +1009,11 @@ impl DiggrApp {
     fn armed_line(&self) -> Option<String> {
         let (c, id) = self.armed?;
         let e = self.crates.get(c)?.get(id)?;
+        // Waiting on a paused source: say why, since the pause's own message is hidden.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(why) = self.waiting_why(e) {
+            return Some(format!("Waiting for {}. {why}", e.display_name()));
+        }
         Some(match e.status.note() {
             Some(note) => format!("Waiting for {} ({note})", e.display_name()),
             None => format!("Waiting for {}", e.display_name()),
