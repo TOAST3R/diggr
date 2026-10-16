@@ -365,6 +365,8 @@
     // A Bandcamp label is named after its page's title ("Music | Analogical Force").
     const title = WR.pageKind(location.href) === "BandcampLabel" ? document.title : undefined;
     const r = await ask({ type: "send", url: location.href, mode, crate, title });
+    // Only the app bundle sends `front`: opening it brings the player forward on macOS.
+    if (r.ok && r.json.front === "diggr://show") location.href = r.json.front;
     if (r.ok && r.json.message) toast(`${appName}: ${r.json.message}`);
     else if (r.ok) toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}`);
     else toast(WR.problem(r.error, appName), false);

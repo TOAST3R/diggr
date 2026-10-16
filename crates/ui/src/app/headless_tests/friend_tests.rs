@@ -51,6 +51,7 @@ impl Fakes {
             browser: Arc::new(FakeBrowser::default()),
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
+            tools: None,
         }
     }
 

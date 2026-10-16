@@ -9,6 +9,7 @@
 //! - [`cover`]: record covers for the entry tooltip, from Discogs' image host.
 //! - [`bandcamp`]: Bandcamp pages, checked and read through yt-dlp.
 //! - [`juno`]: Juno records, sent as checked data by the browser extension.
+//! - [`tools`]: the app's own yt-dlp on Macs without one: downloaded, verified, kept current.
 //!
 //! Native only: the web build leaves this crate out.
 
@@ -28,6 +29,7 @@ pub mod memory;
 pub mod prepare;
 pub mod preview;
 pub mod sellers;
+pub mod tools;
 
 /// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder
 /// until the rebrand.

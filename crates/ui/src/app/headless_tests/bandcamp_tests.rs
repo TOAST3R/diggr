@@ -82,6 +82,7 @@ impl Fakes {
             browser: self.browser.clone(),
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
+            tools: None,
         }
     }
 }

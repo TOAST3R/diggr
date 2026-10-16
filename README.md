@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon/logo-lockup.svg" width="140" alt="Diggr"></p>
+
 # Diggr
 
 Diggr is a music player in Rust with the look of a classic 2000s desktop player, built for
@@ -15,9 +17,15 @@ archived in `openspec/changes/archive/`. `web-target` is planned and not started
 
 Working on the code (or pointing an AI agent at it)? Start with [`AGENTS.md`](AGENTS.md).
 
+**[Download for Mac](https://github.com/TOAST3R/diggr/releases/latest)** (Apple Silicon and
+Intel, macOS 11 or later): open the `.dmg` and drag Diggr onto Applications. Releases aren't
+signed by Apple (that costs $99 a year), so macOS refuses the first open: then go to System
+Settings ▸ Privacy & Security and click **Open Anyway** next to Diggr, once. It opens normally
+from then on.
+
 ## Launch the app
 
-Starting from nothing on macOS, run these from the project folder:
+To build it yourself, starting from nothing on macOS, run these from the project folder:
 
 ```sh
 xcode-select --install                                           # 1. once: the C linker (skip if already installed)
@@ -437,10 +445,17 @@ ahead of what plays. Other pasted text is ignored.
     Settings ▸ Developers, <https://www.discogs.com/settings/developers>, **Generate new
     token**; the dialog's **Open that page** goes there). It's checked before it's saved, is
     readable only by you, and is shown only by its last 4 characters.
-  - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp): `brew install yt-dlp` (or your
-    package manager). The dialog shows the version found, and can take a path if it isn't on
-    the `PATH`. Until it's found, entries say "needs yt-dlp". If clips keep failing, try
-    `yt-dlp -U`.
+  - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp). Yours is used when there is one
+    (`brew install yt-dlp`, your package manager, or a path in the dialog if it isn't on the
+    `PATH`), and the app never updates it; if clips keep failing, try `yt-dlp -U`. On a Mac
+    without one, the first preview asks "Previews need yt-dlp, a free downloader (37 MB).
+    Download it?": the app then fetches yt-dlp's official macOS build, installs it only if its
+    SHA-256 matches the one published with the release, keeps it in the cache's `tools/`, and
+    checks for a newer release at most once a day while previews download. **Not now** isn't
+    asked again that session. The dialog shows the version and whether it's "installed by you"
+    or "downloaded by the app", with **Download** or **Update now**. Until yt-dlp is there,
+    entries say "needs yt-dlp" (elsewhere than macOS, install it yourself; it's found within
+    30 s).
   - The dialog also sets the default filter for every send (skip what you've passed) and the
     preview cache size (2 GB by default; the least recently played go first, except for
     Download all tracks, which never deletes anything: see [Labels](#labels)). A track whose
@@ -1067,7 +1082,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`, the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
 \* `DIGGR_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
 always lives in the platform config folder.
@@ -1095,7 +1110,8 @@ clips, and `covers/` the record covers shown in tooltips (150 px PNGs, about 10 
 delete). `collection.ron` is your Discogs collection (release ids, and each owned pressing's
 master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
 `cart.ron` is your Discogs cart as last read (listing ids, releases, sellers, prices and
-subtotals), for the CART badges at launch.
+subtotals), for the CART badges at launch. `tools/` holds the yt-dlp the app downloaded (macOS,
+only when you have none) and `checked`, the time of its last update check.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -1108,10 +1124,37 @@ Other environment variables, mostly for unattended runs and measurements:
 
 `diggr --help` prints all command-line modes.
 
+## Build a release
+
+```sh
+scripts/make-dmg.sh             # dist/Diggr.app and dist/Diggr-<version>[-unsigned].dmg
+scripts/release.sh --unsigned --dry-run    # every check, then stops before tagging
+scripts/release.sh --unsigned [--notes-file NOTES.md]
+```
+
+`make-dmg.sh` builds `diggr` for Apple Silicon and Intel (macOS 11 or later), joins them into
+one binary, and wraps it in `Diggr.app` (`packaging/macos/Info.plist.in`, the icon made from
+`assets/icon/icon-1024.png`, the `diggr://` URL scheme) and a drag-to-install disk image of
+about 17 MB. It needs `rustup` (it adds the `x86_64-apple-darwin` target) and the tools macOS
+already has. `--dry-run` only says which build it would make.
+
+- **Unsigned (how releases are made):** the app is signed ad hoc and the image is named
+  `…-unsigned.dmg`; the script prints the Open Anyway steps above.
+- **Signed (unused, kept in case):** with `DEVELOPER_ID` (the certificate's name, "Developer ID Application: … (TEAMID)")
+  and `NOTARY_PROFILE` (a keychain profile made once with `xcrun notarytool store-credentials`),
+  the app and the image are signed with the hardened runtime, notarized by Apple and stapled,
+  and `spctl` must accept both. It needs a paid Apple Developer account. No secret is kept in
+  the repository.
+
+`release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg` as GitHub Release
+`v<version>`, with its SHA-256 and the Open Anyway steps appended to the notes, after checking
+that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
+`--unsigned` it publishes the signed image instead, and only if `spctl` accepts it. Disk images are never committed: `dist/` is in `.gitignore`.
+
 ## Tests
 
 ```sh
-cargo test --workspace            # 924 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 940 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1159,6 +1202,7 @@ What's covered:
     300-entry `playlist.ron`, and Send to crate without duplicates;
   - spectrum bars following the *audible* frame;
   - EQ curve;
+  - that the committed app and extension icons match `icon-gen`;
   - skin validation, that the committed skin matches its generator, and that a skin without
     an LCD colour keeps green (and one without a filter bar height gets the default);
   - the empty crate hint and the verdict flash wording (and, headless, which verdicts flash);
@@ -1194,11 +1238,15 @@ What's covered:
   pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals
   by host, origin, preflight, size, unknown fields and other addresses (look-alike Bandcamp hosts
   too), Bandcamp albums and labels (added, merged or refreshed), no
-  `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, and a
-  send answered in under 100 ms while Discogs is slow.
+  `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, a
+  send answered in under 100 ms while Discogs is slow, and the `diggr://show` URL a seller's
+  answer carries only from inside the app bundle.
 
   The preview scheduler runs against a fake yt-dlp: the horizon, 2 slots, the armed entry
-  first, cancelling, retries, the timeout, yt-dlp appearing later, the cache limit, and the
+  first, cancelling, retries, the timeout, yt-dlp appearing later, the app's own yt-dlp
+  (downloaded only when asked, waiting entries starting once it's installed, a checksum
+  mismatch leaving entries waiting, the user's yt-dlp winning and never updated, a newer
+  release installed while previews download), the cache limit, and the
   background list of Download all tracks (after the horizon, paused instead of evicting,
   resumed by a larger cache, stopped by an empty list), YouTube limiting (yt-dlp's 429 and
   bot-check errors told apart from a broken video, nothing failed, waits of 10, 20, 40 and
@@ -1206,7 +1254,10 @@ What's covered:
   a track downloaded as MP3 by its located page, a label read album by album (leaving out
   albums read before), and a Bandcamp limit that leaves YouTube going. `crates/dig` also checks
   Bandcamp addresses, reads yt-dlp's answers from fixtures, and runs a real read and download by
-  hand (`--ignored real_bandcamp`). Also
+  hand (`--ignored real_bandcamp`). `dig::tools` checks the yt-dlp installer against a fake
+  release: the checksum read for exactly `yt-dlp_macos`, a matching download installed and run,
+  a mismatched one leaving nothing behind, a failed one keeping the old copy, and update checks
+  once a day for newer releases only. Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
   - a pasted release filling the crate with playable previews;
@@ -1218,7 +1269,10 @@ What's covered:
   - `Y`, `N` and `I` with and without a token;
   - the entry menu;
   - Options ▸ Discogs… checking a token;
-  - "needs yt-dlp";
+  - "needs yt-dlp", and on a Mac the download question: accepting it installs yt-dlp and starts
+    the previews, Not now isn't asked again and Options ▸ Discogs… still offers the download, a
+    checksum failure is said while entries keep waiting, and the user's own yt-dlp shows as
+    theirs with no Update now;
   - no request to Discogs before the window is interactive;
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget
@@ -1357,6 +1411,8 @@ crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), v
 crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 extensions/chrome the Chrome extension (plain JS, loaded unpacked) that sends Discogs pages to the bridge
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
+assets/icon       the logo: logo-mark.svg and logo-lockup.svg (sources), and the app and extension icon PNGs
+                  generated from the mark by `cargo run -p ui --bin icon-gen`
 apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time, --render-show
 openspec/         specs and plans for every milestone (see below)
 .claude/, .opencode/  OpenSpec agent commands (/opsx:propose, :explore, :apply, :archive)

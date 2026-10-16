@@ -3,6 +3,7 @@
 
 use super::digging::BridgeAction;
 use super::*;
+use crate::playlist::WaitKind;
 use ::dig::browser::{FakeBrowser, sell_url};
 use ::dig::clock::RealClock;
 use ::dig::cover::{FakeImages, test_jpeg};
@@ -13,7 +14,8 @@ use ::dig::jobs::{Filters, Job, Jobs};
 use ::dig::memory::DigMemory;
 use ::dig::preview::clip::Source;
 use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::scheduler::{Finder, PreviewEvent};
+use ::dig::tools::{FakeSource, ToolSource};
 
 const RELEASE: &str = "https://www.discogs.com/release/1001-Glasshouse-EP";
 const CLIPS: [&str; 3] = ["GLASShouse1", "LUMENremix1", "LASTlight01"];
@@ -54,6 +56,7 @@ impl Fakes {
             browser: self.browser.clone(),
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
+            tools: None,
         }
     }
 
@@ -3787,4 +3790,140 @@ fn the_vinyl_release_takes_over_a_track_found_for_its_twin() {
     );
     assert!(rows.iter().all(|r| r.2 != "already in crate"));
     assert_eq!(fakes.fetcher.searched().len(), 1, "no second search");
+}
+
+/// A Mac with no yt-dlp of the user's: the app's own copy (a stand-in script) comes from
+/// `source`, and the fake fetcher answers only for it once it is installed.
+fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig {
+    let (f, source) = (fakes.clone(), source.clone());
+    Rig::with_dig(
+        name,
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            let mut setup = f.setup(dir);
+            let fetcher = f.fetcher.clone();
+            setup.finder = Arc::new(move |path| {
+                path.filter(|p| Path::new(p).exists())
+                    .map(|_| (fetcher.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
+            });
+            setup.tools = Some(source.clone() as Arc<dyn ToolSource>);
+            Some(setup)
+        },
+    )
+}
+
+const YTDLP_SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
+const ASK_YTDLP: &str = "Previews need yt-dlp, a free downloader (37 MB). Download it?";
+
+fn waiting_for_ytdlp(rig: &Rig, c: CrateId) -> bool {
+    rig.app.crates.get(c).is_some_and(|p| {
+        !p.is_empty()
+            && p.entries()
+                .iter()
+                .all(|e| e.status == EntryStatus::Waiting(WaitKind::NeedsYtDlp))
+    })
+}
+
+fn open_discogs_options(rig: &mut Rig) -> egui::FullOutput {
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
+    rig.frame(Vec::new());
+    rig.frame(Vec::new())
+}
+
+#[test]
+fn accepting_the_download_installs_yt_dlp_and_starts_previews() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let mut rig = rig_without_ytdlp("dig-ytdlp-accept", &fakes, &source);
+    rig.app
+        .dig_send(url::parse(RELEASE).unwrap(), SendMode::Play, None);
+    let c = rig.app.crates.shown_id();
+    rig.until(|r| shows(&r.frame(Vec::new()), ASK_YTDLP), "the question");
+    assert!(
+        source.asked.lock().unwrap().is_empty(),
+        "nothing downloaded unasked"
+    );
+    rig.click_text("Download");
+    rig.until(
+        |r| r.app.position.state == PlayState::Playing && r.app.crates.playing_id() == c,
+        "the first preview plays",
+    );
+    assert!(!fakes.fetcher.started().is_empty());
+    let out = open_discogs_options(&mut rig);
+    assert!(
+        shows(&out, "yt-dlp 2026.08.19 (downloaded by the app)"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Update now"));
+}
+
+#[test]
+fn declining_the_download_is_not_asked_again_and_options_still_offer_it() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let mut rig = rig_without_ytdlp("dig-ytdlp-decline", &fakes, &source);
+    rig.app
+        .dig_send(url::parse(RELEASE).unwrap(), SendMode::Play, None);
+    let c = rig.app.crates.shown_id();
+    rig.until(|r| shows(&r.frame(Vec::new()), ASK_YTDLP), "the question");
+    rig.click_text("Not now");
+    rig.until(|r| waiting_for_ytdlp(r, c), "entries wait for yt-dlp");
+    // yt-dlp is missed again (another session's scheduler, say): no second question.
+    rig.app.dig_preview_event(PreviewEvent::NeedsYtDlp);
+    assert!(!shows(&rig.frame(Vec::new()), ASK_YTDLP));
+    assert!(source.asked.lock().unwrap().is_empty());
+    let out = open_discogs_options(&mut rig);
+    assert!(shows(&out, "yt-dlp not found"), "{:?}", text_list(&out));
+    rig.click_text("Download (37 MB)");
+    rig.until(|r| all_playable(r, c, CLIPS.len()), "previews download");
+}
+
+#[test]
+fn a_download_that_fails_its_checksum_says_so_and_entries_keep_waiting() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, false));
+    let mut rig = rig_without_ytdlp("dig-ytdlp-mismatch", &fakes, &source);
+    rig.app
+        .dig_send(url::parse(RELEASE).unwrap(), SendMode::Play, None);
+    let c = rig.app.crates.shown_id();
+    rig.until(|r| shows(&r.frame(Vec::new()), ASK_YTDLP), "the question");
+    rig.click_text("Download");
+    rig.until(
+        |r| message(r).starts_with("yt-dlp download failed"),
+        "the failure is said",
+    );
+    assert!(message(&rig).contains("checksum"), "{}", message(&rig));
+    assert!(waiting_for_ytdlp(&rig, c));
+    assert!(fakes.fetcher.started().is_empty());
+}
+
+#[test]
+fn the_users_own_yt_dlp_shows_as_theirs_with_no_update_button() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2099.01.01", YTDLP_SCRIPT, true));
+    let f = fakes.clone();
+    let src = source.clone();
+    let mut rig = Rig::with_dig(
+        "dig-ytdlp-user",
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            let mut setup = f.setup(dir);
+            setup.tools = Some(src.clone() as Arc<dyn ToolSource>);
+            Some(setup)
+        },
+    );
+    let c = play_release(&mut rig);
+    rig.until(|r| all_playable(r, c, CLIPS.len()), "previews download");
+    let out = open_discogs_options(&mut rig);
+    assert!(
+        shows(&out, "yt-dlp 2026.01.01-fake (installed by you)"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(!shows(&out, "Update now"));
+    assert!(source.asked.lock().unwrap().is_empty());
 }
