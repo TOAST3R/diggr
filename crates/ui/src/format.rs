@@ -58,8 +58,10 @@ pub fn dj_bpm(raw: f64) -> Option<u16> {
 /// short on the right loses it before any of the title.
 pub fn entry_name(catno: &str, artist: &str, title: &str, album: &str, bpm: Option<u16>) -> String {
     let mut name = String::new();
-    if !catno.trim().is_empty() {
-        name += &format!("({}) ", catno.trim());
+    // Discogs writes "none" for a release without a catalogue number.
+    let catno = catno.trim();
+    if !catno.is_empty() && !catno.eq_ignore_ascii_case("none") {
+        name += &format!("({catno}) ");
     }
     if !artist.is_empty() {
         name += &format!("{artist}: ");
@@ -489,6 +491,12 @@ mod tests {
             entry_name(" ", "", "untitled", "", Some(128)),
             "untitled (128 BPM)"
         );
+        for none in ["none", " NONE ", "None"] {
+            assert_eq!(
+                entry_name(none, "Ben Gibson", "Vanished Between", "", None),
+                "Ben Gibson: Vanished Between"
+            );
+        }
     }
 
     #[test]

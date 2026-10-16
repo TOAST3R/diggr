@@ -2274,6 +2274,7 @@ fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
     rig.app.dig_preview_event(PreviewEvent::Limited {
         source: Source::YouTube,
         until,
+        reason: None,
     });
     assert!(
         message(&rig).starts_with("YouTube is limiting requests: trying again in 10 min"),
@@ -2295,6 +2296,7 @@ fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
     rig.app.dig_preview_event(PreviewEvent::Limited {
         source: Source::YouTube,
         until: until + 1200,
+        reason: None,
     });
     assert_eq!(message(&rig), "");
     rig.click_text("Try now");
@@ -2305,6 +2307,64 @@ fn a_limited_youtube_pauses_the_download_and_says_when_it_tries_again() {
     assert!(!rig.app.youtube_limited());
     let out = rig.frame(Vec::new());
     assert!(!text_list(&out).iter().any(|t| t.starts_with("Paused")));
+}
+
+#[test]
+fn an_intercepted_youtube_says_so_once_and_leaves_entries_waiting() {
+    use ::dig::preview::scheduler::PreviewEvent;
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-unreachable", &fakes, |_| {});
+    let c = followed_label(&mut rig);
+    let reason = Some(::dig::preview::fetcher::CERT_ERROR.to_owned());
+    let until = ::dig::now_secs() + 60;
+    rig.app.dig_preview_event(PreviewEvent::Limited {
+        source: Source::YouTube,
+        until,
+        reason: reason.clone(),
+    });
+    let m = message(&rig);
+    assert!(
+        m.starts_with("Can't reach YouTube: trying again in 1 min"),
+        "{m}"
+    );
+    assert!(m.contains("proxy, VPN or security tool"), "{m}");
+    // The next try fails the same way: nothing new is said.
+    rig.app.notify("");
+    rig.app.dig_preview_event(PreviewEvent::Limited {
+        source: Source::YouTube,
+        until: until + 120,
+        reason,
+    });
+    assert_eq!(message(&rig), "");
+    // Once the message is gone, the status line still says it.
+    assert!(
+        rig.app
+            .dig_line()
+            .is_some_and(|l| l.starts_with("Can't reach YouTube: trying again")),
+        "{:?}",
+        rig.app.dig_line()
+    );
+    // An armed entry waiting for YouTube says why, not just "to search".
+    let id = rig.app.crates.get(c).unwrap().entries()[0].id;
+    rig.app
+        .crates
+        .get_mut(c)
+        .unwrap()
+        .set_waiting(id, crate::playlist::WaitKind::Search);
+    rig.app.armed = Some((c, id));
+    let line = rig.app.armed_line().unwrap();
+    assert!(
+        line.starts_with("Waiting for ") && line.contains(". Can't reach YouTube: trying again in"),
+        "{line}"
+    );
+    assert!(line.contains("proxy, VPN or security tool"), "{line}");
+    let p = rig.app.crates.get(c).unwrap();
+    assert!(
+        !p.entries()
+            .iter()
+            .any(|e| matches!(e.status, EntryStatus::Unavailable(_))),
+        "nothing marked dead"
+    );
 }
 
 #[test]
@@ -2359,6 +2419,59 @@ fn retry_failed_tries_clip_failed_and_not_found_again_and_nothing_else() {
         "runs as Download all tracks"
     );
     assert!(rig.app.retryable(c).0.is_empty());
+}
+
+#[test]
+fn a_double_click_retries_a_dead_entry_in_any_crate_and_plays_it() {
+    use crate::playlist::WaitKind;
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-retry-entry", &fakes, |_| {});
+    let c = play_release(&mut rig);
+    rig.until(|r| all_playable(r, c, 3), "all previews ready");
+    assert!(!rig.app.crates.is_label(c));
+    let (ids, clip) = {
+        let p = rig.app.crates.get_mut(c).unwrap();
+        let ids: Vec<EntryId> = p.entries().iter().map(|e| e.id).collect();
+        let clip = p.get(ids[2]).unwrap().origin.as_ref().unwrap().clip.clone();
+        // A track to search: no clip, a search key.
+        for e in p.entries_mut().filter(|e| e.id == ids[1]) {
+            let o = e.origin.as_mut().unwrap();
+            o.clip = None;
+            o.search_key = "track/nightcraft/glasshouse".into();
+        }
+        p.set_unavailable(ids[2], "clip failed");
+        p.set_unavailable(ids[1], "not found by search");
+        (ids, clip)
+    };
+    let ctx = rig.ctx.clone();
+    let status = |rig: &Rig, id: EntryId| {
+        rig.app
+            .crates
+            .get(c)
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .status
+            .clone()
+    };
+    // Not found: searched again.
+    rig.app.apply(Action::PlayEntry(ids[1]), &ctx);
+    assert_eq!(status(&rig, ids[1]), EntryStatus::Waiting(WaitKind::Search));
+    // Clip failed: downloaded again, armed, and played once it is back.
+    rig.app.apply(Action::PlayEntry(ids[2]), &ctx);
+    assert_eq!(status(&rig, ids[2]), EntryStatus::Waiting(WaitKind::Queued));
+    assert_eq!(rig.app.armed, Some((c, ids[2])));
+    rig.until(|r| playing_clip(r) == clip, "the retried entry plays");
+    // No clip: only says why.
+    rig.app
+        .crates
+        .get_mut(c)
+        .unwrap()
+        .set_unavailable(ids[0], "no clip");
+    rig.app.apply(Action::PlayEntry(ids[0]), &ctx);
+    assert!(matches!(status(&rig, ids[0]), EntryStatus::Unavailable(_)));
+    assert!(message(&rig).ends_with("no clip"), "{}", message(&rig));
+    assert_ne!(rig.app.armed, Some((c, ids[0])));
 }
 
 #[test]
@@ -3441,6 +3554,21 @@ fn an_armed_track_is_searched_first() {
     let c = six_tracks(&mut rig, "AF069");
     let last = rig.app.crates.get(c).unwrap().entries()[5].id;
     rig.app.armed = Some((c, last));
+    rig.until(|_| !fakes.fetcher.searched().is_empty(), "a search");
+    assert_eq!(fakes.fetcher.searched()[0], "The 89th Passenger T6");
+}
+
+#[test]
+fn an_armed_track_in_another_crate_than_the_playing_one_is_searched() {
+    let fakes = Fakes::new();
+    let mut rig = rig("search-armed-elsewhere", &fakes, |_| {});
+    let playing = play_release(&mut rig);
+    let c = six_tracks(&mut rig, "AF069");
+    assert_ne!(rig.app.crates.playing_id(), c);
+    assert_eq!(rig.app.crates.playing_id(), playing);
+    let last = rig.app.crates.get(c).unwrap().entries()[5].id;
+    rig.app.apply(Action::PlayEntry(last), &rig.ctx.clone());
+    assert_eq!(rig.app.armed, Some((c, last)));
     rig.until(|_| !fakes.fetcher.searched().is_empty(), "a search");
     assert_eq!(fakes.fetcher.searched()[0], "The 89th Passenger T6");
 }

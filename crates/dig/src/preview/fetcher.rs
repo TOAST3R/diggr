@@ -42,6 +42,9 @@ pub enum FetchError {
     /// The source is limiting requests (too many, or a bot check): nothing is wrong with the
     /// clip, so it isn't a failed try. The text is the line that said so.
     Limited(String),
+    /// The source can't be reached (no network, DNS, refused, a certificate that won't
+    /// verify): nothing is wrong with the clip either. The text is the line that said so.
+    Unreachable(String),
 }
 
 /// The line of yt-dlp's error output saying that YouTube is limiting requests, if one does:
@@ -60,10 +63,35 @@ pub fn limited(errors: &str) -> Option<&str> {
     })
 }
 
-/// A failed yt-dlp run as an error: limited when its output says so, else its last line.
+/// The line of yt-dlp's error output saying that the source can't be reached, if one does.
+/// Only transport failures: an HTTP status means the server answered.
+pub fn unreachable(errors: &str) -> Option<&str> {
+    errors.lines().map(str::trim).find(|l| {
+        let l = l.to_lowercase();
+        [
+            "certificate verify failed",
+            "urlopen error",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "nodename nor servname",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "failed to resolve",
+        ]
+        .iter()
+        .any(|p| l.contains(p))
+    })
+}
+
+/// A failed yt-dlp run as an error: limited or unreachable when its output says so, else its
+/// last line.
 fn failure(errors: &str, otherwise: &str) -> FetchError {
     if let Some(line) = limited(errors) {
         return FetchError::Limited(line.to_owned());
+    }
+    if let Some(line) = unreachable(errors) {
+        return FetchError::Unreachable(line.to_owned());
     }
     let last = errors.lines().rev().find(|l| !l.trim().is_empty());
     FetchError::Failed(last.unwrap_or(otherwise).trim().to_owned())
@@ -386,6 +414,9 @@ pub fn remove_partial(dir: &Path, clip: &str) {
     }
 }
 
+/// What [`FakeFetcher`] answers while unreachable: yt-dlp's line behind an intercepting proxy.
+pub const CERT_ERROR: &str = "ERROR: [youtube] abc: Unable to download API page: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed";
+
 /// A fetcher for tests: copies a fixture file, with scripted progress, delays and failures.
 /// A Bandcamp clip gets the fixture's `.mp3` sibling when there is one (`tone.m4a` →
 /// `tone.mp3`), so it decodes as what it is named.
@@ -407,6 +438,8 @@ pub struct FakeFetcher {
     pub search_fails: AtomicBool,
     /// YouTube limits every download and search while this is set.
     pub limited: AtomicBool,
+    /// YouTube can't be reached (a certificate that won't verify) while this is set.
+    pub unreachable: AtomicBool,
     /// Bandcamp limits every read and download while this is set.
     pub bandcamp_limited: AtomicBool,
     /// Juno refuses every sample while this is set.
@@ -432,6 +465,7 @@ impl FakeFetcher {
             searched: Default::default(),
             search_fails: AtomicBool::new(false),
             limited: AtomicBool::new(false),
+            unreachable: AtomicBool::new(false),
             bandcamp_limited: AtomicBool::new(false),
             juno_limited: AtomicBool::new(false),
             pages: Default::default(),
@@ -507,6 +541,9 @@ impl FakeFetcher {
                 "ERROR: HTTP Error 429: Too Many Requests".into(),
             ));
         }
+        if source_of(clip) == Source::YouTube && self.unreachable.load(Ordering::SeqCst) {
+            return Err(FetchError::Unreachable(CERT_ERROR.into()));
+        }
         std::fs::create_dir_all(dir).map_err(|e| FetchError::Failed(e.to_string()))?;
         let part = dir.join(format!("{clip}.{}.part", ext_of(clip)));
         let _ = std::fs::write(&part, b"partial");
@@ -570,6 +607,9 @@ impl Fetcher for FakeFetcher {
             return Err(FetchError::Limited(
                 "ERROR: Sign in to confirm you're not a bot".into(),
             ));
+        }
+        if self.unreachable.load(Ordering::SeqCst) {
+            return Err(FetchError::Unreachable(CERT_ERROR.into()));
         }
         if self.search_fails.load(Ordering::SeqCst) {
             return Err(FetchError::Failed("offline".into()));
@@ -683,6 +723,46 @@ mod tests {
         assert_eq!(
             failure("a\nERROR: [youtube] abc: Video unavailable\n", "x"),
             FetchError::Failed("ERROR: [youtube] abc: Video unavailable".into())
+        );
+    }
+
+    #[test]
+    fn an_unreachable_source_is_told_apart_from_a_broken_video() {
+        for errors in [
+            "WARNING: [youtube] [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082). Retrying (2/3)...\nERROR: [youtube] abc: Unable to download API page",
+            "ERROR: [youtube] abc: Unable to download API page: <urlopen error [Errno 8] nodename nor servname provided, or not known>",
+            "ERROR: Unable to download webpage: [Errno 61] Connection refused",
+            "ERROR: [Errno 54] Connection reset by peer",
+            "ERROR: [Errno 51] Network is unreachable",
+            "ERROR: Temporary failure in name resolution",
+            "ERROR: Failed to resolve 'www.youtube.com'",
+        ] {
+            assert!(
+                matches!(failure(errors, "x"), FetchError::Unreachable(_)),
+                "{errors}"
+            );
+        }
+        for errors in [
+            "ERROR: Unable to download webpage: HTTP Error 404: Not Found",
+            "ERROR: [youtube] abc: Video unavailable",
+            "download timed out",
+        ] {
+            assert!(
+                matches!(failure(errors, "x"), FetchError::Failed(_)),
+                "{errors}"
+            );
+        }
+        // A limit wins: the server answered.
+        assert!(matches!(
+            failure(
+                "ERROR: Connection reset\nERROR: HTTP Error 429: Too Many Requests",
+                "x"
+            ),
+            FetchError::Limited(_)
+        ));
+        assert!(
+            unreachable("WARNING: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+                .is_some_and(|l| l.contains("certificate"))
         );
     }
 

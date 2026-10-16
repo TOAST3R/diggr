@@ -641,6 +641,49 @@ fn a_limited_youtube_pauses_everything_and_fails_nothing() {
 }
 
 #[test]
+fn an_unreachable_youtube_fails_nothing_and_juno_goes_on() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.unreachable.store(true, Ordering::SeqCst);
+    fake.answer(
+        "The 89th Passenger Paper Wings",
+        vec![upload("paperwings1", "Paper Wings", 292.0)],
+    );
+    let (h, d) = start_with_samples("unreachable", &fake, |cfg| {
+        cfg.unreachable_wait = Duration::from_millis(30)
+    });
+    want(&h, &[clip(1), clip(2), JN.to_owned()]);
+    h.send(PreviewCommand::Search(vec![track(
+        "track/89th/paper wings",
+        "Paper Wings",
+        292.0,
+    )]));
+    // Several tries, each one waited for: still nothing failed or remembered.
+    let ev = until(&h, |ev| limited_events(ev) >= 3 && done_count(ev) == 1);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::Done(c, _) if c == JN)),
+        "Juno went on"
+    );
+    assert!(
+        !ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..))),
+        "{ev:?}"
+    );
+    assert_eq!(answers(&ev), 0, "neither found nor not found");
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        PreviewEvent::Limited { source: Source::YouTube, reason: Some(r), .. }
+            if r.contains("certificate verify failed")
+    )));
+    // The network is back: everything carries on.
+    fake.unreachable.store(false, Ordering::SeqCst);
+    let ev = until(&h, |ev| done_count(ev) == 2 && answers(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::Unlimited {
+        source: Source::YouTube
+    }));
+    assert!(d.join(format!("{}.m4a", clip(2))).exists());
+}
+
+#[test]
 fn try_now_ends_the_wait() {
     let fake = Arc::new(FakeFetcher::new(fixture()));
     fake.limited.store(true, Ordering::SeqCst);
