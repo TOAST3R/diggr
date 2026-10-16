@@ -511,11 +511,6 @@ fn i_opens_the_for_sale_page_and_verdict_keys_wait_while_stopped() {
     play_release(&mut rig);
     key(&mut rig, Key::I);
     assert_eq!(*fakes.browser.opened.lock().unwrap(), [sell_url(1001)]);
-    // The fullscreen host keeps them too.
-    key(&mut rig, Key::F);
-    assert!(rig.app.fullscreen.is_some());
-    key(&mut rig, Key::I);
-    assert_eq!(fakes.browser.opened.lock().unwrap().len(), 2);
     key(&mut rig, Key::Y);
     assert!(memory(&rig).is_wanted(1001));
 }

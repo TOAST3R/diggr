@@ -2,17 +2,13 @@
 
 # Diggr
 
-Diggr is a music player in Rust with the look of a classic 2000s desktop player, built for
-**speed and zero perceived latency**, with a fullscreen fractal visualizer that follows the
-rhythm and structure of the music.
+Diggr is a player for digging records, in Rust, with the look of a classic 2000s desktop
+player and built for **speed and zero perceived latency**. Send it a Discogs, Bandcamp or Juno
+page and hear every record on it at once; want, pass or buy with one key. Every track gets its
+BPM, sections and waveform as it plays.
 
-Progress:
-
- **audio-core** ✅ → **classic-ui** ✅ → **music-analysis** ✅ → **visual-engine** ✅ → web-target
-
-Implemented so far: the audio engine (`audio-core`), the classic skinned player window
-(`classic-ui`), music analysis ahead of the playhead (`music-analysis`), and the fullscreen
-visual engine (`visual-engine`), which holds a steady 60 fps on an M2 MacBook. All four are
+The audio engine (`audio-core`), the classic skinned player window (`classic-ui`), music
+analysis ahead of the playhead (`music-analysis`) and the digging that grew on top of them are
 archived in `openspec/changes/archive/`. `web-target` is planned and not started yet.
 
 Working on the code (or pointing an AI agent at it)? Start with [`AGENTS.md`](AGENTS.md).
@@ -48,8 +44,7 @@ After the first build you can also start the program directly, without `cargo`:
 ./target/release/diggr
 ```
 
-Press `F` for fullscreen visuals, `Esc` to leave, and Cmd+Q to quit. Your playlist and settings
-are kept for next time.
+Press Cmd+Q to quit. Your playlist and settings are kept for next time.
 
 If you get `zsh: command not found: cargo`, repeat step 3. To make it permanent, run
 `echo 'source "$HOME/.cargo/env"' >> ~/.zshrc`. Other platforms and details are under
@@ -298,7 +293,7 @@ and Home/End jump), and Enter plays the entry under it.
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
   - **LP** is a DJ filter: drag the knob down to sweep a resonant low-pass over everything
-    that plays (and over the visuals), from 20 kHz down to 60 Hz, smoothly and without clicks.
+    that plays, from 20 kHz down to 60 Hz, smoothly and without clicks.
     Fully up is off (the audio passes untouched); double-click turns it off. It always starts
     off;
   - **PRESETS** loads the built-in presets, and can save or delete your own.
@@ -310,7 +305,7 @@ and Home/End jump), and Enter plays the entry under it.
 |---|---|---|---|---|
 | `Z` | previous | | `←` / `→` | seek −5 s / +5 s |
 | `X` | play | | `↑` / `↓` | volume (playlist focused: move in the list) |
-| `C` | pause / resume | | `F` | fullscreen visuals (`F`/`Esc` to leave) |
+| `C` | pause / resume | | | |
 | `V` | stop | | `Delete` / `Backspace` | remove selected entries |
 | `B` | next | | `Enter` | play the entry under the cursor (or the first selected) |
 | `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
@@ -324,9 +319,6 @@ and Home/End jump), and Enter plays the entry under it.
 | `Space` | open or close the record under the cursor (grouped) | | `Cmd+F` | search the crate on screen |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
-
-**Fullscreen (`F`)** shows the fractal visuals (see [Visuals](#visuals)). Transport keys,
-including the section jumps and loops, and `Y`, `N` and `I`, keep working in fullscreen.
 
 ### Digging Discogs
 
@@ -877,144 +869,16 @@ cargo run --release -p ui --example spectrogram_probe -- song.flac
 
 It prints the quality verdict and opens the window; clicks move the playhead.
 
-### Visuals
-
-Fullscreen visuals run on musical time: beats, bars and phrases from the analysis, with kicks,
-snares and hats fired as the playhead crosses them, so motion lands on the beat you hear. At
-each section change the **director** picks what to show. A big rise in energy cuts to your
-highest-rated look with a flash. A drop in energy crossfades to something calm. A section that
-comes back returns to the look it had before. Other changes morph to a sibling look, and the
-`stretch` macro follows the track's tension. The same track always gets the same show.
-
-Six scenes ship with it, each with at least two variants:
-
-- **Julia Tunnel** (2D fractal);
-- **Liquid Feedback** (the MilkDrop feel);
-- **KIFS Cathedral** (raymarched 3D);
-- **Flame** (a compute-shader fractal flame);
-- **Polar Life** (cellular automata on the walls of a tunnel): spectrum onsets and kicks give birth
-  at the centre, and the tunnel flies outward eight rings per beat. Cells are lit, bevelled tiles
-  with halos and comet tails. Each kind of section runs its own rule: Life in grooves, Brian's
-  Brain in builds, Star Wars in drops, Day & Night in breakdowns. Every kick or beat hits the tunnel with
-  a burst of interference, and drops speed it up with their energy. The `hyperdrive` variant bends
-  the tunnel into a swaying 3D pipe;
-- **Coral Tunnel** (reaction-diffusion): onsets and kicks seed chemistry that grows into glossy
-  coral or dividing cells as it streams outward.
-
-The artist, title and progress (with section ticks) show for 5 s on entering fullscreen, on each
-new track, and when you move the mouse or press a key.
-
-| Key | Action |
-|---|---|
-| `D` | show/hide the fader deck: 6 macros (intensity, chaos, stretch, speed, hue, feedback) and the scene's parameters |
-| `M` / `Shift+M` | mutate the current look (small / big step) |
-| `K` | keep: save the current look, fader positions included, as a new variant |
-| `Backspace` | undo back through the looks you had |
-| `1`–`5` | rate the current look (the director prefers higher ratings) |
-
-On the deck, dragging a fader switches it to MANUAL. When you let go, it holds, then glides back
-to automation after the RETURN time (1 beat, 1 bar, 4 bars, a phrase, or ∞), landing on a bar
-line. Click RETURN in the deck header to change the global setting. Right-click a fader to give it
-its own RETURN, and double-click it to hand it back to automation now. Speed snaps to ¼, ½, 1, 2
-and 4×.
-
-**Make it yours:** on first use the scenes are copied to `visuals/` in the config folder
-(`~/Library/Application Support/Diggr/visuals/` on macOS), and any file you save there is picked up
-while the music plays:
-
-```
-visuals/
-  director.ron              the rules for what happens at section changes (commented)
-  prelude/*.wgsl            helpers every scene can call: complex math, noise, palettes, SDFs, tunnels
-  scenes/<id>/scene.ron     name, tags, parameters (type, default, range), macro mappings, routes
-  scenes/<id>/scene.wgsl    fn scene(uv: vec2f, m: Music, p: Params) -> vec4f
-  variants/<id>/<name>.ron  saved looks (K writes these; ratings live here too)
-```
-
-A new look is one `.wgsl` and one `.ron` file in a new `scenes/<id>/` folder. You write only
-`fn scene`. The engine generates `p.<param>` from your manifest and passes the music as `m`: for
-example `m.beat` (the phase within the beat), `m.motion` (beats, scaled by the speed macro), `m.kick`
-(beats since the last kick, so use `pulse(m.kick, 4.0)` for a punch), `m.energy`, `m.tension`,
-and `band(m, i)` for the 19 spectrum bars. Routes in the manifest connect signals to parameters
-without writing code, for example
-`(source: Kick, shapers: [Envelope(attack: Ms(5), release: Ms(120)), Range(0, 0.35)], target: "zoom")`.
-A scene can also be a cellular automaton: declare
-`kind: Automaton(theta: 128, rings: 64, steps_per_beat: 4.0)` and write
-`fn rule(c: vec2<i32>, m: Music, p: Params) -> vec4f` next to `fn scene`. `rule` returns a cell's
-next state from the previous one, read with `cell(c)`: θ wraps around, and rings outside the grid
-are empty. `inject_level(m, theta)` spreads the spectrum around the circle, `tick()` numbers
-the steps, and `since_reset()` is 0 on the first step after a reset (a rule can seed its start
-state there; `preroll: N` in the kind runs N steps right away, 16 by default). In `fn scene`, `state_at(depth, theta)` samples the grid and `tick_phase()` glides
-between steps. The grid persists between frames, one per drawn layer. It steps on musical time,
-so the show is the same at any frame rate, and it starts over on a seek, a new track or a reload.
-A `step_rate` param, if the scene has one, is read once per beat and snapped to ×0.5, ×1, ×2 or
-×4. For continuous rules such as diffusion, `substeps: N` in the kind runs `rule` N times per step
-(up to 32; `substeps()` returns N). Any scene can fly through a tunnel with
-`tube_hit(uv, focal, bend)` from `prelude/tunnel.wgsl`: it returns the depth, the angle and the
-distance from the axis of a tube whose far end sits at `bend`.
-
-Bundled scenes are copied only when missing, so after an update that changes a scene you've used
-before, delete its folder under `visuals/scenes/` (and `visuals/variants/`) to get the new version.
-If you save a broken shader or manifest, the previous version keeps running, and a message
-shows the file, line and error for 8 seconds. To reset a file, delete it and it is restored from
-the bundled copy the next time you enter fullscreen.
-
-Resolution adapts to hold the frame rate. You can measure the scenes on your GPU:
-
-```sh
-cargo run -p visuals --example visual_bench --release        # offscreen, native Retina size
-DIGGR_VISUAL_BENCH=1 cargo run -p diggr --release   # in the app: press F; 15 s with no visuals,
-                                                             # then 15 s per scene; results in .../visuals/bench.txt
-DIGGR_FRAME_STATS=1 cargo run -p diggr --release    # per-second frame timings (app, visuals, present)
-cargo run -p ui --example fullscreen_probe --release         # what a blank eframe window can present
-```
-
-### Render a show to video
-
-Any track's show can be rendered to an MP4 (H.264 video with the track's own audio). The show
-is deterministic, so the file matches what you'd see in fullscreen with your hands off the
-deck. Rendering needs ffmpeg (`brew install ffmpeg`).
-
-```sh
-diggr --render-show track.flac -o show.mp4                 # 1920×1080, 60 fps, the whole track
-diggr --render-show track.flac -o clip.mp4 --from 1:00 --to 1:30 --size 1280x720 --fps 30
-diggr --render-show track.flac -o card.mp4 --overlay       # with the artist/title card at the start
-diggr --render-show track.flac -o one.mp4 --look julia_tunnel/solar   # one look, director off
-```
-
-(With cargo: `cargo run --release -p diggr -- --render-show …`.)
-
-- **Frame timing:** frame n shows the music at exactly `start + n/fps`, so every kick lands on
-  its frame.
-- **Size:** the width must be divisible by 8 and the height even; vertical `1080x1920` works.
-- **Progress:** the time left is shown as it renders. Ctrl-C stops it, and a cancelled or
-  failed render leaves no file behind.
-- **Analysis:** the track is analyzed first if it isn't in the cache yet.
-- **Matching the live show:** a render matches the live show of a replay, because a first live
-  play can react to sections the analyzer later corrects.
-
-To measure rendering speed without encoding:
-`cargo run -p visuals --example render_speed --release -- track.flac`.
-
 ### Music analysis
 
 While a track plays, the app analyzes it about 2 minutes ahead of what you hear: tempo, the beat
-grid, bars, and sections (intro, build, drop, breakdown, groove, outro), with a countdown to the
-next drop. The first 32 bars are ready about half a second after you press play, and results are
+grid, bars, and sections (intro, build, drop, breakdown, groove, outro). That gives the BPM
+column and the BPM filter, the waveform's section colours and the structure keys. The first 32 bars are ready about half a second after you press play, and results are
 cached in the cache folder (`~/Library/Caches/Diggr/` on macOS), so a second play is instant. Set `DIGGR_CACHE_DIR`
 to use another folder. It runs at low priority and never delays playback.
 
-In fullscreen:
-
-| Key | Action |
-|---|---|
-| `T` | show/hide the analysis strip: BPM, current section, drop countdown, section bands, beats (taller on bar starts), the tension curve and the playhead |
-| `A` | annotation mode, for teaching the analyzer your music |
-| `Space` *(annotating)* | tap along with the beat |
-| `1`–`6` *(annotating)* | mark where a section starts: 1 intro, 2 build, 3 drop, 4 breakdown, 5 groove, 6 outro |
-
-Annotations are saved immediately to `annotations/` in the cache folder. To see how the
-analyzer scores against them:
+To see how the analyzer scores against hand annotations (JSON files of tapped beats and marked
+section starts, one per track, in `annotations/` in the cache folder):
 
 ```sh
 cargo run --release -p analysis --bin analysis-eval
@@ -1023,7 +887,7 @@ cargo run --release -p analysis --bin analysis-eval
 This prints each track's beat accuracy and how many of your section marks it found. The targets
 are ≥ 90% and ≥ 70%.
 
-No music annotated yet? You can try it on generated tracks:
+No annotations? You can try it on generated tracks:
 
 ```sh
 cargo run --release -p analysis --example make_annotated -- /tmp/eval
@@ -1088,11 +952,11 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
-| config (settings, presets, `crates/`, `dig/`, `visuals/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`, the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| config (settings, presets, `crates/`, `dig/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
+| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`, the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
-\* `DIGGR_CONFIG_DIR` covers settings, crates and presets; the editable `visuals/` folder
-always lives in the platform config folder.
+\* `DIGGR_CONFIG_DIR` covers settings, crates and presets. A `visuals/` folder (scenes and
+variants) left in the config folder by an earlier version is deleted at launch.
 
 Crates are kept in `crates/`: `index.ron` lists them (with whether each is grouped by record) and each crate is `<id>.ron`. A crate file
 that can't be read is reported once and left as it is; a damaged `index.ron` is rebuilt from the
@@ -1124,9 +988,7 @@ Other environment variables, mostly for unattended runs and measurements:
 
 | Variable | Effect |
 |---|---|
-| `DIGGR_AUTO_FULLSCREEN=1` | enter fullscreen as soon as playback starts |
 | `DIGGR_AUTO_QUIT_SECS=n` | close the app after `n` seconds |
-| `DIGGR_VISUAL_BENCH=1` | benchmark every scene on the first fullscreen (see [Visuals](#visuals)) |
 | `DIGGR_FRAME_STATS=1` | print per-second frame timings |
 
 `diggr --help` prints all command-line modes.
@@ -1161,7 +1023,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 947 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 846 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1346,28 +1208,6 @@ What's covered:
   - `lossless` follows the codec for every fixture format;
   - note names, cursor readout, zoom limits, live columns lined up with the audio, and a
     headless click that seeks to the time under the pointer.
-- **`crates/visuals`** (unit tests, plus GPU tests on a headless device that skip when there is
-  no GPU):
-  - musical time and triggers locked to the analyzed beats, including pause and seek;
-  - every shaper, route determinism, and the base → manual → macros → routes → clamp order;
-  - manifests, and WGSL generation checked with naga, with errors mapped to the author's line;
-  - every bundled scene compiling and rendering;
-  - crossfade, feedback trails, compute accumulation, hue, and broken shaders not panicking;
-  - automata: steps on musical time at 30 and 144 fps, per-beat step rate with hysteresis
-    (drops ×2 and ×4), catch-up, pre-roll and reset on seeks; grids that persist, wrap in θ and
-    stay separate per layer; Polar Life starting from a soup, growing from kicks and emptying in
-    silence; Coral Tunnel growing a kick splash with its chemistry staying in range, and its dividing cells outlasting the flow;
-  - variants loading when params change, mutation, lineage and undo;
-  - the director's default show (rise, fall, repeat, idle, track change, provisional boundaries);
-  - fader RETURN glides landing on bar lines;
-  - the overlay fade;
-  - hot reload keeping the last good scene, and the file watcher;
-  - the engine end to end (keys, crossfades, re-init);
-  - offline show rendering: a kick at 12.500 s hitting frame 750 at 60 fps, identical frames
-    across renders, BT.709 YUV conversion, the overlay card, pinned looks, an MP4 end to end
-    through ffmpeg (skipped without it), and cancel leaving no file.
-- **`crates/visuals/tests/render_playback.rs`**: real-time playback while a show renders, with
-  zero underruns.
 - **`apps/native/tests/no_old_name.rs`**: no tracked file names the player that inspired Diggr's
   look, in any letter case (skipped outside a git checkout).
 
@@ -1389,12 +1229,12 @@ first launch after a build takes about 0.7 s while macOS compiles and caches GPU
    symphonia → stereo → rubato             EQ → tap → volume/balance
    gapless + pre-warm next track           publishes the playback clock
                                                   │
-                   visuals / analysis ◀── clock + tap (lock-free, never block audio)
+          spectrum / waveform / analysis ◀── clock + tap (lock-free, never block audio)
 ```
 
 - **Instant start:** the output device opens at launch and stays open (emitting silence), so
   pressing play only has to decode one packet.
-- **Zero-offset visuals:** the callback publishes *which frame is at the speaker right now*
+- **Zero-offset clock:** the callback publishes *which frame is at the speaker right now*
   (callback time + output latency). Consumers interpolate it at any frame rate.
 - **Gapless:** the next track is opened and pre-decoded 30 s before the end. One continuous
   resampler carries across track boundaries, so even 44.1 kHz files on a 48 kHz device join
@@ -1412,20 +1252,18 @@ Full details and the reasoning behind each decision:
 ```
 crates/platform   seam traits (AudioSink, Spawner, FileSource) + native impls + ManualSink for tests
 crates/audio      decode, ring, renderer (callback), clock, EQ, tap, decode worker, Engine API
-crates/analysis   music analysis: beat grid, tempo segments, sections, tension, cache, eval tools;
+crates/analysis   music analysis: beat grid, tempo segments, sections, energy, cache, eval tools;
                   track overview (waveform + spectrogram, cutoff check) and zoomed spectrogram detail
-crates/ui         the player window: skin, main/EQ/playlist sections, fullscreen host, playlist model,
+crates/ui         the player window: skin, main/EQ/playlist sections, playlist model,
                   waveform, spectrogram window
 crates/dig        digging Discogs (native only): API client, rate limit and cache, page expansion,
                   send jobs, yt-dlp previews and their scheduler, preparing previews, dig memory,
                   the browser bridge (loopback server, pairing)
-crates/visuals    the visual engine: signals, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, deck
-crates/visuals/assets  the bundled scenes, variants, prelude and director rules
 extensions/chrome the Chrome extension (plain JS, loaded unpacked) that sends Discogs pages to the bridge
 assets/skin       the bundled original skin (atlas.png + skin.ron), generated by `cargo run -p ui --bin skin-gen`
 assets/icon       the logo: logo-mark.svg and logo-lockup.svg (sources), and the app and extension icon PNGs
                   generated from the mark by `cargo run -p ui --bin icon-gen`
-apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time, --render-show
+apps/native       the desktop app: GUI (default), --tui, --bench, --click-test, --startup-time
 openspec/         specs and plans for every milestone (see below)
 .claude/, .opencode/  OpenSpec agent commands (/opsx:propose, :explore, :apply, :archive)
 AGENTS.md         conventions and checks for anyone (human or AI) changing the code
@@ -1449,21 +1287,20 @@ Each milestone is an OpenSpec change with a proposal, design, specs and tasks in
 `openspec/changes/`:
 
 1. `audio-core`: the audio engine ✅ (done and archived, apart from the two checks above)
-2. `classic-ui`: the classic skinned player, EQ and playlist (egui/wgpu), and the
-   fullscreen key ✅ (done and archived)
+2. `classic-ui`: the classic skinned player, EQ and playlist (egui/wgpu) ✅ (done and archived)
 3. `music-analysis`: beat grid, phrases, build/drop/breakdown detection that analyzes ahead of
    the playhead ✅ (done and archived)
-4. `visual-engine`: fractal scenes (WGSL), a modulation matrix, a director, a fader deck, and an
-   auto-fading track overlay ✅ (done and archived)
-5. `web-target`: the same app in Chrome via WebAssembly, AudioWorklet and WebGPU (proposed in
+4. `visual-engine`: fullscreen fractal visuals. Done and archived, then removed by
+   `remove-visuals` to keep Diggr on digging
+5. `web-target`: the same player in Chrome via WebAssembly, AudioWorklet and WebGPU (proposed in
    `openspec/changes/web-target/`, not started)
 6. `waveform-navigation`: the coloured waveform, section/drop jumps on the beat, bar loops,
    and the shortcuts help ✅ (done and archived)
 7. `spectrogram-window`: a spectrogram window with whole-track, zoomed and live views, and a
    check for files made from lossy sources ✅ (done and archived)
 8. `beatmatch-automix`: tempo-matched, phrase-aligned DJ mixes between tracks (proposed)
-9. `show-render`: render a track's visual show to an MP4, from the command line
-   ✅ (done and archived)
+9. `show-render`: render a track's visual show to an MP4. Done and archived, then removed with
+   the visuals
 10. `crates`: named playlists ("crates") switched from the playlist's title bar, with entries that
     remember the record they came from and can wait for their audio ✅ (done and archived)
 11. `discogs-digging`: paste a Discogs page (label, artist, release, master, wantlist or list) to

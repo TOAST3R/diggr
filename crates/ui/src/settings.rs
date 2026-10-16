@@ -131,6 +131,7 @@ pub const MAX_PLAYLIST_WIDTH: u16 = 4000;
 pub const SETTINGS_FILE: &str = "settings.ron";
 pub const PLAYLIST_FILE: &str = "playlist.ron";
 pub const PRESETS_FILE: &str = "eq_presets.ron";
+const VISUALS_DIR: &str = "visuals";
 
 /// Reads and writes RON files in one directory. Writes are atomic (temp file + rename).
 #[derive(Debug, Clone)]
@@ -151,6 +152,12 @@ impl Store {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Deletes the `visuals` folder earlier versions kept the user's scenes and variants in:
+    /// nothing reads it any more. Only that folder; a failure leaves it.
+    pub fn remove_old_visuals(&self) {
+        let _ = std::fs::remove_dir_all(self.dir.join(VISUALS_DIR));
     }
 
     /// Missing or unreadable files give the default (a broken file never blocks startup).
@@ -228,6 +235,23 @@ mod tests {
 
     fn store(name: &str) -> TestStore {
         TestStore::new(&format!("ui-store-{name}"))
+    }
+
+    #[test]
+    fn the_old_visuals_folder_goes_and_nothing_else() {
+        let s = store("old-visuals");
+        let scenes = s.dir().join("visuals/scenes");
+        std::fs::create_dir_all(&scenes).unwrap();
+        std::fs::write(scenes.join("tunnel.ron"), "()").unwrap();
+        s.save(SETTINGS_FILE, &Settings::default()).unwrap();
+        std::fs::write(s.dir().join("visuals.txt"), "keep").unwrap();
+        s.remove_old_visuals();
+        assert!(!s.dir().join("visuals").exists());
+        assert!(s.dir().join(SETTINGS_FILE).exists());
+        assert!(s.dir().join("visuals.txt").exists());
+        // Nothing there: nothing happens, nothing is created.
+        s.remove_old_visuals();
+        assert!(!s.dir().join("visuals").exists());
     }
 
     #[test]

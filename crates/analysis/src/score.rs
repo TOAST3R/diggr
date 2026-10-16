@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump when analysis results change meaningfully; cached scores of other versions are ignored.
-pub const ALGORITHM_VERSION: u32 = 1;
+pub const ALGORITHM_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SectionKind {
@@ -93,31 +93,11 @@ impl TempoSegment {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Events {
-    pub kick: Vec<f64>,
-    pub snare: Vec<f64>,
-    pub hat: Vec<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventKind {
-    Kick,
-    Snare,
-    Hat,
-    Downbeat,
-}
-
 /// Per-beat curves, indexed like `SongScore::beats`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BeatCurves {
+    /// Loudness (dB), for structure navigation's energy rises.
     pub energy: Vec<f32>,
-    pub bass: Vec<f32>,
-    pub mid: Vec<f32>,
-    pub treble: Vec<f32>,
-    pub brightness: Vec<f32>,
-    pub flatness: Vec<f32>,
-    pub tension: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -152,7 +132,6 @@ pub struct SongScore {
     pub downbeats: Vec<usize>,
     /// Bar index (counting from the first downbeat) where 8-bar phrases start, mod 8.
     pub phrase_origin: u8,
-    pub events: Events,
     pub curves: BeatCurves,
     pub sections: Vec<Section>,
     /// The whole file has been analyzed.
@@ -176,34 +155,10 @@ impl SongScore {
         Some(i as f64 + (t - b[i]) / (next - b[i]))
     }
 
-    /// Event times in `[a, b)`.
-    pub fn events_in(&self, kind: EventKind, a: f64, b: f64) -> Vec<f64> {
-        let list: Vec<f64> = match kind {
-            EventKind::Kick => self.events.kick.clone(),
-            EventKind::Snare => self.events.snare.clone(),
-            EventKind::Hat => self.events.hat.clone(),
-            EventKind::Downbeat => self.downbeats.iter().map(|&i| self.beats[i]).collect(),
-        };
-        list.into_iter().filter(|&t| t >= a && t < b).collect()
-    }
-
     pub fn section_at(&self, beat: usize) -> Option<&Section> {
         self.sections
             .iter()
             .find(|s| beat >= s.start_beat && beat < s.end_beat)
-    }
-
-    /// Beats until the next drop starts, if one is known.
-    pub fn drop_in(&self, beat: usize) -> Option<usize> {
-        self.sections
-            .iter()
-            .filter(|s| s.kind == SectionKind::Drop && s.start_beat > beat)
-            .map(|s| s.start_beat - beat)
-            .min()
-    }
-
-    pub fn tension(&self, beat: usize) -> f32 {
-        self.curves.tension.get(beat).copied().unwrap_or(0.0)
     }
 
     /// Tempo (BPM) at time `t`.
@@ -262,14 +217,7 @@ mod tests {
                 },
             ],
             curves: BeatCurves {
-                tension: (0..64)
-                    .map(|i| if i < 32 { i as f32 / 32.0 } else { 0.0 })
-                    .collect(),
-                ..Default::default()
-            },
-            events: Events {
-                kick: vec![16.0, 16.5, 17.0],
-                ..Default::default()
+                energy: vec![-20.0; 64],
             },
             ..Default::default()
         }
@@ -286,11 +234,6 @@ mod tests {
         assert_eq!(s.beat_at(31.75), Some(63.5));
         assert_eq!(s.beat_at(-1.0), None);
         assert_eq!(s.section_at(40).unwrap().kind, SectionKind::Drop);
-        assert_eq!(s.drop_in(24), Some(8));
-        assert_eq!(s.drop_in(40), None);
-        assert!((s.tension(24) - 0.75).abs() < 1e-6);
-        assert_eq!(s.events_in(EventKind::Kick, 16.2, 17.5), vec![16.5, 17.0]);
-        assert_eq!(s.events_in(EventKind::Downbeat, 0.0, 4.0), vec![0.0, 2.0]);
         assert_eq!(s.sections[1].label_name(), 'B');
     }
 

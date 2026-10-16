@@ -4,11 +4,11 @@
 TBD - created by archiving change music-analysis. Update Purpose after archive.
 ## Requirements
 ### Requirement: Band onsets
-The analyzer SHALL detect kick, snare, and hi-hat onsets and store them as timestamped events.
+The analyzer SHALL detect kick, snare, and hi-hat onsets as timestamped events, and SHALL use them to estimate tempo. They SHALL NOT be kept in the score, which no reader needs them from.
 
 #### Scenario: Four-on-the-floor
 - **WHEN** a house track with a kick on every beat is analyzed
-- **THEN** a kick event is present within ±20 ms of each audible kick
+- **THEN** the analyzer's onset detection reports a kick within ±20 ms of each audible kick, and the score holds no drum events
 
 ### Requirement: Tempo estimation with electronica prior
 The analyzer SHALL estimate tempo in 60–200 BPM using a prior centered near 125 BPM and SHALL resolve half/double-tempo ambiguity using hi-hat density and kick periodicity.

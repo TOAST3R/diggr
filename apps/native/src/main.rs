@@ -8,15 +8,11 @@
 //!                                            (optionally with music analysis running)
 //! diggr --click-test                 clock vs. microphone (needs speaker → mic path)
 //! diggr --startup-time               print time to first frame and quit
-//! diggr --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T]
-//!               [--overlay] [--look SCENE/VARIANT]
-//!                                            render the track's visual show to a video
 //! ```
 
 mod bench;
 mod click;
 mod interactive;
-mod render;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -44,20 +40,11 @@ pub fn open_engine() -> Result<Engine, String> {
     .map_err(|e| e.to_string())
 }
 
-const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time | --render-show TRACK -o OUT.mp4 [--size WxH] [--fps N] [--from T] [--to T] [--overlay] [--look SCENE/VARIANT]";
+const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time";
 
 fn main() -> ExitCode {
     let process_start = Instant::now();
     let all: Vec<String> = std::env::args().skip(1).collect();
-    if all.first().is_some_and(|a| a == "--render-show") {
-        return match render::run(&all[1..]) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
     let mut args = all.into_iter().peekable();
     let mut mode = "gui";
     let mut volume = None;
@@ -154,13 +141,11 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
                 files: Arc::new(NativeFileSource),
                 store,
                 open,
-                scene: Box::new(visuals::VisualEngine::new()),
                 analysis: Some(analysis::AnalysisService::new(
                     Arc::new(NativeSpawner),
                     Arc::new(NativeFileSource),
                     cache.clone(),
                 )),
-                annotations_dir: cache.as_ref().map(|c| c.dir().join("annotations")),
                 overviews: Some(analysis::overview::OverviewService::new(
                     Arc::new(NativeSpawner),
                     Arc::new(NativeFileSource),

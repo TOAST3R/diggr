@@ -47,7 +47,6 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "S",
                 "spectrogram window (also in Options: right-click the main window)",
             ),
-            ("F", "fullscreen visuals"),
             ("H or F1", "this help"),
             (
                 "Up / Down (playlist focused)",
@@ -70,22 +69,6 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
             ("Cmd+F", "search the crate (Esc: clear the search)"),
-        ],
-    ),
-    (
-        "Fullscreen visuals",
-        &[
-            ("F or Esc", "leave fullscreen"),
-            ("D", "fader deck"),
-            ("M / Shift+M", "mutate the look (small / big step)"),
-            ("K", "keep the look as a new variant"),
-            ("Backspace", "undo the last look change"),
-            ("1–5", "rate the look"),
-            ("T", "analysis strip"),
-            (
-                "A",
-                "annotation mode (Space: tap the beat, 1–6: mark a section)",
-            ),
         ],
     ),
     (
@@ -286,16 +269,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_every_navigation_and_visual_key() {
+    fn lists_every_navigation_and_digging_key() {
         let keys: Vec<&str> = GROUPS
             .iter()
             .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "F", "H or F1", "D", "K", "T", "A",
-            "Cmd+V", "Y", "N", "I", "Tab", "P", "Shift+P", "Space",
+            "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "H or F1", "Cmd+V", "Y", "N", "I",
+            "Tab", "P", "Shift+P", "Space",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
+        }
+        for k in ["F", "F or Esc", "T", "A", "D", "K"] {
+            assert!(!keys.contains(&k), "help still lists {k}");
         }
     }
 

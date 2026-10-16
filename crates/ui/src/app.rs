@@ -1,5 +1,5 @@
 //! The eframe application: main player, equalizer and playlist stacked in one borderless
-//! window, plus fullscreen visual mode.
+//! window.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -20,7 +20,6 @@ use crate::crates::{CrateId, Crates, MetaKey, PLAYLIST};
 use crate::eqcurve;
 use crate::files;
 use crate::format;
-use crate::fullscreen::{SceneFrame, VisualScene};
 use crate::metadata::{MetaResult, MetaWorker};
 use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus, Facet};
 use crate::records::{self, ListRow};
@@ -57,12 +56,10 @@ pub struct AppContext {
     pub store: Option<Store>,
     /// Files from the command line: replace the Playlist crate and play.
     pub open: Vec<PathBuf>,
-    pub scene: Box<dyn VisualScene>,
     pub startup: Startup,
-    /// Music analysis ahead of the playhead (beats, sections) for the visuals.
+    /// Music analysis ahead of the playhead (beats, sections) for BPM, the waveform and the
+    /// structure keys.
     pub analysis: Option<analysis::AnalysisService>,
-    /// Where annotation mode saves its JSON files.
-    pub annotations_dir: Option<PathBuf>,
     /// Native-rate track overviews for the waveform section.
     pub overviews: Option<analysis::overview::OverviewService>,
     /// Digging Discogs pages into crates of previews; `None` turns it off.
@@ -83,12 +80,6 @@ enum EngineSlot {
     Starting(Receiver<Result<Engine, String>>),
     Ready(Box<Engine>),
     Failed(String),
-}
-
-struct Fullscreen {
-    restore: Option<Rect>,
-    last_pointer: Instant,
-    pointer_at: Option<Pos2>,
 }
 
 pub struct DiggrApp {
@@ -181,13 +172,11 @@ pub struct DiggrApp {
     name_dialog: Option<NameDialog>,
     /// A crate with entries waiting for "Delete crate…" to be confirmed.
     confirm_delete: Option<CrateId>,
-    fullscreen: Option<Fullscreen>,
-    scene: Box<dyn VisualScene>,
-    scene_ready: bool,
-    render_state: Option<eframe::egui_wgpu::RenderState>,
     last_frame: Instant,
     startup: Startup,
     first_frame_done: bool,
+    /// Removes the old visuals folder after the first frame (see [`Store::remove_old_visuals`]).
+    cleanup: Option<(Arc<dyn Spawner>, Store)>,
     /// The shortcuts help panel (`H` / `F1`).
     help: bool,
     overviews: Option<analysis::overview::OverviewService>,
@@ -200,8 +189,6 @@ pub struct DiggrApp {
     /// `DIGGR_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/diggr_frame_stats.log`.
     profile: Option<FrameProfile>,
-    /// `DIGGR_AUTO_FULLSCREEN=1`: enter fullscreen once playback starts (for unattended runs).
-    auto_fullscreen: bool,
     /// `DIGGR_AUTO_QUIT_SECS=n`: close the app after n seconds.
     auto_quit: Option<Instant>,
     settings_dirty: Option<Instant>,
@@ -210,15 +197,11 @@ pub struct DiggrApp {
     /// A verdict just landed: the title line shows it for [`FLASH_SECS`] (WANTED, PASS, …).
     flash: Option<(String, Instant)>,
     analysis: Option<analysis::AnalysisService>,
-    files: Arc<dyn FileSource>,
     /// Engine track instances → files, from `TrackLoaded` events.
     track_refs: std::collections::HashMap<audio::TrackId, TrackRef>,
     score: Option<Arc<analysis::SongScore>>,
     /// The last playing track whose tempo was given to its entries.
     bpm_track: Option<TrackRef>,
-    strip: bool,
-    annotating: Option<analysis::eval::Annotations>,
-    annotations_dir: Option<PathBuf>,
     #[cfg(not(target_arch = "wasm32"))]
     dig: Option<digging::Dig>,
 }
@@ -227,15 +210,12 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 
 impl DiggrApp {
     pub fn new(cc: &eframe::CreationContext<'_>, ctx: AppContext) -> Self {
-        Self::build(cc.egui_ctx.clone(), cc.wgpu_render_state.clone(), ctx)
+        Self::build(cc.egui_ctx.clone(), ctx)
     }
 
-    fn build(
-        egui_ctx: egui::Context,
-        render_state: Option<eframe::egui_wgpu::RenderState>,
-        ctx: AppContext,
-    ) -> Self {
+    fn build(egui_ctx: egui::Context, ctx: AppContext) -> Self {
         let store = ctx.store;
+        let cleanup = store.clone().map(|s| (ctx.spawner.clone(), s));
         let settings = store.as_ref().map(Store::load_settings).unwrap_or_default();
         let presets = store.as_ref().map(Store::load_presets).unwrap_or_default();
         let mut crates = store.as_ref().map_or_else(Crates::in_memory, Crates::open);
@@ -361,15 +341,11 @@ impl DiggrApp {
             width_fitted: false,
             name_dialog: None,
             confirm_delete: None,
-            fullscreen: None,
-            scene: ctx.scene,
-            scene_ready: false,
-            render_state,
             last_frame: Instant::now(),
             startup: ctx.startup,
             first_frame_done: false,
+            cleanup,
             profile: std::env::var_os("DIGGR_FRAME_STATS").map(|_| FrameProfile::new()),
-            auto_fullscreen: std::env::var_os("DIGGR_AUTO_FULLSCREEN").is_some(),
             auto_quit: std::env::var("DIGGR_AUTO_QUIT_SECS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
@@ -379,13 +355,9 @@ impl DiggrApp {
             message,
             flash: None,
             analysis: ctx.analysis,
-            files: ctx.files.clone(),
             track_refs: std::collections::HashMap::new(),
             score: None,
             bpm_track: None,
-            strip: false,
-            annotating: None,
-            annotations_dir: ctx.annotations_dir,
             help: false,
             overviews: ctx.overviews,
             overview: None,
@@ -1104,7 +1076,7 @@ impl DiggrApp {
         if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Tab) && !i.modifiers.any())
         {
             ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-            if self.fullscreen.is_none() && self.settings.show_playlist {
+            if self.settings.show_playlist {
                 self.focus = self.focus.other();
             }
         }
@@ -1149,14 +1121,14 @@ impl DiggrApp {
             (keys, i.modifiers)
         });
         for key in pressed {
-            // Cmd+F (Ctrl+F) finds in the shown crate, never fullscreen.
+            // Cmd+F (Ctrl+F) finds in the shown crate.
             if key == Key::F && mods.command {
-                if self.fullscreen.is_none() && self.settings.show_playlist {
+                if self.settings.show_playlist {
                     self.search_focus = true;
                 }
                 continue;
             }
-            // The help panel takes its own close keys first (Esc must not leave fullscreen).
+            // The help panel takes its own close keys first.
             if matches!(key, Key::H | Key::F1) && !mods.command {
                 self.help = !self.help;
                 continue;
@@ -1165,76 +1137,14 @@ impl DiggrApp {
                 self.help = false;
                 continue;
             }
-            if !self.transport_key(ctx, key, mods) {
-                if self.fullscreen.is_some() {
-                    if !self.host_key(key) {
-                        self.scene.key(key, mods);
-                    }
-                } else {
-                    self.window_key(ctx, key, mods);
-                }
+            if !self.transport_key(key, mods) {
+                self.window_key(ctx, key, mods);
             }
         }
     }
 
-    /// Keys the fullscreen host keeps for itself (see [`host_action`]); others go to the scene.
-    fn host_key(&mut self, key: Key) -> bool {
-        let Some(action) = host_action(key, self.annotating.is_some()) else {
-            return false;
-        };
-        let t = self.position.seconds();
-        match action {
-            HostAction::ToggleStrip => self.strip = !self.strip,
-            HostAction::ToggleAnnotating => self.toggle_annotating(),
-            HostAction::Tap => {
-                if let Some(a) = &mut self.annotating {
-                    a.tap(t);
-                }
-                self.save_annotations();
-            }
-            HostAction::Boundary(kind) => {
-                if let Some(a) = &mut self.annotating {
-                    a.boundary(t, kind);
-                }
-                self.save_annotations();
-            }
-        }
-        true
-    }
-
-    fn toggle_annotating(&mut self) {
-        if self.annotating.take().is_some() {
-            return; // every mark is saved as it is made
-        }
-        let Some(track) = self.track_refs.get(&self.position.track).cloned() else {
-            self.notify("Play a track to annotate it");
-            return;
-        };
-        let Some(dir) = self.annotations_dir.clone() else {
-            self.notify("Annotations need a cache directory");
-            return;
-        };
-        let hash = self
-            .score
-            .as_ref()
-            .map(|s| s.content_hash)
-            .filter(|&h| h != 0)
-            .or_else(|| analysis::cache::content_hash(&*self.files, &track))
-            .unwrap_or(0);
-        self.annotating = Some(analysis::eval::Annotations::load_or_new(&dir, &track, hash));
-        self.strip = true;
-    }
-
-    fn save_annotations(&mut self) {
-        if let (Some(ann), Some(dir)) = (&self.annotating, &self.annotations_dir)
-            && let Err(e) = ann.save(dir)
-        {
-            self.message = Some((format!("Could not save annotations: {e}"), Instant::now()));
-        }
-    }
-
-    /// Keys that work in both windowed and fullscreen mode.
-    fn transport_key(&mut self, ctx: &egui::Context, key: Key, mods: Modifiers) -> bool {
+    /// Playback, volume, structure and digging keys.
+    fn transport_key(&mut self, key: Key, mods: Modifiers) -> bool {
         if mods.command {
             return false;
         }
@@ -1255,8 +1165,6 @@ impl DiggrApp {
             Key::ArrowUp | Key::ArrowDown if self.arrows_move_cursor() => return false,
             Key::ArrowUp => self.set_volume(self.settings.volume + 0.05),
             Key::ArrowDown => self.set_volume(self.settings.volume - 0.05),
-            Key::F => self.toggle_fullscreen(ctx),
-            Key::Escape if self.fullscreen.is_some() => self.toggle_fullscreen(ctx),
             Key::CloseBracket if mods.shift => self.structure_jump(crate::navigation::next_rise),
             Key::CloseBracket => self.structure_jump(crate::navigation::next_section),
             Key::OpenBracket => self.structure_jump(crate::navigation::previous_section),
@@ -1409,9 +1317,9 @@ impl DiggrApp {
         self.scroll_into_view(first);
     }
 
-    /// ↑/↓ move the playlist cursor while the playlist has the keyboard (not in fullscreen).
+    /// ↑/↓ move the playlist cursor while the playlist has the keyboard.
     fn arrows_move_cursor(&self) -> bool {
-        self.focus == Focus::Playlist && self.fullscreen.is_none() && self.settings.show_playlist
+        self.focus == Focus::Playlist && self.settings.show_playlist
     }
 
     /// Maximizes the window for the playlist (showing it, and giving it the keyboard), or
@@ -1565,89 +1473,6 @@ impl DiggrApp {
         let v = self.settings.volume;
         self.with_engine(|e| e.set_volume(v));
         self.mark_settings();
-    }
-
-    // ---- fullscreen ------------------------------------------------------------------------
-
-    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
-        match self.fullscreen.take() {
-            Some(fs) => {
-                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
-                ctx.send_viewport_cmd(ViewportCommand::CursorVisible(true));
-                if self.settings.playlist_maximized {
-                    ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
-                    self.max_seen = false;
-                } else if let Some(r) = fs.restore {
-                    ctx.send_viewport_cmd(ViewportCommand::InnerSize(Self::window_size(
-                        &self.settings,
-                        &self.skin,
-                    )));
-                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(r.min));
-                }
-                self.last_size = None;
-            }
-            None => {
-                if !self.scene_ready
-                    && let Some(rs) = &self.render_state
-                {
-                    self.scene.init(rs);
-                    self.scene_ready = true;
-                }
-                self.scene.entered();
-                let restore = ctx.input(|i| i.viewport().outer_rect);
-                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
-                self.fullscreen = Some(Fullscreen {
-                    restore,
-                    last_pointer: Instant::now(),
-                    pointer_at: None,
-                });
-            }
-        }
-    }
-
-    fn fullscreen_ui(&mut self, ui: &mut Ui) {
-        let ctx = ui.ctx().clone();
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
-        let (artist, title, duration) = self
-            .now_playing_names()
-            .unwrap_or_else(|| (String::new(), "Nothing playing".into(), None));
-        let bars = *self.analyzer.bars();
-        let frame = SceneFrame {
-            position: self.position,
-            bars: &bars,
-            artist: &artist,
-            title: &title,
-            score: self.score.as_deref(),
-            duration,
-            strip_visible: self.strip || self.annotating.is_some(),
-        };
-        if let Some(cb) = self.scene.paint(rect, &frame) {
-            ui.painter().add(cb);
-        }
-        self.scene.ui(ui, &frame);
-        if self.strip || self.annotating.is_some() {
-            crate::timeline::draw(
-                ui,
-                rect,
-                &self.position,
-                self.score.as_deref(),
-                self.annotating.as_ref(),
-            );
-        }
-
-        // Hide the cursor after 2 s without movement.
-        if let Some(fs) = &mut self.fullscreen {
-            let pointer = ctx.input(|i| i.pointer.latest_pos());
-            if pointer != fs.pointer_at {
-                fs.pointer_at = pointer;
-                fs.last_pointer = Instant::now();
-                ctx.send_viewport_cmd(ViewportCommand::CursorVisible(true));
-            } else if fs.last_pointer.elapsed() > Duration::from_secs(2) {
-                ctx.send_viewport_cmd(ViewportCommand::CursorVisible(false));
-            }
-        }
-        ctx.request_repaint(); // one frame per vsync
     }
 
     // ---- sections ----------------------------------------------------------------------------
@@ -6221,34 +6046,6 @@ fn draw_crate_name(sk: &Skinned, name: &str, count: Option<(usize, usize)>) {
     sk.text(bar.x as f32 + x, y, &text, color(sk.def.colors.pl_title));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostAction {
-    ToggleStrip,
-    ToggleAnnotating,
-    Tap,
-    Boundary(analysis::SectionKind),
-}
-
-/// Fullscreen keys the host keeps instead of passing them to the scene: `T` (analysis strip),
-/// `A` (annotation mode), and while annotating `Space` (beat tap) and `1`–`6` (boundary of kind
-/// intro, build, drop, breakdown, groove, outro).
-pub fn host_action(key: Key, annotating: bool) -> Option<HostAction> {
-    use analysis::SectionKind as K;
-    Some(match key {
-        Key::T => HostAction::ToggleStrip,
-        Key::A => HostAction::ToggleAnnotating,
-        _ if !annotating => return None,
-        Key::Space => HostAction::Tap,
-        Key::Num1 => HostAction::Boundary(K::Intro),
-        Key::Num2 => HostAction::Boundary(K::Build),
-        Key::Num3 => HostAction::Boundary(K::Drop),
-        Key::Num4 => HostAction::Boundary(K::Breakdown),
-        Key::Num5 => HostAction::Boundary(K::Groove),
-        Key::Num6 => HostAction::Boundary(K::Outro),
-        _ => return None,
-    })
-}
-
 /// What the window is doing, for the repaint policy.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Activity {
@@ -6258,13 +6055,11 @@ pub struct Activity {
     pub bars_moving: bool,
     pub engine_starting: bool,
     pub hidden: bool,
-    pub fullscreen: bool,
 }
 
 /// When to repaint without input. `None` means only on input, so an idle window costs nothing.
-/// Fullscreen schedules its own frames (one per vsync), so it is not handled here.
 pub fn repaint_after(a: Activity) -> Option<Duration> {
-    if a.hidden || a.fullscreen {
+    if a.hidden {
         None
     } else if a.playing && a.waveform {
         // The waveform scrolls with the playhead: smooth at the display rate.
@@ -6461,7 +6256,7 @@ impl eframe::App for DiggrApp {
         let ui_start = Instant::now();
         self.ui_inner(ui);
         if let Some(p) = &mut self.profile {
-            p.ui_done(ui_start, self.fullscreen.is_some());
+            p.ui_done(ui_start);
         }
     }
 
@@ -6475,13 +6270,6 @@ impl DiggrApp {
         let now = Instant::now();
         if let Some(p) = &mut self.profile {
             p.logic_start(now);
-        }
-        if self.auto_fullscreen
-            && self.fullscreen.is_none()
-            && self.position.state == PlayState::Playing
-        {
-            self.auto_fullscreen = false;
-            self.toggle_fullscreen(ctx);
         }
         if self.auto_quit.is_some_and(|t| now >= t) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -6538,7 +6326,7 @@ impl DiggrApp {
         }
         // While the playlist is maximized the OS sizes the window and the layout follows it.
         // Restored from outside (a window manager): back to the normal layout.
-        if self.settings.playlist_maximized && self.fullscreen.is_none() {
+        if self.settings.playlist_maximized {
             match ctx.input(|i| i.viewport().maximized) {
                 Some(true) => self.max_seen = true,
                 Some(false) if self.max_seen => {
@@ -6550,8 +6338,8 @@ impl DiggrApp {
                 _ => {}
             }
         }
-        // Keep the window sized to the visible sections (not in fullscreen or maximized).
-        if self.fullscreen.is_none() && !self.settings.playlist_maximized {
+        // Keep the window sized to the visible sections (not while maximized).
+        if !self.settings.playlist_maximized {
             let size = Self::window_size(&self.settings, &self.skin);
             if self.last_size != Some(size) {
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
@@ -6575,7 +6363,6 @@ impl DiggrApp {
             bars_moving: self.analyzer.is_active(),
             engine_starting: matches!(self.engine, EngineSlot::Starting(_)),
             hidden,
-            fullscreen: self.fullscreen.is_some(),
         };
         if let Some(after) = repaint_after(activity) {
             ctx.request_repaint_after(after);
@@ -6595,69 +6382,65 @@ impl DiggrApp {
             let img = egui::ColorImage::from_rgba_unmultiplied(self.skin.size, &self.skin.rgba);
             self.tex = Some(ctx.load_texture("skin-atlas", img, egui::TextureOptions::NEAREST));
         }
-        if self.fullscreen.is_some() {
-            self.fullscreen_ui(ui);
-        } else {
-            let origin = ui.max_rect().min;
-            let scale = self.settings.scale as f32;
-            let d = self.skin.def.clone();
-            self.win_px = ui.max_rect().size() / scale;
-            let maximized = self.settings.playlist_maximized;
-            // A click gives its side the keyboard (lit in this same frame).
-            if let Some(p) = ctx.input(|i| {
-                i.pointer
-                    .primary_pressed()
-                    .then(|| i.pointer.interact_pos())
-                    .flatten()
-            }) {
-                // Maximized, the player is the band on top; otherwise the column on the left.
-                let on_playlist = if maximized {
-                    p.y >= origin.y + crate::layout::BAND_H as f32 * scale
-                } else {
-                    p.x >= origin.x + d.main_size.0 as f32 * scale
-                };
-                self.focus = if self.settings.show_playlist && on_playlist {
-                    Focus::Playlist
-                } else {
-                    Focus::Player
-                };
-            }
-            if !self.settings.show_playlist {
-                self.focus = Focus::Player;
-            }
-            if maximized {
-                self.maximized_layout(ui, origin);
+        let origin = ui.max_rect().min;
+        let scale = self.settings.scale as f32;
+        let d = self.skin.def.clone();
+        self.win_px = ui.max_rect().size() / scale;
+        let maximized = self.settings.playlist_maximized;
+        // A click gives its side the keyboard (lit in this same frame).
+        if let Some(p) = ctx.input(|i| {
+            i.pointer
+                .primary_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        }) {
+            // Maximized, the player is the band on top; otherwise the column on the left.
+            let on_playlist = if maximized {
+                p.y >= origin.y + crate::layout::BAND_H as f32 * scale
             } else {
-                self.normal_layout(ui, origin);
-            }
-            if self
-                .message
-                .as_ref()
-                .is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(4))
-            {
-                self.message = None;
-            }
-            // An armed entry's "Waiting for …" stays up until it plays.
-            let line = self
-                .armed_line()
-                .or_else(|| self.message.as_ref().map(|(text, _)| text.clone()))
-                .or_else(|| self.dig_line());
-            if let Some(text) = line {
-                egui::Tooltip::always_open(
-                    ctx.clone(),
-                    ui.layer_id(),
-                    Id::new("msg"),
-                    egui::PopupAnchor::Position(origin),
-                )
-                .show(|ui| ui.label(text));
-            }
-            self.name_dialog(&ctx);
-            self.delete_dialog(&ctx);
-            #[cfg(not(target_arch = "wasm32"))]
-            self.dig_dialog_ui(&ctx);
-            #[cfg(not(target_arch = "wasm32"))]
-            self.dig_bridge_dialog_ui(&ctx);
+                p.x >= origin.x + d.main_size.0 as f32 * scale
+            };
+            self.focus = if self.settings.show_playlist && on_playlist {
+                Focus::Playlist
+            } else {
+                Focus::Player
+            };
         }
+        if !self.settings.show_playlist {
+            self.focus = Focus::Player;
+        }
+        if maximized {
+            self.maximized_layout(ui, origin);
+        } else {
+            self.normal_layout(ui, origin);
+        }
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(4))
+        {
+            self.message = None;
+        }
+        // An armed entry's "Waiting for …" stays up until it plays.
+        let line = self
+            .armed_line()
+            .or_else(|| self.message.as_ref().map(|(text, _)| text.clone()))
+            .or_else(|| self.dig_line());
+        if let Some(text) = line {
+            egui::Tooltip::always_open(
+                ctx.clone(),
+                ui.layer_id(),
+                Id::new("msg"),
+                egui::PopupAnchor::Position(origin),
+            )
+            .show(|ui| ui.label(text));
+        }
+        self.name_dialog(&ctx);
+        self.delete_dialog(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dig_dialog_ui(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dig_bridge_dialog_ui(&ctx);
         if self.help {
             crate::help::show(&ctx, &mut self.help);
         }
@@ -6670,6 +6453,13 @@ impl DiggrApp {
             }
             if self.startup.exit_after_first_frame {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            if let Some((spawner, store)) = self.cleanup.take() {
+                let _ = spawner.spawn(
+                    "cleanup",
+                    platform::Priority::Low,
+                    Box::new(move || store.remove_old_visuals()),
+                );
             }
         }
     }
@@ -6875,7 +6665,6 @@ impl DiggrApp {
             overview,
             now: self.position.seconds(),
             playing: self.position.state == PlayState::Playing,
-            fullscreen: self.fullscreen.is_some(),
             lossless: info.is_some_and(|i| i.lossless),
         };
         if self.spectro.feed(feed) {
@@ -6885,9 +6674,6 @@ impl DiggrApp {
     }
 
     fn exit(&mut self) {
-        if let Some(r) = self.fullscreen.as_ref().and_then(|f| f.restore) {
-            self.settings.window_pos = Some((r.min.x, r.min.y));
-        }
         self.settings_dirty.get_or_insert_with(Instant::now);
         self.save_now(true);
         #[cfg(not(target_arch = "wasm32"))]
@@ -6898,12 +6684,11 @@ impl DiggrApp {
 }
 
 /// Presentation settings for the app's window: vsync with up to 3 frames queued. With eframe's
-/// default of 1 (measured on an M2 MacBook, even for a blank fullscreen window) frames regularly
+/// default of 1 (measured on an M2 MacBook, even for a blank window) frames regularly
 /// miss their vsync slot and the rate swings between 30 and 60 fps; with 3 it holds 60. The
 /// windowed player only draws on input or at 30 fps, so its queue stays short and clicks stay
 /// snappy. (Set at startup: eframe 0.36's `Frame::set_wgpu_surface_config` changes a clone of
-/// the render state and has no effect.) The visuals read the audio clock ahead to make up for
-/// the display delay.
+/// the render state and has no effect.)
 pub fn surface_config() -> eframe::egui_wgpu::SurfaceConfig {
     eframe::egui_wgpu::SurfaceConfig {
         present_mode: eframe::egui_wgpu::wgpu::PresentMode::AutoVsync,
@@ -6930,8 +6715,7 @@ impl PhaseStats {
     }
 }
 
-/// Where each frame's time goes: our `logic`, our `ui` (which includes the visuals' `paint` and
-/// egui layer), and everything eframe does outside them (egui tessellation, GPU submit, waiting
+/// Where each frame's time goes: our `logic`, our `ui` (the egui layer), and everything eframe does outside them (egui tessellation, GPU submit, waiting
 /// for a drawable, present, event loop).
 struct FrameProfile {
     window: Instant,
@@ -6980,15 +6764,14 @@ impl FrameProfile {
             .add(self.logic_started.elapsed().as_secs_f64() * 1e3);
     }
 
-    fn ui_done(&mut self, start: Instant, fullscreen: bool) {
+    fn ui_done(&mut self, start: Instant) {
         let now = Instant::now();
         self.ui.add((now - start).as_secs_f64() * 1e3);
         self.ui_end = Some(now);
         self.frames += 1;
         if self.window.elapsed() >= Duration::from_secs(1) {
             let line = format!(
-                "{} fps {:3} | frame ms avg/max {} | logic {} | ui+visuals {} | eframe paint+present {}",
-                if fullscreen { "full" } else { "win " },
+                "fps {:3} | frame ms avg/max {} | logic {} | ui {} | eframe paint+present {}",
                 self.frames,
                 self.frame_dt.show(),
                 self.logic.show(),
@@ -7051,32 +6834,6 @@ fn _unused(_: Rect, _: Pos2) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn host_keys_are_not_forwarded_to_the_scene() {
-        use analysis::SectionKind as K;
-        assert_eq!(host_action(Key::T, false), Some(HostAction::ToggleStrip));
-        assert_eq!(
-            host_action(Key::A, false),
-            Some(HostAction::ToggleAnnotating)
-        );
-        // Digits and Space belong to the scene unless annotating.
-        assert_eq!(host_action(Key::Num1, false), None);
-        assert_eq!(host_action(Key::Space, false), None);
-        assert_eq!(
-            host_action(Key::Num3, true),
-            Some(HostAction::Boundary(K::Drop))
-        );
-        assert_eq!(
-            host_action(Key::Num6, true),
-            Some(HostAction::Boundary(K::Outro))
-        );
-        assert_eq!(host_action(Key::Space, true), Some(HostAction::Tap));
-        // Anything else still reaches the scene (e.g. the visual engine's M / K / D).
-        for k in [Key::M, Key::K, Key::D, Key::Num7] {
-            assert_eq!(host_action(k, true), None);
-        }
-    }
 
     #[test]
     fn idle_window_never_repaints_on_its_own() {
@@ -7334,7 +7091,6 @@ mod headless_tests {
             let ctx = egui::Context::default();
             let app = DiggrApp::build(
                 ctx.clone(),
-                None,
                 AppContext {
                     engine: Box::new(move || {
                         Engine::new(
@@ -7349,14 +7105,12 @@ mod headless_tests {
                     files: Arc::new(NativeFileSource),
                     store: Some(store),
                     open,
-                    scene: Box::new(crate::fullscreen::BeatFlash::default()),
                     startup: Startup {
                         process_start: Instant::now(),
                         report: false,
                         exit_after_first_frame: false,
                     },
                     analysis: None,
-                    annotations_dir: None,
                     overviews: None,
                     dig: dig(&dir),
                 },
@@ -8299,20 +8053,28 @@ mod headless_tests {
     }
 
     #[test]
-    fn leaving_fullscreen_visuals_maximizes_the_playlist_again() {
-        let mut rig = Rig::new("max-fullscreen", Vec::new(), |_| {});
-        rig.key(Key::P, Modifiers::SHIFT);
-        rig.key(Key::F, Modifiers::NONE);
-        assert!(rig.app.fullscreen.is_some());
-        let out = rig.key(Key::F, Modifiers::NONE);
-        assert!(rig.app.fullscreen.is_none());
-        assert_eq!(maximize_commands(&out), [true]);
-        let sized = out.viewport_output.values().any(|v| {
-            v.commands
-                .iter()
-                .any(|c| matches!(c, ViewportCommand::InnerSize(_)))
+    fn the_old_visuals_folder_is_deleted_after_launch() {
+        let mut keep = None;
+        let mut rig = Rig::new("old-visuals", Vec::new(), |store| {
+            std::fs::create_dir_all(store.dir().join("visuals/variants")).unwrap();
+            keep = Some(store.dir().to_path_buf());
         });
-        assert!(!sized, "the OS sizes a maximized window");
+        let dir = keep.unwrap();
+        rig.until(
+            |_| !dir.join("visuals").exists(),
+            "the visuals folder is gone",
+        );
+        assert!(dir.exists(), "the config folder stays");
+    }
+
+    #[test]
+    fn f_does_nothing_in_the_player_window() {
+        let mut rig = Rig::new("f-nothing", Vec::new(), |_| {});
+        let out = rig.key(Key::F, Modifiers::NONE);
+        let viewport = out.viewport_output.values().any(|v| !v.commands.is_empty());
+        assert!(!viewport, "no window change");
+        assert!(!rig.app.help);
+        assert!(!rig.app.settings.playlist_maximized);
     }
 
     #[test]
@@ -9604,7 +9366,6 @@ mod headless_tests {
             PlayState::Playing,
             "not paused or stopped"
         );
-        assert!(rig.app.fullscreen.is_none(), "no fullscreen");
         assert!(!rig.app.help, "no help");
         assert!(
             rig.app.crates.shown().shown_rows().is_empty(),
@@ -9673,7 +9434,6 @@ mod headless_tests {
         rig.key(Key::F, Modifiers::COMMAND);
         rig.frame(Vec::new());
         assert!(rig.ctx.memory(|m| m.has_focus(Id::new("pl_search"))));
-        assert!(rig.app.fullscreen.is_none());
         type_keys(&mut rig, "lowtide");
         rig.frame(Vec::new());
         assert_eq!(rig.app.crates.shown().shown_rows(), [0, 2]);

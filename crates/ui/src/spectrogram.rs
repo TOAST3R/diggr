@@ -408,7 +408,6 @@ pub struct Feed {
     pub now: f64,
     pub duration: Option<f64>,
     pub playing: bool,
-    pub fullscreen: bool,
     pub lossless: bool,
 }
 
@@ -427,13 +426,10 @@ pub struct Activity {
     pub playing: bool,
     pub live: bool,
     pub detail_arriving: bool,
-    pub fullscreen: bool,
 }
 
 pub fn repaint_after(a: Activity) -> Option<Duration> {
-    if a.fullscreen {
-        None
-    } else if a.playing && a.live {
+    if a.playing && a.live {
         Some(Duration::from_millis(16))
     } else if a.detail_arriving {
         Some(Duration::from_millis(40))
@@ -564,12 +560,10 @@ impl SpectrogramWindow {
     /// visible changed while it would otherwise sleep).
     pub fn feed(&self, feed: Feed) -> bool {
         let mut s = self.lock();
-        let wake = !feed.fullscreen
-            && (s.feed.track != feed.track
-                || (s.feed.now - feed.now).abs() > 0.01
-                || s.feed.playing != feed.playing
-                || s.feed.overview.as_ref().map(Arc::as_ptr)
-                    != feed.overview.as_ref().map(Arc::as_ptr));
+        let wake = s.feed.track != feed.track
+            || (s.feed.now - feed.now).abs() > 0.01
+            || s.feed.playing != feed.playing
+            || s.feed.overview.as_ref().map(Arc::as_ptr) != feed.overview.as_ref().map(Arc::as_ptr);
         s.feed = feed;
         wake
     }
@@ -629,7 +623,6 @@ impl SpectrogramWindow {
             playing: s.feed.playing,
             live: s.settings.mode == Mode::Live,
             detail_arriving: s.detail_arriving(),
-            fullscreen: s.feed.fullscreen,
         };
         if let Some(after) = repaint_after(activity) {
             ctx.request_repaint_after(after);
@@ -1278,29 +1271,24 @@ mod tests {
 
     #[test]
     fn repaints_only_when_something_moves() {
-        let a = |playing, live, detail_arriving, fullscreen| Activity {
+        let a = |playing, live, detail_arriving| Activity {
             playing,
             live,
             detail_arriving,
-            fullscreen,
         };
         assert_eq!(
-            repaint_after(a(false, false, false, false)),
+            repaint_after(a(false, false, false)),
             None,
             "paused track mode"
         );
         assert_eq!(
-            repaint_after(a(false, true, false, false)),
+            repaint_after(a(false, true, false)),
             None,
             "paused live mode"
         );
-        assert!(repaint_after(a(true, true, false, false)).unwrap() <= Duration::from_millis(16));
-        assert!(repaint_after(a(false, false, true, false)).is_some());
-        assert!(
-            repaint_after(a(true, false, false, false)).is_some(),
-            "playhead"
-        );
-        assert_eq!(repaint_after(a(true, true, true, true)), None, "fullscreen");
+        assert!(repaint_after(a(true, true, false)).unwrap() <= Duration::from_millis(16));
+        assert!(repaint_after(a(false, false, true)).is_some());
+        assert!(repaint_after(a(true, false, false)).is_some(), "playhead");
     }
 
     fn chunk(track: u64, start: u64, f: impl Fn(u64) -> f32) -> TapChunk {
@@ -1382,7 +1370,6 @@ mod tests {
             now: 1.0,
             duration: Some(180.0),
             playing: false,
-            fullscreen: false,
             lossless: true,
         });
         let ctx = egui::Context::default();
