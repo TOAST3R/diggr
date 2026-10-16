@@ -65,6 +65,6 @@ Scores (including partial coverage) SHALL be cached on disk by content hash and 
 Consumers SHALL read the score through immutable snapshots that are swapped atomically, with no locks on the render path.
 
 #### Scenario: Render-thread read
-- **WHEN** the visual engine reads the score every frame while the analyzer appends
+- **WHEN** the player reads the score every frame (waveform, structure keys) while the analyzer appends
 - **THEN** reads never block
 

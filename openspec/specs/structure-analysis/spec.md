@@ -28,13 +28,6 @@ Each section SHALL be classified as one of intro, build, drop, breakdown, groove
 - **WHEN** the kick disappears and energy falls below the track median for 16 bars
 - **THEN** the section is classified `breakdown`
 
-### Requirement: Tension and drop countdown
-The score SHALL provide a per-beat `tension` value in [0, 1] that rises through builds preceding a drop and falls to 0 at the drop, and a `drop_in` value giving beats until the next known drop.
-
-#### Scenario: Countdown
-- **WHEN** the playhead is 8 beats before a detected drop
-- **THEN** `drop_in` reads 8 and `tension` is near its maximum
-
 ### Requirement: Finalization
 Sections SHALL be marked provisional until the analysis horizon is at least 32 bars past them, then final.
 

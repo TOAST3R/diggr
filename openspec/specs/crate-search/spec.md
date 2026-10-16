@@ -61,7 +61,7 @@ While the search field has the keyboard, typed characters SHALL go only into the
 
 #### Scenario: Shortcuts don't fire
 - **WHEN** a track plays and the user types "xcvfni" in the search field
-- **THEN** the field reads "XCVFNI", the track is still playing, fullscreen is off, no record is passed and no browser page is opened
+- **THEN** the field reads "XCVFNI", the track is still playing, no record is passed and no browser page is opened
 
 #### Scenario: Enter
 - **WHEN** the search is "parrish" and the user presses Enter

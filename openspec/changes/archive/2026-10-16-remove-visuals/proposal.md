@@ -27,6 +27,7 @@ Diggr is for digging records: hearing a page's records fast, sorting what to wan
 - `structure-navigation`: section jumps work in the player window (no fullscreen).
 - `player-window`: the shortcut list and the help panel lose F and fullscreen.
 - `crate-search`: the "shortcuts don't fire" scenario no longer mentions fullscreen.
+- `spectrogram-window`: "Low cost" no longer mentions fullscreen visuals.
 - `macos-release`: the bundle holds the skin, and the app opens "with its skin" (no scenes or rules).
 - `app-identity`: a leftover visuals folder in the config folder is deleted.
 

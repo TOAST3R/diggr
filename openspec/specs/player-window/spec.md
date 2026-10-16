@@ -48,7 +48,7 @@ The main section SHALL show a 19-bar spectrum analyzer with peak caps (or an osc
 - **THEN** the low bars rise in the same displayed frame (within one UI refresh)
 
 ### Requirement: Keyboard shortcuts
-The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume while the player has focus or in fullscreen; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), Shift+P (maximize the playlist, or restore it), Space (open or close the record under the playlist cursor while the playlist has focus), F (fullscreen visuals), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page).
+The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s), ↑/↓ (volume while the player has focus; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), Shift+P (maximize the playlist, or restore it), Space (open or close the record under the playlist cursor while the playlist has focus), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page).
 
 #### Scenario: Classic keys
 - **WHEN** the user presses B during playback
@@ -82,6 +82,10 @@ The system SHALL support Z (previous), X (play), C (pause), V (stop), B (next), 
 - **WHEN** the user presses Cmd+V with a Discogs label address on the clipboard
 - **THEN** the label's tracks are added to the shown crate
 
+#### Scenario: No fullscreen key
+- **WHEN** the user presses F in the player window
+- **THEN** nothing happens, and the help (H) does not list F
+
 #### Scenario: No group key
 - **WHEN** the user presses Shift+G with a flat crate shown
 - **THEN** nothing happens, and the help (H) does not list Shift+G
@@ -101,15 +105,15 @@ The app SHALL show an interactive window within 300 ms of launch on macOS.
 - **THEN** the window is interactive within 300 ms and durations fill in afterwards
 
 ### Requirement: Shortcuts help
-`H` or `F1` SHALL open a panel listing every keyboard and mouse shortcut, grouped by area, in the player window and in fullscreen; `H`, `F1`, `Esc` or the panel's close button SHALL close it, and `Esc` SHALL close the panel before it leaves fullscreen.
+`H` or `F1` SHALL open a panel listing every keyboard and mouse shortcut, grouped by area, in the player window; `H`, `F1`, `Esc` or the panel's close button SHALL close it.
 
 #### Scenario: Open help
 - **WHEN** the user presses H in the player window
-- **THEN** a panel lists the playback, structure, player window, fullscreen visuals and mouse shortcuts
+- **THEN** a panel lists the playback, structure, player window and mouse shortcuts, and no fullscreen shortcuts
 
-#### Scenario: Esc in fullscreen
-- **WHEN** the help panel is open in fullscreen and the user presses Esc
-- **THEN** the panel closes and fullscreen stays on
+#### Scenario: Esc closes help
+- **WHEN** the help panel is open and the user presses Esc
+- **THEN** the panel closes, and playback is unchanged
 
 ### Requirement: Section focus
 The player side (main, waveform and EQ sections) and the playlist SHALL each take keyboard focus when clicked, and Tab SHALL switch focus between them. The app SHALL start with the player focused. The focused side's title bars SHALL be drawn lit and the other side's dimmed, in the same frame as the click. Hovering SHALL NOT change focus. While a text field has keyboard focus, no shortcut SHALL act.

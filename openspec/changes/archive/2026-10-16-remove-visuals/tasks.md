@@ -20,4 +20,4 @@
 - [x] 4.2 AGENTS.md: "What this is", the workspace table without `visuals`, the data files line, hard rule 4 removed, hard rule 5 without the A/V target; `openspec/config.yaml`: the product line and the constraints that mention visuals
 - [x] 4.3 Delete the empty change folders `openspec/changes/show-transitions`, `section-matching` and `fractal-library`
 - [x] 4.4 Run `cargo test --workspace`, clippy with `-D warnings`, `cargo fmt --all --check` and the wasm check; confirm `--startup-time` is no worse than before, and note the release binary's size before and after
-- [ ] 4.5 Run the app: F does nothing, the help has no fullscreen group, BPM column and filter, waveform, spectrogram, `[`/`]` and previews all work, and an existing `visuals/` config folder is gone after launch
+- [x] 4.5 Run the app: F does nothing, the help has no fullscreen group, BPM column and filter, waveform, spectrogram, `[`/`]` and previews all work, and an existing `visuals/` config folder is gone after launch
