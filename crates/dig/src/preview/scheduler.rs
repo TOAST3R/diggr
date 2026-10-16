@@ -32,6 +32,7 @@ use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
 use crate::bandcamp::fan::{FanList, FanLists, FanPage};
 use crate::bandcamp::{BandcampAlbum, BandcampPage, Listing};
+use crate::tools::{self, ToolSource};
 
 /// Entries kept ready after the playing one.
 pub const AHEAD: usize = 3;
@@ -114,6 +115,8 @@ pub enum PreviewCommand {
     },
     /// Read these album and track pages for job `job`, in order (a fan's items).
     ReadBandcampPages { job: u64, pages: Vec<BandcampPage> },
+    /// Download the app's own yt-dlp (the user said yes, or Update now); needs [`Tools`].
+    DownloadYtDlp,
     /// Read a Bandcamp fan's collection and wishlist for job `job` (see
     /// [`crate::bandcamp::fan`]).
     ReadFan { job: u64, page: FanPage },
@@ -132,8 +135,15 @@ pub enum PreviewEvent {
     Evicted(String),
     /// yt-dlp can't be found; entries wait for it.
     NeedsYtDlp,
-    /// yt-dlp was found, with its version.
-    YtDlp(String),
+    /// yt-dlp was found, with its version; `managed`: it is the app's own copy, not the user's.
+    YtDlp {
+        version: String,
+        managed: bool,
+    },
+    /// The app's own yt-dlp is downloading: percent done.
+    YtDlpProgress(u8),
+    /// Downloading the app's own yt-dlp failed, with why; entries keep waiting.
+    YtDlpFailed(String),
     /// A search found a track's preview: `clip` is the video, `title` its title, `duration`
     /// its length (it answers the entries under `key` whose length agrees).
     Found {
@@ -206,6 +216,15 @@ pub struct Config {
     pub read_gap: Duration,
     /// What downloads Juno samples.
     pub samples: Arc<dyn SampleFetcher>,
+    /// The app's own yt-dlp, used when the user has none (macOS); `None`: never downloaded.
+    pub tools: Option<Tools>,
+}
+
+/// Where the app keeps its own yt-dlp (`<cache>/tools`), and where releases come from. The
+/// copy is opened with the scheduler's [`Finder`], given its path.
+pub struct Tools {
+    pub dir: PathBuf,
+    pub source: Arc<dyn ToolSource>,
 }
 
 impl Config {
@@ -220,6 +239,7 @@ impl Config {
             limited_wait: LIMITED_WAIT,
             read_gap: READ_GAP,
             samples: Arc::new(JunoHttp::default()),
+            tools: None,
         }
     }
 }
@@ -232,6 +252,11 @@ enum Msg {
     Read(u64, BandcampPage, Result<Listing, FetchError>),
     FanProgress(u64, FanList, usize, usize),
     FanRead(u64, Result<FanLists, FetchError>),
+    ToolProgress(u8),
+    /// A download the user asked for ended.
+    Installed(Result<(), String>),
+    /// An update check ended: whether a newer copy was installed.
+    Updated(bool),
 }
 
 /// One source's wait while it limits requests.
@@ -258,6 +283,13 @@ struct Scheduler {
     /// When yt-dlp was last looked for; `None`: never.
     looked: Option<Instant>,
     said_missing: bool,
+    /// The yt-dlp in use is the app's own copy, at `version`.
+    managed: bool,
+    version: String,
+    /// The app's copy is being downloaded or checked for updates.
+    installing: bool,
+    /// No update check before this.
+    next_update: Option<Instant>,
     wanted: Vec<String>,
     protected: HashSet<String>,
     running: HashMap<String, Running>,
@@ -298,12 +330,24 @@ struct Scheduler {
 impl Scheduler {
     fn look(&mut self) {
         self.looked = Some(Instant::now());
-        match (self.finder)(self.cfg.program.as_deref()) {
-            Some((f, version)) => {
+        let user = (self.finder)(self.cfg.program.as_deref()).map(|f| (f, false));
+        // The app's own copy only when the user has none.
+        let found = user.or_else(|| {
+            let program = tools::program(&self.cfg.tools.as_ref()?.dir);
+            program.exists().then_some(())?;
+            (self.finder)(Some(&program.to_string_lossy())).map(|f| (f, true))
+        });
+        match found {
+            Some(((f, version), managed)) => {
                 if self.fetcher.is_none() || self.said_missing {
-                    self.events.push(PreviewEvent::YtDlp(version));
+                    self.events.push(PreviewEvent::YtDlp {
+                        version: version.clone(),
+                        managed,
+                    });
                 }
                 self.fetcher = Some(f);
+                self.managed = managed;
+                self.version = version;
                 self.said_missing = false;
             }
             None => {
@@ -409,6 +453,7 @@ impl Scheduler {
                 self.look();
             }
             PreviewCommand::CheckProgram => self.look(),
+            PreviewCommand::DownloadYtDlp => self.install(),
             PreviewCommand::Played(path) => store::touch(&path),
             PreviewCommand::Search(list) => self.to_search = list,
         }
@@ -882,6 +927,7 @@ impl Scheduler {
                 None => return self.give_up(clip),
             },
         };
+        self.update();
         let fetcher = self.fetcher.clone().expect("checked");
         let cancel = Arc::new(AtomicBool::new(false));
         let (c2, dir, inbox, id) = (
@@ -921,6 +967,62 @@ impl Scheduler {
 }
 
 impl Scheduler {
+    /// Downloads the app's own yt-dlp, once at a time.
+    fn install(&mut self) {
+        let Some(t) = &self.cfg.tools else { return };
+        if self.installing {
+            return;
+        }
+        let (source, dir, inbox) = (t.source.clone(), t.dir.clone(), self.inbox.clone());
+        let spawned = self.spawner.spawn(
+            "dig-tools",
+            Priority::Low,
+            Box::new(move || {
+                let progress = inbox.clone();
+                let result = tools::install(&*source, &dir, &move |p| {
+                    let _ = progress.send(Msg::ToolProgress(p));
+                });
+                let _ = inbox.send(Msg::Installed(result.map(|_| ())));
+            }),
+        );
+        self.installing = spawned.is_ok();
+    }
+
+    /// While previews are fetched with the app's copy: installs a newer release, checked at
+    /// most once a day (also across sessions, see [`tools::update`]). A failed check is quiet:
+    /// the copy in use keeps working.
+    fn update(&mut self) {
+        let Some(t) = &self.cfg.tools else { return };
+        if !self.managed || self.installing || self.next_update.is_some_and(|n| Instant::now() < n)
+        {
+            return;
+        }
+        self.next_update = Some(Instant::now() + tools::UPDATE_EVERY);
+        let (source, dir, inbox) = (t.source.clone(), t.dir.clone(), self.inbox.clone());
+        let version = self.version.clone();
+        let spawned = self.spawner.spawn(
+            "dig-tools",
+            Priority::Low,
+            Box::new(move || {
+                let newer = tools::update(&*source, &dir, &version, crate::now_secs());
+                let _ = inbox.send(Msg::Updated(matches!(newer, Ok(Some(_)))));
+            }),
+        );
+        self.installing = spawned.is_ok();
+    }
+
+    /// A download or update ended: a new copy is looked for (and announced) at once.
+    fn installed(&mut self, result: Result<(), String>) {
+        self.installing = false;
+        match result {
+            Ok(()) => {
+                self.fetcher = None;
+                self.look();
+            }
+            Err(e) => self.events.push(PreviewEvent::YtDlpFailed(e)),
+        }
+    }
+
     /// Downloads a Juno sample, like a clip but without yt-dlp.
     fn start_sample(&mut self, clip: String) {
         let samples = self.cfg.samples.clone();
@@ -985,6 +1087,10 @@ impl PreviewHandle {
             fetcher: None,
             looked: None,
             said_missing: false,
+            managed: false,
+            version: String::new(),
+            installing: false,
+            next_update: None,
             wanted: Vec::new(),
             protected: HashSet::new(),
             running: HashMap::new(),
@@ -1043,6 +1149,10 @@ impl PreviewHandle {
                             });
                         }
                         Ok(Msg::FanRead(job, r)) => s.fan_read(job, r),
+                        Ok(Msg::ToolProgress(p)) => s.events.push(PreviewEvent::YtDlpProgress(p)),
+                        Ok(Msg::Installed(r)) => s.installed(r),
+                        Ok(Msg::Updated(true)) => s.installed(Ok(())),
+                        Ok(Msg::Updated(false)) => s.installing = false,
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
@@ -1105,6 +1215,10 @@ mod tests {
             fetcher: None,
             looked: None,
             said_missing: false,
+            managed: false,
+            version: String::new(),
+            installing: false,
+            next_update: None,
             wanted: Vec::new(),
             protected: HashSet::new(),
             running: HashMap::new(),

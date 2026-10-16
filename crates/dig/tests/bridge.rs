@@ -600,6 +600,18 @@ fn a_label_page_follows_or_refreshes_whatever_the_mode() {
 }
 
 #[test]
+fn only_the_app_bundle_has_a_url_to_come_forward() {
+    use dig::bridge::front_url;
+    use std::path::Path;
+    let bundled = front_url(Path::new("/Applications/Diggr.app/Contents/MacOS/diggr"));
+    assert_eq!(bundled, cfg!(target_os = "macos").then_some("diggr://show"));
+    assert_eq!(
+        front_url(Path::new("/src/diggr/target/release/diggr")),
+        None
+    );
+}
+
+#[test]
 fn a_seller_page_adds_or_refreshes_whatever_the_mode() {
     let r = rig("seller");
     let key = r.pair();
@@ -609,6 +621,10 @@ fn a_seller_page_adds_or_refreshes_whatever_the_mode() {
     assert_eq!(a.status, 202);
     assert_eq!(a.json["message"], "Added seller decks.de");
     assert_eq!(a.json["added"], true);
+    assert!(
+        a.json.get("front").is_none(),
+        "only the app bundle answers with a front URL"
+    );
     match &r.bridge.poll()[..] {
         [BridgeCommand::Send { page, .. }] => {
             assert_eq!(

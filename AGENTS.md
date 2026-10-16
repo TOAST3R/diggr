@@ -26,8 +26,10 @@ Cargo workspace, edition 2024, **Rust ≥ 1.95** (egui 0.36); built and tested w
 | `apps/native` | `diggr` | desktop binary: GUI (default), `--tui`, `--bench [--analysis]`, `--click-test`, `--startup-time` | all |
 
 Data files: the skin is in `assets/skin/default/`. It is generated, so don't hand-edit it; run
-`cargo run -p ui --bin skin-gen`, which a test checks. Bundled scenes, variants, prelude and
-director rules are in `crates/visuals/assets/`.
+`cargo run -p ui --bin skin-gen`, which a test checks. The app and extension icon PNGs are
+generated the same way from `assets/icon/logo-mark.svg` by `cargo run -p ui --bin icon-gen`.
+Bundled scenes, variants, prelude and director rules are in `crates/visuals/assets/`. Release
+builds: `scripts/make-dmg.sh` and `scripts/release.sh` (see README, Build a release).
 
 ## Commands
 

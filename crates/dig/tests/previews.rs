@@ -1,6 +1,7 @@
 //! The preview scheduler with a fake fetcher: the horizon, 2 slots, the armed entry first,
-//! cancelling, retrying, the timeout, a yt-dlp that appears later, the cache limit, and Juno
-//! samples (fetched without yt-dlp).
+//! cancelling, retrying, the timeout, a yt-dlp that appears later, the app's own yt-dlp
+//! (downloaded on request, never preferred to the user's), the cache limit, and Juno samples
+//! (fetched without yt-dlp).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,7 +12,8 @@ use dig::bandcamp::{self, BandcampAlbum, BandcampTrack, Listing};
 use dig::preview::clip::Source;
 use dig::preview::fetcher::{FakeFetcher, Fetcher};
 use dig::preview::sample::SampleFetcher;
-use dig::preview::scheduler::{Config, Finder, PreviewCommand, PreviewEvent, PreviewHandle};
+use dig::preview::scheduler::{Config, Finder, PreviewCommand, PreviewEvent, PreviewHandle, Tools};
+use dig::tools::{self, FakeSource};
 use platform::native::NativeSpawner;
 use platform::testing::TestDir;
 
@@ -209,10 +211,120 @@ fn missing_yt_dlp_waits_and_downloads_once_installed() {
     );
     fake.available.store(true, Ordering::SeqCst);
     let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.iter().any(
+        |e| matches!(e, PreviewEvent::YtDlp { version, managed: false } if version.contains("fake"))
+    ));
+}
+
+/// A scheduler whose user has no yt-dlp, and whose own copy (a stand-in script) comes from
+/// `source`; the fake fetcher answers only for the app's copy, once it exists.
+fn start_with_tools(
+    name: &str,
+    fake: &Arc<FakeFetcher>,
+    source: &Arc<FakeSource>,
+) -> (PreviewHandle, TestDir) {
+    let d = dir(name);
+    let mut cfg = Config::new(d.join("previews"), 2_000_000_000, None);
+    cfg.recheck = Duration::from_millis(100);
+    cfg.tools = Some(Tools {
+        dir: d.join("tools"),
+        source: source.clone(),
+    });
+    let f = fake.clone();
+    let finder: Finder = Arc::new(move |path| {
+        let found = path.is_some_and(|p| std::path::Path::new(p).exists());
+        found.then(|| (f.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
+    });
+    (
+        PreviewHandle::start(Arc::new(NativeSpawner), cfg, finder, || {}).unwrap(),
+        d,
+    )
+}
+
+const SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
+
+#[test]
+fn waiting_entries_start_once_the_apps_own_yt_dlp_is_installed() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::new("2026.08.19", SCRIPT, true));
+    let (h, d) = start_with_tools("tools-install", &fake, &source);
+    want(&h, &[clip(1)]);
+    until(&h, |ev| ev.contains(&PreviewEvent::NeedsYtDlp));
+    assert!(
+        source.asked.lock().unwrap().is_empty(),
+        "nothing downloaded unasked"
+    );
+    h.send(PreviewCommand::DownloadYtDlp);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::YtDlpProgress(100)));
+    assert!(ev.contains(&PreviewEvent::YtDlp {
+        version: "2026.08.19".into(),
+        managed: true
+    }));
+    assert!(tools::program(&d.join("tools")).exists());
+}
+
+#[test]
+fn a_mismatched_download_is_reported_and_entries_keep_waiting() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::new("2026.08.19", SCRIPT, false));
+    let (h, d) = start_with_tools("tools-mismatch", &fake, &source);
+    want(&h, &[clip(1)]);
+    until(&h, |ev| ev.contains(&PreviewEvent::NeedsYtDlp));
+    h.send(PreviewCommand::DownloadYtDlp);
+    until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::YtDlpFailed(why) if why.contains("checksum")))
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(done_count(&h.poll()), 0);
+    assert!(fake.started().is_empty());
+    assert!(!tools::program(&d.join("tools")).exists());
+}
+
+#[test]
+fn the_users_own_yt_dlp_wins_and_is_never_updated() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::new("2099.01.01", SCRIPT, true));
+    let (h, _) = start("tools-user", &fake, |c| {
+        c.tools = Some(Tools {
+            dir: c.dir.join("tools"),
+            source: source.clone(),
+        })
+    });
+    want(&h, &[clip(1), clip(2)]);
+    let ev = until(&h, |ev| done_count(ev) == 2);
     assert!(
         ev.iter()
-            .any(|e| matches!(e, PreviewEvent::YtDlp(v) if v.contains("fake")))
+            .any(|e| matches!(e, PreviewEvent::YtDlp { managed: false, .. }))
     );
+    assert!(
+        source.asked.lock().unwrap().is_empty(),
+        "never checked for updates"
+    );
+}
+
+#[test]
+fn the_apps_copy_is_updated_while_previews_are_fetched() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::new("2026.08.19", SCRIPT, true));
+    let (h, d) = start_with_tools("tools-update", &fake, &source);
+    // An older copy is installed, never checked.
+    std::fs::create_dir_all(d.join("tools")).unwrap();
+    std::fs::write(tools::program(&d.join("tools")), b"old").unwrap();
+    *source.tag.lock().unwrap() = "2099.01.01".into();
+    want(&h, &[clip(1)]);
+    until(&h, |ev| done_count(ev) == 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read(tools::program(&d.join("tools"))).unwrap() == b"old" {
+        assert!(Instant::now() < deadline, "the newer release is installed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read(tools::program(&d.join("tools"))).unwrap(),
+        SCRIPT
+    );
+    assert!(d.join("tools/checked").exists());
 }
 
 #[test]

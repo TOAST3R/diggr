@@ -100,6 +100,19 @@ fn main() -> ExitCode {
     }
 }
 
+/// The Dock and window icon. eframe sets the Dock icon only at window creation and puts its own
+/// there when given none, so a development build decodes a small PNG before the window opens.
+/// Inside `Diggr.app` an empty icon leaves the bundle's `.icns` in place and costs nothing.
+fn app_icon() -> eframe::egui::IconData {
+    let bundled = std::env::current_exe()
+        .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+    if bundled {
+        return Default::default();
+    }
+    eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/icon-256.png"))
+        .unwrap_or_default()
+}
+
 fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result<(), String> {
     // DIGGR_CONFIG_DIR overrides where settings and the playlist are kept (handy for testing).
     let store = std::env::var_os("DIGGR_CONFIG_DIR")
@@ -112,6 +125,7 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
         .with_inner_size(size)
         .with_decorations(false)
         .with_resizable(false);
+    viewport = viewport.with_icon(app_icon());
     if let Some((x, y)) = settings.window_pos {
         viewport = viewport.with_position([x, y]);
     }

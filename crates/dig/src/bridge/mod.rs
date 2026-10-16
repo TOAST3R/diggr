@@ -82,6 +82,14 @@ pub enum BridgeCommand {
     ResolveShopItem(u64),
 }
 
+/// The URL that brings the app to the front, when `exe` runs inside `Diggr.app` (which
+/// registers the `diggr://` scheme); a development build has none, so it never launches an
+/// installed copy.
+pub fn front_url(exe: &std::path::Path) -> Option<&'static str> {
+    let bundled = exe.to_string_lossy().contains(".app/Contents/MacOS/");
+    (cfg!(target_os = "macos") && bundled).then_some("diggr://show")
+}
+
 /// What `/v1/crates` and `/v1/status` answer, kept up to date by the UI.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Snapshot {
@@ -486,7 +494,9 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             .collect(),
         Mode::Crate(name) => name.clone(),
     };
-    // A seller's page adds the seller to Top Sellers (or refreshes it), whatever the mode.
+    // A seller's page adds the seller to Top Sellers (or refreshes it), whatever the mode. Inside
+    // the app bundle the answer carries `front`, a URL the extension opens to bring the app
+    // forward: macOS refuses a background app's own focus request, but honours a URL.
     if let url::PageKind::Seller(name) = &page.kind {
         let known = shared
             .snapshot
@@ -499,13 +509,16 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
         } else {
             format!("Added seller {name}")
         };
-        let answer = json!({
+        let mut answer = json!({
             "page": page.provisional_name(),
             "crate": page.provisional_name(),
             "seller": name,
             "added": !known,
             "message": message,
         });
+        if let Some(url) = std::env::current_exe().ok().and_then(|e| front_url(&e)) {
+            answer["front"] = url.into();
+        }
         let cmd = BridgeCommand::Send {
             page,
             mode,
