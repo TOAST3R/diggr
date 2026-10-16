@@ -5,12 +5,15 @@ is in [`README.md`](README.md). The authoritative product context is in `openspe
 
 ## What this is
 
-Diggr, a music player in Rust with the look of a classic 2000s desktop player and a fullscreen
-fractal visualizer driven by analysis of the music's beats and sections. **Zero perceived latency is the top priority**, and
-nothing on the playback path may ever wait for the UI, the analysis or the visuals.
+Diggr, a player for digging records, in Rust, with the look of a classic 2000s desktop player:
+Discogs, Bandcamp and Juno pages become crates of previews to want, pass or buy, and every track
+gets its BPM, sections and waveform from analysis ahead of the playhead. **Zero perceived
+latency is the top priority**, and nothing on the playback path may ever wait for the UI or the
+analysis.
 
-Milestones (OpenSpec changes): `audio-core`, `classic-ui`, `music-analysis` and `visual-engine`
-are done and archived. `web-target` is proposed but not started (`openspec/changes/web-target/`).
+Milestones (OpenSpec changes): `audio-core`, `classic-ui`, `music-analysis` and the digging
+changes are done and archived; the fullscreen visuals (`visual-engine`) were removed by
+`remove-visuals`. `web-target` is proposed but not started (`openspec/changes/web-target/`).
 
 ## Workspace
 
@@ -21,29 +24,27 @@ Cargo workspace, edition 2024, **Rust ≥ 1.95** (egui 0.36); built and tested w
 | `crates/platform` | `platform` | seam traits `AudioSink`, `Spawner`, `FileSource`; native impls (cpal); `testing::ManualSink` | — |
 | `crates/audio` | `audio` | decode (symphonia) → rubato → lock-free ring → real-time renderer (EQ, tap, volume) → device; playback clock; `Engine` API | platform |
 | `crates/analysis` | `analysis` | streaming analyzer: onsets, tempo/beat grid, sections, tension → immutable `SongScore` snapshots; cache; eval tools; track overview (waveform + spectral + cutoff) and spectrogram detail worker | audio, platform |
-| `crates/ui` | `ui` | egui/eframe (wgpu) player: skin, main/EQ/playlist, waveform, spectrogram window, settings, fullscreen host | audio, analysis, platform |
-| `crates/visuals` | `visuals` | signal bus, modulation, scenes (WGSL + RON), variants, director, GPU compositor, overlay, fader deck | audio, analysis, ui |
+| `crates/dig` | `dig` | digging (native only): Discogs client, Bandcamp and Juno intake, previews (yt-dlp, samples) and their scheduler, dig memory, the browser bridge | analysis, platform |
+| `crates/ui` | `ui` | egui/eframe (wgpu) player: skin, main/EQ/playlist, waveform, spectrogram window, settings, digging | audio, analysis, platform, dig |
 | `apps/native` | `diggr` | desktop binary: GUI (default), `--tui`, `--bench [--analysis]`, `--click-test`, `--startup-time` | all |
 
 Data files: the skin is in `assets/skin/default/`. It is generated, so don't hand-edit it; run
 `cargo run -p ui --bin skin-gen`, which a test checks. The app and extension icon PNGs are
 generated the same way from `assets/icon/logo-mark.svg` by `cargo run -p ui --bin icon-gen`.
-Bundled scenes, variants, prelude and director rules are in `crates/visuals/assets/`. Release
-builds: `scripts/make-dmg.sh` and `scripts/release.sh` (see README, Build a release).
+Release builds: `scripts/make-dmg.sh` and `scripts/release.sh` (see README, Build a release).
 
 ## Commands
 
 Linux needs `build-essential pkg-config libasound2-dev`. macOS needs the Xcode CLT.
 
 ```sh
-cargo test --workspace                                   # ~266 tests; no audio device, display or GPU needed
+cargo test --workspace                                   # ~850 tests; no audio device, display or GPU needed
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
 cargo fmt --all --check                                  # must be clean
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core must stay web-portable
 ```
 
-Narrower runs: `cargo test -p audio --test engine`, `cargo test -p visuals director`.
-GPU tests in `visuals` skip themselves when no adapter is available.
+Narrower runs: `cargo test -p audio --test engine`, `cargo test -p dig --test previews`.
 
 Run all four checks before committing. Dependencies are built with `opt-level = 3` even in
 dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up with real time.
@@ -56,17 +57,14 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
    with atomics, `rtrb` SPSC rings, the seqlock clock or `TryCell`, never with `Mutex` on the
    audio side.
 2. **Nothing waits on the playback path.** Analysis runs at low priority, ahead of the playhead.
-   The UI and visuals read the clock and tap without locking. Seeks flush by generation number.
+   The UI reads the clock and tap without locking. Seeks flush by generation number.
 3. **Platform seams only.** `audio` and `platform` must compile for `wasm32-unknown-unknown`.
    Reach devices, threads and files only through the `platform` traits. Put native-only code
    behind `#[cfg(not(target_arch = "wasm32"))]`.
-4. **Visuals are deterministic.** All randomness is seeded from the track hash and musical
-   time, so the same track always gives the same show. Motion keys off musical time (beats,
-   bars) from the playback clock, never off wall-clock frame counts.
-5. **Latency targets are tested, so don't regress them.** Start < 30 ms, seek < 50 ms, 0
-   underruns, A/V offset < 1 frame, launch < 300 ms. The measurements are
-   `diggr --bench`, `--click-test` and `--startup-time` (see README).
-6. **Tests stay hardware-free.** Use `platform::testing::ManualSink` (fake time) for engine
+4. **Latency targets are tested, so don't regress them.** Start < 30 ms, seek < 50 ms, 0
+   underruns, launch < 300 ms. The measurements are `diggr --bench` and `--startup-time`
+   (see README).
+5. **Tests stay hardware-free.** Use `platform::testing::ManualSink` (fake time) for engine
    tests, and the synthesized tracks in `analysis::synth` for analysis ground truth. Fixtures are
    in `crates/audio/tests/fixtures/`.
 
@@ -74,8 +72,7 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
 
 - Match the surrounding style: short `//!` module docs that explain *why*, and focused unit tests
   in the same file (`#[cfg(test)] mod tests`). Integration tests go in `crates/*/tests/`.
-- Data files are RON (serde). User-editable visuals live in `<config>/Diggr/visuals/`, are
-  hot-reloaded with `notify`, and must fail soft: keep the last good version and show the error.
+- Data files are RON (serde), and must fail soft: a broken file never blocks startup.
 - Paths come from `dirs` (config/cache), overridable by `DIGGR_CONFIG_DIR` / `DIGGR_CACHE_DIR`.
   Tests must use temp dirs, never the user's real folders: take one from
   `platform::testing::TestDir`, which deletes its folder when the test ends (even on failure).

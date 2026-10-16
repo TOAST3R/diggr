@@ -2,11 +2,7 @@
 //! one) and, when resuming from cache, the cached score as a frozen prefix.
 
 use crate::region::RegionResult;
-use crate::rhythm::Onsets;
-use crate::score::{
-    ALGORITHM_VERSION, BeatCurves, Events, IntervalSet, Section, SongScore, TempoSegment,
-};
-use crate::structure;
+use crate::score::{ALGORITHM_VERSION, BeatCurves, IntervalSet, Section, SongScore, TempoSegment};
 
 /// A contiguous analyzed stretch, independent of how it was produced.
 #[derive(Debug, Clone, Default)]
@@ -17,19 +13,9 @@ pub struct Piece {
     pub beats: Vec<f64>,
     pub downbeats: Vec<usize>,
     pub phrase_origin: u8,
-    pub events: Events,
     pub curves: BeatCurves,
     pub sections: Vec<Section>,
     pub complete: bool,
-}
-
-fn events_of(o: &Onsets) -> Events {
-    let times = |v: &[(f64, f32)]| v.iter().map(|&(t, _)| t).collect();
-    Events {
-        kick: times(&o.kick),
-        snare: times(&o.snare),
-        hat: times(&o.hat),
-    }
 }
 
 impl From<&RegionResult> for Piece {
@@ -42,15 +28,8 @@ impl From<&RegionResult> for Piece {
             beats: r.beats.clone(),
             downbeats: r.downbeats.clone(),
             phrase_origin: r.phrase_origin,
-            events: events_of(&r.onsets),
             curves: BeatCurves {
                 energy: f.iter().map(|b| b.energy).collect(),
-                bass: f.iter().map(|b| b.bass).collect(),
-                mid: f.iter().map(|b| b.mid).collect(),
-                treble: f.iter().map(|b| b.treble).collect(),
-                brightness: f.iter().map(|b| b.brightness).collect(),
-                flatness: f.iter().map(|b| b.flatness).collect(),
-                tension: Vec::new(),
             },
             sections: r.sections.clone(),
             complete: r.complete,
@@ -69,11 +48,7 @@ impl From<&SongScore> for Piece {
             beats: s.beats.clone(),
             downbeats: s.downbeats.clone(),
             phrase_origin: s.phrase_origin,
-            events: s.events.clone(),
-            curves: BeatCurves {
-                tension: Vec::new(),
-                ..s.curves.clone()
-            },
+            curves: s.curves.clone(),
             sections: s.sections.clone(),
             complete: s.complete,
         }
@@ -100,11 +75,6 @@ pub fn assemble(mut pieces: Vec<Piece>, content_hash: u64) -> SongScore {
         s.beats.extend_from_slice(&p.beats[skip..]);
         let curve = |dst: &mut Vec<f32>, src: &[f32]| dst.extend(src.iter().skip(skip).copied());
         curve(&mut s.curves.energy, &p.curves.energy);
-        curve(&mut s.curves.bass, &p.curves.bass);
-        curve(&mut s.curves.mid, &p.curves.mid);
-        curve(&mut s.curves.treble, &p.curves.treble);
-        curve(&mut s.curves.brightness, &p.curves.brightness);
-        curve(&mut s.curves.flatness, &p.curves.flatness);
         s.downbeats.extend(
             p.downbeats
                 .iter()
@@ -121,15 +91,6 @@ pub fn assemble(mut pieces: Vec<Piece>, content_hash: u64) -> SongScore {
                 ..*sec
             });
         }
-        let after = |v: &[f64]| {
-            v.iter()
-                .copied()
-                .filter(|&t| t >= covered_to)
-                .collect::<Vec<_>>()
-        };
-        s.events.kick.extend(after(&p.events.kick));
-        s.events.snare.extend(after(&p.events.snare));
-        s.events.hat.extend(after(&p.events.hat));
         s.tempo_segments
             .extend(
                 p.segments
@@ -142,7 +103,6 @@ pub fn assemble(mut pieces: Vec<Piece>, content_hash: u64) -> SongScore {
             );
         covered_to = covered_to.max(p.end);
     }
-    s.curves.tension = structure::tension(&s.sections, s.beats.len());
     // Complete when one span covers the whole file from the start and reached its end.
     s.complete = pieces.iter().any(|p| p.complete)
         && s.coverage.spans().len() == 1
@@ -210,14 +170,5 @@ mod tests {
         assert!(score.complete);
         let again = assemble(vec![Piece::from(&score)], 7);
         assert_eq!(again, score);
-        // Drop countdown and tension come with it.
-        let drop = score
-            .sections
-            .iter()
-            .find(|x| x.kind == SectionKind::Drop)
-            .unwrap()
-            .start_beat;
-        assert_eq!(score.drop_in(drop - 8), Some(8));
-        assert!(score.tension(drop - 8) > 0.8);
     }
 }

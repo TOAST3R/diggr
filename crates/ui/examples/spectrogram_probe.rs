@@ -76,7 +76,6 @@ fn main() -> eframe::Result {
         overview: Some(overview),
         now: 0.0,
         playing: false,
-        fullscreen: false,
         lossless: info.lossless,
     };
     let probe = Probe {

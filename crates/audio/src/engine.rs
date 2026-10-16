@@ -374,7 +374,7 @@ impl Engine {
         self.clock.position(now)
     }
 
-    /// An independent clock reader for another thread (e.g. the renderer of visuals).
+    /// An independent clock reader for another thread (e.g. an analyzer).
     pub fn clock_reader(&self) -> ClockReader {
         self.clock.clone()
     }

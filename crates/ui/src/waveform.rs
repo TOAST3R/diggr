@@ -2,8 +2,8 @@
 //! bands, drop markers, playhead, loop; click or drag to seek) and a zoomed row scrolling around
 //! the playhead (colour by frequency, mirrored channels, beat grid; the wheel zooms).
 
-use analysis::SongScore;
 use analysis::overview::{Block, Overview};
+use analysis::{SectionKind, SongScore};
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 /// Section height in skin pixels (multiplied by the UI scale).
@@ -101,7 +101,7 @@ pub fn draw(ui: &mut Ui, rect: Rect, scale: f32, v: &View) -> Option<Action> {
                 ) else {
                     continue;
                 };
-                let c = crate::timeline::kind_color(sec.kind);
+                let c = kind_color(sec.kind);
                 let c = if sec.is_final {
                     c
                 } else {
@@ -265,6 +265,18 @@ pub fn draw(ui: &mut Ui, rect: Rect, scale: f32, v: &View) -> Option<Action> {
         }
     }
     action
+}
+
+/// A section's colour in the waveform's tint.
+pub fn kind_color(kind: SectionKind) -> Color32 {
+    match kind {
+        SectionKind::Intro => Color32::from_rgb(90, 110, 160),
+        SectionKind::Build => Color32::from_rgb(230, 150, 40),
+        SectionKind::Drop => Color32::from_rgb(230, 50, 90),
+        SectionKind::Breakdown => Color32::from_rgb(60, 140, 230),
+        SectionKind::Groove => Color32::from_rgb(70, 180, 110),
+        SectionKind::Outro => Color32::from_rgb(120, 120, 130),
+    }
 }
 
 #[cfg(test)]

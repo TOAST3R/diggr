@@ -31,9 +31,6 @@ pub struct Frame {
     pub centroid: f32,
     /// Spectral flatness 0..1 (1 = noise-like).
     pub flatness: f32,
-    pub bass: f32,
-    pub mid: f32,
-    pub treble: f32,
 }
 
 fn bin(hz: f32) -> usize {
@@ -187,7 +184,6 @@ impl FrontEnd {
         let n = (power.len() - 1) as f32;
         let geo = (power[1..].iter().map(|p| p.ln()).sum::<f32>() / n).exp();
         let flatness = (geo / (sum / n)).clamp(0.0, 1.0);
-        let band = |lo: f32, hi: f32| (1e-8 + power[bin(lo)..=bin(hi)].iter().sum::<f32>()).ln();
         Frame {
             t,
             kick,
@@ -199,9 +195,6 @@ impl FrontEnd {
             rms,
             centroid,
             flatness,
-            bass: band(20.0, 250.0),
-            mid: band(250.0, 4_000.0),
-            treble: band(4_000.0, 11_000.0),
         }
     }
 }

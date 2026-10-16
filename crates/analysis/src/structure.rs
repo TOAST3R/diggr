@@ -3,7 +3,7 @@
 
 use crate::frontend::{Frame, MEL_BANDS};
 use crate::rhythm::Onsets;
-use crate::score::{Section, SectionKind};
+use crate::score::SectionKind;
 
 /// Features of one beat (averaged over the frames between it and the next beat).
 #[derive(Debug, Clone, PartialEq)]
@@ -12,9 +12,6 @@ pub struct BeatFeat {
     pub chroma: [f32; 12],
     /// Loudness in dB (RMS).
     pub energy: f32,
-    pub bass: f32,
-    pub mid: f32,
-    pub treble: f32,
     pub brightness: f32,
     pub flatness: f32,
     /// A kick onset within ±40 ms of the beat.
@@ -44,8 +41,7 @@ pub fn beat_features(beats: &[f64], frames: &[Frame], onsets: &Onsets) -> Vec<Be
             let n = fr.len().max(1) as f32;
             let mut mel = [0.0; MEL_BANDS];
             let mut chroma = [0.0; 12];
-            let (mut rms, mut bass, mut mid, mut treble, mut bright, mut flat) =
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            let (mut rms, mut bright, mut flat) = (0.0, 0.0, 0.0);
             for f in fr {
                 for (m, v) in mel.iter_mut().zip(&f.mel) {
                     *m += v / n;
@@ -54,9 +50,6 @@ pub fn beat_features(beats: &[f64], frames: &[Frame], onsets: &Onsets) -> Vec<Be
                     *c += v / n;
                 }
                 rms += f.rms * f.rms / n;
-                bass += f.bass / n;
-                mid += f.mid / n;
-                treble += f.treble / n;
                 bright += f.centroid / n;
                 flat += f.flatness / n;
             }
@@ -68,9 +61,6 @@ pub fn beat_features(beats: &[f64], frames: &[Frame], onsets: &Onsets) -> Vec<Be
                 mel,
                 chroma,
                 energy: 10.0 * (rms + 1e-10).log10(),
-                bass,
-                mid,
-                treble,
                 brightness: bright,
                 flatness: flat,
                 kick,
@@ -339,33 +329,12 @@ pub fn label(feats: &[BeatFeat], bounds: &[usize], prototypes: &mut Vec<Vec<f32>
         .collect()
 }
 
-/// Per-beat tension: rises through each build that leads into a drop (ease-out, so it is near
-/// its peak for the last bars) and is 0 elsewhere. A build still open at the end of the analyzed
-/// range also rises (its drop is not known yet).
-pub fn tension(sections: &[Section], beats: usize) -> Vec<f32> {
-    let mut t = vec![0.0; beats];
-    for (i, s) in sections.iter().enumerate() {
-        let leads_to_drop = sections
-            .get(i + 1)
-            .is_none_or(|n| n.kind == SectionKind::Drop);
-        if s.kind != SectionKind::Build || !leads_to_drop {
-            continue;
-        }
-        let len = (s.end_beat - s.start_beat).max(1) as f32;
-        let end = s.end_beat.min(beats);
-        for (k, v) in t[s.start_beat.min(end)..end].iter_mut().enumerate() {
-            let p = k as f32 / len;
-            *v = 1.0 - (1.0 - p) * (1.0 - p);
-        }
-    }
-    t
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::frontend::{FrontEnd, SR};
     use crate::rhythm;
+    use crate::score::Section;
     use crate::synth::{self, Pattern, part};
 
     struct Analyzed {
@@ -470,34 +439,6 @@ mod tests {
                 .label;
             assert_ne!(bd, drops[0]);
         }
-    }
-
-    #[test]
-    fn tension_peaks_before_the_drop_and_resets() {
-        let a = analyze(&synth::standard_track(128.0));
-        let secs = sections_for(&a, true);
-        let t = tension(&secs, a.feats.len());
-        let drop = secs
-            .iter()
-            .find(|s| s.kind == SectionKind::Drop)
-            .unwrap()
-            .start_beat;
-        assert!(
-            t[drop - 8] > 0.8,
-            "8 beats before the drop: {}",
-            t[drop - 8]
-        );
-        assert!(t[drop - 8] > t[drop - 24], "rising through the build");
-        assert_eq!(t[drop], 0.0, "released at the drop");
-        let breakdown = secs
-            .iter()
-            .find(|s| s.kind == SectionKind::Breakdown)
-            .unwrap();
-        assert!(
-            t[breakdown.start_beat..breakdown.end_beat]
-                .iter()
-                .all(|&x| x == 0.0)
-        );
     }
 
     #[test]

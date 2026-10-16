@@ -3,8 +3,8 @@
 //! ```text
 //! cargo run --release -p analysis --bin analysis-eval [ANNOTATIONS_DIR]
 //! ```
-//! The default directory is `<cache>/annotations` (where the player saves them in annotation
-//! mode). For each annotated track it prints the beat F-measure (±70 ms, within the tapped
+//! The default directory is `<cache>/annotations` (where earlier versions of the player saved
+//! them; the JSON can also be written by hand). For each annotated track it prints the beat F-measure (±70 ms, within the tapped
 //! stretch) and the share of marked boundaries found within ±1 bar.
 
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ fn main() -> std::process::ExitCode {
     files.sort();
     if files.is_empty() {
         eprintln!(
-            "no annotations in {} (record some in fullscreen with A)",
+            "no annotations in {} (annotation JSON files, one per track)",
             dir.display()
         );
         return std::process::ExitCode::FAILURE;
