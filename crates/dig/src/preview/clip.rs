@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bandcamp::valid_track_id;
 use crate::discogs::model::valid_clip_id;
-use crate::juno;
+use crate::{beatport, juno};
 
 const BANDCAMP_PREFIX: &str = "bc.";
 
@@ -18,14 +18,21 @@ pub enum Source {
     YouTube,
     Bandcamp,
     Juno,
+    Beatport,
 }
 
 impl Source {
+    /// A store's sample, fetched with one plain request instead of yt-dlp.
+    pub fn is_sample(self) -> bool {
+        matches!(self, Source::Juno | Source::Beatport)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Source::YouTube => "YouTube",
             Source::Bandcamp => "Bandcamp",
             Source::Juno => "Juno",
+            Source::Beatport => "Beatport",
         }
     }
 
@@ -35,6 +42,7 @@ impl Source {
             Source::YouTube => "YT",
             Source::Bandcamp => "BC",
             Source::Juno => "JN",
+            Source::Beatport => "BP",
         }
     }
 }
@@ -65,6 +73,8 @@ pub fn source_of(key: &str) -> Source {
         Source::Bandcamp
     } else if juno::is_key(key) {
         Source::Juno
+    } else if beatport::is_key(key) {
+        Source::Beatport
     } else {
         Source::YouTube
     }
@@ -76,6 +86,7 @@ pub fn valid_key(key: &str) -> bool {
     match key.strip_prefix(BANDCAMP_PREFIX) {
         Some(id) => valid_track_id(id),
         None if juno::is_key(key) => juno::parse_key(key).is_some(),
+        None if beatport::is_key(key) => beatport::parse_key(key).is_some(),
         None => valid_clip_id(key),
     }
 }

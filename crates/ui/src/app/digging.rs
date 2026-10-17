@@ -38,7 +38,7 @@ use dig::memory::{DigMemory, WantOp};
 use dig::prepare::PrepareHandle;
 use dig::preview::clip::Source;
 use dig::preview::fetcher::{clip_url, preview_path};
-use dig::preview::sample::{JunoHttp, SampleFetcher};
+use dig::preview::sample::{SampleFetcher, Samples};
 use dig::preview::scheduler::{
     self, Finder, PreviewCommand, PreviewEvent, PreviewHandle, Tools, system_finder,
 };
@@ -103,7 +103,7 @@ impl DigSetup {
             images: Arc::new(UreqImages::default()),
             clock: Arc::new(RealClock::default()),
             finder: system_finder(),
-            samples: Arc::new(JunoHttp::default()),
+            samples: Arc::new(Samples::default()),
             browser: Arc::new(SystemBrowser),
             cache_root,
             bridge: BridgeSetup::Configured,
@@ -162,9 +162,9 @@ pub enum DigAction {
     OpenRecord(EntryId),
     /// The entry's track page on Bandcamp.
     OpenBandcamp(EntryId),
-    /// The entry's record on Juno (its own, or the one linked to its release).
-    OpenJuno(EntryId),
-    /// Play the entry from another of its sources (YouTube, Bandcamp or Juno).
+    /// The entry's page on a store (Juno: its own record, or the one linked to its release).
+    OpenStore(EntryId, dig::stores::Store),
+    /// Play the entry from another of its sources (YouTube, Bandcamp, Juno or Beatport).
     SwitchSource(EntryId, crate::playlist::ClipSource),
     /// The last Bandcamp import's report.
     ShowFanReport,
@@ -321,11 +321,12 @@ pub(super) struct Dig {
     /// Crates filled without announcing each send (the wantlist crate).
     quiet: HashSet<CrateId>,
     fail_streak: u32,
-    /// A Play send's crate: its first entry is armed as soon as it has one.
-    pub(super) play_when_ready: Option<CrateId>,
+    /// A Play send's crate and the entries it held before: the first new one is armed as soon
+    /// as there is one.
+    pub(super) play_when_ready: Option<(CrateId, HashSet<EntryId>)>,
     /// Bandcamp sends, memory and questions.
     pub(super) bandcamp: super::bandcamp::BandcampState,
-    pub(super) juno: super::juno::JunoState,
+    pub(super) stores: super::stores::StoreState,
     last_playing: Option<(CrateId, EntryId)>,
     pub(super) dialog: Option<DigDialog>,
     /// Shared with the bridge thread once digging has started (unless the bridge is off).
@@ -411,13 +412,7 @@ impl Dig {
             .as_deref()
             .map(CartSnapshot::load)
             .unwrap_or_default();
-        let juno = super::juno::JunoState::new(
-            setup
-                .cache_root
-                .as_deref()
-                .map(dig::juno::JunoMemory::load)
-                .unwrap_or_default(),
-        );
+        let stores = super::stores::StoreState::load(setup.cache_root.as_deref());
         Self {
             sellers,
             friends,
@@ -468,7 +463,7 @@ impl Dig {
             fail_streak: 0,
             play_when_ready: None,
             bandcamp,
-            juno,
+            stores,
             last_playing: None,
             dialog: None,
             bridge_shared: None,
@@ -559,35 +554,39 @@ impl Dig {
         &self.horizon
     }
 
-    /// Saves what Juno sends taught (`juno.ron`) on a worker thread: the write syncs to disk,
-    /// which can take a while, and a send must never wait for it. Snapshots are written in
-    /// order, only the latest of those waiting. It is a cache: a failed write loses nothing
-    /// a later send can't bring back.
-    pub(super) fn save_juno(&mut self) {
+    /// Saves what a store's sends taught (`juno.ron`, `beatport.ron`, `traxsource.ron`) on a
+    /// worker thread: the write syncs to disk, which can take a while, and a send must never
+    /// wait for it. Snapshots are written in order, only each store's latest of those
+    /// waiting. It is a cache: a failed write loses nothing a later send can't bring back.
+    pub(super) fn save_store(&mut self, store: dig::stores::Store) {
         let Some(cache) = self.setup.cache_root.clone() else {
             return;
         };
-        if self.juno.saver.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<dig::juno::JunoMemory>();
+        if self.stores.saver.is_none() {
+            let (tx, rx) =
+                std::sync::mpsc::channel::<(dig::stores::Store, dig::stores::StoreMemory)>();
             let spawned = self.spawner.spawn(
-                "dig-juno-save",
+                "dig-store-save",
                 Priority::Low,
                 Box::new(move || {
-                    while let Ok(mut m) = rx.recv() {
-                        while let Ok(newer) = rx.try_recv() {
-                            m = newer;
+                    while let Ok(first) = rx.recv() {
+                        let mut latest = HashMap::from([first]);
+                        while let Ok((s, m)) = rx.try_recv() {
+                            latest.insert(s, m);
                         }
-                        let _ = m.save(&cache);
+                        for (s, m) in latest {
+                            let _ = m.save(&cache, s);
+                        }
                     }
                 }),
             );
             if spawned.is_err() {
                 return;
             }
-            self.juno.saver = Some(tx);
+            self.stores.saver = Some(tx);
         }
-        if let Some(tx) = &self.juno.saver {
-            let _ = tx.send(self.juno.memory.clone());
+        if let Some(tx) = &self.stores.saver {
+            let _ = tx.send((store, self.stores.memory(store).clone()));
         }
     }
 
@@ -924,11 +923,15 @@ pub(super) fn release_of(e: &Entry) -> Option<u64> {
     e.origin.as_ref()?.release
 }
 
-/// Why an entry has no Discogs verbs: "‹name› isn't from Discogs", or, for a Juno record no
+/// Why an entry has no Discogs verbs: "‹name› isn't from Discogs", or, for a store's record no
 /// single release was found for, "‹name› isn't linked to Discogs".
 fn not_on_discogs(e: &Entry) -> String {
     let name = e.display_name();
-    match e.origin.as_ref().is_some_and(|o| !o.juno.is_empty()) {
+    let from_store = e
+        .origin
+        .as_ref()
+        .is_some_and(|o| !o.juno.is_empty() || !o.beatport.is_empty() || !o.traxsource.is_empty());
+    match from_store {
         true => format!("{name} isn't linked to Discogs"),
         false => format!("{name} isn't from Discogs"),
     }
@@ -1035,15 +1038,15 @@ fn retry_of(e: &Entry) -> Option<Result<String, SearchRequest>> {
 fn limited_text(source: Source, unreachable: Option<&str>) -> String {
     match source {
         s if unreachable.is_some() => format!("Can't reach {}", s.name()),
-        Source::Juno => "Juno is refusing downloads".to_owned(),
+        Source::Juno | Source::Beatport => format!("{} is refusing downloads", source.name()),
         s => format!("{} is limiting requests", s.name()),
     }
 }
 
-/// Whether Download all tracks leaves an entry's preview for when it plays: a Juno sample
+/// Whether Download all tracks leaves an entry's preview for when it plays: a store's sample
 /// is only fetched just ahead of playback.
 fn played_only(e: &Entry) -> bool {
-    clip_of(e).is_some_and(|c| dig::preview::clip::source_of(c) == Source::Juno)
+    clip_of(e).is_some_and(|c| dig::preview::clip::source_of(c).is_sample())
 }
 
 /// The counts, and the number of tracks in all.
@@ -1225,16 +1228,7 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         styles: info.styles.clone(),
         artist: info.artist.clone(),
         formats: formats_text(&info.formats),
-        search_key: String::new(),
-        found: String::new(),
-        album_clip: String::new(),
-        album_clip_title: String::new(),
-        bandcamp: String::new(),
-        bandcamp_clip: String::new(),
-        youtube_clip: String::new(),
-        juno: String::new(),
-        juno_slug: String::new(),
-        juno_clip: String::new(),
+        ..Origin::default()
     }
 }
 
@@ -1264,13 +1258,22 @@ impl DiggrApp {
     /// wantlist, the collection, a label, a seller or a friend); then the Playlist.
     pub(super) fn enqueue_target(&self) -> CrateId {
         let c = self.crates.shown_id();
-        let special = self.crates.is_locked(c)
+        if self.takes_sends(c) {
+            c
+        } else {
+            crate::crates::PLAYLIST
+        }
+    }
+
+    /// Whether sends may add to `c`: not a Discogs or label crate (locked), a seller's, or a
+    /// friend's.
+    pub(super) fn takes_sends(&self, c: CrateId) -> bool {
+        !(self.crates.is_locked(c)
             || self.crates.seller_of(c).is_some()
             || self
                 .dig
                 .as_ref()
-                .is_some_and(|d| d.friends.by_crate(c).is_some());
-        if special { crate::crates::PLAYLIST } else { c }
+                .is_some_and(|d| d.friends.by_crate(c).is_some()))
     }
 
     /// A send the user asked for (a paste, the browser): never into a Discogs crate, which
@@ -1314,9 +1317,15 @@ impl DiggrApp {
     /// Cmd+V / Ctrl+V: a Discogs or Bandcamp address goes to the shown crate; other text is
     /// ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
-        // The app can't read Juno: its pages come from the browser extension.
-        if dig::juno::looks_like_juno(text) {
-            return self.notify("Juno pages are sent from the browser extension");
+        // The app can't read these stores: their pages come from the browser extension.
+        for (looks, store) in [
+            (dig::juno::looks_like_juno as fn(&str) -> bool, "Juno"),
+            (dig::beatport::looks_like_beatport, "Beatport"),
+            (dig::traxsource::looks_like_traxsource, "Traxsource"),
+        ] {
+            if looks(text) {
+                return self.notify(format!("{store} pages are sent from the browser extension"));
+            }
         }
         match dig::bandcamp::fan::parse(text) {
             Ok(page) => return self.fan_import(page),
@@ -1914,13 +1923,11 @@ impl DiggrApp {
         let filters = filters.unwrap_or(Filters {
             skip_passed: d.settings.skip_passed,
         });
-        let (target, created, play) = match mode {
-            SendMode::Enqueue => (self.enqueue_target(), false, false),
-            SendMode::Play | SendMode::Crate(_) => {
-                let name = match &mode {
-                    SendMode::Crate(n) => n.clone(),
-                    _ => page.provisional_name(),
-                };
+        let (target, created, play) = match &mode {
+            SendMode::Enqueue | SendMode::Play => {
+                (self.enqueue_target(), false, mode == SendMode::Play)
+            }
+            SendMode::Crate(name) => {
                 let name: String = name.trim().chars().take(MAX_NAME).collect();
                 let (id, created) = match self.crates.find(&name) {
                     Some(id) => (id, false),
@@ -1932,23 +1939,22 @@ impl DiggrApp {
                 if !self.crates.load(id) {
                     return self.notify(format!("Crate \"{name}\" can't be read"));
                 }
-                let play = mode == SendMode::Play;
-                // A crate the send just made (or plays) comes on screen, with the playlist
-                // opened if it was hidden; sending to an existing crate leaves the view alone.
-                if play || created {
+                // A crate the send just made comes on screen, with the playlist opened if it
+                // was hidden; sending to an existing crate leaves the view alone.
+                if created {
                     self.show_crate(id);
                     if !self.settings.show_playlist {
                         self.settings.show_playlist = true;
                         self.mark_settings();
                     }
                 }
-                (id, created, play)
+                (id, created, false)
             }
         };
-        let Some(d) = &mut self.dig else { return };
         if play {
-            d.play_when_ready = Some(target);
+            self.play_new_in(target);
         }
+        let Some(d) = &mut self.dig else { return };
         if created {
             d.created.insert(target);
         }
@@ -2105,7 +2111,7 @@ impl DiggrApp {
                     true,
                 );
             }
-            BridgeCommand::SendJuno {
+            BridgeCommand::SendStore {
                 records,
                 mode,
                 filters,
@@ -2115,7 +2121,7 @@ impl DiggrApp {
                     Mode::Enqueue => SendMode::Enqueue,
                     Mode::Crate(name) => SendMode::Crate(name),
                 };
-                self.juno_send(records, mode, filters.skip_passed);
+                self.store_send(records, mode, filters.skip_passed);
             }
             BridgeCommand::ImportFan(page) => self.fan_import(page),
             BridgeCommand::ResolveShopItem(id) => {
@@ -2142,10 +2148,12 @@ impl DiggrApp {
         let (shown, playing_id) = (self.crates.shown_id(), self.crates.playing_id());
         let enqueue = self.enqueue_target();
         let active = self.position.state != PlayState::Stopped;
+        // Only crates a send can fill are offered (Send to crate).
         let crates = self
             .crates
             .list()
             .iter()
+            .filter(|c| self.takes_sends(c.id))
             .map(|c| CrateState {
                 name: c.name.clone(),
                 shown: c.id == shown,
@@ -2208,7 +2216,9 @@ impl DiggrApp {
 
     pub(super) fn dig_intake_event(&mut self, e: Event) {
         match e {
-            Event::Found(key, result) if Self::is_juno_find(&key) => self.juno_found(&key, result),
+            Event::Found(key, result) if Self::is_store_find(&key) => {
+                self.store_found(&key, result)
+            }
             Event::Found(key, result) => self.fan_found(&key, result),
             Event::Copies(j, copies) => self.seller_copies(j.target, copies),
             Event::FirstSellers(result) => self.dig_first_sellers(result),
@@ -2324,6 +2334,7 @@ impl DiggrApp {
                     });
                 }
                 self.seller_job_ended(j.target, true);
+                self.play_send_ended(j.target);
             }
             Event::Failed(j, err) => {
                 let Some(d) = &mut self.dig else { return };
@@ -2333,7 +2344,10 @@ impl DiggrApp {
                     return self.friend_private(j.target);
                 }
                 let Some(d) = &mut self.dig else { return };
-                if d.play_when_ready == Some(j.target) {
+                if d.play_when_ready
+                    .as_ref()
+                    .is_some_and(|(c, _)| *c == j.target)
+                {
                     d.play_when_ready = None;
                 }
                 // A crate made for a page that turned out not to exist goes again.
@@ -3048,15 +3062,39 @@ impl DiggrApp {
         }
     }
 
-    fn dig_play_when_ready(&mut self) {
-        let Some(c) = self.dig.as_ref().and_then(|d| d.play_when_ready) else {
-            return;
-        };
-        let Some(first) = self
+    /// Play (from the browser): the first entry the send adds to `c` plays as soon as there is
+    /// one.
+    pub(super) fn play_new_in(&mut self, c: CrateId) {
+        let before = self
             .crates
             .get(c)
-            .and_then(|p| p.play_order(false, None, 0).first().copied())
-        else {
+            .map(|p| p.entries().iter().map(|e| e.id).collect())
+            .unwrap_or_default();
+        if let Some(d) = &mut self.dig {
+            d.play_when_ready = Some((c, before));
+        }
+    }
+
+    /// A send into `c` is over: what it added plays now, or nothing does (it added nothing).
+    pub(super) fn play_send_ended(&mut self, c: CrateId) {
+        self.dig_play_when_ready();
+        if let Some(d) = &mut self.dig
+            && d.play_when_ready.as_ref().is_some_and(|(p, _)| *p == c)
+        {
+            d.play_when_ready = None;
+        }
+    }
+
+    fn dig_play_when_ready(&mut self) {
+        let Some((c, before)) = self.dig.as_ref().and_then(|d| d.play_when_ready.as_ref()) else {
+            return;
+        };
+        let c = *c;
+        let Some(first) = self.crates.get(c).and_then(|p| {
+            p.play_order(false, None, 0)
+                .into_iter()
+                .find(|id| !before.contains(id))
+        }) else {
             return;
         };
         if let Some(d) = &mut self.dig {
@@ -3415,12 +3453,13 @@ impl DiggrApp {
                     self.notify(format!("Could not open the browser: {err}"));
                 }
             }
-            DigAction::OpenJuno(id) => {
+            DigAction::OpenStore(id, store) => {
                 let url = self
                     .crates
                     .get(c)
                     .and_then(|p| p.get(id))
-                    .and_then(|e| self.juno_page(e));
+                    .and_then(|e| self.store_pages(e).into_iter().find(|(s, _)| *s == store))
+                    .map(|(_, url)| url);
                 let Some(d) = &self.dig else { return };
                 if let Some(url) = url
                     && let Err(err) = d.setup.browser.open(&url)
@@ -4541,9 +4580,9 @@ impl DiggrApp {
                 let a = DigAction::OpenBandcamp(e.id);
                 item(ui, "Open on Bandcamp".into(), Some(a), "");
             }
-            if self.juno_page(e).is_some() {
-                let a = DigAction::OpenJuno(e.id);
-                item(ui, "Open on Juno".into(), Some(a), "");
+            for (store, _) in self.store_pages(e) {
+                let a = DigAction::OpenStore(e.id, store);
+                item(ui, format!("Open on {}", store.name()), Some(a), "");
             }
         }
         if let Some(url) = entry_record_url(e) {

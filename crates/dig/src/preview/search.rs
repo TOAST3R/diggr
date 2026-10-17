@@ -135,8 +135,11 @@ pub fn best<'a>(req: &SearchRequest, results: &'a [SearchResult]) -> Option<&'a 
         }
     };
     let track = words(&req.title);
+    // A credit of several artists ("Basement Jaxx, Reboot") is met by any one of them: uploads
+    // seldom name them all.
     let artists: Vec<&str> = [req.artist.as_str(), req.record_artist.as_str()]
         .into_iter()
+        .flat_map(|a| std::iter::once(a).chain(a.split([',', '&', '/'])))
         .filter(|a| !fold(a).trim().is_empty())
         .collect();
     let fits = |r: &&SearchResult| {
@@ -276,6 +279,46 @@ mod tests {
             title: "Paper Wings".into(),
             duration: secs,
         }
+    }
+
+    #[test]
+    fn one_artist_of_a_shared_credit_is_enough() {
+        let req = SearchRequest {
+            key: "traxsource/15091026".into(),
+            artist: "Basement Jaxx, Reboot".into(),
+            record_artist: "Basement Jaxx, Reboot".into(),
+            title: "Samba Magic (Reboot Extended Mix)".into(),
+            duration: Some(371.0),
+        };
+        let found = [
+            result(
+                "rMj-EJtU2NA",
+                Some(348.0),
+                "Basement Jaxx",
+                "Do Your Thing (Reboot Extended Mix)",
+            ),
+            result(
+                "JhkOYsltw6A",
+                Some(371.0),
+                "Basement Jaxx",
+                "Samba Magic (Reboot Extended Mix)",
+            ),
+        ];
+        assert_eq!(
+            best(&req, &found).map(|r| r.id.as_str()),
+            Some("JhkOYsltw6A")
+        );
+        let req = SearchRequest {
+            artist: "Basement Jaxx, Kenny Dope".into(),
+            record_artist: "Basement Jaxx, Kenny Dope".into(),
+            title: "Samba Magic".into(),
+            ..req
+        };
+        let nobody = [result("x0000000001", Some(371.0), "Someone", "Samba Magic")];
+        assert!(
+            best(&req, &nobody).is_none(),
+            "still needs one of the artists"
+        );
     }
 
     #[test]

@@ -27,7 +27,7 @@ use platform::{Priority, Spawner};
 
 use super::clip::{Clip, Source, source_of, track_id_of};
 use super::fetcher::{FetchError, Fetcher, preview_path};
-use super::sample::{JunoHttp, SampleFetcher};
+use super::sample::{SampleFetcher, Samples};
 use super::search::{self, Remembered, SearchRequest, SearchResult, Searches};
 use super::store;
 use crate::bandcamp::fan::{FanList, FanLists, FanPage};
@@ -222,7 +222,7 @@ pub struct Config {
     pub unreachable_wait: Duration,
     /// The least time between two Bandcamp page reads.
     pub read_gap: Duration,
-    /// What downloads Juno samples.
+    /// What downloads store samples (Juno, Beatport).
     pub samples: Arc<dyn SampleFetcher>,
     /// The app's own yt-dlp, used when the user has none (macOS); `None`: never downloaded.
     pub tools: Option<Tools>,
@@ -247,7 +247,7 @@ impl Config {
             limited_wait: LIMITED_WAIT,
             unreachable_wait: UNREACHABLE_WAIT,
             read_gap: READ_GAP,
-            samples: Arc::new(JunoHttp::default()),
+            samples: Arc::new(Samples::default()),
             tools: None,
         }
     }
@@ -934,10 +934,10 @@ impl Scheduler {
         }
     }
 
-    /// Whether `clip` can start now: a Juno sample always, a clip once yt-dlp is found
+    /// Whether `clip` can start now: a store's sample always, a clip once yt-dlp is found
     /// (looked for again at most every [`RECHECK`]).
     fn can_start(&mut self, clip: &str) -> bool {
-        if source_of(clip) == Source::Juno || self.fetcher.is_some() {
+        if source_of(clip).is_sample() || self.fetcher.is_some() {
             return true;
         }
         if self.looked.is_none_or(|t| t.elapsed() >= self.cfg.recheck) {
@@ -947,7 +947,7 @@ impl Scheduler {
     }
 
     fn start(&mut self, clip: String) {
-        if source_of(&clip) == Source::Juno {
+        if source_of(&clip).is_sample() {
             return self.start_sample(clip);
         }
         let target = match track_id_of(&clip) {

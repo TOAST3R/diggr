@@ -1043,6 +1043,35 @@ fn a_juno_sample_downloads_without_yt_dlp() {
     );
 }
 
+const BP: &str = "bp.b776a31b-cb84-477f-a7bb-0476c5a1ee8e";
+
+#[test]
+fn a_refusing_beatport_waits_while_juno_and_youtube_go_on() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    fake.beatport_limited.store(true, Ordering::SeqCst);
+    let (h, d) = start_with_samples("beatport-limited", &fake, |cfg| {
+        cfg.limited_wait = Duration::from_secs(600)
+    });
+    want(&h, &[BP.to_owned(), JN.to_owned(), clip(1)]);
+    let ev = until(&h, |ev| limited_events(ev) == 1 && done_count(ev) == 2);
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        PreviewEvent::Limited {
+            source: Source::Beatport,
+            ..
+        }
+    )));
+    assert!(d.join(format!("{JN}.mp3")).exists(), "Juno went on");
+    assert!(!ev.iter().any(|e| matches!(e, PreviewEvent::Failed(..))));
+    fake.beatport_limited.store(false, Ordering::SeqCst);
+    h.send(PreviewCommand::TryNow);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::Unlimited {
+        source: Source::Beatport
+    }));
+    assert!(d.join(format!("{BP}.mp3")).exists());
+}
+
 #[test]
 fn a_refusing_juno_waits_while_youtube_goes_on() {
     let fake = Arc::new(FakeFetcher::new(fixture()));

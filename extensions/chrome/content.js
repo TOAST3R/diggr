@@ -1,10 +1,11 @@
 // On discogs.com and Bandcamp: a button next to the page's title (floating in a corner when
-// there is none) with Play in ‹App›, Enqueue in ‹App›, Send to crate (with a New crate… field)
+// there is none) with Play in ‹App› (added to the crate on screen and played), Send to crate (with a New crate… field)
 // and the switch; a label's page has only Send label, a Bandcamp fan's page only Import
 // collection & wishlist. Only the address, the title's position
 // and the document title (for New crate…'s suggested name, and a Bandcamp label's name) are
-// read from the page; everything goes to the player through the service worker. On Juno, the
-// records the page shows are read too (juno.js), and only when the menu opens.
+// read from the page; everything goes to the player through the service worker. On Juno,
+// Beatport and Traxsource, the records or tracks the page shows are read too (juno.js,
+// beatport.js, traxsource.js), and only when the menu opens.
 
 (() => {
   const STYLE = `
@@ -164,8 +165,8 @@
             ? `Follow this label in ${appName}: it goes under LABELS`
             : kind === "BandcampFan"
               ? `Import this fan's Bandcamp collection & wishlist into ${appName}`
-              : WR.isJuno(kind)
-                ? `Send the records on this Juno page to ${appName}`
+              : WR.storeOf(kind)
+                ? `Send the tracks on this ${WR.storeOf(kind)} page to ${appName}`
                 : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
     });
     const wrap = el("div", { className: "wrap" }, main);
@@ -244,18 +245,25 @@
       wrap.append(menu);
       return;
     }
-    // A Juno page is read now, and what was read is what gets sent.
+    // A store's page is read now, and what was read is what gets sent.
     let juno = null;
-    if (WR.isJuno(WR.pageKind(location.href))) {
-      juno = WRJuno.read(document, location.href, WR.pageKind(location.href));
-      if (!juno) {
-        menu.append(el("div", { className: "note", textContent: "Couldn't read this Juno page" }));
+    const store = WR.storeOf(WR.pageKind(location.href));
+    if (store) {
+      // Each store's page loads only its own reader (WRJuno, WRBeatport, WRTraxsource).
+      const reader = self[`WR${store}`];
+      const read = reader.read(document, location.href, WR.pageKind(location.href));
+      if (!read) {
+        // Beatport's page data describes the address it was loaded at.
+        const why = store === "Beatport" ? ": reload it, then try again" : "";
+        menu.append(el("div", { className: "note", textContent: `Couldn't read this ${store} page${why}` }));
         wrap.append(menu);
         return;
       }
-      const n = juno.records.length;
-      menu.append(el("div", { className: "note", textContent: n === 1 ? "1 record" : `${n} records` }));
-      if (juno.single && n > 1) {
+      juno = { store, ...read };
+      const n = (read.records || read.tracks).length;
+      const unit = read.records ? "record" : "track";
+      menu.append(el("div", { className: "note", textContent: n === 1 ? `1 ${unit}` : `${n} ${unit}s` }));
+      if (read.single && n > 1) {
         const hint = "1 track per record: set Show tracks to All for more";
         menu.append(el("div", { className: "note", textContent: hint }));
       }
@@ -264,7 +272,6 @@
     const sendThis = (mode, crate) => send(mode, crate, juno);
     menu.append(
       item(`Play in ${appName}`, () => sendThis("play")),
-      item(`Enqueue in ${appName}`, () => sendThis("enqueue")),
       el("div", { className: "sep" }),
       el("div", { className: "note", textContent: "Send to crate ▸" }),
     );
@@ -310,9 +317,9 @@
    */
   function newCrateField(sendThis, juno) {
     const kind = WR.pageKind(location.href);
-    // Juno: "Artist - Title" for a product, else the page's heading.
-    const r = juno?.records[0];
-    const value = !WR.isJuno(kind)
+    // Juno: "Artist - Title" for a product; any store's other page: its heading.
+    const r = juno?.records?.[0];
+    const value = !WR.storeOf(kind)
       ? WR.suggestName(document.title, kind, location.href)
       : kind === "JunoProduct" && r
         ? WR.fit(`${r.artist} - ${r.title}`)
@@ -357,7 +364,8 @@
   async function send(mode, crate, juno) {
     closeMenus();
     if (juno) {
-      const r = await ask({ type: "sendJuno", page: juno.page, records: juno.records, mode, crate });
+      const { store, page, records, tracks } = juno;
+      const r = await ask({ type: "sendStore", store, page, items: records || tracks, mode, crate });
       if (!r.ok) return toast(WR.problem(r.error, appName), false);
       const refused = r.json.refused ? ` (${r.json.refused} refused)` : "";
       return toast(`Sent to ${appName}: ${r.json.page} → ${r.json.crate}${refused}`);
@@ -374,7 +382,44 @@
 
   // Discogs changes pages without reloading: follow the address, and put the button back if
   // the page redraws its heading.
+  // A Discogs page listing records for sale (a seller's shop, the marketplace): a small
+  // ▶ after each record's title plays it in the app (sent as its marketplace item's address).
+  const ITEM = /\/(?:[a-z]{2}\/)?(?:shop|sell)\/item\/(\d+)/;
+  const PLAY_STYLE = `
+    :host { all: initial; }
+    button { font: 11px/1 "Trebuchet MS", Tahoma, sans-serif; margin-left: 6px; padding: 2px 6px;
+      background: #1b1b24; color: #2fe45a; border: 1px solid #4a4a5e; border-radius: 3px;
+      cursor: pointer; vertical-align: middle; }
+    button:hover { border-color: #2fe45a; }
+  `;
+
+  function itemButtons() {
+    if (!/(^|\.)discogs\.com$/.test(location.hostname) || ITEM.test(location.pathname)) return;
+    const seen = new Set();
+    for (const a of document.querySelectorAll('a[href*="/item/"]')) {
+      const m = (a.getAttribute("href") || "").match(ITEM);
+      // The title link only: one button per record, none on its picture.
+      if (!m || seen.has(m[1]) || !a.textContent.trim()) continue;
+      seen.add(m[1]);
+      if (a.nextElementSibling?.classList.contains("wr-item-play")) continue;
+      const span = el("span", { className: "wr-item-play" });
+      const shadow = span.attachShadow({ mode: "closed" });
+      const b = el("button", { textContent: "▶", title: `Play in ${appName}` });
+      b.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const url = new URL(`/sell/item/${m[1]}`, location.origin).href;
+        const r = await ask({ type: "send", url, mode: "play" });
+        if (r.ok) toast(`Playing in ${appName}: ${a.textContent.trim().slice(0, 80)}`);
+        else toast(WR.problem(r.error, appName), false);
+      });
+      shadow.append(el("style", { textContent: PLAY_STYLE }), b);
+      a.after(span);
+    }
+  }
+
   function tick() {
+    itemButtons();
     if (location.href !== lastHref) {
       lastHref = location.href;
       closeMenus();

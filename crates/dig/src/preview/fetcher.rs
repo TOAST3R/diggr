@@ -134,7 +134,7 @@ const FAN_GAP: Duration = Duration::from_secs(1);
 pub fn ext_of(clip: &str) -> &'static str {
     match source_of(clip) {
         Source::YouTube => EXT,
-        Source::Bandcamp | Source::Juno => BANDCAMP_EXT,
+        Source::Bandcamp | Source::Juno | Source::Beatport => BANDCAMP_EXT,
     }
 }
 
@@ -444,6 +444,8 @@ pub struct FakeFetcher {
     pub bandcamp_limited: AtomicBool,
     /// Juno refuses every sample while this is set.
     pub juno_limited: AtomicBool,
+    /// Beatport refuses every sample while this is set.
+    pub beatport_limited: AtomicBool,
     /// Canned Bandcamp pages, by checked address (none listed: the read fails).
     pub pages: std::sync::Mutex<std::collections::HashMap<String, Listing>>,
     /// Every Bandcamp page read, in order.
@@ -468,6 +470,7 @@ impl FakeFetcher {
             unreachable: AtomicBool::new(false),
             bandcamp_limited: AtomicBool::new(false),
             juno_limited: AtomicBool::new(false),
+            beatport_limited: AtomicBool::new(false),
             pages: Default::default(),
             read: Default::default(),
             fans: Default::default(),
@@ -535,6 +538,7 @@ impl FakeFetcher {
             Source::YouTube => &self.limited,
             Source::Bandcamp => &self.bandcamp_limited,
             Source::Juno => &self.juno_limited,
+            Source::Beatport => &self.beatport_limited,
         };
         if limited.load(Ordering::SeqCst) {
             return Err(FetchError::Limited(
@@ -572,7 +576,7 @@ impl FakeFetcher {
         let dest = preview_path(dir, clip);
         let mp3 = self.source.with_extension(BANDCAMP_EXT);
         let source = match source_of(clip) {
-            Source::Bandcamp | Source::Juno if mp3.exists() => mp3,
+            Source::Bandcamp | Source::Juno | Source::Beatport if mp3.exists() => mp3,
             _ => self.source.clone(),
         };
         std::fs::copy(&source, &dest).map_err(|e| FetchError::Failed(e.to_string()))?;

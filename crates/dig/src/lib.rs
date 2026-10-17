@@ -14,6 +14,7 @@
 //! Native only: the web build leaves this crate out.
 
 pub mod bandcamp;
+pub mod beatport;
 pub mod bridge;
 pub mod browser;
 pub mod clock;
@@ -29,7 +30,9 @@ pub mod memory;
 pub mod prepare;
 pub mod preview;
 pub mod sellers;
+pub mod stores;
 pub mod tools;
+pub mod traxsource;
 
 /// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder
 /// until the rebrand.

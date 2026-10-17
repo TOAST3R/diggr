@@ -82,7 +82,7 @@ The main window SHALL say how many tracks were added, given Bandcamp audio and s
 - **THEN** its tracks are merged into "Label: Analogical Force", and "Friday" stays on screen unchanged
 
 ### Requirement: Source of the sound
-Every entry whose audio comes from the internet SHALL show its source at the end of its row: **YT** for YouTube, **BC** for Bandcamp, **JN** for Juno. Local files SHALL show none. The tooltip SHALL say "Source: YouTube", "Source: Bandcamp", with the Bandcamp album when known, or "Source: Juno sample (2 min)". When an entry has more than one of a YouTube clip, a Bandcamp track and a Juno sample, its menu SHALL offer Play from ‹source› for each one that isn't in use. Choosing it SHALL switch the source, get that preview (keeping the other in the cache) and remember the choice across restarts. Switching the playing entry SHALL take effect the next time it starts.
+Every entry whose audio comes from the internet SHALL show its source at the end of its row: **YT** for YouTube, **BC** for Bandcamp, **JN** for Juno, **BP** for Beatport. Local files SHALL show none. The tooltip SHALL say "Source: YouTube", "Source: Bandcamp", with the Bandcamp album when known, "Source: Juno sample (2 min)", "Source: Beatport sample (2 min)", or "Source: YouTube (found for Traxsource)" for a Traxsource track played from its search result. When an entry has more than one of a YouTube clip, a Bandcamp track, a Juno sample and a Beatport sample, its menu SHALL offer Play from ‹source› for each one that isn't in use. Choosing it SHALL switch the source, get that preview (keeping the other in the cache) and remember the choice across restarts. Switching the playing entry SHALL take effect the next time it starts.
 
 #### Scenario: Badges
 - **WHEN** a crate holds an entry from a Discogs video, one from Bandcamp and a local file
@@ -95,6 +95,10 @@ Every entry whose audio comes from the internet SHALL show its source at the end
 #### Scenario: Juno badge
 - **WHEN** a crate holds an entry sent from a Juno page
 - **THEN** its row ends with JN, and its tooltip says "Source: Juno sample (2 min)"
+
+#### Scenario: Beatport badge
+- **WHEN** a crate holds an entry sent from a Beatport page
+- **THEN** its row ends with BP, and its tooltip says "Source: Beatport sample (2 min)"
 
 #### Scenario: Three sources
 - **WHEN** an entry plays from Juno and also has a YouTube clip and a Bandcamp track

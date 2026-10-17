@@ -1,12 +1,11 @@
 # chrome-extension Specification
 
 ## Purpose
-A thin Chrome extension that sends the Discogs page you're on, or a Discogs link, to the player in one click, and shows what the player is doing.
+A thin Chrome extension that sends the Discogs, Bandcamp, Juno, Beatport or Traxsource page you're on, or a Discogs or Bandcamp link, to the player in one click, and shows what the player is doing.
 ## Requirements
 ### Requirement: Page button
 On Discogs release, master release, artist, label, wantlist, collection, list and marketplace listing pages, the extension SHALL show a button next to the page's title. When the page's title can't be found, the button SHALL float in a corner of the page. The button's menu SHALL offer:
-- Play in ‹App›;
-- Enqueue in ‹App›;
+- Play in ‹App›, which adds the page's tracks to the end of the crate on screen and plays the first track it adds;
 - Send to crate, listing the app's crates and New crate…;
 - the "skip passed" switch, which SHALL be remembered. There SHALL be no "vinyl only" switch: every send keeps records in every format.
 
@@ -41,8 +40,8 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 - **THEN** the field already holds "D'Arcangelo - TimeLss", and Enter sends it
 
 #### Scenario: Listing page
-- **WHEN** the user opens `https://www.discogs.com/shop/item/3923678974` and chooses Enqueue in ‹App›
-- **THEN** the button is there, and the tracks of the release on sale are added to the shown crate
+- **WHEN** the user opens `https://www.discogs.com/shop/item/3923678974` and chooses Play in ‹App›
+- **THEN** the button is there, the tracks of the release on sale are added to the shown crate, and the first of them plays
 
 #### Scenario: Collection page
 - **WHEN** the user opens `https://www.discogs.com/user/digger/collection` and chooses New crate…
@@ -61,11 +60,11 @@ On other Discogs pages, no button SHALL be shown. The button SHALL follow Discog
 - **THEN** it offers the skip passed switch and no vinyl only switch
 
 ### Requirement: Links anywhere
-Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›, except a link to a label's page, which SHALL offer only ‹App›: Send label.
+Right-clicking a link to a supported Discogs page, on any website, SHALL offer Play in ‹App›, except a link to a label's page, which SHALL offer only ‹App›: Send label.
 
 #### Scenario: Forum link
-- **WHEN** the user right-clicks a Discogs release link in a forum post and chooses Enqueue in ‹App›
-- **THEN** the release's tracks are added to the app's shown crate
+- **WHEN** the user right-clicks a Discogs release link in a forum post and chooses Play in ‹App›
+- **THEN** the release's tracks are added to the app's shown crate, and the first of them plays
 
 #### Scenario: Label link
 - **WHEN** the user right-clicks a Discogs label link in a forum post
@@ -75,11 +74,11 @@ Right-clicking a link to a supported Discogs page, on any website, SHALL offer P
 After a send from a Discogs page, the page SHALL show, for 3 s, a confirmation naming the page and the crate. After a send from a link on another site, the extension's toolbar button SHALL show a mark for 3 s: success or failure. Clicking the toolbar button SHALL show whether the app is running and paired, what is playing, and sends in progress. When the app isn't running, the extension isn't paired, or the page isn't supported, the extension SHALL say so and how to fix it.
 
 #### Scenario: Confirmation
-- **WHEN** the user enqueues a label page
+- **WHEN** the user sends a label page (‹App›: Send label)
 - **THEN** the page shows "Sent to ‹App›: Label: Lowtide Tapes → ‹crate›" for 3 s
 
 #### Scenario: App not running
-- **WHEN** the user chooses Enqueue in ‹App› while the app is closed
+- **WHEN** the user chooses Play in ‹App› while the app is closed
 - **THEN** a message says that the app isn't running, and nothing else happens
 
 #### Scenario: Not paired
@@ -87,11 +86,11 @@ After a send from a Discogs page, the page SHALL show, for 3 s, a confirmation n
 - **THEN** the pairing screen opens and asks for the code shown in Options ▸ Browser…
 
 ### Requirement: Minimal access
-The extension SHALL ask for access only to discogs.com, the subdomains of bandcamp.com and of juno.co.uk, and 127.0.0.1, and for its own storage, context menu and toolbar button. It SHALL send the app only the page's address, the chosen mode, the crate and the switches; for a Bandcamp page, its title; and for a Juno page, the records the page shows as `juno-intake` describes them. It SHALL contact no other server, and SHALL make no request to juno.co.uk or any other site. It SHALL read nothing from pages beyond their address and title, except on Juno pages, where it SHALL read only the records' fields, tracks, sample links and cover names from the page already loaded, and only when the user chooses an action. It SHALL contain no remote code.
+The extension SHALL ask for access only to discogs.com, the subdomains of bandcamp.com, juno.co.uk, beatport.com and traxsource.com, and 127.0.0.1, and for its own storage, context menu and toolbar button. It SHALL send the app only the page's address, the chosen mode, the crate and the switches; for a Bandcamp page, its title; for a Juno page, the records the page shows as `juno-intake` describes them; and for a Beatport or Traxsource page, the tracks the page shows as `beatport-intake` and `traxsource-intake` describe them. It SHALL contact no other server, and SHALL make no request to juno.co.uk, beatport.com, traxsource.com or any other site. It SHALL read nothing from pages beyond their address and title, except on Juno, Beatport and Traxsource pages, where it SHALL read only the fields their specs list from the page already loaded (on Beatport, from the page's own data, `__NEXT_DATA__`), and only when the user chooses an action. It SHALL contain no remote code.
 
 #### Scenario: Permissions at install
 - **WHEN** the extension is loaded in Chrome
-- **THEN** the only site access it lists is discogs.com, *.bandcamp.com, *.juno.co.uk and 127.0.0.1
+- **THEN** the only site access it lists is discogs.com, *.bandcamp.com, *.juno.co.uk, *.beatport.com, *.traxsource.com and 127.0.0.1
 
 #### Scenario: Nothing read until asked
 - **WHEN** the user opens a Juno product page and doesn't open the button's menu
@@ -106,7 +105,7 @@ Every label that names the player (for example "Play in ‹App›") SHALL use th
 
 #### Scenario: Renamed app
 - **WHEN** the app reports its name as "My Player"
-- **THEN** the menus read "Play in My Player" and "Enqueue in My Player"
+- **THEN** the menus read "Play in My Player"
 
 ### Requirement: Owned note
 On release, master release and marketplace item pages, when the app says the page's record is owned, the extension SHALL show under its button "✓ In your collection", or "✓ Another pressing in your collection (‹catalog number›, ‹year›)". When the answer is "checking", it SHALL ask once more after 3 s. When the app has no Discogs token, it SHALL show, dimmed, that a token in the app (Options ▸ Discogs…) is needed to see owned records. When the record isn't owned, or the answer is unknown, it SHALL show nothing. It SHALL send the app only the page's address for this.
@@ -124,11 +123,11 @@ On release, master release and marketplace item pages, when the app says the pag
 - **THEN** no note is shown
 
 ### Requirement: Bandcamp page button
-On a Bandcamp album or track page, the extension SHALL show its button next to the page's title (floating in a corner when the title can't be found). Its menu SHALL be the same as on a Discogs release: Play, Enqueue, Send to crate and skip passed. New crate… SHALL suggest "Artist - Title" from the page's title. On a Bandcamp label or artist page (`/` or `/music`), its menu SHALL offer only ‹App›: Send label. On a Bandcamp fan's collection or wishlist page (`bandcamp.com/‹user›` or `bandcamp.com/‹user›/wishlist`), its menu SHALL offer only ‹App›: Import collection & wishlist, which sends only the page's address. On other Bandcamp pages, no button SHALL be shown.
+On a Bandcamp album or track page, the extension SHALL show its button next to the page's title (floating in a corner when the title can't be found). Its menu SHALL be the same as on a Discogs release: Play, Send to crate and skip passed. New crate… SHALL suggest "Artist - Title" from the page's title. On a Bandcamp label or artist page (`/` or `/music`), its menu SHALL offer only ‹App›: Send label. On a Bandcamp fan's collection or wishlist page (`bandcamp.com/‹user›` or `bandcamp.com/‹user›/wishlist`), its menu SHALL offer only ‹App›: Import collection & wishlist, which sends only the page's address. On other Bandcamp pages, no button SHALL be shown.
 
 #### Scenario: Album page
 - **WHEN** the user opens a Bandcamp album page while the app is running and paired
-- **THEN** the button offers Play in ‹App›, Enqueue in ‹App› and Send to crate
+- **THEN** the button offers Play in ‹App› and Send to crate
 
 #### Scenario: Label page
 - **WHEN** the user opens `https://analogicalforce.bandcamp.com/music`
@@ -143,17 +142,17 @@ On a Bandcamp album or track page, the extension SHALL show its button next to t
 - **THEN** no button is shown
 
 ### Requirement: Bandcamp links
-Right-clicking a link to a Bandcamp album or track page, on any website, SHALL offer Play in ‹App› and Enqueue in ‹App›. A link to a Bandcamp label page (`/` or `/music`) SHALL offer only ‹App›: Send label.
+Right-clicking a link to a Bandcamp album or track page, on any website, SHALL offer Play in ‹App›. A link to a Bandcamp label page (`/` or `/music`) SHALL offer only ‹App›: Send label.
 
 #### Scenario: Album link in a forum
-- **WHEN** the user right-clicks a Bandcamp album link and chooses Enqueue in ‹App›
-- **THEN** its tracks are merged into the app's shown crate, and the toolbar button shows success for 3 s
+- **WHEN** the user right-clicks a Bandcamp album link and chooses Play in ‹App›
+- **THEN** its tracks are merged into the app's shown crate, the first new one plays, and the toolbar button shows success for 3 s
 
 ### Requirement: Juno page button
-On product, label, artist, genre, chart, search and new release pages of www.juno.co.uk and its regional sites (`es.`, `de.`…, which share product ids), the extension SHALL show its button after the record's Play and Add to playlist buttons on a product page, else next to the page's title (floating in a corner when neither can be found). Its menu SHALL offer Play, Enqueue, Send to crate and skip passed, as on a Discogs release. New crate… SHALL suggest "Artist - Title" on a product page and the page's heading on other pages, at most 40 characters. The menu SHALL say how many records the page shows. When every record shows only one track, it SHALL add "1 track per record: set Show tracks to All for more". When the page can't be read, the menu SHALL say "Couldn't read this Juno page", send nothing and offer no action. On other Juno pages (cart, account, equipment), no button SHALL be shown. The extension SHALL show no menu items on links to Juno pages, since a link's page isn't loaded.
+On product, label, artist, genre, chart, search and new release pages of www.juno.co.uk and its regional sites (`es.`, `de.`…, which share product ids), the extension SHALL show its button after the record's Play and Add to playlist buttons on a product page, else next to the page's title (floating in a corner when neither can be found). Its menu SHALL offer Play, Send to crate and skip passed, as on a Discogs release. New crate… SHALL suggest "Artist - Title" on a product page and the page's heading on other pages, at most 40 characters. The menu SHALL say how many records the page shows. When every record shows only one track, it SHALL add "1 track per record: set Show tracks to All for more". When the page can't be read, the menu SHALL say "Couldn't read this Juno page", send nothing and offer no action. On other Juno pages (cart, account, equipment), no button SHALL be shown. The extension SHALL show no menu items on links to Juno pages, since a link's page isn't loaded.
 
 #### Scenario: Product page
-- **WHEN** the user opens the page of product 1178909-01 and chooses Enqueue in ‹App›
+- **WHEN** the user opens the page of product 1178909-01 and chooses Play in ‹App›
 - **THEN** the record with its two tracks is sent, and the page shows "Sent to ‹App›: 0 aka Mika Vainio - Rontgen → ‹crate›" for 3 s
 
 #### Scenario: Listing with single samples
@@ -167,4 +166,44 @@ On product, label, artist, genre, chart, search and new release pages of www.jun
 #### Scenario: Equipment page
 - **WHEN** the user opens a Juno DJ equipment page
 - **THEN** no button is shown
+
+### Requirement: Beatport and Traxsource page buttons
+On track, release (Traxsource: title), chart, label, artist, genre and search pages of www.beatport.com and www.traxsource.com, the extension SHALL show its button next to the page's title (floating in a corner when it can't be found). Its menu SHALL offer Play, Send to crate and skip passed, as on a Discogs release, and SHALL say how many tracks the page shows. New crate… SHALL suggest "Artist - Title" on a track page and the page's heading on other pages, at most 40 characters. When the page can't be read, the menu SHALL say "Couldn't read this Beatport page" (or Traxsource), send nothing and offer no action. On other pages of either store (cart, account), no button SHALL be shown, and no menu items SHALL be shown on links to their pages.
+
+#### Scenario: Beatport chart
+- **WHEN** the user opens a Beatport chart showing 100 tracks and chooses Play in ‹App›
+- **THEN** the 100 tracks are sent, and the page shows "Sent to ‹App›: 100 tracks → ‹crate›" for 3 s
+
+#### Scenario: Unreadable page
+- **WHEN** Beatport changes its page data so no track can be read
+- **THEN** the menu says "Couldn't read this Beatport page", and nothing is sent
+
+#### Scenario: Cart
+- **WHEN** the user opens the Traxsource cart
+- **THEN** no button is shown
+
+### Requirement: One Play action
+Wherever the extension offered Play in ‹App› and Enqueue in ‹App› (the button's menu on Discogs, Bandcamp, Juno, Beatport and Traxsource pages, and the link menu), it SHALL offer only Play in ‹App›, which adds the page's tracks to the end of the crate on screen and plays the first track the send adds. Enqueue in ‹App› SHALL no longer be shown; Send to crate and the single-action menus (Send label, Add seller, Import collection & wishlist) are unchanged.
+
+#### Scenario: Play from a release page
+- **WHEN** the user chooses Play in ‹App› on a Discogs release page while the crate "Friday" is on screen
+- **THEN** the release's tracks are added to the end of "Friday", no crate is created, and the first of them plays as soon as its preview is ready
+
+#### Scenario: No Enqueue item
+- **WHEN** the user opens the button's menu on any supported page, or right-clicks a supported link
+- **THEN** no Enqueue in ‹App› item is shown
+
+### Requirement: Play each record of a for-sale list
+On a Discogs page listing marketplace items (a seller's shop, the marketplace), the extension SHALL show a small ▶ after each item's title link, one per item and none on its picture, which sends that item's address (`/sell/item/‹id›`) with mode Play. The page's own button is unchanged.
+
+#### Scenario: A seller's shop
+- **WHEN** the user clicks ▶ after a record's title on `https://www.discogs.com/seller/ADEPTA_STORE/profile`
+- **THEN** that record is added to the crate on screen and its first track plays, and the page doesn't navigate
+
+### Requirement: Send to crate lists crates that take sends
+Send to crate SHALL list only the crates a send can fill: no Top Sellers crate, label crate (LABELS), Discogs collection or wantlist crate, or friend's crate.
+
+#### Scenario: Special crates left out
+- **WHEN** the user opens Send to crate while Diggr has a seller's crate and a followed label
+- **THEN** neither is listed, and the Playlist and the user's own crates are
 

@@ -212,6 +212,28 @@ pub struct Origin {
     /// Its Juno sample (`jn.‹product›-‹side›-‹track›`): the clip in use, or one to switch to.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub juno_clip: String,
+    /// The record on Beatport (`r‹release id›`, or `t‹track id›`), when it was sent from a
+    /// Beatport page: what its price note and Discogs link are kept under.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub beatport: String,
+    /// The track's Beatport page, to open it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub beatport_page: String,
+    /// Its Beatport sample (`bp.‹uuid›`): the clip in use, or one to switch to.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub beatport_clip: String,
+    /// The record on Traxsource, when it was sent from a Traxsource page.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub traxsource: String,
+    /// The track's Traxsource page, to open it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub traxsource_page: String,
+    /// The key a store gave, as a Camelot code ("8A").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// The entry's tempo is the store's, not yet the analyser's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub store_bpm: bool,
 }
 
 /// Where an entry's audio comes from.
@@ -220,17 +242,26 @@ pub enum ClipSource {
     YouTube,
     Bandcamp,
     Juno,
+    Beatport,
 }
 
 impl ClipSource {
-    pub const ALL: [ClipSource; 3] = [ClipSource::YouTube, ClipSource::Bandcamp, ClipSource::Juno];
+    pub const ALL: [ClipSource; 4] = [
+        ClipSource::YouTube,
+        ClipSource::Bandcamp,
+        ClipSource::Juno,
+        ClipSource::Beatport,
+    ];
 
-    /// Bandcamp clips are `bc.‹track id›`, Juno samples `jn.…`; a YouTube id never has a dot.
+    /// Bandcamp clips are `bc.‹track id›`, Juno samples `jn.…`, Beatport samples `bp.…`; a
+    /// YouTube id never has a dot.
     pub fn of(clip: &str) -> Self {
         if clip.starts_with("bc.") {
             ClipSource::Bandcamp
         } else if clip.starts_with("jn.") {
             ClipSource::Juno
+        } else if clip.starts_with("bp.") {
+            ClipSource::Beatport
         } else {
             ClipSource::YouTube
         }
@@ -241,6 +272,7 @@ impl ClipSource {
             ClipSource::YouTube => "YouTube",
             ClipSource::Bandcamp => "Bandcamp",
             ClipSource::Juno => "Juno",
+            ClipSource::Beatport => "Beatport",
         }
     }
 
@@ -250,6 +282,7 @@ impl ClipSource {
             ClipSource::YouTube => "YT",
             ClipSource::Bandcamp => "BC",
             ClipSource::Juno => "JN",
+            ClipSource::Beatport => "BP",
         }
     }
 }
@@ -274,6 +307,7 @@ impl Origin {
             ClipSource::YouTube => return self.youtube(),
             ClipSource::Bandcamp => &self.bandcamp_clip,
             ClipSource::Juno => &self.juno_clip,
+            ClipSource::Beatport => &self.beatport_clip,
         };
         Some(c.as_str()).filter(|c| !c.is_empty())
     }
@@ -302,6 +336,7 @@ impl Origin {
             ClipSource::YouTube => std::mem::take(&mut self.youtube_clip),
             ClipSource::Bandcamp => self.bandcamp_clip.clone(),
             ClipSource::Juno => self.juno_clip.clone(),
+            ClipSource::Beatport => self.beatport_clip.clone(),
         });
         true
     }
@@ -1011,8 +1046,13 @@ impl Playlist {
     pub fn set_bpm(&mut self, key: &DuplicateKey, bpm: u16) -> bool {
         let mut changed = false;
         for e in &mut self.entries {
-            if e.bpm != Some(bpm) && e.duplicate_key() == *key {
+            // The analyser's tempo replaces a store's, even when they agree.
+            let store = e.origin.as_ref().is_some_and(|o| o.store_bpm);
+            if (e.bpm != Some(bpm) || store) && e.duplicate_key() == *key {
                 e.bpm = Some(bpm);
+                if let Some(o) = e.origin.as_mut() {
+                    o.store_bpm = false;
+                }
                 changed = true;
             }
         }

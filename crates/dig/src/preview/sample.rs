@@ -1,10 +1,10 @@
-//! Juno samples: one plain HTTPS request each, without yt-dlp.
+//! Store samples (Juno, Beatport): one plain HTTPS request each, without yt-dlp.
 //!
-//! The address is rebuilt from a checked key (see [`crate::juno`]), never taken from a page.
-//! Redirects are followed by hand, and only to Juno's own hosts. The answer must be MP3 audio
+//! The address is rebuilt from a checked key (see [`crate::juno`], [`crate::beatport`]),
+//! never taken from a page. Redirects are followed by hand, and only to the store's own hosts. The answer must be MP3 audio
 //! of a sane size, and is written to a `.part` file renamed when complete, as yt-dlp does, so
 //! a half-downloaded sample is never played. An answer that isn't audio (a challenge page),
-//! a 403 or a 429 means Juno is refusing: that is not the sample's fault, so it is reported
+//! a 403 or a 429 means the store is refusing: that is not the sample's fault, so it is reported
 //! as limited, and the track waits instead of failing.
 
 use std::io::{Read, Write};
@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use super::fetcher::{FetchError, preview_path, remove_partial};
 use crate::discogs::transport::USER_AGENT;
-use crate::juno;
+use crate::{beatport, juno};
 
 /// No sample is larger: a 2-minute 128 kbps MP3 is about 2 MB.
 pub const MAX_BYTES: u64 = 10 << 20;
 const MAX_REDIRECTS: usize = 3;
 
-/// Downloads samples (Juno's today) into the preview folder.
+/// Downloads store samples into the preview folder.
 pub trait SampleFetcher: Send + Sync {
     /// Fetches sample `key` into its [`preview_path`], reporting percent done, until done or
     /// `cancel`.
@@ -36,8 +36,12 @@ pub trait SampleFetcher: Send + Sync {
 type UrlOf = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type Allowed = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// The real thing: `ureq`, with the app's own user agent.
-pub struct JunoHttp {
+/// The real thing for one store: `ureq`, with the app's own user agent.
+pub struct StoreHttp {
+    /// The store, as answers name it ("Juno answered HTTP 403").
+    name: &'static str,
+    /// Whether a key is one of this store's.
+    valid: fn(&str) -> bool,
     agent: ureq::Agent,
     /// The address of a key's sample.
     url_of: UrlOf,
@@ -56,16 +60,25 @@ fn https_host(url: &str) -> Option<&str> {
     .then_some(host)
 }
 
-impl Default for JunoHttp {
-    fn default() -> Self {
+impl StoreHttp {
+    pub fn juno() -> Self {
         Self::new(
             Box::new(juno::sample_url),
             Box::new(|url| https_host(url).is_some_and(juno::sample_host)),
         )
     }
-}
 
-impl JunoHttp {
+    pub fn beatport() -> Self {
+        let mut h = Self::new(
+            Box::new(beatport::sample_url),
+            Box::new(|url| https_host(url).is_some_and(beatport::sample_host)),
+        );
+        h.name = "Beatport";
+        h.valid = |k| beatport::parse_key(k).is_some();
+        h
+    }
+
+    /// A Juno fetcher with its own addresses (tests point it at a local server).
     pub fn new(url_of: UrlOf, allowed: Allowed) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(10)))
@@ -77,10 +90,43 @@ impl JunoHttp {
             .build()
             .into();
         Self {
+            name: "Juno",
+            valid: |k| juno::parse_key(k).is_some(),
             agent,
             url_of,
             allowed,
         }
+    }
+}
+
+/// Every store's sample fetcher, picked by the key's prefix.
+pub struct Samples {
+    juno: StoreHttp,
+    beatport: StoreHttp,
+}
+
+impl Default for Samples {
+    fn default() -> Self {
+        Self {
+            juno: StoreHttp::juno(),
+            beatport: StoreHttp::beatport(),
+        }
+    }
+}
+
+impl SampleFetcher for Samples {
+    fn fetch(
+        &self,
+        key: &str,
+        dir: &Path,
+        progress: &dyn Fn(u8),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, FetchError> {
+        let store = match beatport::is_key(key) {
+            true => &self.beatport,
+            false => &self.juno,
+        };
+        store.fetch(key, dir, progress, cancel)
     }
 }
 
@@ -102,7 +148,7 @@ fn looks_like_mp3(head: &[u8]) -> bool {
     head.starts_with(b"ID3") || (head.len() >= 2 && head[0] == 0xFF && head[1] & 0xE0 == 0xE0)
 }
 
-impl SampleFetcher for JunoHttp {
+impl SampleFetcher for StoreHttp {
     fn fetch(
         &self,
         key: &str,
@@ -110,7 +156,7 @@ impl SampleFetcher for JunoHttp {
         progress: &dyn Fn(u8),
         cancel: &AtomicBool,
     ) -> Result<PathBuf, FetchError> {
-        if juno::parse_key(key).is_none() {
+        if !(self.valid)(key) {
             return Err(FetchError::InvalidId);
         }
         let mut url = (self.url_of)(key).ok_or(FetchError::InvalidId)?;
@@ -139,9 +185,15 @@ impl SampleFetcher for JunoHttp {
                 }
                 200 => break resp,
                 403 | 429 => {
-                    return Err(FetchError::Limited(format!("Juno answered HTTP {status}")));
+                    let name = self.name;
+                    return Err(FetchError::Limited(format!(
+                        "{name} answered HTTP {status}"
+                    )));
                 }
-                _ => return Err(FetchError::Failed(format!("Juno answered HTTP {status}"))),
+                _ => {
+                    let name = self.name;
+                    return Err(FetchError::Failed(format!("{name} answered HTTP {status}")));
+                }
             }
         };
         let kind = resp
@@ -151,7 +203,10 @@ impl SampleFetcher for JunoHttp {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if kind.starts_with("text/html") {
-            return Err(FetchError::Limited("Juno answered with a page".into()));
+            return Err(FetchError::Limited(format!(
+                "{} answered with a page",
+                self.name
+            )));
         }
         if !kind.starts_with("audio/mpeg") {
             return Err(FetchError::Failed(format!("not audio ({kind})")));
@@ -255,10 +310,10 @@ mod tests {
         (base, alive)
     }
 
-    fn http(base: &str) -> JunoHttp {
+    fn http(base: &str) -> StoreHttp {
         let b = base.to_owned();
         let allow = base.to_owned();
-        JunoHttp::new(
+        StoreHttp::new(
             Box::new(move |key| {
                 juno::parse_key(key).map(|(p, s)| format!("{b}/MP3/SF{p}-{s}.mp3"))
             }),
@@ -275,7 +330,7 @@ mod tests {
 
     const KEY: &str = "jn.1178909-01-01-01";
 
-    fn fetch(h: &JunoHttp, dir: &Path) -> Result<PathBuf, FetchError> {
+    fn fetch(h: &StoreHttp, dir: &Path) -> Result<PathBuf, FetchError> {
         h.fetch(KEY, dir, &|_| {}, &AtomicBool::new(false))
     }
 
@@ -388,7 +443,7 @@ mod tests {
     #[test]
     fn bad_keys_never_make_a_request() {
         let dir = crate::test_dir("sample-key");
-        let h = JunoHttp::new(
+        let h = StoreHttp::new(
             Box::new(|_| panic!("no address for a bad key")),
             Box::new(|_| panic!("no request for a bad key")),
         );
@@ -403,7 +458,7 @@ mod tests {
 
     #[test]
     fn only_juno_hosts_over_https() {
-        let real = JunoHttp::default();
+        let real = StoreHttp::juno();
         for ok in [
             "https://mp3.juno.co.uk/MP3/SF1-01-01-01.mp3",
             "https://www.juno.co.uk/MP3/SF1-01-01-01.mp3",
@@ -436,12 +491,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_beatport_hosts_over_https_and_keys_go_to_their_store() {
+        let real = StoreHttp::beatport();
+        assert!((real.allowed)(
+            "https://geo-samples.beatport.com/track/b776a31b-cb84-477f-a7bb-0476c5a1ee8e.LOFI.mp3"
+        ));
+        assert!(!(real.allowed)("https://beatport.com.evil.net/x.mp3"));
+        assert!(!(real.allowed)("http://geo-samples.beatport.com/x.mp3"));
+        let dir = crate::test_dir("sample-routing");
+        let samples = Samples::default();
+        let none = &AtomicBool::new(false);
+        // Malformed keys never make a request, whichever store they claim.
+        for key in ["bp.b776a31b", "bp.../../etc", "jn.1-01-01"] {
+            assert_eq!(
+                samples.fetch(key, &dir, &|_| {}, none),
+                Err(FetchError::InvalidId),
+                "{key}"
+            );
+        }
+    }
+
+    /// Needs the network: `cargo test -p dig -- --ignored real_beatport`.
+    #[test]
+    #[ignore]
+    fn real_beatport_sample() {
+        let dir = crate::test_dir("sample-beatport-real");
+        let key = "bp.b776a31b-cb84-477f-a7bb-0476c5a1ee8e";
+        let path = StoreHttp::beatport()
+            .fetch(key, &dir, &|_| {}, &AtomicBool::new(false))
+            .expect("downloaded");
+        assert!(std::fs::metadata(&path).unwrap().len() > 1_000_000);
+    }
+
     /// Needs the network: `cargo test -p dig -- --ignored real_juno`.
     #[test]
     #[ignore]
     fn real_juno_sample() {
         let dir = crate::test_dir("sample-real");
-        let path = fetch(&JunoHttp::default(), &dir).expect("downloaded");
+        let path = fetch(&StoreHttp::juno(), &dir).expect("downloaded");
         assert!(std::fs::metadata(&path).unwrap().len() > 500_000);
     }
 }

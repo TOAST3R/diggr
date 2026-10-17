@@ -15,6 +15,7 @@ use ::dig::jobs::Filters;
 use ::dig::juno::{JunoRecord, JunoTrack, Stock};
 use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
 use ::dig::preview::scheduler::Finder;
+use ::dig::stores::Store;
 
 const PRODUCT: &str = "1178909-01";
 
@@ -149,11 +150,20 @@ fn rontgen() -> JunoRecord {
 }
 
 fn send(rig: &mut Rig, records: Vec<JunoRecord>) {
-    rig.app.dig_bridge_command(BridgeCommand::SendJuno {
-        records,
+    rig.app.dig_bridge_command(BridgeCommand::SendStore {
+        records: records.iter().map(JunoRecord::to_store).collect(),
         mode: Mode::Enqueue,
         filters: Filters { skip_passed: true },
     });
+}
+
+/// What the tooltip says under "Juno".
+fn juno_note(rig: &Rig, e: &crate::playlist::Entry) -> Option<String> {
+    rig.app
+        .store_notes(e)
+        .into_iter()
+        .find(|(s, _)| *s == "Juno")
+        .map(|(_, n)| n)
 }
 
 fn origin(rig: &Rig, i: usize) -> Origin {
@@ -381,7 +391,7 @@ fn exactly_one_discogs_release_links_the_record_once() {
     send(&mut rig, vec![rontgen()]);
     settle(&mut rig);
     assert_eq!(fakes.searches(), 3);
-    let mem = &rig.app.dig.as_ref().unwrap().juno.memory;
+    let mem = rig.app.dig.as_ref().unwrap().stores.memory(Store::Juno);
     assert_eq!(mem.products[PRODUCT].release, Some(123456));
     assert!(mem.products["1113596-01"].searched);
     assert!(mem.products["1113597-01"].searched);
@@ -396,10 +406,11 @@ fn the_note_shows_on_discogs_entries_of_the_release_and_opens_juno() {
     send(&mut rig, vec![rontgen()]);
     rig.until(
         |r| {
-            r.app
-                .dig
-                .as_ref()
-                .is_some_and(|d| d.juno.memory.products[PRODUCT].release.is_some())
+            r.app.dig.as_ref().is_some_and(|d| {
+                d.stores.memory(Store::Juno).products[PRODUCT]
+                    .release
+                    .is_some()
+            })
         },
         "linked",
     );
@@ -418,22 +429,27 @@ fn the_note_shows_on_discogs_entries_of_the_release_and_opens_juno() {
         WaitKind::Queued,
     );
     let e = rig.app.crates.get(c).unwrap().get(id).unwrap().clone();
-    let note = rig.app.juno_note(&e).unwrap();
+    let note = juno_note(&rig, &e).unwrap();
     assert!(note.starts_with("in stock, €14.78 (seen "), "{note}");
     assert!(!note.contains("may have changed"));
     rig.app.show_crate(c);
     let ctx = rig.ctx.clone();
-    rig.app.apply(Action::Dig(DigAction::OpenJuno(id)), &ctx);
+    rig.app
+        .apply(Action::Dig(DigAction::OpenStore(id, Store::Juno)), &ctx);
     assert_eq!(
         *fakes.browser.opened.lock().unwrap(),
         ["https://www.juno.co.uk/products/0-mika-vainio-rontgen-vinyl/1178909-01/"]
     );
     // A note from 40 days ago may have changed.
     let d = rig.app.dig.as_mut().unwrap();
-    d.juno.memory.products.get_mut(PRODUCT).unwrap().seen -= 40 * 24 * 3600;
+    d.stores
+        .memory_mut(Store::Juno)
+        .products
+        .get_mut(PRODUCT)
+        .unwrap()
+        .seen -= 40 * 24 * 3600;
     assert!(
-        rig.app
-            .juno_note(&e)
+        juno_note(&rig, &e)
             .unwrap()
             .ends_with(", may have changed)")
     );

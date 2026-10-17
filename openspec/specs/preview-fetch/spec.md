@@ -64,10 +64,10 @@ How it is run:
 - The user's yt-dlp configuration SHALL be ignored.
 - Output SHALL be confined to the preview folder, named after the YouTube id or `bc.‹track id›`.
 
-Plain downloads: the only request the app SHALL make for a preview without yt-dlp is a Juno sample (see `juno-intake`):
-- its address SHALL be `https://mp3.juno.co.uk/MP3/SF‹product›-‹sample›.mp3`, rebuilt from a key that passes the `juno-intake` checks, never taken from a page or the extension;
-- it SHALL follow redirects only to `mp3.juno.co.uk` or `www.juno.co.uk` over HTTPS;
-- it SHALL be written only to the preview folder, named `jn.‹product›-‹sample›.mp3`.
+Plain downloads: the only requests the app SHALL make for a preview without yt-dlp are a Juno sample (see `juno-intake`) and a Beatport sample (see `beatport-intake`):
+- a Juno sample's address SHALL be `https://mp3.juno.co.uk/MP3/SF‹product›-‹sample›.mp3`, and a Beatport sample's `https://geo-samples.beatport.com/track/‹sample id›.LOFI.mp3`, each rebuilt from a key that passes its store's checks, never taken from a page or the extension;
+- a Juno request SHALL follow redirects only to `mp3.juno.co.uk` or `www.juno.co.uk`, and a Beatport request only to `beatport.com` and its subdomains, over HTTPS;
+- each SHALL be written only to the preview folder, named `jn.‹product›-‹sample›.mp3` or `bp.‹sample id›.mp3`.
 
 Failures:
 - A clip whose id or address doesn't match SHALL be treated as unusable.
@@ -77,6 +77,10 @@ Failures:
 #### Scenario: Malformed clip id
 - **WHEN** a record's clip address carries an id with other characters (for example `abc;rm -rf`)
 - **THEN** yt-dlp is not run for it, and the clip is treated as unusable
+
+#### Scenario: A Beatport sample
+- **WHEN** an entry plays from Beatport sample `0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b`
+- **THEN** the app requests exactly `https://geo-samples.beatport.com/track/0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.LOFI.mp3`, runs no yt-dlp, and writes `bp.0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.mp3` in the preview folder
 
 #### Scenario: Dead clip
 - **WHEN** a clip no longer exists

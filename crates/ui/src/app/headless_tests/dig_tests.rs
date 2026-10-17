@@ -126,12 +126,13 @@ fn memory(rig: &Rig) -> &DigMemory {
     &rig.app.dig.as_ref().unwrap().memory
 }
 
-/// Play mode for the release, until its first preview plays.
+/// Play mode for the release into a new crate on screen, until its first preview plays.
 fn play_release(rig: &mut Rig) -> CrateId {
+    let c = rig.app.crates.create("Release").unwrap();
+    rig.app.show_crate(c);
     rig.app
         .dig_send(url::parse(RELEASE).unwrap(), SendMode::Play, None);
-    let c = rig.app.crates.shown_id();
-    assert_ne!(c, PLAYLIST, "a new crate is shown");
+    assert_eq!(rig.app.crates.shown_id(), c, "into the crate on screen");
     rig.until(
         |r| r.app.position.state == PlayState::Playing && r.app.crates.playing_id() == c,
         "the first preview plays",
@@ -237,14 +238,15 @@ fn a_preview_whose_file_is_gone_downloads_again_instead_of_failing() {
 }
 
 #[test]
-fn play_mode_names_a_new_crate_after_the_page_and_plays_its_first_preview() {
+fn play_mode_adds_to_the_crate_on_screen_and_plays_the_first_track_it_added() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-play", &fakes, |_| {});
     let c = play_release(&mut rig);
     assert_eq!(playing_clip(&rig).as_deref(), Some(CLIPS[0]));
-    rig.until(
-        |r| r.app.crates.name(c).contains("Glasshouse EP"),
-        "the crate takes the page's name",
+    assert_eq!(
+        rig.app.crates.name(c),
+        "Release",
+        "no crate named after the page"
     );
     // The title line carries the side, year and for-sale summary.
     let line = rig.app.now_playing_line().unwrap();
@@ -285,7 +287,7 @@ fn a_send_for_a_missing_page_takes_its_new_crate_away_again() {
     let mut rig = rig("dig-missing", &fakes, |_| {});
     let page = url::parse("https://www.discogs.com/label/999").unwrap();
     let name = page.provisional_name();
-    rig.app.dig_send(page, SendMode::Play, None);
+    rig.app.dig_send(page, SendMode::Crate(name.clone()), None);
     assert!(rig.app.crates.find(&name).is_some());
     rig.until(
         |r| r.app.crates.find(&name).is_none(),
@@ -879,12 +881,20 @@ fn a_browser_send_is_answered_at_once_and_the_crate_fills_in_afterwards() {
     assert_eq!(rig.app.crates.name(c), "Label: Lowtide Tapes");
     assert_eq!(rig.app.crates.shown_id(), PLAYLIST, "the shown crate stays");
     assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
+    // Send to crate offers only crates a send can fill: no label or seller crate.
+    let seller = rig.app.crates.create("Seller: decks.de").unwrap();
+    rig.app.crates.set_seller(seller, "decks.de");
+    rig.app.crates.create("Friday").unwrap();
+    rig.frame(Vec::new());
     let (status, crates) = http(bridge_port(&rig), "GET", "/v1/crates", Some(&key), "");
     assert_eq!(status, 200);
     assert!(
         crates.contains(r#"{"name":"Playlist","playing":false,"shown":true}"#),
         "{crates}"
     );
+    assert!(crates.contains(r#""Friday""#), "{crates}");
+    assert!(!crates.contains("Label: Lowtide Tapes"), "{crates}");
+    assert!(!crates.contains("Seller: decks.de"), "{crates}");
 
     // Sent again, once the first send is done: the same crate, refreshed, nothing doubled.
     let port = bridge_port(&rig);
