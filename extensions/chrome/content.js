@@ -4,8 +4,9 @@
 // collection & wishlist. Only the address, the title's position
 // and the document title (for New crate…'s suggested name, and a Bandcamp label's name) are
 // read from the page; everything goes to the player through the service worker. On Juno,
-// Beatport and Traxsource, the records or tracks the page shows are read too (juno.js,
-// beatport.js, traxsource.js), and only when the menu opens.
+// Beatport, Traxsource and Bleep, the records or tracks the page shows are read too (juno.js,
+// beatport.js, traxsource.js, bleep.js), and only when the menu opens or a record's ▶ is
+// clicked.
 
 (() => {
   const STYLE = `
@@ -249,7 +250,8 @@
     let juno = null;
     const store = WR.storeOf(WR.pageKind(location.href));
     if (store) {
-      // Each store's page loads only its own reader (WRJuno, WRBeatport, WRTraxsource).
+      // Each store's page loads only its own reader (WRJuno, WRBeatport, WRTraxsource,
+      // WRBleep).
       const reader = self[`WR${store}`];
       const read = reader.read(document, location.href, WR.pageKind(location.href));
       if (!read) {
@@ -321,7 +323,7 @@
     const r = juno?.records?.[0];
     const value = !WR.storeOf(kind)
       ? WR.suggestName(document.title, kind, location.href)
-      : kind === "JunoProduct" && r
+      : (kind === "JunoProduct" || kind === "BleepRelease") && r
         ? WR.fit(`${r.artist} - ${r.title}`)
         : WR.fit((document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim());
     const input = el("input", {
@@ -418,8 +420,39 @@
     }
   }
 
+  // A Bleep page listing records: a small ▶ after each record's title plays that record
+  // alone (read from its tile, which shows no tracks: the player brings them from Discogs).
+  function bleepButtons() {
+    if (WR.pageKind(location.href) !== "BleepPage") return;
+    for (const tile of WRBleep.tiles(document)) {
+      const title = tile.querySelector("dd.release-title a") || tile.querySelector("dd.release-title");
+      if (!title || title.nextElementSibling?.classList.contains("wr-item-play")) continue;
+      const span = el("span", { className: "wr-item-play" });
+      const shadow = span.attachShadow({ mode: "closed" });
+      const b = el("button", { textContent: "▶", title: `Play in ${appName}` });
+      b.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const record = WRBleep.readTile(tile);
+        if (!record) return toast("Couldn't read this Bleep record", false);
+        const r = await ask({
+          type: "sendStore",
+          store: "Bleep",
+          page: location.href,
+          items: [record],
+          mode: "play",
+        });
+        if (r.ok) toast(`Playing in ${appName}: ${record.title.slice(0, 80)}`);
+        else toast(WR.problem(r.error, appName), false);
+      });
+      shadow.append(el("style", { textContent: PLAY_STYLE }), b);
+      title.after(span);
+    }
+  }
+
   function tick() {
     itemButtons();
+    bleepButtons();
     if (location.href !== lastHref) {
       lastHref = location.href;
       closeMenus();

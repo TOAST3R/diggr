@@ -228,6 +228,12 @@ pub struct Origin {
     /// The track's Traxsource page, to open it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub traxsource_page: String,
+    /// The release on Bleep (`100168`), when it was sent from a Bleep page.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bleep: String,
+    /// The Bleep release page's name part (`bibio-zen-drumsdada-drums`), to open it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bleep_slug: String,
     /// The key a store gave, as a Camelot code ("8A").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub key: String,

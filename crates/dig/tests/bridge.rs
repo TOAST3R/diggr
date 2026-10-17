@@ -879,6 +879,50 @@ fn a_beatport_chart_is_sent_as_tracks() {
     }
 }
 
+fn bleep_record(id: &str) -> Value {
+    serde_json::json!({
+        "id": id, "slug": "russell-haswell-deep-time", "artist": "Russell Haswell",
+        "title": "Deep Time", "label": "Diagonal Records", "catno": "DIAG045",
+        "image": format!("{id}.jpg"), "formats": [{ "name": "LP" }, { "name": "Download" }],
+    })
+}
+
+#[test]
+fn a_bleep_list_is_sent_as_records() {
+    let r = rig("bleep-list");
+    let key = r.pair();
+    r.bridge.poll();
+    let mut records: Vec<Value> = (1..=24).map(|i| bleep_record(&i.to_string())).collect();
+    records[3]["slug"] = Value::from("../x");
+    let body = serde_json::json!({
+        "bleep": { "page": "https://bleep.com/label/12257-diagonal-records", "records": records },
+        "mode": "enqueue",
+        "skip_passed": true,
+    })
+    .to_string();
+    let started = Instant::now();
+    let a = r.send(&key, &body);
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["message"], "Sent 23 records, 1 refused");
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendStore { records, .. }] => {
+            assert_eq!(records.len(), 23);
+            assert_eq!(records[0].store, ::dig::stores::Store::Bleep);
+        }
+        other => panic!("{other:?}"),
+    }
+    // An unknown field is refused whole.
+    let odd = serde_json::json!({
+        "bleep": { "page": "https://bleep.com/", "records": [bleep_record("1")], "extra": 1 },
+        "mode": "enqueue",
+        "skip_passed": true,
+    })
+    .to_string();
+    assert_eq!(r.send(&key, &odd).status, 422);
+    assert!(r.bridge.poll().is_empty());
+}
+
 #[test]
 fn a_store_send_names_one_store_and_fits_in_a_mebibyte() {
     let r = rig("store-shape");

@@ -1,5 +1,5 @@
 //! The browser bridge: a tiny HTTP server on 127.0.0.1 through which a paired browser
-//! extension sends Discogs and Bandcamp pages, and Juno, Beatport and Traxsource records, to
+//! extension sends Discogs and Bandcamp pages, and Juno, Beatport, Traxsource and Bleep records, to
 //! the player.
 //!
 //! It is the app's only network listener, so it accepts as little as it can: loopback only,
@@ -33,7 +33,7 @@ use crate::discogs::url::{self, Page, PageKind};
 use crate::jobs::Filters;
 use crate::juno;
 use crate::stores::{self, StoreRecord};
-use crate::{beatport, traxsource};
+use crate::{beatport, bleep, traxsource};
 pub use pairing::{DEFAULT_PORT, PairError, Pairing};
 
 /// The bridge's protocol version, reported by `/v1/hello`.
@@ -652,10 +652,10 @@ fn send_bandcamp(
 }
 
 /// The members naming a store send's records.
-const STORES: [&str; 3] = ["juno", "beatport", "traxsource"];
+const STORES: [&str; 4] = ["juno", "beatport", "traxsource", "bleep"];
 
-/// Whether a send's body is a store send: a JSON object with a `juno`, `beatport` or
-/// `traxsource` member.
+/// Whether a send's body is a store send: a JSON object with a `juno`, `beatport`,
+/// `traxsource` or `bleep` member.
 fn is_store(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Map<String, Value>>(body)
         .is_ok_and(|m| STORES.iter().any(|k| m.contains_key(*k)))
@@ -670,6 +670,8 @@ struct StoreBody {
     beatport: Option<Value>,
     #[serde(default)]
     traxsource: Option<Value>,
+    #[serde(default)]
+    bleep: Option<Value>,
     mode: ModeName,
     #[serde(rename = "crate", default)]
     crate_name: Option<String>,
@@ -677,7 +679,8 @@ struct StoreBody {
 }
 
 /// Records from a store's page: each checked on its own (see [`crate::juno::check`],
-/// [`crate::beatport::check`], [`crate::traxsource::check`]); the answer says how many were
+/// [`crate::beatport::check`], [`crate::traxsource::check`], [`crate::bleep::check`]); the
+/// answer says how many were
 /// taken and how many refused. Never brings the app to the front.
 fn send_store(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
     let Ok(b) = serde_json::from_slice::<StoreBody>(body) else {
@@ -687,9 +690,9 @@ fn send_store(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand
         Ok(m) => m,
         Err(why) => return error(422, why),
     };
-    // Juno counts records; Beatport and Traxsource list tracks.
-    let (records, refused, unit) = match (b.juno, b.beatport, b.traxsource) {
-        (Some(v), None, None) => match juno::check(&v) {
+    // Juno and Bleep count records; Beatport and Traxsource list tracks.
+    let (records, refused, unit) = match (b.juno, b.beatport, b.traxsource, b.bleep) {
+        (Some(v), None, None, None) => match juno::check(&v) {
             Ok(c) => (
                 c.records.iter().map(|r| r.to_store()).collect(),
                 c.refused,
@@ -698,12 +701,16 @@ fn send_store(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand
             Err(juno::SendError::NotJuno) => return error(422, "unsupported"),
             Err(e) => return error(422, &e.to_string()),
         },
-        (None, Some(v), None) => match beatport::check(&v) {
+        (None, Some(v), None, None) => match beatport::check(&v) {
             Ok(c) => (c.records, c.refused, "track"),
             Err(e) => return error(422, &e.to_string()),
         },
-        (None, None, Some(v)) => match traxsource::check(&v) {
+        (None, None, Some(v), None) => match traxsource::check(&v) {
             Ok(c) => (c.records, c.refused, "track"),
+            Err(e) => return error(422, &e.to_string()),
+        },
+        (None, None, None, Some(v)) => match bleep::check(&v) {
+            Ok(c) => (c.records, c.refused, "record"),
             Err(e) => return error(422, &e.to_string()),
         },
         _ => return error(422, "unsupported"),

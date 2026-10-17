@@ -652,6 +652,29 @@ a browser), and a pasted address is refused with a hint.
   with a token, "Beatport: €1.39 (seen 16 Oct)" in the tooltip, and **Open on Beatport** or
   **Open on Traxsource** in the menu.
 
+### Bleep
+
+Warp's shop (bleep.com, once bleep.co.uk), with a lot of electronic, experimental and leftfield
+music on vinyl, CD and as files. Like the other stores, its pages go into Diggr only **from
+the browser extension** (Bleep stops anything but a browser), and a pasted bleep.com or
+bleep.co.uk address is refused with a hint.
+
+- **Which pages:** a release page, and any page listing records: a label, an artist, a search,
+  new releases. Up to 500 records are sent.
+- **A release page** sends its tracks, in order, as "Artist - Title" entries with their length,
+  the label, catalogue number and cover, merged like Juno records.
+- **A list** shows no tracks, so each record comes in as one entry, "Artist - Record title". With
+  a Discogs token, when exactly one Discogs release fits, that release's tracks replace it in
+  its crate; without a token, or when none or several fit, it stays one entry.
+- **▶ per record:** on a list, a small ▶ after each record's title plays that record alone in
+  Diggr (added to the crate on screen).
+- **Previews:** Bleep gives its previews out per request, so a Bleep track is searched for on
+  YouTube by artist, title and length, as a Traxsource track is. Its tooltip then says "Source:
+  YouTube (found for Bleep)".
+- **Linked to Discogs, price note, Open on Bleep:** as for Juno: one Discogs lookup per record
+  with a token, each format and its price in the tooltip ("Bleep: LP 22.99 €, Download 7.99 €
+  (seen 18 Oct)"), and **Open on Bleep** in the menu.
+
 ### Top Sellers
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
@@ -728,8 +751,8 @@ hovering **FRIENDS** says when it was read and why it couldn't be read again.
 
 ### From the browser
 
-A Chrome extension (in `extensions/chrome/`) adds a button to Discogs, Bandcamp, Juno, Beatport
-and Traxsource pages: Play in
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs, Bandcamp, Juno, Beatport,
+Traxsource and Bleep pages: Play in
 Diggr (added to the crate on screen, and the first track it adds plays) and Send to crate. It talks to the player through a small **browser bridge**
 that the player starts once its window is up.
 
@@ -745,9 +768,9 @@ that the player starts once its window is up.
 - **What it accepts:** only a Discogs or Bandcamp page address (the pages that paste accepts),
   a mode (Play, Enqueue, or a crate of 1 to 40 characters), the skip-passed switch, and for a
   Bandcamp page its title (at most 200 characters, to name a label), in a body of at most 16 KB
-  (a vinyl-only switch from an older extension is accepted and ignored). A Juno, Beatport or
-  Traxsource send carries the page's records or tracks instead of an address, in up to 1 MiB:
-  at most 500 records (Juno, with 5,000 tracks) or 500 tracks, each field checked, and every
+  (a vinyl-only switch from an older extension is accepted and ignored). A Juno, Beatport,
+  Traxsource or Bleep send carries the page's records or tracks instead of an address, in up to
+  1 MiB: at most 500 records (Juno and Bleep, with 5,000 tracks) or 500 tracks, each field checked, and every
   address rebuilt by the player from the ids. A bad record or track is refused alone, and the
   answer counts it.
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
@@ -760,7 +783,7 @@ that the player starts once its window is up.
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
    the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com,
-   juno.co.uk, www.beatport.com, www.traxsource.com and 127.0.0.1 only. (An older copy needs
+   juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com and 127.0.0.1 only. (An older copy needs
    reloading in `chrome://extensions` for new sites, and Chrome asks you to accept the new site
    access.)
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
@@ -799,6 +822,9 @@ that the player starts once its window is up.
    [Beatport and Traxsource](#beatport-and-traxsource)). Beatport is read from the data the
    page was loaded with, so after moving to another Beatport page without a reload the menu says
    "Couldn't read this Beatport page: reload it, then try again".
+   On a Bleep release or list page, the button does the same and says how many records it
+   read, and on a list a ▶ after each record plays that record alone (see [Bleep](#bleep)).
+   The basket, checkout and account pages show no button.
    On a Discogs page listing records for sale (a seller's shop, the marketplace), a small **▶**
    after each record's title plays that record in Diggr (added to the crate on screen, as Play
    in Diggr).
@@ -818,7 +844,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 **Manual checklist** (the extension has no automated tests):
 
 - [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com,
-      bandcamp.com, juno.co.uk, www.beatport.com, www.traxsource.com and 127.0.0.1 only.
+      bandcamp.com, juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com and 127.0.0.1
+      only.
 - [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
 - [ ] Release, master, artist, wantlist, list and marketplace item pages each show the
@@ -842,7 +869,14 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 - [ ] A Traxsource title, track, chart and label page each show the button with the track
       count; the crate's tracks wait "to search", then play from YouTube with "found for
       Traxsource" in their tooltip.
-- [ ] On Beatport and Traxsource, the DevTools Network panel shows no request from the
+- [ ] A Bleep release page (`/release/626858-intellitronic-pixel`) shows the button with
+      "1 record"; Play fills the crate with its tracks in order, waiting "to search", then
+      playing with "found for Bleep" in their tooltip. New crate… suggests "Artist - Title".
+- [ ] A Bleep label page (`/label/4035-rubadub`) and a search (`/search/query?q=analogical+force`)
+      show the button with the record count, and a ▶ after each record's title; ▶ adds that
+      record alone as one entry, and with a Discogs token its tracks replace it when one
+      release fits. The basket shows no button.
+- [ ] On Beatport, Traxsource and Bleep, the DevTools Network panel shows no request from the
       extension but the one to `127.0.0.1`.
 - [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
       its picture); clicking it adds the record to the crate on screen and plays it.
@@ -1026,7 +1060,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron` (and Beatport's and Traxsource's in `beatport.ron` and `traxsource.ron`), the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron` (and Beatport's, Traxsource's and Bleep's in `beatport.ron`, `traxsource.ron` and `bleep.ron`), the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
 \* `DIGGR_CONFIG_DIR` covers settings, crates and presets. A `visuals/` folder (scenes and
 variants) left in the config folder by an earlier version is deleted at launch.
@@ -1096,7 +1130,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 885 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 895 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1253,6 +1287,13 @@ What's covered:
   keys folded from names, one bad track alone, 501 refused), the bridge's store sends, Beatport
   sample hosts and keys, Beatport limiting pausing only Beatport, and a real sample download
   (ignored by default) are tested in `crates/dig`.
+- **Bleep in the player** (`crates/ui`, headless, `bleep_tests.rs`; and `crates/dig`): a
+  release's tracks in order waiting to be searched and played "found for Bleep", the price
+  note, Open on Bleep, pasted bleep.com and bleep.co.uk addresses refused, a list record as one
+  entry replaced by its Discogs release's tracks (and kept without a token), and 500 records
+  in under 50 ms. The send checks, the bridge's Bleep send, and what the extension's reader
+  made of a real release and label page (`crates/dig/tests/fixtures/bleep/`) are tested in
+  `crates/dig`.
 - **A Bandcamp fan** (`crates/ui`, headless, `fan_tests.rs`, with fake pages and a fake Discogs;
   and `crates/dig`): both lists into crates made without a token and nothing sent to Discogs; an
   exact match added to the Discogs collection and taking the Bandcamp entries over, the rest

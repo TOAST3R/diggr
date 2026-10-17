@@ -3,7 +3,7 @@
   "name": "Diggr bridge",
   "short_name": "Diggr",
   "version": "0.1.0",
-  "description": "Send Discogs, Bandcamp, Juno, Beatport and Traxsource pages and links to the player running on this computer.",
+  "description": "Send Discogs, Bandcamp, Juno, Beatport, Traxsource and Bleep pages and links to the player running on this computer.",
   "permissions": ["storage", "contextMenus"],
   "host_permissions": [
     "https://www.discogs.com/*",
@@ -12,6 +12,8 @@
     "https://*.juno.co.uk/*",
     "https://www.beatport.com/*",
     "https://www.traxsource.com/*",
+    "https://bleep.com/*",
+    "https://*.bleep.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -36,6 +38,11 @@
     {
       "matches": ["https://www.traxsource.com/*"],
       "js": ["pages.js", "traxsource.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://bleep.com/*", "https://*.bleep.com/*"],
+      "js": ["pages.js", "bleep.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

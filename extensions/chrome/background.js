@@ -67,12 +67,13 @@ async function send(url, mode, crate, title) {
 }
 
 /**
- * The records read from a Juno page, or the tracks from a Beatport or Traxsource one (the
- * player checks each one again).
+ * The records read from a Juno or Bleep page, or the tracks from a Beatport or Traxsource one
+ * (the player checks each one again).
  */
 async function sendStore(store, page, items, mode, crate) {
   const s = await settings();
-  const payload = store === "Juno" ? { page, records: items } : { page, tracks: items };
+  const records = store === "Juno" || store === "Bleep";
+  const payload = records ? { page, records: items } : { page, tracks: items };
   const body = { [store.toLowerCase()]: payload, mode, skip_passed: s.skipPassed };
   if (mode === "crate") body.crate = crate;
   return bridge("send", { method: "POST", body });

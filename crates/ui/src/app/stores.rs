@@ -1,5 +1,5 @@
-//! Stores in the player: records the browser extension read from a Juno, Beatport or
-//! Traxsource page the user has open, sent with the bridge (the app never reads those pages
+//! Stores in the player: records the browser extension read from a Juno, Beatport, Traxsource
+//! or Bleep page the user has open, sent with the bridge (the app never reads those pages
 //! itself, see `dig::stores`).
 //!
 //! A send's tracks are merged into their crate as a Bandcamp album is: a track the crate plays
@@ -14,10 +14,14 @@
 //! catalogue number, and linked only when exactly one release fits: its entries get the
 //! Discogs verbs (Y, I, ★, owned). What the page said about stock and price is kept per
 //! record and shown on its entries, and on any Discogs entry of the linked release.
+//!
+//! A Bleep list shows its records without tracks: each stands as one entry with no position
+//! until it is linked, when its release's tracks come in from Discogs and it goes.
 
 use dig::bandcamp::fan::DiscogsMatch;
 use dig::discogs::client::ApiError;
 use dig::discogs::search::Wanted;
+use dig::discogs::url::{Page, PageKind};
 use dig::intake::Command;
 use dig::juno;
 use dig::preview::fetcher::preview_path;
@@ -88,6 +92,7 @@ fn record_of(o: &Origin, store: Store) -> &str {
         Store::Juno => &o.juno,
         Store::Beatport => &o.beatport,
         Store::Traxsource => &o.traxsource,
+        Store::Bleep => &o.bleep,
     }
 }
 
@@ -215,6 +220,10 @@ fn tag(o: &mut Origin, r: &StoreRecord, t: &dig::stores::StoreTrack) {
         Store::Traxsource => {
             o.traxsource = r.id.clone();
             o.traxsource_page = t.page.clone();
+        }
+        Store::Bleep => {
+            o.bleep = r.id.clone();
+            o.bleep_slug = r.slug.clone();
         }
     }
     if let Some(k) = &t.key {
@@ -498,21 +507,33 @@ impl DiggrApp {
     }
 
     /// Every loaded entry of the store's record `id` with no Discogs record takes `release`.
+    /// An entry standing for a whole Bleep record (no position) gives way to the release's
+    /// tracks, brought into its crate.
     fn store_link(&mut self, store: Store, id: &str, release: u64) {
         for c in self.crates.loaded_ids() {
             let Some(p) = self.crates.get_mut(c) else {
                 continue;
             };
             let mut changed = false;
+            let mut standing = Vec::new();
             for e in p.entries_mut() {
                 if let Some(o) = e.origin.as_mut()
                     && record_of(o, store) == id
                     && o.release.is_none()
                     && o.master.is_none()
                 {
+                    if store == Store::Bleep && o.position.is_empty() {
+                        standing.push(e.id);
+                        continue;
+                    }
                     o.release = Some(release);
                     changed = true;
                 }
+            }
+            if !standing.is_empty() {
+                p.remove_ids(&standing);
+                self.dig_fill(Page::new(PageKind::Release(release)), c);
+                changed = true;
             }
             if changed {
                 self.mark_crate(c);
@@ -554,10 +575,18 @@ impl DiggrApp {
                 juno::product_url(&seen.slug, product)
             }),
         };
+        let bleep = match o.bleep.is_empty() {
+            false => dig::bleep::release_url(&o.bleep, &o.bleep_slug),
+            true => self.dig.as_ref().and_then(|d| {
+                let (id, seen) = d.stores.memory(Store::Bleep).product_of(o.release?)?;
+                dig::bleep::release_url(id, &seen.slug)
+            }),
+        };
         [
             (Store::Juno, juno),
             (Store::Beatport, Some(o.beatport_page.clone())),
             (Store::Traxsource, Some(o.traxsource_page.clone())),
+            (Store::Bleep, bleep),
         ]
         .into_iter()
         .filter_map(|(s, page)| Some((s, page.filter(|p| !p.is_empty())?)))
