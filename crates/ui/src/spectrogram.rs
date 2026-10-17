@@ -347,19 +347,23 @@ impl Live {
 
     /// Adds a tap chunk. A new track or a jump in frames starts a fresh history.
     pub fn push(&mut self, chunk: &TapChunk, channel: Channel) {
-        if chunk.track != self.track || chunk.start_frame != self.next_frame {
+        // (±1: track frames are rounded per chunk under varispeed.)
+        if chunk.track != self.track || chunk.start_frame.abs_diff(self.next_frame) > 1 {
             self.clear();
             self.track = chunk.track;
         }
-        self.next_frame = chunk.start_frame + chunk.frames as u64;
+        self.next_frame = chunk.end_frame();
+        // Under varispeed a heard sample spans `speed` track frames.
+        let s = chunk.speed;
         for (i, f) in chunk.data().as_chunks::<2>().0.iter().enumerate() {
             self.hist[self.pos] = *f;
             self.pos = (self.pos + 1) % LIVE_FFT;
             self.since += 1;
             if self.since == self.hop {
                 self.since = 0;
-                let end = chunk.start_frame + i as u64 + 1;
-                self.column(end.saturating_sub(LIVE_FFT as u64 / 2), channel);
+                let end = chunk.start_frame + ((i + 1) as f64 * s).round() as u64;
+                let half = (LIVE_FFT as f64 / 2.0 * s).round() as u64;
+                self.column(end.saturating_sub(half), channel);
             }
         }
     }
@@ -1296,6 +1300,7 @@ mod tests {
             track,
             start_frame: start,
             frames: audio::tap::TAP_CHUNK_FRAMES,
+            speed: 1.0,
             samples: [0.0; audio::tap::TAP_CHUNK_FRAMES * 2],
         };
         for i in 0..c.frames {

@@ -26,6 +26,7 @@ use crate::records::{self, ListRow};
 use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
 use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
+use crate::sync::speed_label;
 use crate::widgets::{self, Skinned, SliderSprites, color};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -107,6 +108,13 @@ pub struct DiggrApp {
     now_playing: Option<TrackInfo>,
     position: Position,
     seek_drag: Option<f32>,
+    /// When SYNC last changed the playing track's speed (changes come at most every 30 ms).
+    sync_applied: Instant,
+    /// Scrolling over the pitch fader not yet worth a whole BPM, in skin pixels.
+    sync_drag: f32,
+    /// The turntable's platter angle and strobe drift, in radians.
+    deck_turn: f32,
+    deck_strobe: f32,
     /// The LP knob, 0..=1 (1 is off); not remembered, so every launch starts with it off.
     lp_knob: f32,
     title_offset: usize,
@@ -304,8 +312,13 @@ impl DiggrApp {
                 sample_rate: 0,
                 state: PlayState::Stopped,
                 discontinuity: false,
+                speed: 1.0,
             },
             seek_drag: None,
+            sync_applied: Instant::now(),
+            sync_drag: 0.0,
+            deck_turn: 0.0,
+            deck_strobe: 0.0,
             lp_knob: audio::filter::OFF,
             title_offset: 0,
             title_tick: 0.0,
@@ -451,6 +464,66 @@ impl DiggrApp {
         }
     }
 
+    /// The playing entry's BPM, if known.
+    fn playing_bpm(&self) -> Option<u16> {
+        let playing = self.crates.playing();
+        playing.current().and_then(|id| playing.get(id))?.bpm
+    }
+
+    /// SYNC: sets the speed of the playing track and its neighbours in the queue from their
+    /// BPM (an entry started anywhere else gets its speed in [`Self::play_entry`]); all 1 when
+    /// off. Returns whether a change to the playing track waits for its 30 ms.
+    fn apply_sync(&mut self) -> bool {
+        let sync = self.settings.sync;
+        let (Some(p), EngineSlot::Ready(engine)) =
+            (self.crates.get(self.queue_crate), &mut self.engine)
+        else {
+            return false;
+        };
+        let queue = &self.queue;
+        let speed = |i: usize| {
+            let bpm = queue.get(i).and_then(|&id| p.get(id)).and_then(|e| e.bpm);
+            sync.speed(bpm).unwrap_or(1.0)
+        };
+        let Some(cur) = engine.current_index() else {
+            return false;
+        };
+        // The next one before it starts (gapless at its speed), the first for REPEAT ALL, and
+        // the one before for Z.
+        for i in [cur + 1, 0, cur.wrapping_sub(1)] {
+            if i < queue.len() && i != cur {
+                engine.set_speed(i, speed(i));
+            }
+        }
+        let s = speed(cur);
+        if engine.speed(cur) == s {
+            return false;
+        }
+        if self.sync_applied.elapsed() < Duration::from_millis(30) {
+            return true;
+        }
+        engine.set_speed(cur, s);
+        self.sync_applied = Instant::now();
+        false
+    }
+
+    /// Turns SYNC on (at the playing track's tempo) or off.
+    fn toggle_sync(&mut self) {
+        let sync = &mut self.settings.sync;
+        sync.on = !sync.on;
+        if sync.on
+            && let Some(bpm) = self.playing_bpm()
+        {
+            self.settings.sync.target = bpm;
+        }
+        self.mark_settings();
+    }
+
+    fn nudge_sync(&mut self, bpm: i32) {
+        self.settings.sync.nudge(bpm);
+        self.mark_settings();
+    }
+
     fn mark_shown(&mut self) {
         self.mark_crate(self.crates.shown_id());
     }
@@ -555,7 +628,10 @@ impl DiggrApp {
         }
         if let Some(q) = self.queue.iter().position(|&x| x == id) {
             self.crates.playing_mut().set_current(Some(id));
+            let bpm = self.crates.playing().get(id).and_then(|e| e.bpm);
+            let speed = self.settings.sync.speed(bpm).unwrap_or(1.0);
             if let Some(e) = self.engine() {
+                e.set_speed(q, speed);
                 e.play_index(q);
             }
         }
@@ -1163,6 +1239,8 @@ impl DiggrApp {
             Key::ArrowRight => self.with_engine(|e| e.seek(secs + 5.0)),
             // With the playlist focused, the arrows move its cursor instead (`window_key`).
             Key::ArrowUp | Key::ArrowDown if self.arrows_move_cursor() => return false,
+            Key::ArrowUp if mods.shift => self.nudge_sync(1),
+            Key::ArrowDown if mods.shift => self.nudge_sync(-1),
             Key::ArrowUp => self.set_volume(self.settings.volume + 0.05),
             Key::ArrowDown => self.set_volume(self.settings.volume - 0.05),
             Key::CloseBracket if mods.shift => self.structure_jump(crate::navigation::next_rise),
@@ -1738,6 +1816,17 @@ impl DiggrApp {
             if widgets::button(ui, &sk, "repeat", "repeat", repeat).clicked() {
                 actions.push(Action::Repeat);
             }
+            let sync = if self.settings.sync.on {
+                "sync_on"
+            } else {
+                "sync_off"
+            };
+            if widgets::button(ui, &sk, "sync", "sync", sync)
+                .on_hover_text("SYNC: every track at one tempo, set on the turntable")
+                .clicked()
+            {
+                actions.push(Action::Sync);
+            }
         }
         for a in actions {
             self.apply(a, ui.ctx());
@@ -1825,6 +1914,153 @@ impl DiggrApp {
         Self::titlebar_drag(ui, &sk, "wave_title", "wave_titlebar");
         if widgets::button(ui, &sk, "wave_close", "wave_close", "btn_close").clicked() {
             self.apply(Action::ToggleWaveform, ui.ctx());
+        }
+    }
+
+    /// The turntable under the main window while SYNC is on. The pitch fader sets the set's
+    /// tempo against the playing record (its centre is the record's own tempo), and then shows
+    /// how far each record is pushed. The platter turns with the speed heard; its strobe dots
+    /// stand still while the record is locked to the tempo, as on a real deck.
+    fn deck_section(&mut self, ui: &mut Ui, origin: Pos2) {
+        use std::f32::consts::TAU;
+        let sync = self.settings.sync;
+        let bpm = self.playing_bpm();
+        let state = self.position.state;
+        let fitted = sync.speed(bpm);
+        if state == PlayState::Playing {
+            let dt = ui.input(|i| i.stable_dt).min(0.1);
+            let rps = 100.0 / 3.0 / 60.0 * self.position.speed as f32;
+            self.deck_turn = (self.deck_turn + dt * TAU * rps) % TAU;
+            let drift = match (fitted, bpm) {
+                (Some(_), _) => 0.0,
+                (None, Some(b)) => b as f32 / sync.target as f32 - 1.0,
+                (None, None) => 0.05,
+            };
+            self.deck_strobe = (self.deck_strobe + dt * TAU * drift) % TAU;
+        }
+        let mut actions = Vec::new();
+        {
+            let def = self.def.clone();
+            let sk = self.skinned(&def, ui, origin);
+            sk.sprite("deck_bg", 0.0, 0.0);
+            dim_title(&sk, "deck_titlebar", self.focus == Focus::Player);
+            Self::titlebar_drag(ui, &sk, "deck_title", "deck_titlebar");
+            if widgets::button(ui, &sk, "deck_close", "deck_close", "btn_close").clicked() {
+                actions.push(Action::Sync);
+            }
+            let lcd = color(sk.def.colors.lcd);
+
+            // The platter: strobe dots on its rim, a mark on its label.
+            let p = sk.def.at("deck_platter");
+            let (cx, cy) = (p.x as f32 + p.w as f32 / 2.0, p.y as f32 + p.h as f32 / 2.0);
+            let px = |r: f32, a: f32, size: f32| {
+                let (x, y) = (cx + r * a.cos() - size / 2.0, cy + r * a.sin() - size / 2.0);
+                sk.rect(x.round(), y.round(), size, size)
+            };
+            for k in 0..STROBE_DOTS {
+                let a = self.deck_strobe + k as f32 * TAU / STROBE_DOTS as f32;
+                sk.fill(px(37.5, a, 2.0), lcd);
+            }
+            let white = color(sk.def.colors.pl_current);
+            for r in [4.0, 6.0, 8.0, 10.0] {
+                sk.fill(px(r, self.deck_turn, 1.0), white);
+            }
+
+            // The tempo in big digits, how far this record is pushed, and its own tempo.
+            let t = sk.def.at("deck_target");
+            for (i, c) in format!("{:>3}", sync.target).chars().enumerate() {
+                let name = if c == ' ' {
+                    "digit_blank".to_owned()
+                } else {
+                    format!("digit_{c}")
+                };
+                sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
+            }
+            let r = sk.def.at("deck_push");
+            if let (Some(_), true) = (bpm, state != PlayState::Stopped) {
+                let push = speed_label(fitted.unwrap_or(1.0)).unwrap_or_else(|| "0.0%".into());
+                sk.text(r.x as f32, r.y as f32, &push, lcd);
+            }
+            let r = sk.def.at("deck_record");
+            let rec = bpm.map_or("REC ---".to_owned(), |b| format!("REC {b}"));
+            sk.text(r.x as f32, r.y as f32, &rec, lcd);
+            let r = sk.def.at("deck_lamp");
+            let own = state != PlayState::Stopped && fitted.is_none();
+            let lamp = if own { "own_tempo_on" } else { "own_tempo_off" };
+            sk.sprite(lamp, r.x as f32, r.y as f32);
+
+            let range = if sync.wide {
+                "deck_range_16"
+            } else {
+                "deck_range_8"
+            };
+            if widgets::button(ui, &sk, "deck_range", "deck_range", range)
+                .on_hover_text("Pitch range: ±8% or ±16%")
+                .clicked()
+            {
+                actions.push(Action::SyncRange);
+            }
+            if widgets::button(ui, &sk, "deck_reset", "deck_reset", "deck_reset")
+                .on_hover_text("The tempo back to this record's own")
+                .clicked()
+            {
+                actions.push(Action::SyncTakeBpm);
+            }
+
+            // The pitch fader: up is faster. Its thumb shows this record's push.
+            let r = sk.def.at("deck_pitch");
+            let travel = sk.rect(r.x as f32, r.y as f32, r.w as f32, r.h as f32);
+            let range = sync.range() as f32;
+            let pitch = fitted.map_or(0.0, |s| s as f32 - 1.0);
+            let resp = ui
+                .interact(
+                    travel.expand(5.0 * sk.scale),
+                    Id::new("deck_pitch"),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_text(
+                    "Your set's tempo: up faster, down slower (the centre is this record's own)",
+                );
+            if let (Some(b), Some(pos), true) = (
+                bpm,
+                resp.interact_pointer_pos(),
+                resp.is_pointer_button_down_on(),
+            ) {
+                let at = ((pos.y - travel.top()) / travel.height()).clamp(0.0, 1.0);
+                // Whole BPM, kept inside the range so the record stays locked.
+                let b = b as f32;
+                let target = (b * (1.0 + range * (1.0 - 2.0 * at)))
+                    .round()
+                    .clamp((b * (1.0 - range)).ceil(), (b * (1.0 + range)).floor())
+                    as u16;
+                if target != sync.target {
+                    actions.push(Action::SyncTarget(target));
+                }
+            }
+            // Scrolling over it: 1 BPM per 4 skin pixels.
+            if resp.hovered() {
+                self.sync_drag += ui.input(|i| i.smooth_scroll_delta.y) / sk.scale;
+                let n = (self.sync_drag / 4.0).trunc();
+                if n != 0.0 {
+                    self.sync_drag -= n * 4.0;
+                    actions.push(Action::SyncNudge(n as i32));
+                }
+            }
+            let thumb = sk.def.sprite("pitch_thumb");
+            let at = (0.5 - pitch / range / 2.0).clamp(0.0, 1.0);
+            let name = if resp.is_pointer_button_down_on() {
+                "pitch_thumb_p"
+            } else {
+                "pitch_thumb"
+            };
+            sk.sprite(
+                name,
+                r.x as f32 + (r.w as f32 - thumb.w as f32) / 2.0,
+                (r.y as f32 + at * r.h as f32 - thumb.h as f32 / 2.0).round(),
+            );
+        }
+        for a in actions {
+            self.apply(a, ui.ctx());
         }
     }
 
@@ -4273,6 +4509,15 @@ impl DiggrApp {
                 let failed = marks.wantlist_failed.is_some()
                     || marks.collection_failed.is_some()
                     || marks.discard_failed.is_some();
+                let sync = self.settings.sync;
+                let row_name = |e: &crate::playlist::Entry| {
+                    let name = e.row_name();
+                    if sync.on && sync.speed(e.bpm).is_none() {
+                        name + " (own tempo)"
+                    } else {
+                        name
+                    }
+                };
                 let marked = |name: String| {
                     format!(
                         "{}{}{name}{}",
@@ -4382,7 +4627,7 @@ impl DiggrApp {
                         text_marked(
                             &name_clip,
                             at + vec2(w, 0.0),
-                            marked(e.row_name()),
+                            marked(row_name(e)),
                             &font,
                             col,
                             hl,
@@ -4392,7 +4637,7 @@ impl DiggrApp {
                         text_marked(
                             &name_clip,
                             at,
-                            format!("{}. {}", idx + 1, marked(e.row_name())),
+                            format!("{}. {}", idx + 1, marked(row_name(e))),
                             &font,
                             col,
                             hl,
@@ -5035,6 +5280,27 @@ impl DiggrApp {
                 self.queue_dirty = true;
                 self.mark_settings();
             }
+            Action::Sync => self.toggle_sync(),
+            Action::SyncRange => {
+                let sync = &mut self.settings.sync;
+                sync.wide = !sync.wide;
+                let range = if sync.wide { 16 } else { 8 };
+                self.notify(format!("SYNC fits tracks within ±{range}%"));
+                self.mark_settings();
+            }
+            Action::SyncNudge(bpm) => self.nudge_sync(bpm),
+            Action::SyncTarget(bpm) => {
+                self.settings.sync.target = bpm;
+                self.settings.sync = self.settings.sync.sanitized();
+                self.mark_settings();
+            }
+            Action::SyncTakeBpm => match self.playing_bpm() {
+                Some(bpm) => {
+                    self.settings.sync.target = bpm;
+                    self.mark_settings();
+                }
+                None => self.notify("Not analyzed yet"),
+            },
             Action::Repeat => {
                 self.settings.repeat = self.settings.repeat.cycle();
                 let r = self.settings.repeat.to_engine();
@@ -5417,6 +5683,16 @@ enum Action {
     SelectAlbum(EntryId),
     Shuffle,
     Repeat,
+    /// SYNC on or off.
+    Sync,
+    /// SYNC's range: ±8% or ±16%.
+    SyncRange,
+    /// SYNC's target, by this many BPM.
+    SyncNudge(i32),
+    /// SYNC's target, in BPM.
+    SyncTarget(u16),
+    /// SYNC's target from the playing track.
+    SyncTakeBpm,
     ToggleEq,
     TogglePlaylist,
     ToggleRemaining,
@@ -6001,6 +6277,9 @@ impl Focus {
 
 /// Title bars of the side without the keyboard are drawn dimmed, as classic players did with their
 /// inactive windows. Drawn over the bar, before its buttons.
+/// Strobe dots on the turntable's rim.
+const STROBE_DOTS: usize = 24;
+
 fn dim_title(sk: &Skinned, layout: &str, lit: bool) {
     if !lit {
         sk.painter
@@ -6279,6 +6558,9 @@ impl DiggrApp {
         self.update_audio(dt);
         self.show_playing_bpm();
         self.handle_keys(ctx);
+        if self.apply_sync() {
+            ctx.request_repaint_after(Duration::from_millis(30));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_update();
         // A grouped crate places what arrived (sends, digs, tags) with its record.
@@ -6470,6 +6752,11 @@ impl DiggrApp {
         let d = self.skin.def.clone();
         self.main_section(ui, origin);
         let mut y = d.main_size.1 as f32;
+        let deck = crate::layout::deck_h(&self.settings, &d) as f32;
+        if deck > 0.0 {
+            self.deck_section(ui, origin + vec2(0.0, y * scale));
+            y += deck;
+        }
         if self.settings.show_waveform {
             let title_h = crate::layout::wave_title_h(&d) as f32;
             if title_h > 0.0 {
@@ -7371,6 +7658,120 @@ mod headless_tests {
                 .iter()
                 .any(|c| matches!(c, ViewportCommand::StartDrag))
         })
+    }
+
+    // ---- SYNC ------------------------------------------------------------------------------
+
+    /// The SYNC button, and on the turntable under the main window (at 1×) the pitch fader's
+    /// top, centre and bottom, its 8/16 and RESET buttons and its ×.
+    const SYNC: Pos2 = pos2(255.0, 96.0);
+    const PITCH_UP: Pos2 = pos2(251.0, 116.0 + 22.0);
+    const PITCH_MID: Pos2 = pos2(251.0, 116.0 + 54.0);
+    const DECK_RANGE: Pos2 = pos2(147.0, 116.0 + 92.0);
+    const DECK_RESET: Pos2 = pos2(187.0, 116.0 + 92.0);
+    const DECK_CLOSE: Pos2 = pos2(266.0, 116.0 + 7.0);
+
+    #[test]
+    fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
+        let mut rig = Rig::new("sync", vec![fixture("tone.flac")], |_| {});
+        rig.until(
+            |r| {
+                r.app.position.state == PlayState::Playing
+                    && r.app.track_refs.contains_key(&r.app.position.track)
+            },
+            "the track plays",
+        );
+        let track = rig.app.track_refs[&rig.app.position.track].clone();
+        rig.app.set_track_bpm(&track, 123.0);
+        // On: the turntable opens at the playing record's tempo, which plays on as it is.
+        let closed = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
+        rig.click(SYNC);
+        assert!(rig.app.settings.sync.on);
+        assert_eq!(rig.app.settings.sync.target, 123);
+        let open = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
+        assert!(
+            open.y > closed.y,
+            "the turntable takes its place in the column"
+        );
+        assert_eq!(rig.engine().speed(0), 1.0);
+        // The fader at the top: as fast as the range allows, and heard.
+        rig.click(PITCH_UP);
+        assert_eq!(rig.app.settings.sync.target, 132, "123 + 8%, still locked");
+        let fitted = 132.0 / 123.0;
+        rig.until(
+            |r| (r.app.position.speed - fitted).abs() < 1e-9,
+            "heard at the new speed",
+        );
+        // At its centre detent: the record's own tempo.
+        rig.click(PITCH_MID);
+        assert_eq!(rig.app.settings.sync.target, 123);
+        // Shift+↑ and scrolling over the fader step it.
+        for _ in 0..3 {
+            rig.key(Key::ArrowUp, Modifiers::SHIFT);
+        }
+        assert_eq!(rig.app.settings.sync.target, 126);
+        assert!(
+            rig.app.settings.volume == Settings::default().volume,
+            "not the volume"
+        );
+        rig.frame(vec![
+            Event::PointerMoved(PITCH_MID),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, 8.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        // (The scroll is smoothed over frames.)
+        for _ in 0..30 {
+            rig.frame(Vec::new());
+        }
+        assert!(rig.app.settings.sync.target > 126, "scrolled up");
+        // RESET, the range switch, and × to turn it off.
+        rig.click(DECK_RESET);
+        assert_eq!(rig.app.settings.sync.target, 123);
+        rig.until(|r| r.app.position.speed == 1.0, "back to its own speed");
+        rig.click(DECK_RANGE);
+        assert!(rig.app.settings.sync.wide);
+        rig.click(DECK_CLOSE);
+        assert!(!rig.app.settings.sync.on);
+        assert_eq!(
+            DiggrApp::window_size(&rig.app.settings, &rig.app.skin),
+            closed
+        );
+    }
+
+    #[test]
+    fn a_track_out_of_range_plays_at_its_own_tempo_and_says_so() {
+        let mut rig = Rig::new("sync-own", Vec::new(), |_| {});
+        let ids = rig.fill_playlist(3);
+        let p = rig.app.crates.shown_mut();
+        for (id, bpm) in ids.iter().zip([Some(122), Some(140), None]) {
+            p.entries_mut().find(|e| e.id == *id).unwrap().bpm = bpm;
+        }
+        rig.app.settings.sync = crate::sync::SyncSettings {
+            on: true,
+            target: 126,
+            wide: false,
+        };
+        let out = rig.frame(Vec::new());
+        let own: Vec<String> = text_list(&out)
+            .into_iter()
+            .filter(|t| t.ends_with("(own tempo)"))
+            .collect();
+        assert_eq!(own.len(), 2, "140 BPM and no BPM: {own:?}");
+        assert!(own[0].contains("(140 BPM)"), "{own:?}");
+        // Playing the first, fitted: it starts at 126/122; the next is set before it starts.
+        rig.app.play_entry(PLAYLIST, ids[0]);
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "the first plays",
+        );
+        rig.pump();
+        let e = rig.engine();
+        assert!((e.speed(0) - 126.0 / 122.0).abs() < 1e-9);
+        assert_eq!((e.speed(1), e.speed(2)), (1.0, 1.0));
     }
 
     // ---- playback follows its crate -------------------------------------------------------

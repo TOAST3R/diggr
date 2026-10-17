@@ -826,3 +826,251 @@ fn a_track_change_ends_the_loop() {
         }
     );
 }
+
+/// Zero crossings (rising, left channel) per second of output at 48 kHz.
+fn crossings_per_sec(samples: &[f32]) -> f64 {
+    let left: Vec<f32> = samples.chunks(2).map(|f| f[0]).collect();
+    let n = left
+        .windows(2)
+        .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+        .count();
+    n as f64 * 48_000.0 / left.len() as f64
+}
+
+fn sine_wav(path: &PathBuf, hz: f64, frames: std::ops::Range<u64>) -> TrackRef {
+    write_wav_with(path, 48_000, frames, |i| {
+        let v = (2.0 * std::f64::consts::PI * hz * i as f64 / 48_000.0).sin() as f32 * 0.5;
+        (v, v)
+    })
+}
+
+#[test]
+fn a_speed_change_is_heard_within_50_ms_without_click_or_gap() {
+    let dir = temp_dir("speed-change");
+    let t = sine_wav(&dir.join("a.wav"), 1_000.0, 0..480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.latency_ns = 5_000_000;
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let mut out = rig.pull_audio(40);
+    let before = rig.engine.position();
+    assert_eq!(before.speed, 1.0);
+
+    rig.engine.set_speed(0, 1.04);
+    assert_eq!(rig.engine.speed(0), 1.04);
+    let changed_at = out.len() / 2;
+    let mut heard = None;
+    let mut clock = vec![before];
+    for i in 0..60 {
+        out.extend(rig.pull_waiting());
+        let p = rig.engine.position();
+        if heard.is_none() && p.speed == 1.04 {
+            heard = Some((i + 1) * BUF);
+        }
+        clock.push(p);
+    }
+    let heard = heard.expect("the new speed reached the clock");
+    // A buffer for the device's audio, the 5 ms latency, and the worker's restart.
+    assert!(heard * 1000 / 48_000 <= 50, "heard after {heard} frames");
+    // A sine at 0.5 changes by at most 0.068 per sample at 1.04 × 1 kHz.
+    assert!(
+        max_step(&out[changed_at * 2..]) < 0.08,
+        "click at the change"
+    );
+    let tail = &out[(out.len() / 2 - 20 * BUF) * 2..];
+    assert!(tail.iter().all(|s| s.abs() <= 0.5001), "no overshoot");
+    let hz = crossings_per_sec(tail);
+    assert!((1_035.0..1_045.0).contains(&hz), "pitch follows: {hz} Hz");
+    assert_eq!(rig.engine.stats().underruns, 0);
+    assert!(
+        clock.windows(2).all(|w| w[1].frame >= w[0].frame),
+        "the clock never goes back"
+    );
+}
+
+#[test]
+fn the_clock_runs_in_track_time_under_varispeed() {
+    let dir = temp_dir("speed-clock");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.set_speed(0, 1.06);
+    rig.engine.play_index(0);
+    let first = rig.pull_audio(1);
+    let (_, clock) = collect(&mut rig, first, 100 * BUF);
+    let (a, b) = (clock[10], *clock.last().unwrap());
+    assert_eq!(b.speed, 1.06);
+    let per_frame = (b.frame - a.frame) as f64 / ((clock.len() - 11) * BUF) as f64;
+    assert!(
+        (per_frame - 1.06).abs() < 1e-3,
+        "{per_frame} track frames/frame"
+    );
+    // Track seconds: 100 buffers of output at 1.06 is 1.13 s of the track (± two buffers:
+    // the clock is read after each pull, and the first buffer may be partly silent).
+    let expected = 100.0 * BUF as f64 * 1.06 / 48_000.0;
+    assert!((b.seconds() - expected).abs() < 0.023, "{}", b.seconds());
+
+    // Down to 0.96 mid-track: never backwards, then 0.96 track seconds per second.
+    rig.engine.set_speed(0, 0.96);
+    let mut after = Vec::new();
+    for _ in 0..60 {
+        rig.pull_waiting();
+        after.push(rig.engine.position());
+    }
+    assert!(after.iter().all(|p| p.frame >= b.frame));
+    assert!(after.windows(2).all(|w| w[1].frame >= w[0].frame));
+    let (c, d) = (after[20], after[59]);
+    assert_eq!(d.speed, 0.96);
+    let rate = (d.frame - c.frame) as f64 / (39 * BUF) as f64;
+    assert!((rate - 0.96).abs() < 1e-3, "{rate}");
+    assert_eq!(rig.engine.stats().underruns, 0);
+}
+
+#[test]
+fn gapless_across_tracks_at_different_speeds() {
+    let dir = temp_dir("speed-gapless");
+    let split = 24_000;
+    let a = write_wav(&dir.join("a.wav"), 48_000, 0, split);
+    let b = write_wav(&dir.join("b.wav"), 48_000, split, 96_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![a, b]);
+    rig.engine.set_speed(0, 1.03);
+    rig.engine.set_speed(1, 0.97);
+    rig.engine.play_index(0);
+    let out = rig.pull_audio(100);
+    assert_eq!(rig.engine.stats().underruns, 0);
+    // Track a lasts 24 000 / 1.03 = 23 301 output frames; the signal is continuous across
+    // the files, so a gap or click shows as a step (the source moves < 0.005 per frame).
+    let boundary = (split as f64 / 1.03).round() as usize;
+    let around = &out[(boundary - 1_000) * 2..(boundary + 1_000) * 2];
+    assert!(max_step(around) < 0.02, "step {}", max_step(around));
+    let pos = rig.engine.position();
+    assert_eq!((rig.engine.current_index(), pos.speed), (Some(1), 0.97));
+    let expected = ((100 * BUF - boundary) as f64 * 0.97) as u64;
+    assert!(
+        pos.frame.abs_diff(expected) <= BUF as u64,
+        "{} vs {expected}",
+        pos.frame
+    );
+}
+
+#[test]
+fn jumps_and_loops_land_in_track_time_at_speed_1_04() {
+    let dir = temp_dir("speed-jump");
+    let t = write_wav(&dir.join("a.wav"), 48_000, 0, 480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.set_speed(0, 1.04);
+    rig.engine.play_index(0);
+    let first = rig.pull_audio(1);
+    let track = rig.engine.position().track;
+    rig.engine.seek_at(track, vec![1.0], 5.0);
+    let ev = wait_event(&mut rig, |e| {
+        matches!(
+            e,
+            EngineEvent::JumpScheduled { .. } | EngineEvent::JumpMissed { .. }
+        )
+    });
+    assert_eq!(
+        ev,
+        EngineEvent::JumpScheduled {
+            track,
+            at_secs: 1.0
+        }
+    );
+    // 1 s of the track is 1 / 1.04 s of output; then the track from 5 s, at 1.04.
+    let at = (48_000.0f64 / 1.04).round() as usize;
+    let (out, clock) = collect(&mut rig, first, at + 8_192);
+    let landed = &out[(at + 96) * 2..(at + 96 + 16) * 2];
+    let expected_first = expected(240_000 + 100, 1)[0];
+    assert!(
+        (landed[0] - expected_first).abs() < 0.01,
+        "lands at 5 s: {} vs {expected_first}",
+        landed[0]
+    );
+    assert!(
+        max_step(&out[(at - 4) * 2..(at + 100) * 2]) < 0.03,
+        "no click"
+    );
+    let last = clock.last().unwrap();
+    assert!((5.0..5.25).contains(&last.seconds()), "{}", last.seconds());
+
+    // A loop of half a second keeps the clock in it, in track seconds.
+    rig.engine.set_loop(track, Some((6.0, 6.5)));
+    wait_event(&mut rig, |e| matches!(e, EngineEvent::LoopChanged { .. }));
+    let mut inside = Vec::new();
+    for _ in 0..200 {
+        rig.pull_waiting();
+        let p = rig.engine.position();
+        if p.seconds() >= 6.0 {
+            inside.push(p.seconds());
+        }
+    }
+    assert!(inside.len() > 100, "reached the loop");
+    assert!(inside.iter().all(|&s| s < 6.5 + 0.011), "stays in it");
+    assert!(inside.windows(2).any(|w| w[1] < w[0]), "and wraps");
+    assert_eq!(rig.engine.stats().underruns, 0);
+}
+
+#[test]
+fn a_speed_change_in_a_tracks_last_moments_leaves_the_queue_playing() {
+    let dir = temp_dir("speed-end");
+    let a = write_wav(&dir.join("a.wav"), 48_000, 0, 48_000);
+    let b = write_wav(&dir.join("b.wav"), 48_000, 48_000, 96_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![a, b]);
+    rig.engine.play_index(0);
+    rig.pull_audio(1);
+    while rig.engine.position().seconds() < 0.99 {
+        rig.pull_waiting();
+    }
+    // Restarting 20-odd ms ahead would be past the end: it finishes at its own speed.
+    rig.engine.set_speed(0, 1.08);
+    for _ in 0..40 {
+        rig.pull_waiting();
+    }
+    let events = rig.engine.poll_events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::TrackFailed { .. })),
+        "{events:?}"
+    );
+    assert_eq!(rig.engine.current_index(), Some(1));
+    assert_eq!(rig.engine.stats().underruns, 0);
+}
+
+#[test]
+fn a_speed_change_at_a_gapless_boundary_applies_to_the_audible_track() {
+    let dir = temp_dir("speed-boundary");
+    let a = write_wav(&dir.join("a.wav"), 48_000, 0, 48_000);
+    let b = write_wav(&dir.join("b.wav"), 48_000, 48_000, 72_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![a, b]);
+    rig.engine.play_index(0);
+    rig.pull_audio(1);
+    // 0.8 s in, the decoder is already in b (the ring holds 0.5 s): the change is for a.
+    while rig.engine.position().seconds() < 0.8 {
+        rig.pull_waiting();
+    }
+    rig.engine.set_speed(0, 1.08);
+    let mut speeds = Vec::new();
+    for _ in 0..60 {
+        rig.pull_waiting();
+        let p = rig.engine.position();
+        speeds.push((rig.engine.current_index(), p.speed));
+    }
+    let events = rig.engine.poll_events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::TrackFailed { .. })),
+        "{events:?}"
+    );
+    assert!(speeds.contains(&(Some(0), 1.08)), "a sped up: {speeds:?}");
+    assert!(
+        speeds.contains(&(Some(1), 1.0)),
+        "then b at its own: {speeds:?}"
+    );
+    assert_eq!(rig.engine.stats().underruns, 0);
+}

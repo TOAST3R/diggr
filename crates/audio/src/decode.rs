@@ -3,7 +3,10 @@
 
 use audioadapter_buffers::direct::InterleavedSlice;
 use platform::{FileSource, MediaSource, TrackRef};
-use rubato::{Fft, FixedSync, Indexing, Resampler};
+use rubato::{
+    Async, Fft, FixedAsync, FixedSync, Indexing, Resampler, SincInterpolationParameters,
+    WindowFunction,
+};
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
@@ -18,6 +21,8 @@ use crate::ring::CHANNELS;
 /// Consecutive undecodable packets tolerated before giving up on a track.
 const MAX_CONSECUTIVE_ERRORS: u32 = 64;
 const RESAMPLER_CHUNK: usize = 1024;
+/// The varispeed sinc filter's length (taps); see `--bench --speed`.
+const SINC_LEN: usize = 256;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum DecodeError {
@@ -346,10 +351,12 @@ fn to_stereo(src: &[f32], channels: usize, dst: &mut Vec<f32>) {
     }
 }
 
-/// FFT resampler for interleaved audio with any channel count that trims its startup delay and
+/// Resampler for interleaved audio with any channel count that trims its startup delay and
 /// flushes its tail, so `n` input frames always become exactly `round(n * ratio)` output frames.
+/// FFT for fixed rate conversion (bit-identical to before varispeed, and what analysis uses);
+/// sinc for a speed other than 1, whose ratio isn't a ratio of integer rates.
 pub struct ChannelResampler {
-    inner: Fft<f32>,
+    inner: Box<dyn Resampler<f32>>,
     channels: usize,
     ratio: f64,
     input: Vec<f32>,
@@ -381,18 +388,45 @@ impl ChannelResampler {
             FixedSync::Input,
         )
         .map_err(|e| DecodeError::Unsupported(format!("resampler: {e}")))?;
-        let delay = fft.output_delay();
-        let out_max = fft.output_frames_max();
-        Ok(Self {
-            inner: fft,
+        Ok(Self::wrap(
+            Box::new(fft),
             channels,
-            ratio: out_rate as f64 / in_rate as f64,
+            out_rate as f64 / in_rate as f64,
+        ))
+    }
+
+    /// Interleaved stereo played at `speed` (pitch follows): `in_rate` audio comes out at
+    /// `out_rate`, `speed` times faster. Speed 1 is the FFT path of [`Self::new`].
+    pub fn with_speed(in_rate: u32, out_rate: u32, speed: f64) -> Result<Self, DecodeError> {
+        if speed == 1.0 {
+            return Self::new(in_rate, out_rate);
+        }
+        let ratio = out_rate as f64 / in_rate as f64 / speed;
+        let sinc = Async::<f32>::new_sinc(
+            ratio,
+            1.0,
+            &SincInterpolationParameters::new(SINC_LEN, WindowFunction::BlackmanHarris2),
+            RESAMPLER_CHUNK,
+            CHANNELS,
+            FixedAsync::Input,
+        )
+        .map_err(|e| DecodeError::Unsupported(format!("resampler: {e}")))?;
+        Ok(Self::wrap(Box::new(sinc), CHANNELS, ratio))
+    }
+
+    fn wrap(inner: Box<dyn Resampler<f32>>, channels: usize, ratio: f64) -> Self {
+        let delay = inner.output_delay();
+        let out_max = inner.output_frames_max();
+        Self {
+            inner,
+            channels,
+            ratio,
             input: Vec::with_capacity(RESAMPLER_CHUNK * channels * 2),
             output: vec![0.0; out_max * channels],
             delay_left: delay,
             total_in: 0,
             total_out: 0,
-        })
+        }
     }
 
     pub fn process(&mut self, samples: &[f32], out: &mut Vec<f32>) {
@@ -407,11 +441,30 @@ impl ChannelResampler {
         }
     }
 
+    /// Feeds `history` (audio just before the first input) so the output starts as a
+    /// continuation of it instead of from silence. Call before the first [`Self::process`].
+    pub fn prime(&mut self, history: &[f32]) {
+        self.input.extend_from_slice(history);
+        self.delay_left += ((history.len() / self.channels) as f64 * self.ratio).round() as usize;
+    }
+
     /// Flushes buffered input and the filter tail.
     pub fn finish(&mut self, out: &mut Vec<f32>) {
+        self.finish_with(&[], out);
+    }
+
+    /// [`Self::finish`], with `post_roll` (audio just after the last input) filling the filter
+    /// tail instead of silence, so the output ends as it would continue into it.
+    pub fn finish_with(&mut self, post_roll: &[f32], out: &mut Vec<f32>) {
         let expected = (self.total_in as f64 * self.ratio).round() as u64;
+        self.input.extend_from_slice(post_roll);
+        while self.total_out < expected
+            && self.input.len() / self.channels >= self.inner.input_frames_next()
+        {
+            self.run(None, out);
+        }
         let pending = self.input.len() / self.channels;
-        if pending > 0 {
+        if pending > 0 && self.total_out < expected {
             self.run(Some(pending), out);
         }
         while self.total_out < expected {
@@ -510,6 +563,46 @@ mod tests {
         assert_eq!(out.len(), 22_050);
         let crossings = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
         assert!((439..=441).contains(&crossings), "{crossings}");
+    }
+
+    #[test]
+    fn varispeed_keeps_length_and_moves_pitch() {
+        let mut r = StereoResampler::with_speed(44_100, 48_000, 1.04).unwrap();
+        let input = sine(44_100, 1_000.0, 44_100);
+        let mut out = Vec::new();
+        for chunk in input.chunks(1152 * 2) {
+            r.process(chunk, &mut out);
+        }
+        r.finish(&mut out);
+        assert_eq!(out.len() / 2, (48_000.0f64 / 1.04).round() as usize);
+        // 1 s of 1 kHz played in 1/1.04 s: 1000 cycles at 1040 Hz.
+        let zc = zero_crossings(&out);
+        assert!((999..=1001).contains(&zc), "{zc} cycles");
+        assert!(out[0].abs() < 0.05 && out[2 * 5] > 0.0, "delay trimmed");
+    }
+
+    #[test]
+    fn priming_and_post_roll_join_two_resamplers_seamlessly() {
+        let input = sine(48_000, 440.0, 48_000);
+        let (a, b) = input.split_at(20_000 * 2);
+        let mut out = Vec::new();
+        let mut first = StereoResampler::with_speed(48_000, 48_000, 1.03).unwrap();
+        first.process(a, &mut out);
+        first.finish_with(&b[..4096 * 2], &mut out);
+        let join = out.len() / 2;
+        let mut second = StereoResampler::with_speed(48_000, 48_000, 0.97).unwrap();
+        second.prime(&a[a.len() - 4096 * 2..]);
+        second.process(b, &mut out);
+        second.finish(&mut out);
+        let step = out[(join - 200) * 2..(join + 200) * 2]
+            .chunks(2)
+            .map(|f| f[0])
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        // 440 Hz at 0.5 moves < 0.03 per sample at these speeds; an edge would ring far more.
+        assert!(step < 0.035, "step {step} at the join");
     }
 
     #[test]

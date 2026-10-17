@@ -20,6 +20,9 @@ use crate::trycell::TryCell;
 use crate::worker::{Command, DecodeWorker, EngineEvent, RepeatMode, WorkerConfig};
 use crate::{PlayState, TrackId, TrackInfo, rt_guard};
 
+/// The varispeed range: ±16%.
+pub const SPEED_RANGE: std::ops::RangeInclusive<f64> = 0.84..=1.16;
+
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
     /// Requested device buffer (frames). 256–512 keeps output latency around 5–10 ms.
@@ -82,6 +85,8 @@ pub struct Engine {
     tap: Option<TapReader>,
     queue: Vec<TrackRef>,
     loaded: HashMap<TrackId, usize>,
+    /// Speed per queue entry (missing: 1).
+    speeds: HashMap<usize, f64>,
     infos: HashMap<TrackId, TrackInfo>,
     unread: Vec<EngineEvent>,
     last_index: Option<usize>,
@@ -173,6 +178,7 @@ impl Engine {
             tap: Some(tap_r),
             queue: Vec::new(),
             loaded: HashMap::new(),
+            speeds: HashMap::new(),
             infos: HashMap::new(),
             unread: Vec::new(),
             last_index: None,
@@ -191,6 +197,7 @@ impl Engine {
         self.queue = tracks.clone();
         self.last_index = current;
         self.loaded.clear();
+        self.speeds.clear();
         let _ = self.commands.send(Command::SetQueue { tracks, current });
     }
 
@@ -286,6 +293,48 @@ impl Engine {
     /// [`EngineEvent::LoopRejected`].
     pub fn set_loop(&self, track: TrackId, region: Option<(f64, f64)>) {
         let _ = self.commands.send(Command::SetLoop { track, region });
+    }
+
+    /// Plays queue entry `index` at `speed` (clamped to [`SPEED_RANGE`]; pitch follows), from
+    /// its next start, or within a buffer or two if it is playing: the old speed crossfades
+    /// into the new without a gap. Repeating a speed costs nothing. A new queue resets every
+    /// entry to 1.
+    pub fn set_speed(&mut self, index: usize, speed: f64) {
+        let speed = speed.clamp(*SPEED_RANGE.start(), *SPEED_RANGE.end());
+        if self.speed(index) == speed {
+            return;
+        }
+        self.speeds.insert(index, speed);
+        let _ = self.commands.send(Command::SetSpeed { index, speed });
+        if self.control.state() == PlayState::Stopped || self.current_index() != Some(index) {
+            return;
+        }
+        // Restart where the new audio takes over: after what the device already has (about a
+        // buffer, then its latency), still played at the old speed. A little early is fine.
+        let snap = self.clock.snapshot();
+        let pos = self.position();
+        let rate = snap.sample_rate.max(1) as f64;
+        let lead = snap.latency_ns as f64 / 1e9 + snap.buffer_frames as f64 / rate + 0.005;
+        let secs = pos.seconds() + lead * pos.speed;
+        // That late, it finishes at its old speed; its next start has the new one.
+        let duration = self.infos.get(&pos.track).and_then(|i| i.duration_secs);
+        if duration.is_some_and(|d| secs >= d) {
+            return;
+        }
+        self.control.mark_soft();
+        let generation = self.control.bump_generation();
+        self.control
+            .mark_start_request(generation, self.sink.now_ns());
+        let _ = self.commands.send(Command::Respeed {
+            generation,
+            track: pos.track,
+            secs,
+        });
+    }
+
+    /// The speed set for queue entry `index`.
+    pub fn speed(&self, index: usize) -> f64 {
+        self.speeds.get(&index).copied().unwrap_or(1.0)
     }
 
     /// Next queue entry; wraps to the first with [`RepeatMode::All`].

@@ -41,6 +41,13 @@ const GROOVE: C = rgb(16, 14, 12);
 const OFF_WHITE: C = rgb(240, 236, 226);
 
 const ATLAS_W: u16 = 512;
+/// The turntable section's height, its platter's centre, its LCD (x, y, w, h), and its pitch
+/// fader's travel (top, length), relative to the section.
+pub const DECK_H: u16 = 104;
+const PLATTER: (i32, i32) = (62, 58);
+const DECK_LCD: (i32, i32, i32, i32) = (132, 18, 76, 46);
+const PITCH_TOP: i32 = 22;
+const PITCH_LEN: i32 = 64;
 const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/'!?&+#%*\"=<>@·€£$¥";
 const GLYPH_W: u16 = 5;
 const GLYPH_H: u16 = 7;
@@ -575,6 +582,84 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny_centered(x + 78 + 18 * i as i32 + 7, y + 105, l, LABEL);
         }
     });
+    // The turntable under the main window while SYNC is on: a platter (the app turns its label
+    // mark and strobe dots), a tonearm, the LCD the app writes the tempo on, and the pitch
+    // fader's groove with its centre detent.
+    b.sprite("deck_bg", 275, DECK_H, |c, x, y| {
+        panel(c, x, y, 275, DECK_H as i32);
+        titlebar(c, x, y, 275, 14, "DIGGR TURNTABLE");
+        let (cx, cy) = (x + PLATTER.0, y + PLATTER.1);
+        for py in -42..=42 {
+            for px in -42..=42 {
+                let d = ((px * px + py * py) as f32).sqrt();
+                let col = match d {
+                    d if d > 41.5 => continue,
+                    d if d > 40.5 => LO,
+                    // The rim the strobe dots run on, lit from the top left.
+                    d if d > 34.5 => mix(BTN_BOT, BTN_LO, (px + py + 60) as f32 / 120.0),
+                    d if d > 33.5 => LO,
+                    // The record: grooves, then the label.
+                    d if d > 12.5 => {
+                        if (d as i32) % 3 == 0 {
+                            rgb(30, 28, 26)
+                        } else {
+                            rgb(14, 13, 12)
+                        }
+                    }
+                    d if d > 11.5 => rgb(40, 36, 32),
+                    d if d > 1.5 => ACCENT_DIM,
+                    _ => OFF_WHITE,
+                };
+                c.px(cx + px, cy + py, col);
+            }
+        }
+        // Tonearm: pivot, arm and headshell resting in the grooves.
+        let (pivot_x, pivot_y) = (x + 116, y + 24);
+        for dy in -4..=4 {
+            for dx in -4..=4 {
+                if dx * dx + dy * dy <= 16 {
+                    let col = if dx + dy < 0 { BTN_HI } else { BTN_BOT };
+                    c.px(pivot_x + dx, pivot_y + dy, col);
+                }
+            }
+        }
+        for i in 0..52 {
+            let t = i as f32 / 51.0;
+            let ax = pivot_x as f32 - 4.0 - t * 18.0;
+            let ay = pivot_y as f32 + 4.0 + t * 46.0;
+            c.px(ax as i32, ay as i32, BTN_TOP);
+            c.px(ax as i32 + 1, ay as i32, BTN_LO);
+        }
+        c.fill(pivot_x - 26, pivot_y + 50, 6, 8, BTN_TOP);
+        c.fill(pivot_x - 26, pivot_y + 57, 6, 1, BTN_LO);
+        // LCD.
+        let l = DECK_LCD;
+        c.inset(x + l.0, y + l.1, l.2, l.3, LCD_BG);
+        c.text(x + 174, y + 26, "BPM", LCD_DIM);
+        // Pitch fader groove, with a mark every eighth of its travel and the detent at 0.
+        let (gx, top, len) = (x + 251, y + PITCH_TOP, PITCH_LEN);
+        c.inset(gx - 3, top - 2, 6, len + 4, GROOVE);
+        for k in 0..=8 {
+            let ty = top + k * len / 8;
+            let (w, col) = if k == 4 { (8, ACCENT) } else { (3, LABEL) };
+            c.fill(gx + 5, ty, w, 1, col);
+        }
+        c.text(x + 262, y + 15, "+", LABEL);
+        c.text(x + 262, y + PITCH_TOP + PITCH_LEN - 4, "-", LABEL);
+        c.text_centered(x + 251, y + PITCH_TOP + PITCH_LEN + 6, "PITCH", LABEL);
+    });
+    for (name, pressed) in [("pitch_thumb", false), ("pitch_thumb_p", true)] {
+        b.sprite(name, 20, 9, |c, x, y| {
+            button_face(c, x, y, 20, 9, pressed);
+            c.fill(x + 2, y + 4, 16, 1, ACCENT);
+        });
+    }
+    for (state, col) in [("off", LCD_DIM), ("on", LCD_ON)] {
+        b.sprite(&format!("own_tempo_{state}"), 76, 12, |c, x, y| {
+            c.inset(x, y, 76, 12, LCD_BG);
+            c.text_centered(x + 38, y + 3, "OWN TEMPO", col);
+        });
+    }
     // The waveform's title bar, over the waveform in the player column.
     b.sprite("wave_title", 275, 14, |c, x, y| {
         titlebar(c, x, y, 275, 14, "DIGGR WAVEFORM");
@@ -847,6 +932,35 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             label,
             lit,
             true,
+        );
+    }
+    for (state, lit) in [("off", false), ("on", true)] {
+        for pressed in [false, true] {
+            let p = if pressed { "_p" } else { "" };
+            text_button(
+                &mut b,
+                &format!("sync_{state}{p}"),
+                26,
+                15,
+                "SYNC",
+                lit,
+                pressed,
+            );
+        }
+    }
+    for pressed in [false, true] {
+        let p = if pressed { "_p" } else { "" };
+        for (name, label) in [("deck_range_8", "8%"), ("deck_range_16", "16%")] {
+            text_button(&mut b, &format!("{name}{p}"), 30, 13, label, false, pressed);
+        }
+        text_button(
+            &mut b,
+            &format!("deck_reset{p}"),
+            42,
+            13,
+            "RESET",
+            false,
+            pressed,
         );
     }
     for (name, w, label) in [
@@ -1178,6 +1292,20 @@ fn layout() -> BTreeMap<String, R> {
         ("eject", R::new(136, 89, 22, 16)),
         ("shuffle", R::new(164, 89, 47, 15)),
         ("repeat", R::new(212, 89, 28, 15)),
+        ("sync", R::new(242, 89, 26, 15)),
+        // turntable (relative to its section)
+        ("deck_titlebar", R::new(0, 0, 275, 14)),
+        ("deck_close", R::new(262, 3, 9, 9)),
+        // The platter's square; the tempo lines on the LCD.
+        ("deck_platter", R::new(21, 17, 83, 83)),
+        ("deck_target", R::new(138, 23, 30, 13)),
+        ("deck_push", R::new(138, 42, 66, 7)),
+        ("deck_record", R::new(138, 53, 66, 7)),
+        ("deck_lamp", R::new(132, 68, 76, 12)),
+        ("deck_range", R::new(132, 86, 30, 13)),
+        ("deck_reset", R::new(166, 86, 42, 13)),
+        // The fader: its thumb's centre runs from y to y + h.
+        ("deck_pitch", R::new(241, 22, 20, 64)),
         // waveform title bar (relative to the waveform section)
         ("wave_titlebar", R::new(0, 0, 275, 14)),
         ("wave_close", R::new(262, 3, 9, 9)),

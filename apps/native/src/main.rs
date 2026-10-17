@@ -3,9 +3,10 @@
 //! ```text
 //! diggr [FILE...]                    the player window (files replace the playlist)
 //! diggr --tui FILE...                terminal player
-//! diggr --bench [--volume V] [--analysis] FILE...
+//! diggr --bench [--volume V] [--analysis] [--speed S] FILE...
 //!                                            measure start/seek latency and underruns
-//!                                            (optionally with music analysis running)
+//!                                            (optionally with music analysis running, or
+//!                                            at speed S with speed changes timed)
 //! diggr --click-test                 clock vs. microphone (needs speaker → mic path)
 //! diggr --startup-time               print time to first frame and quit
 //! ```
@@ -40,7 +41,7 @@ pub fn open_engine() -> Result<Engine, String> {
     .map_err(|e| e.to_string())
 }
 
-const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] FILE... | --click-test | --startup-time";
+const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] [--speed 0.84..1.16] FILE... | --click-test | --startup-time";
 
 fn main() -> ExitCode {
     let process_start = Instant::now();
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
     let mut files = Vec::new();
     let mut startup_time = false;
     let mut with_analysis = false;
+    let mut speed = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--tui" => mode = "tui",
@@ -59,6 +61,7 @@ fn main() -> ExitCode {
             "--startup-time" => startup_time = true,
             "--analysis" => with_analysis = true,
             "--volume" => volume = args.next().and_then(|v| v.parse::<f32>().ok()),
+            "--speed" => speed = args.next().and_then(|v| v.parse::<f64>().ok()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -68,7 +71,7 @@ fn main() -> ExitCode {
     }
     let tracks = || files.iter().map(TrackRef::new).collect::<Vec<_>>();
     let result = match mode {
-        "bench" => bench::run(tracks(), volume.unwrap_or(0.0), with_analysis),
+        "bench" => bench::run(tracks(), volume.unwrap_or(0.0), with_analysis, speed),
         "click" => click::run(),
         "tui" if files.is_empty() => Err(format!("no files given\n{USAGE}")),
         "tui" => interactive::run(tracks(), volume.unwrap_or(0.8)),

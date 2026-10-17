@@ -14,7 +14,7 @@ pub mod trycell;
 pub mod worker;
 
 pub use clock::{ClockReader, ClockSnapshot, Position};
-pub use engine::{Engine, EngineConfig, EngineError, EngineStats};
+pub use engine::{Engine, EngineConfig, EngineError, EngineStats, SPEED_RANGE};
 pub use eq::{EqPreset, EqPresets, EqSettings};
 pub use tap::{TapChunk, TapReader};
 pub use worker::{EngineEvent, RepeatMode};

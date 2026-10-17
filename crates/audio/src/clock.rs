@@ -4,6 +4,9 @@
 //! locks, no allocation). Readers interpolate between callbacks using the monotonic time base
 //! of the sink, compensating output latency and handling a gapless track boundary inside the
 //! buffer.
+//!
+//! Positions are in track frames. Under varispeed a buffer frame plays `speed` track frames;
+//! the snapshot stamps the track frame each run starts at, so readers never accumulate drift.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering, fence};
@@ -13,7 +16,7 @@ use crate::{PlayState, TrackId};
 /// Maximum user A/V offset, in milliseconds.
 pub const MAX_OFFSET_MS: i64 = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClockSnapshot {
     /// Track of the first frame in the buffer (0 = none).
     pub track: TrackId,
@@ -28,6 +31,9 @@ pub struct ClockSnapshot {
     /// From this buffer offset on, a different run is audible (gapless next track, or new
     /// position after a seek): `(track, buffer offset in frames, track frame at that offset)`.
     pub boundary: Option<(TrackId, u32, u64)>,
+    /// Track frames per buffer frame, before and from `boundary` on.
+    pub speed: f64,
+    pub boundary_speed: f64,
     /// No audio was available for this buffer (loading/seeking); readers freeze the position.
     pub starved: bool,
     pub buffer_frames: u32,
@@ -50,6 +56,8 @@ struct Shared {
     boundary_track: AtomicU64,
     boundary_at: AtomicU64,
     boundary_frame: AtomicU64,
+    speed_bits: AtomicU64,
+    boundary_speed_bits: AtomicU64,
     starved: AtomicU64,
     buffer_frames: AtomicU64,
     epoch: AtomicU64,
@@ -91,6 +99,9 @@ impl ClockWriter {
         sh.boundary_track.store(bt, Ordering::Relaxed);
         sh.boundary_at.store(ba, Ordering::Relaxed);
         sh.boundary_frame.store(bf, Ordering::Relaxed);
+        sh.speed_bits.store(s.speed.to_bits(), Ordering::Relaxed);
+        sh.boundary_speed_bits
+            .store(s.boundary_speed.to_bits(), Ordering::Relaxed);
         sh.starved.store(s.starved as u64, Ordering::Relaxed);
         sh.buffer_frames
             .store(s.buffer_frames as u64, Ordering::Relaxed);
@@ -110,6 +121,8 @@ pub struct Position {
     pub state: PlayState,
     /// True if a seek or device change happened since this reader's previous call.
     pub discontinuity: bool,
+    /// The speed being heard: 1 at the track's own tempo, 1.024 is 2.4% faster.
+    pub speed: f64,
 }
 
 impl Position {
@@ -154,6 +167,8 @@ impl ClockReader {
                         sh.boundary_frame.load(Ordering::Relaxed),
                     )
                 }),
+                speed: f64::from_bits(sh.speed_bits.load(Ordering::Relaxed)),
+                boundary_speed: f64::from_bits(sh.boundary_speed_bits.load(Ordering::Relaxed)),
                 starved: sh.starved.load(Ordering::Relaxed) != 0,
                 buffer_frames: sh.buffer_frames.load(Ordering::Relaxed) as u32,
                 epoch: sh.epoch.load(Ordering::Relaxed),
@@ -210,6 +225,7 @@ fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> (Position, bool) {
         sample_rate: s.sample_rate,
         state: s.state,
         discontinuity: false,
+        speed: s.speed,
     };
     if s.state != PlayState::Playing || s.starved || s.sample_rate == 0 {
         return (pos, false);
@@ -223,11 +239,12 @@ fn compute(s: &ClockSnapshot, now_ns: u64, offset_ns: i64) -> (Position, bool) {
     match s.boundary {
         Some((track, at, frame)) if off >= at as f64 => {
             pos.track = track;
-            pos.frame = frame + (off - at as f64) as u64;
+            pos.speed = s.boundary_speed;
+            pos.frame = frame + ((off - at as f64) * s.boundary_speed) as u64;
             (pos, true)
         }
         _ => {
-            pos.frame = (s.frame as f64 + off).max(0.0) as u64;
+            pos.frame = (s.frame as f64 + off * s.speed).max(0.0) as u64;
             (pos, false)
         }
     }
@@ -248,6 +265,8 @@ mod tests {
             sample_rate: 48_000,
             state: PlayState::Playing,
             boundary: None,
+            speed: 1.0,
+            boundary_speed: 1.0,
             starved: false,
             buffer_frames: 512,
             epoch: 1,
@@ -304,6 +323,20 @@ mod tests {
         w.publish(&s);
         let p = r.position(10 * MS + 300 * MS / 48 + 1);
         assert_eq!((p.track, p.frame), (1, 480_100));
+    }
+
+    #[test]
+    fn varispeed_advances_in_track_frames() {
+        let (w, mut r) = clock();
+        let mut s = playing(10_000, 0);
+        s.speed = 1.04;
+        s.boundary = Some((1, 100, 10_104));
+        s.boundary_speed = 0.96;
+        w.publish(&s);
+        let before = r.position(10 * MS + 50 * MS / 48 + 1);
+        assert_eq!((before.frame, before.speed), (10_052, 1.04));
+        let after = r.position(10 * MS + 200 * MS / 48 + 1);
+        assert_eq!((after.frame, after.speed), (10_200, 0.96));
     }
 
     #[test]

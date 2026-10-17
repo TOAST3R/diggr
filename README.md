@@ -287,6 +287,22 @@ and Home/End jump), and Enter plays the entry under it.
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
   - **SHUFFLE**;
   - **REP** cycles off → all → one (all gapless);
+  - **SYNC** plays every track at one tempo, the way it will sit in a set. It opens the
+    **turntable** under the main window, set to the playing record's tempo:
+    - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
+      record's own tempo (±8%; the **8%/16%** button widens it). Scroll over it, or press
+      `Shift+↑` / `Shift+↓` (player focused), for 1 BPM steps; **RESET** goes back to the
+      record's own tempo;
+    - the LCD shows the tempo, how far this record is pushed ("+2.4%") and its own BPM;
+    - every track plays at `target / its BPM` (or its double or half, whichever is closest),
+      vinyl-style: pitch follows speed. The change is heard within a buffer or two, without
+      a gap, and the fader then shows how far each new record is pushed;
+    - the platter turns with the speed heard, and its strobe dots stand still while the
+      record is locked to the tempo. A track that would need more than the range, or has no
+      BPM yet, plays at its own tempo: **OWN TEMPO** lights, the dots drift, and its row says
+      "(own tempo)";
+    - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
+      jumps, loops and analysis all stay in the track's own time;
   - **WAVE**, **EQ** and **PL** show or hide the other sections. There is no balance
     control: playback is always centred.
 - **Equalizer:**
@@ -315,7 +331,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen (the Playlist when that's a wantlist, collection, label, seller or friend crate) |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
-| `Shift+P` | maximize the playlist (again: restore) | | | |
+| `Shift+P` | maximize the playlist (again: restore) | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
 | `Space` | open or close the record under the cursor (grouped) | | `Cmd+F` | search the crate on screen |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
@@ -987,10 +1003,13 @@ seeks. It exits non-zero if a target is missed:
 start < 30 ms, seek < 50 ms, 0 underruns, 0 callback allocations (the allocation check needs a
 debug build: drop `--release`). `--volume 0` runs the full pipeline silently (it is also the
 default for `--bench`). Add `--analysis` to run the music analyzer during the whole bench and
-confirm it doesn't cost underruns or latency.
+confirm it doesn't cost underruns or latency. Add `--speed 1.04` (0.84–1.16) to play
+everything at that speed, as SYNC does, and time speed changes (to ±0.02 and back) after the
+seeks: target < 50 ms.
 
 Last measured on an M-series Mac (CoreAudio, 44.1 kHz, 512-frame buffer), 60 s files:
-start 7.9–20.8 ms, seek 12.1–20.0 ms.
+start 7.9–20.8 ms, seek 12.1–20.0 ms. With `--speed 1.04` (48 kHz, the fixtures): start
+6.9–19.4 ms, seek 4.2–20.8 ms, speed change 7.3–21.2 ms.
 
 ### Check A/V clock accuracy acoustically
 
@@ -1077,7 +1096,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 865 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 885 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1108,9 +1127,13 @@ What's covered:
   - bit-exact gapless playback, and gapless playback with resampling;
   - the clock hitting a click within ±2 ms with 12 ms of output latency;
   - device loss that comes back at a new sample rate;
-  - the tap, EQ, volume and balance.
+  - the tap, EQ, volume and balance;
+  - varispeed: a speed change heard within 50 ms with no click, gap or underrun, the
+    clock in track time (1.06 track frames per frame, monotonic across a change), gapless
+    at 1.03 → 0.97, jumps and loops landing in track time at 1.04, and a change in a track's
+    last moments or at a gapless boundary applying to the track being heard.
 - **`crates/audio/tests/rt_alloc.rs`**: a counting global allocator proves the audio callback
-  never allocates on any path.
+  never allocates on any path, varispeed and the speed change's crossfade included.
 - **`crates/ui`** (unit tests):
   - playlist selection, reordering and totals;
   - shuffle order, and a play order that skips entries waiting for their audio;
@@ -1121,6 +1144,9 @@ What's covered:
     filters in any crate (styles arriving late), and the row menu's Only this… / Search…;
   - folder scanning and M3U round trip (remote entries exported as their source URL);
   - settings, crate and preset persistence;
+  - SYNC: the speed for a BPM (fitted, half and double time, out of range, no BPM) and the
+    "+2.4%" label; headless, SYNC opening the turntable, its pitch fader (top, centre detent,
+    scroll), RESET, 8%/16% and ×, `Shift+↑`, what's heard following, and "(own tempo)" rows;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
     300-entry `playlist.ron`, and Send to crate without duplicates;
   - spectrum bars following the *audible* frame;
