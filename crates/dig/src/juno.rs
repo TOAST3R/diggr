@@ -10,11 +10,11 @@
 //! A sample is the one thing the app downloads from Juno: a 2-minute MP3 at a fixed path on
 //! `mp3.juno.co.uk`, which answers without a challenge (see `preview::fetcher`).
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
+
+pub use crate::stores::{STALE_SECS, Seen, Stock, StoreMemory as JunoMemory};
+use crate::stores::{Store, StoreRecord, StoreTrack, text, valid_slug};
 
 /// The most records one send may hold (Juno's largest page size).
 pub const MAX_RECORDS: usize = 500;
@@ -29,38 +29,6 @@ const KEY_PREFIX: &str = "jn.";
 const SAMPLE_HOST: &str = "https://mp3.juno.co.uk/MP3/";
 const PAGE_HOST: &str = "https://www.juno.co.uk";
 const COVER_HOST: &str = "https://imagescdn.juno.co.uk/full/";
-
-/// What the page said about stock when it was sent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Stock {
-    #[default]
-    Unknown,
-    In,
-    Out,
-    Preorder,
-}
-
-impl Stock {
-    fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "" => Stock::Unknown,
-            "in" => Stock::In,
-            "out" => Stock::Out,
-            "preorder" => Stock::Preorder,
-            _ => return None,
-        })
-    }
-
-    /// "in stock", "out of stock", "pre-order"; empty when unknown.
-    pub fn text(self) -> &'static str {
-        match self {
-            Stock::Unknown => "",
-            Stock::In => "in stock",
-            Stock::Out => "out of stock",
-            Stock::Preorder => "pre-order",
-        }
-    }
-}
 
 /// One track as the page shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -167,12 +135,6 @@ pub fn valid_sample(s: &str) -> bool {
             .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn valid_slug(s: &str) -> bool {
-    (1..=200).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
 fn valid_image(s: &str) -> bool {
     s.strip_suffix(".jpg").is_some_and(|stem| {
         (1..=40).contains(&stem.len())
@@ -182,11 +144,6 @@ fn valid_image(s: &str) -> bool {
 
 fn valid_side(s: &str) -> bool {
     s.len() <= 4 && s.bytes().all(|b| b.is_ascii_alphanumeric())
-}
-
-/// Text of `min..=max` characters with no control character.
-fn text(s: &str, min: usize, max: usize) -> bool {
-    (min..=max).contains(&s.chars().count()) && !s.chars().any(char::is_control)
 }
 
 fn valid_track(t: &JunoTrack) -> bool {
@@ -264,6 +221,47 @@ pub fn check(juno: &Value) -> Result<Checked, SendError> {
     Ok(out)
 }
 
+impl JunoRecord {
+    /// The record in the shape every store shares: its page, cover and sample keys rebuilt.
+    pub fn to_store(&self) -> StoreRecord {
+        StoreRecord {
+            store: Store::Juno,
+            id: self.product.clone(),
+            page: product_url(&self.slug, &self.product).unwrap_or_default(),
+            slug: self.slug.clone(),
+            artist: self.artist.clone(),
+            title: self.title.clone(),
+            label: self.label.clone(),
+            catno: self.catno.clone(),
+            format: self.format.clone(),
+            stock: self.stock,
+            price: self.price.clone(),
+            cover: cover_url(&self.image).unwrap_or_default(),
+            tracks: self
+                .tracks
+                .iter()
+                .map(|t| StoreTrack {
+                    position: match t.side.is_empty() {
+                        true => t.n.to_string(),
+                        false => format!("{}.{}", t.side, t.n),
+                    },
+                    artist: match t.artist.is_empty() {
+                        true => self.artist.clone(),
+                        false => t.artist.clone(),
+                    },
+                    title: match t.title.is_empty() {
+                        true => self.title.clone(),
+                        false => t.title.clone(),
+                    },
+                    secs: t.secs,
+                    clip: Some(key(&self.product, &t.sample)),
+                    ..StoreTrack::default()
+                })
+                .collect(),
+        }
+    }
+}
+
 // ---- keys and addresses ----------------------------------------------------------------
 
 /// A sample's preview key: `jn.1178909-01-02-01`.
@@ -318,97 +316,6 @@ pub fn looks_like_juno(text: &str) -> bool {
         .unwrap_or(&t);
     let host = t.split(['/', '?', '#']).next().unwrap_or_default();
     host == "juno.co.uk" || host.ends_with(".juno.co.uk")
-}
-
-// ---- what was seen on Juno -------------------------------------------------------------
-
-/// One product as last sent, and its Discogs release once looked up.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Seen {
-    /// The product page's name part, to open it.
-    pub slug: String,
-    pub stock: Stock,
-    pub price: String,
-    /// When a send last carried it (Unix seconds).
-    pub seen: u64,
-    /// Its Discogs release, when exactly one fits.
-    pub release: Option<u64>,
-    /// Looked up on Discogs already (found or not): never again.
-    pub searched: bool,
-}
-
-/// What Juno sends taught: per product, the stock note and the Discogs link
-/// (`juno.ron` in the cache folder).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct JunoMemory {
-    pub products: BTreeMap<String, Seen>,
-}
-
-/// A note older than this "may have changed".
-pub const STALE_SECS: u64 = 30 * 24 * 60 * 60;
-
-impl JunoMemory {
-    const FILE: &str = "juno.ron";
-
-    pub fn path(cache: &Path) -> PathBuf {
-        cache.join(Self::FILE)
-    }
-
-    /// Missing or broken: empty (a broken file never blocks launch).
-    pub fn load(cache: &Path) -> Self {
-        std::fs::read_to_string(Self::path(cache))
-            .ok()
-            .and_then(|t| ron::from_str(&t).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self, cache: &Path) -> std::io::Result<()> {
-        let text = ron::ser::to_string(self).map_err(std::io::Error::other)?;
-        crate::config::write_atomic(&Self::path(cache), text.as_bytes(), false)
-    }
-
-    /// A send's records, seen `now`: their stock notes replace the old ones; links stay.
-    pub fn saw(&mut self, records: &[JunoRecord], now: u64) {
-        for r in records {
-            let s = self.products.entry(r.product.clone()).or_default();
-            s.slug = r.slug.clone();
-            s.stock = r.stock;
-            s.price = r.price.clone();
-            s.seen = now;
-        }
-    }
-
-    /// The product linked to `release`, if any (the most recently seen).
-    pub fn product_of(&self, release: u64) -> Option<(&str, &Seen)> {
-        self.products
-            .iter()
-            .filter(|(_, s)| s.release == Some(release))
-            .max_by_key(|(_, s)| s.seen)
-            .map(|(p, s)| (p.as_str(), s))
-    }
-}
-
-impl Seen {
-    /// "in stock, €14.78 (seen 14 Oct)", with "may have changed" once stale (the tooltip
-    /// labels it "Juno"); `None` when nothing about stock was seen.
-    pub fn note(&self, now: u64, date: impl Fn(u64) -> String) -> Option<String> {
-        let stock = self.stock.text();
-        if stock.is_empty() && self.price.is_empty() {
-            return None;
-        }
-        let what = match (stock.is_empty(), self.price.is_empty()) {
-            (false, false) => format!("{stock}, {}", self.price),
-            (false, true) => stock.to_owned(),
-            _ => self.price.clone(),
-        };
-        let stale = match now.saturating_sub(self.seen) > STALE_SECS {
-            true => ", may have changed",
-            false => "",
-        };
-        Some(format!("{what} (seen {}{stale})", date(self.seen)))
-    }
 }
 
 #[cfg(test)]
@@ -629,26 +536,26 @@ mod tests {
         let dir = crate::test_dir("juno-memory");
         let rec: JunoRecord = serde_json::from_value(record()).unwrap();
         let mut m = JunoMemory::default();
-        m.saw(std::slice::from_ref(&rec), 1_000);
+        m.saw(&[rec.to_store()], 1_000);
         m.products.get_mut("1178909-01").unwrap().release = Some(123456);
-        m.save(&dir).unwrap();
-        let mut m = JunoMemory::load(&dir);
+        m.save(&dir, Store::Juno).unwrap();
+        let mut m = JunoMemory::load(&dir, Store::Juno);
         assert_eq!(m.product_of(123456).map(|(p, _)| p), Some("1178909-01"));
         let mut out = rec.clone();
         out.stock = Stock::Out;
         out.price = String::new();
-        m.saw(&[out], 2_000);
+        m.saw(&[out.to_store()], 2_000);
         let s = &m.products["1178909-01"];
         assert_eq!(
             (s.stock, s.release, s.seen),
             (Stock::Out, Some(123456), 2_000)
         );
         assert_eq!(
-            JunoMemory::load(&dir.join("nowhere")),
+            JunoMemory::load(&dir.join("nowhere"), Store::Juno),
             JunoMemory::default()
         );
-        std::fs::write(JunoMemory::path(&dir), "not ron").unwrap();
-        assert_eq!(JunoMemory::load(&dir), JunoMemory::default());
+        std::fs::write(JunoMemory::path(&dir, Store::Juno), "not ron").unwrap();
+        assert_eq!(JunoMemory::load(&dir, Store::Juno), JunoMemory::default());
     }
 
     #[test]

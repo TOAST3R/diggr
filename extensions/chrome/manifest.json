@@ -3,13 +3,15 @@
   "name": "Diggr bridge",
   "short_name": "Diggr",
   "version": "0.1.0",
-  "description": "Send Discogs, Bandcamp and Juno pages and links to the player running on this computer.",
+  "description": "Send Discogs, Bandcamp, Juno, Beatport and Traxsource pages and links to the player running on this computer.",
   "permissions": ["storage", "contextMenus"],
   "host_permissions": [
     "https://www.discogs.com/*",
     "https://discogs.com/*",
     "https://*.bandcamp.com/*",
     "https://*.juno.co.uk/*",
+    "https://www.beatport.com/*",
+    "https://www.traxsource.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -24,6 +26,16 @@
     {
       "matches": ["https://*.juno.co.uk/*"],
       "js": ["pages.js", "juno.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.beatport.com/*"],
+      "js": ["pages.js", "beatport.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.traxsource.com/*"],
+      "js": ["pages.js", "traxsource.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

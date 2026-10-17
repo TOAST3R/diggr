@@ -39,9 +39,9 @@ mod fan;
 #[cfg(not(target_arch = "wasm32"))]
 mod friends;
 #[cfg(not(target_arch = "wasm32"))]
-mod juno;
-#[cfg(not(target_arch = "wasm32"))]
 mod sellers;
+#[cfg(not(target_arch = "wasm32"))]
+mod stores;
 #[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
 
@@ -968,7 +968,7 @@ impl DiggrApp {
                         .collect();
                     (!text.is_empty()).then(|| text.join(", "))
                 }),
-                juno: self.juno_note(e),
+                stores: self.store_notes(e),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -7317,6 +7317,8 @@ mod headless_tests {
     mod fan_tests;
     // Juno records sent by the extension, with a fake Discogs and fake previews.
     mod juno_tests;
+    // Beatport and Traxsource tracks sent by the extension.
+    mod store_tests;
     // Top Sellers and the cart, with a fake Discogs.
     mod seller_tests;
 

@@ -56,10 +56,18 @@ var WR = (() => {
     "login", "register", "help", "about", "contact", "merchandise", "gift-vouchers", "wishlist",
   ]);
 
+  // Beatport and Traxsource: any page listing tracks (track, release or title, chart, label,
+  // artist, genre, search…). The cart, the account and the home page have none to read.
+  const STORE_HOSTS = { "www.beatport.com": "Beatport", "www.traxsource.com": "Traxsource" };
+  const NOT_STORE_PAGES = new Set([
+    "", "cart", "checkout", "account", "my-account", "library", "my-beatport", "login",
+    "signup", "register", "help", "about", "contact", "download", "downloads", "subscriptions",
+  ]);
+
   /**
    * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum",
    * "BandcampTrack" or "BandcampFan" for a Bandcamp one; "JunoProduct" or "JunoListing" for a
-   * Juno one; else null.
+   * Juno one; "BeatportPage" or "TraxsourcePage"; else null.
    */
   function pageKind(address) {
     let u;
@@ -72,6 +80,10 @@ var WR = (() => {
       if (JUNO_PRODUCT.test(u.pathname)) return "JunoProduct";
       const first = u.pathname.split("/")[1];
       return JUNO_LISTING.test(u.pathname) && !NOT_JUNO_LISTINGS.has(first) ? "JunoListing" : null;
+    }
+    if (u.protocol === "https:" && STORE_HOSTS[u.hostname]) {
+      const first = u.pathname.split("/")[1].toLowerCase();
+      return NOT_STORE_PAGES.has(first) ? null : `${STORE_HOSTS[u.hostname]}Page`;
     }
     if (u.protocol === "https:" && FAN_HOST.test(u.hostname)) {
       const m = u.pathname.match(FAN_PATH);
@@ -112,7 +124,8 @@ var WR = (() => {
     "a release, master release, artist, label, wantlist, collection, list, marketplace item " +
     "or seller on Discogs; a label, album or track on Bandcamp, or a fan's collection or " +
     "wishlist (bandcamp.com/‹user›); a product, label, artist, genre, chart or search page " +
-    "on Juno (from this button only)";
+    "on Juno; a track, release, chart, label, artist, genre or search page on Beatport or " +
+    "Traxsource (from this button only)";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -210,10 +223,19 @@ var WR = (() => {
     return typeof kind === "string" && kind.startsWith("Juno");
   }
 
+  /** The store whose page this is ("Juno", "Beatport", "Traxsource"), else null. */
+  function storeOf(kind) {
+    if (isJuno(kind)) return "Juno";
+    if (kind === "BeatportPage") return "Beatport";
+    if (kind === "TraxsourcePage") return "Traxsource";
+    return null;
+  }
+
   return {
     PLACEHOLDER,
     isBandcamp,
     isJuno,
+    storeOf,
     DEFAULT_PORT,
     pageKind,
     LINK_PATTERNS,

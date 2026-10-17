@@ -336,23 +336,24 @@ impl DiggrApp {
             }
             return self.bandcamp_start(page, c, name, false, skip_passed);
         }
-        let Some(target) = self.send_target(&mode, &name) else {
+        let Some(target) = self.send_target(&mode) else {
             return;
         };
         self.bandcamp_start(page, target, name, false, skip_passed);
     }
 
-    /// Where a send's tracks go: the shown crate (Enqueue, see `enqueue_target`), or the crate named after the page
-    /// (Play) or by the user (Crate), made if needed and shown when new. Play also plays it
-    /// once ready. `None`, said why, when it can't take them.
-    pub(super) fn send_target(&mut self, mode: &SendMode, name: &str) -> Option<CrateId> {
+    /// Where a send's tracks go: the shown crate (Enqueue and Play, see `enqueue_target`), or
+    /// the crate the user names (Crate), made if needed and shown when new. Play also plays
+    /// the first track it adds. `None`, said why, when it can't take them.
+    pub(super) fn send_target(&mut self, mode: &SendMode) -> Option<CrateId> {
         match mode {
             SendMode::Enqueue => Some(self.enqueue_target()),
-            SendMode::Play | SendMode::Crate(_) => {
-                let crate_name = match mode {
-                    SendMode::Crate(n) => n.as_str(),
-                    _ => name,
-                };
+            SendMode::Play => {
+                let c = self.enqueue_target();
+                self.play_new_in(c);
+                Some(c)
+            }
+            SendMode::Crate(crate_name) => {
                 let crate_name: String = crate_name.trim().chars().take(MAX_NAME).collect();
                 let (id, created) = match self.crates.find(&crate_name) {
                     Some(id) => (id, false),
@@ -367,17 +368,12 @@ impl DiggrApp {
                 if self.refuse_discogs_insert(id) || !self.crates.load(id) {
                     return None;
                 }
-                if *mode == SendMode::Play || created {
+                if created {
                     self.show_crate(id);
                     if !self.settings.show_playlist {
                         self.settings.show_playlist = true;
                         self.mark_settings();
                     }
-                }
-                if *mode == SendMode::Play
-                    && let Some(d) = &mut self.dig
-                {
-                    d.play_when_ready = Some(id);
                 }
                 Some(id)
             }
@@ -836,6 +832,14 @@ impl DiggrApp {
 
     /// Every page of a job read: the summary.
     pub(super) fn bandcamp_done(&mut self, job: JobId) {
+        let target = self
+            .dig
+            .as_ref()
+            .and_then(|d| d.bandcamp.jobs.get(&job))
+            .map(|j| j.target);
+        if let Some(t) = target {
+            self.play_send_ended(t);
+        }
         let Some(d) = &mut self.dig else { return };
         d.jobs.remove(&job);
         let Some(j) = d.bandcamp.jobs.remove(&job) else {
@@ -1083,6 +1087,7 @@ impl DiggrApp {
             ClipSource::Bandcamp => Some(o.bandcamp.clone()),
             ClipSource::YouTube => Some(dig::preview::fetcher::clip_url(&new)),
             ClipSource::Juno => dig::juno::product_url(&o.juno_slug, &o.juno),
+            ClipSource::Beatport => Some(o.beatport_page.clone()),
         };
         let playing = self.crates.playing_id() == c && self.crates.playing().current() == Some(id);
         let Some(p) = self.crates.get_mut(c) else {

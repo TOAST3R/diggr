@@ -66,10 +66,14 @@ async function send(url, mode, crate, title) {
   return bridge("send", { method: "POST", body });
 }
 
-/** The records read from a Juno page (the player checks each one again). */
-async function sendJuno(page, records, mode, crate) {
+/**
+ * The records read from a Juno page, or the tracks from a Beatport or Traxsource one (the
+ * player checks each one again).
+ */
+async function sendStore(store, page, items, mode, crate) {
   const s = await settings();
-  const body = { juno: { page, records }, mode, skip_passed: s.skipPassed };
+  const payload = store === "Juno" ? { page, records: items } : { page, tracks: items };
+  const body = { [store.toLowerCase()]: payload, mode, skip_passed: s.skipPassed };
   if (mode === "crate") body.crate = crate;
   return bridge("send", { method: "POST", body });
 }
@@ -101,9 +105,9 @@ async function handle(msg) {
       if (r.error === "not-paired") chrome.runtime.openOptionsPage();
       return r;
     }
-    case "sendJuno": {
-      if (!WR.isJuno(WR.pageKind(msg.page))) return { ok: false, error: "unsupported" };
-      const r = await sendJuno(msg.page, msg.records, msg.mode, msg.crate);
+    case "sendStore": {
+      if (WR.storeOf(WR.pageKind(msg.page)) !== msg.store) return { ok: false, error: "unsupported" };
+      const r = await sendStore(msg.store, msg.page, msg.items, msg.mode, msg.crate);
       if (r.error === "not-paired") chrome.runtime.openOptionsPage();
       return r;
     }
@@ -137,7 +141,6 @@ async function buildMenus() {
   await chrome.contextMenus.removeAll();
   for (const [id, verb] of [
     ["play", "Play"],
-    ["enqueue", "Enqueue"],
   ]) {
     chrome.contextMenus.create({
       id,
@@ -179,7 +182,7 @@ async function badge(ok) {
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
   if (!info.linkUrl) return;
-  // The label item sends like Enqueue: the player follows the label from the address.
+  // The label item sends as an enqueue: the player follows the label from the address.
   const mode = info.menuItemId === "label" ? "enqueue" : info.menuItemId;
   const r = await send(info.linkUrl, mode);
   badge(r.ok);

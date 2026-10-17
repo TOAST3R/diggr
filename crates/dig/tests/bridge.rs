@@ -810,7 +810,7 @@ fn a_juno_product_page_is_sent_as_records() {
     );
     match &r.bridge.poll()[..] {
         [
-            BridgeCommand::SendJuno {
+            BridgeCommand::SendStore {
                 records,
                 mode,
                 filters,
@@ -838,6 +838,64 @@ fn bad_juno_records_are_refused_alone() {
         (Some(19), Some(1))
     );
     assert_eq!(a.json["message"], "Sent 19 records, 1 refused");
+}
+
+fn beatport_track(id: &str) -> Value {
+    serde_json::json!({
+        "id": id, "slug": "input", "artists": ["Martin Cantrill"], "title": "Input",
+        "mix": "Original Mix", "sample": "b776a31b-cb84-477f-a7bb-0476c5a1ee8e",
+        "bpm": 126, "key": "8A", "secs": 305, "release": "4630549",
+        "release_name": "Dreams Album", "release_slug": "dreams-album", "price": "€1.39",
+    })
+}
+
+fn beatport_body(tracks: Vec<Value>) -> String {
+    serde_json::json!({
+        "beatport": { "page": "https://www.beatport.com/chart/x/1", "tracks": tracks },
+        "mode": "enqueue",
+        "skip_passed": true,
+    })
+    .to_string()
+}
+
+#[test]
+fn a_beatport_chart_is_sent_as_tracks() {
+    let r = rig("beatport-chart");
+    let key = r.pair();
+    r.bridge.poll();
+    let mut tracks: Vec<Value> = (1..=100).map(|i| beatport_track(&i.to_string())).collect();
+    tracks[7]["sample"] = Value::from("../../etc");
+    let started = Instant::now();
+    let a = r.send(&key, &beatport_body(tracks));
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["message"], "Sent 99 tracks, 1 refused");
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendStore { records, .. }] => {
+            assert_eq!(records.iter().map(|r| r.tracks.len()).sum::<usize>(), 99);
+            assert_eq!(records[0].store, ::dig::stores::Store::Beatport);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_store_send_names_one_store_and_fits_in_a_mebibyte() {
+    let r = rig("store-shape");
+    let key = r.pair();
+    r.bridge.poll();
+    let both = serde_json::json!({
+        "beatport": { "page": "https://www.beatport.com/", "tracks": [beatport_track("1")] },
+        "traxsource": { "page": "https://www.traxsource.com/", "tracks": [] },
+        "mode": "enqueue",
+        "skip_passed": false,
+    })
+    .to_string();
+    assert_eq!(r.send(&key, &both).status, 422);
+    let mut big = beatport_track("1");
+    big["title"] = Value::from("x".repeat(1 << 20));
+    assert_eq!(r.send(&key, &beatport_body(vec![big])).status, 413);
+    assert!(r.bridge.poll().is_empty(), "nothing reached the player");
 }
 
 #[test]

@@ -1,22 +1,27 @@
-//! Juno in the player: records the browser extension read from the Juno page the user has
-//! open, sent with the bridge (the app never reads Juno itself, see `dig::juno`).
+//! Stores in the player: records the browser extension read from a Juno, Beatport or
+//! Traxsource page the user has open, sent with the bridge (the app never reads those pages
+//! itself, see `dig::stores`).
 //!
 //! A send's tracks are merged into their crate as a Bandcamp album is: a track the crate plays
 //! already is skipped, one with no preview ("no clip", "clip failed", "not found") gets the
-//! Juno sample in place, and only what the crate lacks is added. A send can hold 500 records,
-//! so the crate is indexed once by artist and title rather than scanned per track.
+//! store's sample in place, and only what the crate lacks is added. A Traxsource track has no
+//! sample: it waits to be searched for, as a Discogs track without a clip does. A send can
+//! hold 500 records, so the crate is indexed once by artist and title rather than scanned per
+//! track. Beatport and Traxsource tracks bring their BPM (shown until the analyser has one)
+//! and their key.
 //!
 //! Each record is then looked up on Discogs once (with a token), by artist, title and
 //! catalogue number, and linked only when exactly one release fits: its entries get the
-//! Discogs verbs (Y, I, ★, owned). What the page said about stock is kept per product and
-//! shown on its entries, and on any Discogs entry of the linked release.
+//! Discogs verbs (Y, I, ★, owned). What the page said about stock and price is kept per
+//! record and shown on its entries, and on any Discogs entry of the linked release.
 
 use dig::bandcamp::fan::DiscogsMatch;
 use dig::discogs::client::ApiError;
 use dig::discogs::search::Wanted;
 use dig::intake::Command;
-use dig::juno::{self, JunoMemory, JunoRecord};
+use dig::juno;
 use dig::preview::fetcher::preview_path;
+use dig::stores::{Store, StoreMemory, StoreRecord};
 use platform::TrackRef;
 use std::collections::{HashMap, HashSet};
 
@@ -26,37 +31,77 @@ use super::digging::SendMode;
 use crate::crates::CrateId;
 use crate::playlist::{Entry, EntryId, EntryStatus, NewEntry, Origin, UnavailableKind, WaitKind};
 
-/// Discogs lookups for Juno products are keyed `juno:‹product›`.
-const FIND_PREFIX: &str = "juno:";
-
-/// Juno's part of the dig state.
-#[derive(Default)]
-pub(super) struct JunoState {
-    pub(super) memory: JunoMemory,
-    /// Products being looked up on Discogs this session.
-    finding: HashSet<String>,
-    /// Where `juno.ron` snapshots go to be written (see `Dig::save_juno`).
-    pub(super) saver: Option<std::sync::mpsc::Sender<JunoMemory>>,
+/// Discogs lookups for a store's records are keyed `‹store›:‹record›` (`juno:1178909-01`).
+fn find_key(store: Store, id: &str) -> String {
+    format!("{}:{id}", store.name().to_ascii_lowercase())
 }
 
-impl JunoState {
-    pub(super) fn new(memory: JunoMemory) -> Self {
+/// The store and record a lookup's key names.
+fn parse_find(key: &str) -> Option<(Store, &str)> {
+    let (name, id) = key.split_once(':')?;
+    let store = Store::ALL
+        .into_iter()
+        .find(|s| s.name().eq_ignore_ascii_case(name))?;
+    Some((store, id))
+}
+
+/// The stores' part of the dig state.
+#[derive(Default)]
+pub(super) struct StoreState {
+    memories: HashMap<Store, StoreMemory>,
+    /// Records being looked up on Discogs this session.
+    finding: HashSet<(Store, String)>,
+    /// Where `juno.ron`, `beatport.ron` and `traxsource.ron` snapshots go to be written (see
+    /// `Dig::save_store`).
+    pub(super) saver: Option<std::sync::mpsc::Sender<(Store, StoreMemory)>>,
+}
+
+impl StoreState {
+    pub(super) fn load(cache: Option<&std::path::Path>) -> Self {
+        let memories = Store::ALL
+            .into_iter()
+            .map(|s| {
+                (
+                    s,
+                    cache.map(|c| StoreMemory::load(c, s)).unwrap_or_default(),
+                )
+            })
+            .collect();
         Self {
-            memory,
-            finding: HashSet::new(),
-            saver: None,
+            memories,
+            ..Self::default()
         }
+    }
+
+    pub(super) fn memory(&self, store: Store) -> &StoreMemory {
+        self.memories.get(&store).expect("every store has a memory")
+    }
+
+    pub(super) fn memory_mut(&mut self, store: Store) -> &mut StoreMemory {
+        self.memories.entry(store).or_default()
     }
 }
 
-/// An entry with no preview that a Juno sample can fix.
+/// The id of the store's record an entry came from, if it came from that store.
+fn record_of(o: &Origin, store: Store) -> &str {
+    match store {
+        Store::Juno => &o.juno,
+        Store::Beatport => &o.beatport,
+        Store::Traxsource => &o.traxsource,
+    }
+}
+
+/// An entry with no preview that a store's sample can fix.
 fn fixable(e: &Entry) -> bool {
     matches!(
         e.status,
         EntryStatus::Unavailable(
             UnavailableKind::NoClip | UnavailableKind::ClipFailed | UnavailableKind::NotFound
         )
-    ) && e.origin.as_ref().is_some_and(|o| o.juno_clip.is_empty())
+    ) && e
+        .origin
+        .as_ref()
+        .is_some_and(|o| o.juno_clip.is_empty() && o.beatport_clip.is_empty())
 }
 
 /// A crate's entries by match key, built once per send.
@@ -135,14 +180,6 @@ impl Index {
     }
 }
 
-/// "1.2": side and place, or the place alone.
-fn position(t: &juno::JunoTrack) -> String {
-    match t.side.is_empty() {
-        true => t.n.to_string(),
-        false => format!("{}.{}", t.side, t.n),
-    }
-}
-
 /// "14 Oct" for a Unix time (UTC).
 pub(super) fn day_month(secs: u64) -> String {
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
@@ -160,38 +197,73 @@ pub(super) fn day_month(secs: u64) -> String {
     format!("{day} {}", MONTHS[(month - 1) as usize])
 }
 
+/// Sets what a store's track tells on an entry's origin: where it came from, its sample (the
+/// clip to switch to), its page and key.
+fn tag(o: &mut Origin, r: &StoreRecord, t: &dig::stores::StoreTrack) {
+    let clip = t.clip.clone().unwrap_or_default();
+    match r.store {
+        Store::Juno => {
+            o.juno = r.id.clone();
+            o.juno_slug = r.slug.clone();
+            o.juno_clip = clip;
+        }
+        Store::Beatport => {
+            o.beatport = r.id.clone();
+            o.beatport_page = t.page.clone();
+            o.beatport_clip = clip;
+        }
+        Store::Traxsource => {
+            o.traxsource = r.id.clone();
+            o.traxsource_page = t.page.clone();
+        }
+    }
+    if let Some(k) = &t.key {
+        o.key = k.clone();
+    }
+}
+
 impl DiggrApp {
-    /// Records from a Juno page: merged where `mode` says, remembered, and looked up on
+    /// Records from a store's page: merged where `mode` says, remembered, and looked up on
     /// Discogs once each.
-    pub(super) fn juno_send(
+    pub(super) fn store_send(
         &mut self,
-        records: Vec<JunoRecord>,
+        records: Vec<StoreRecord>,
         mode: SendMode,
         skip_passed: bool,
     ) {
         if self.dig.is_none() || records.is_empty() {
             return;
         }
-        let name = dig::bridge::juno_name(&records);
-        let Some(target) = self.send_target(&mode, &name) else {
+        let name = dig::stores::send_name(&records);
+        let Some(target) = self.send_target(&mode) else {
             return;
         };
-        let (added, fixed, skipped) = self.juno_merge(target, &records, skip_passed);
+        let (added, fixed, skipped) = self.store_merge(target, &records, skip_passed);
+        self.play_send_ended(target);
         let Some(d) = &mut self.dig else { return };
-        d.juno.memory.saw(&records, dig::now_secs());
-        d.save_juno();
-        self.juno_link_known(&records);
-        self.juno_find(&records);
+        for store in Store::ALL {
+            let of: Vec<StoreRecord> = records
+                .iter()
+                .filter(|r| r.store == store)
+                .cloned()
+                .collect();
+            if !of.is_empty() {
+                d.stores.memory_mut(store).saw(&of, dig::now_secs());
+                d.save_store(store);
+            }
+        }
+        self.store_link_known(&records);
+        self.store_find(&records);
         self.notify(format!(
             "{name}: {added} added, {fixed} fixed, {skipped} skipped"
         ));
     }
 
     /// Merges the records' tracks into crate `target`; returns (added, fixed, skipped).
-    fn juno_merge(
+    fn store_merge(
         &mut self,
         target: CrateId,
-        records: &[JunoRecord],
+        records: &[StoreRecord],
         skip_passed: bool,
     ) -> (usize, usize, usize) {
         let Some(d) = &self.dig else {
@@ -200,7 +272,7 @@ impl DiggrApp {
         let dir = d.previews_dir();
         let passed: HashSet<String> = records
             .iter()
-            .flat_map(|r| r.tracks.iter().map(|t| juno::key(&r.product, &t.sample)))
+            .flat_map(|r| r.tracks.iter().filter_map(|t| t.clip.clone()))
             .filter(|k| skip_passed && d.memory.is_passed(k))
             .collect();
         let Some(p) = self.crates.get_mut(target) else {
@@ -212,32 +284,23 @@ impl DiggrApp {
         let mut moved_passes: Vec<(String, String)> = Vec::new();
         for r in records {
             let catno = catno_key(&r.catno);
-            let page = juno::product_url(&r.slug, &r.product).unwrap_or_default();
-            let names: Vec<(String, String)> = r
+            let keys: Vec<String> = r
                 .tracks
                 .iter()
-                .map(|t| {
-                    let artist = match t.artist.is_empty() {
-                        true => r.artist.clone(),
-                        false => t.artist.clone(),
-                    };
-                    let title = match t.title.is_empty() {
-                        true => r.title.clone(),
-                        false => t.title.clone(),
-                    };
-                    (artist, title)
-                })
+                .map(|t| match_key(&t.artist, &t.title))
                 .collect();
-            let keys: Vec<String> = names.iter().map(|(a, t)| match_key(a, t)).collect();
             let steps = ix.plan(&catno, &keys);
             let mut last_of_catno = ix.last.get(&catno).copied();
-            for (((t, (artist, title)), key), step) in
-                r.tracks.iter().zip(names).zip(keys).zip(steps)
-            {
-                let clip = juno::key(&r.product, &t.sample);
-                match step {
-                    Step::Skip => skipped += 1,
-                    Step::Fix(id) => {
+            for ((t, key), step) in r.tracks.iter().zip(keys).zip(steps) {
+                let page = match t.page.is_empty() {
+                    true => r.page.clone(),
+                    false => t.page.clone(),
+                };
+                match (step, &t.clip) {
+                    (Step::Skip, _) => skipped += 1,
+                    // A track without a sample can't fix anything.
+                    (Step::Fix(_), None) => skipped += 1,
+                    (Step::Fix(id), Some(clip)) => {
                         let Some(e) = p.entries_mut().find(|e| e.id == id) else {
                             continue;
                         };
@@ -249,45 +312,57 @@ impl DiggrApp {
                         {
                             o.youtube_clip = old.clone();
                         }
-                        o.juno = r.product.clone();
-                        o.juno_slug = r.slug.clone();
-                        o.juno_clip = clip.clone();
+                        tag(o, r, t);
                         o.clip = Some(clip.clone());
                         e.source = Some(page.clone());
+                        if e.bpm.is_none() && t.bpm.is_some() {
+                            e.bpm = t.bpm;
+                            if let Some(o) = e.origin.as_mut() {
+                                o.store_bpm = true;
+                            }
+                        }
                         if let Some(old) = old {
                             moved_passes.push((old, clip.clone()));
                         }
                         p.set_waiting(id, WaitKind::Queued);
-                        ready.push((id, clip));
+                        ready.push((id, clip.clone()));
                         fixed += 1;
                     }
-                    Step::Add => {
-                        if passed.contains(&clip) {
+                    (Step::Add, clip) => {
+                        if clip.as_ref().is_some_and(|c| passed.contains(c)) {
                             skipped += 1;
                             continue;
                         }
-                        let origin = Origin {
+                        let mut origin = Origin {
                             page: page.clone(),
                             label: r.label.clone(),
                             catno: r.catno.clone(),
-                            position: position(t),
-                            clip: Some(clip.clone()),
+                            position: t.position.clone(),
+                            clip: clip.clone(),
                             album: r.title.clone(),
-                            cover: juno::cover_url(&r.image).unwrap_or_default(),
+                            cover: r.cover.clone(),
                             artist: r.artist.clone(),
                             formats: r.format.clone(),
-                            juno: r.product.clone(),
-                            juno_slug: r.slug.clone(),
-                            juno_clip: clip.clone(),
+                            store_bpm: t.bpm.is_some(),
                             ..Origin::default()
                         };
+                        tag(&mut origin, r, t);
+                        // No sample: found by searching, like a Discogs track without a clip.
+                        let status = match clip {
+                            Some(_) => WaitKind::Queued,
+                            None => {
+                                origin.search_key =
+                                    format!("{}/{}", r.store.name().to_ascii_lowercase(), t.track);
+                                WaitKind::Search
+                            }
+                        };
                         let new = NewEntry {
-                            artist,
-                            title,
+                            artist: t.artist.clone(),
+                            title: t.title.clone(),
                             source: Some(page.clone()),
                             origin: Some(origin),
                             duration: (t.secs > 0).then_some(f64::from(t.secs)),
-                            status: WaitKind::Queued,
+                            status,
                         };
                         let after = last_of_catno.or_else(|| p.entries().last().map(|e| e.id));
                         let id = match after {
@@ -302,11 +377,16 @@ impl DiggrApp {
                                 id
                             }
                         };
+                        if let Some(e) = p.entries_mut().find(|e| e.id == id) {
+                            e.bpm = t.bpm;
+                        }
                         if !catno.is_empty() {
                             last_of_catno = Some(id);
                         }
                         ix.add(id, catno.clone(), key, false);
-                        ready.push((id, clip));
+                        if let Some(clip) = clip {
+                            ready.push((id, clip.clone()));
+                        }
                         added += 1;
                     }
                 }
@@ -347,23 +427,23 @@ impl DiggrApp {
 
     // ---- Discogs ------------------------------------------------------------------------
 
-    /// Products linked before: their entries take the release at once.
-    fn juno_link_known(&mut self, records: &[JunoRecord]) {
+    /// Records linked before: their entries take the release at once.
+    fn store_link_known(&mut self, records: &[StoreRecord]) {
         let Some(d) = &self.dig else { return };
-        let links: Vec<(String, u64)> = records
+        let links: Vec<(Store, String, u64)> = records
             .iter()
             .filter_map(|r| {
-                let release = d.juno.memory.products.get(&r.product)?.release?;
-                Some((r.product.clone(), release))
+                let release = d.stores.memory(r.store).products.get(&r.id)?.release?;
+                Some((r.store, r.id.clone(), release))
             })
             .collect();
-        for (product, release) in links {
-            self.juno_link(&product, release);
+        for (store, id, release) in links {
+            self.store_link(store, &id, release);
         }
     }
 
-    /// Products never looked up are looked up on Discogs (with a token), behind other work.
-    fn juno_find(&mut self, records: &[JunoRecord]) {
+    /// Records never looked up are looked up on Discogs (with a token), behind other work.
+    fn store_find(&mut self, records: &[StoreRecord]) {
         let Some(d) = &mut self.dig else { return };
         if d.token.is_none() {
             return;
@@ -371,54 +451,54 @@ impl DiggrApp {
         let mut finds = Vec::new();
         for r in records {
             let searched = d
-                .juno
-                .memory
+                .stores
+                .memory(r.store)
                 .products
-                .get(&r.product)
+                .get(&r.id)
                 .is_some_and(|s| s.searched);
-            if searched || !d.juno.finding.insert(r.product.clone()) {
+            if searched || !d.stores.finding.insert((r.store, r.id.clone())) {
                 continue;
             }
             let w = Wanted::new(&r.artist, &r.title, &r.catno, true);
-            finds.push((format!("{FIND_PREFIX}{}", r.product), w));
+            finds.push((find_key(r.store, &r.id), w));
         }
         if !finds.is_empty() {
             d.send_cmd(Command::FindReleases(finds));
         }
     }
 
-    /// Whether a lookup's key is a Juno product's.
-    pub(super) fn is_juno_find(key: &str) -> bool {
-        key.starts_with(FIND_PREFIX)
+    /// Whether a lookup's key is a store record's.
+    pub(super) fn is_store_find(key: &str) -> bool {
+        parse_find(key).is_some()
     }
 
-    /// Discogs answered for a product: remembered; exactly one release links its entries.
-    pub(super) fn juno_found(&mut self, key: &str, result: Result<DiscogsMatch, ApiError>) {
-        let Some(product) = key.strip_prefix(FIND_PREFIX) else {
+    /// Discogs answered for a record: remembered; exactly one release links its entries.
+    pub(super) fn store_found(&mut self, key: &str, result: Result<DiscogsMatch, ApiError>) {
+        let Some((store, id)) = parse_find(key) else {
             return;
         };
         let Some(d) = &mut self.dig else { return };
-        d.juno.finding.remove(product);
+        d.stores.finding.remove(&(store, id.to_owned()));
         // Offline or refused: looked up again at the next send.
         let Ok(m) = result else { return };
         let seen = d
-            .juno
-            .memory
+            .stores
+            .memory_mut(store)
             .products
-            .entry(product.to_owned())
+            .entry(id.to_owned())
             .or_default();
         seen.searched = true;
         if let DiscogsMatch::Found(release) = m {
             seen.release = Some(release);
         }
-        d.save_juno();
+        d.save_store(store);
         if let DiscogsMatch::Found(release) = m {
-            self.juno_link(product, release);
+            self.store_link(store, id, release);
         }
     }
 
-    /// Every loaded entry of `product` with no Discogs record takes `release`.
-    fn juno_link(&mut self, product: &str, release: u64) {
+    /// Every loaded entry of the store's record `id` with no Discogs record takes `release`.
+    fn store_link(&mut self, store: Store, id: &str, release: u64) {
         for c in self.crates.loaded_ids() {
             let Some(p) = self.crates.get_mut(c) else {
                 continue;
@@ -426,7 +506,7 @@ impl DiggrApp {
             let mut changed = false;
             for e in p.entries_mut() {
                 if let Some(o) = e.origin.as_mut()
-                    && o.juno == product
+                    && record_of(o, store) == id
                     && o.release.is_none()
                     && o.master.is_none()
                 {
@@ -442,31 +522,48 @@ impl DiggrApp {
 
     // ---- the entry ----------------------------------------------------------------------
 
-    /// What Juno last said of an entry's record: its own product, else the product linked
-    /// to its release.
-    pub(super) fn juno_note(&self, e: &Entry) -> Option<String> {
-        let d = self.dig.as_ref()?;
-        let o = e.origin.as_ref()?;
-        let mem = &d.juno.memory;
-        let seen = match o.juno.is_empty() {
-            false => mem.products.get(&o.juno)?,
-            true => mem.product_of(o.release?)?.1,
+    /// What each store last said of an entry's record ("Juno", "in stock, €14.78 (seen 14
+    /// Oct)"): its own record, else the record linked to its release.
+    pub(super) fn store_notes(&self, e: &Entry) -> Vec<(&'static str, String)> {
+        let (Some(d), Some(o)) = (self.dig.as_ref(), e.origin.as_ref()) else {
+            return Vec::new();
         };
-        seen.note(dig::now_secs(), day_month)
+        Store::ALL
+            .into_iter()
+            .filter_map(|store| {
+                let mem = d.stores.memory(store);
+                let id = record_of(o, store);
+                let seen = match id.is_empty() {
+                    false => mem.products.get(id)?,
+                    true => mem.product_of(o.release?)?.1,
+                };
+                Some((store.name(), seen.note(dig::now_secs(), day_month)?))
+            })
+            .collect()
     }
 
-    /// The Juno product page of an entry's record, if it has one.
-    pub(super) fn juno_page(&self, e: &Entry) -> Option<String> {
-        let o = e.origin.as_ref()?;
-        if !o.juno.is_empty() {
-            return juno::product_url(&o.juno_slug, &o.juno);
-        }
-        let d = self.dig.as_ref()?;
-        let (product, seen) = d.juno.memory.product_of(o.release?)?;
-        juno::product_url(&seen.slug, product)
+    /// The stores whose page an entry can open, with the page.
+    pub(super) fn store_pages(&self, e: &Entry) -> Vec<(Store, String)> {
+        let Some(o) = e.origin.as_ref() else {
+            return Vec::new();
+        };
+        let juno = match o.juno.is_empty() {
+            false => juno::product_url(&o.juno_slug, &o.juno),
+            true => self.dig.as_ref().and_then(|d| {
+                let (product, seen) = d.stores.memory(Store::Juno).product_of(o.release?)?;
+                juno::product_url(&seen.slug, product)
+            }),
+        };
+        [
+            (Store::Juno, juno),
+            (Store::Beatport, Some(o.beatport_page.clone())),
+            (Store::Traxsource, Some(o.traxsource_page.clone())),
+        ]
+        .into_iter()
+        .filter_map(|(s, page)| Some((s, page.filter(|p| !p.is_empty())?)))
+        .collect()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

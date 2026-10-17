@@ -3,8 +3,8 @@
 # Diggr
 
 Diggr is a player for digging records, in Rust, with the look of a classic 2000s desktop
-player and built for **speed and zero perceived latency**. Send it a Discogs, Bandcamp or Juno
-page and hear every record on it at once; want, pass or buy with one key. Every track gets its
+player and built for **speed and zero perceived latency**. Send it a Discogs, Bandcamp, Juno,
+Beatport or Traxsource page and hear every record on it at once; want, pass or buy with one key. Every track gets its
 BPM, sections and waveform as it plays.
 
 The audio engine (`audio-core`), the classic skinned player window (`classic-ui`), music
@@ -609,6 +609,33 @@ are sent from the browser extension").
   shows it too. Diggr never checks stock itself. **Open on Juno** in the menu opens the product
   page.
 
+### Beatport and Traxsource
+
+Where most DJs buy electronic music digitally. Both show a BPM and a key for every track, so a
+chart, release or label page becomes a crate you can filter by BPM before anything downloads.
+Like Juno, their pages go into Diggr only **from the browser extension** (both stop anything but
+a browser), and a pasted address is refused with a hint.
+
+- **Which pages:** track, release (Traxsource: title), chart, label, artist, genre and search
+  pages. Only the tracks the page shows are sent, up to 500.
+- **Into a crate:** each track becomes "Artist - Title (Mix)" ("Original Mix" left out), in the
+  page's order, merged like Juno records: a track that plays is skipped, one without a preview
+  gets the Beatport sample in place, and only what the crate lacks is added.
+- **BPM and key:** an entry shows the store's BPM ("126 BPM (from Beatport)" in its tooltip)
+  until Diggr has analysed it, and then its own. The key shows in the tooltip as "Key: 8A (A
+  minor)"; Traxsource's keys ("A min") are turned into Camelot codes.
+- **Beatport samples:** a Beatport entry plays the store's 2-minute sample, fetched with one
+  HTTPS request to `geo-samples.beatport.com` (no yt-dlp) when it's about to play. Rows show
+  **BP**. When Beatport refuses, its downloads pause as Juno's do, and the other sources go on.
+  Download all tracks leaves Beatport entries out.
+- **Traxsource previews:** Traxsource's own samples can't be fetched from what its pages show,
+  so a Traxsource track is searched for on YouTube by artist, title and length, like a Discogs
+  track without a clip. Its tooltip then says "Source: YouTube (found for Traxsource)", and one
+  not found keeps its BPM, key, price and Open on Traxsource.
+- **Linked to Discogs, price note, Open on ‹store›:** as for Juno: one Discogs lookup per release
+  with a token, "Beatport: €1.39 (seen 16 Oct)" in the tooltip, and **Open on Beatport** or
+  **Open on Traxsource** in the menu.
+
 ### Top Sellers
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
@@ -685,8 +712,9 @@ hovering **FRIENDS** says when it was read and why it couldn't be read again.
 
 ### From the browser
 
-A Chrome extension (in `extensions/chrome/`) adds a button to Discogs, Bandcamp and Juno pages: Play
-in Diggr, Enqueue in Diggr and Send to crate. It talks to the player through a small **browser bridge**
+A Chrome extension (in `extensions/chrome/`) adds a button to Discogs, Bandcamp, Juno, Beatport
+and Traxsource pages: Play in
+Diggr (added to the crate on screen, and the first track it adds plays) and Send to crate. It talks to the player through a small **browser bridge**
 that the player starts once its window is up.
 
 - **Local only:** the bridge listens on `127.0.0.1`, port 47800 by default. Other computers
@@ -701,10 +729,11 @@ that the player starts once its window is up.
 - **What it accepts:** only a Discogs or Bandcamp page address (the pages that paste accepts),
   a mode (Play, Enqueue, or a crate of 1 to 40 characters), the skip-passed switch, and for a
   Bandcamp page its title (at most 200 characters, to name a label), in a body of at most 16 KB
-  (a vinyl-only switch from an older extension is accepted and ignored). A Juno send carries
-  the page's records instead of an address, in up to 1 MiB: at most 500 records and 5,000
-  tracks, each field checked, and every address rebuilt by the player from the ids. A bad record
-  is refused alone, and the answer counts it.
+  (a vinyl-only switch from an older extension is accepted and ignored). A Juno, Beatport or
+  Traxsource send carries the page's records or tracks instead of an address, in up to 1 MiB:
+  at most 500 records (Juno, with 5,000 tracks) or 500 tracks, each field checked, and every
+  address rebuilt by the player from the ids. A bad record or track is refused alone, and the
+  answer counts it.
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
   playing, and the progress of sends.
@@ -715,8 +744,9 @@ that the player starts once its window is up.
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
    the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com,
-   juno.co.uk and 127.0.0.1 only. (An older copy needs reloading in `chrome://extensions`
-   for Bandcamp and Juno, and Chrome asks you to accept the new site access.)
+   juno.co.uk, www.beatport.com, www.traxsource.com and 127.0.0.1 only. (An older copy needs
+   reloading in `chrome://extensions` for new sites, and Chrome asks you to accept the new site
+   access.)
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
    right-click its toolbar button ▸ Options): enter the 6-digit code and click **Pair**.
 3. On a seller's page (`/seller/‹name›/profile`), the button offers only **Add seller to
@@ -726,8 +756,10 @@ that the player starts once its window is up.
    under LABELS in the player (or refreshes it), without bringing the player to the front
    (see [Labels](#labels)).
    On a Discogs release, master, artist, wantlist, list or marketplace item page, the
-   button after the title (or in the bottom-right corner) offers **Play in Diggr**, **Enqueue
-   in Diggr** and **Send to crate** (the player's crates, or New crate…, which suggests a name
+   button after the title (or in the bottom-right corner) offers **Play in Diggr** (added to the
+   end of the crate on screen, the first new track playing as soon as it's ready) and **Send to
+   crate** (the player's crates that a send can fill, so no Top Sellers, label, collection, wantlist
+   or friend's crate, or New crate…, which suggests a name
    from the page, such as "D'Arcangelo - TimeLss", that you can edit), and the skip-passed
    switch, which it remembers. On a release, master or marketplace item page
    of a record you own, a line under the button says "✓ In your collection" (or "✓ Another
@@ -746,7 +778,15 @@ that the player starts once its window is up.
    says how many records the page shows. The page is read only when the menu opens, and the
    extension makes no request to Juno (see [Juno](#juno)). There's no button on other Juno pages,
    and no link menu for Juno links.
-4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr or Enqueue in Diggr (a
+   On a Beatport or Traxsource page listing tracks (track, release or title, chart, label,
+   artist, genre, search), the button does the same and says how many tracks it read (see
+   [Beatport and Traxsource](#beatport-and-traxsource)). Beatport is read from the data the
+   page was loaded with, so after moving to another Beatport page without a reload the menu says
+   "Couldn't read this Beatport page: reload it, then try again".
+   On a Discogs page listing records for sale (a seller's shop, the marketplace), a small **▶**
+   after each record's title plays that record in Diggr (added to the crate on screen, as Play
+   in Diggr).
+4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr (a
    label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
    and paired, what's playing, and sends in progress.
@@ -754,36 +794,50 @@ that the player starts once its window is up.
 The labels use the name the player reports (`dig::APP_NAME`, Diggr), so they follow it if it ever
 changes. The extension is plain JavaScript with no build step and no dependencies:
 `manifest.json`, `background.js` (the only code that calls the player, with the key),
-`content.js` (the button), `pages.js` (which pages are supported),
+`content.js` (the button), `pages.js` (which pages are supported), the store page readers
+`juno.js`, `beatport.js` and `traxsource.js`,
 `options.*`, `popup.*` and `icons/`. `pages.js` is plain enough to check with Node:
 `suggestName(title, kind, address)` is a pure function.
 
 **Manual checklist** (the extension has no automated tests):
 
 - [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com,
-      bandcamp.com and 127.0.0.1 only.
+      bandcamp.com, juno.co.uk, www.beatport.com, www.traxsource.com and 127.0.0.1 only.
 - [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
 - [ ] Release, master, artist, wantlist, list and marketplace item pages each show the
-      button, and each of Play, Enqueue, Send to crate and New crate… works; a forum thread
+      button, and each of Play, Send to crate and New crate… works (Play adds to the crate on
+      screen and plays the first track it added); a forum thread
       shows no button.
 - [ ] A label's page shows the button with only Diggr: Send label; it adds the label under
       LABELS in the player without changing the shown crate, and a second time says
       "Refreshed label ‹name›". Right-clicking a label link offers only Diggr: Send label.
-- [ ] A Bandcamp album and a track page show the button by their name, with Play, Enqueue and
+- [ ] A Bandcamp album and a track page show the button by their name, with Play and
       Send to crate (New crate… suggests "Artist - Album"); a label page (`/` and `/music`) shows
       only Diggr: Send label, which follows it as "Label: ‹its name›"; a merch page shows none.
-      Right-clicking a Bandcamp album link offers Play and Enqueue.
+      Right-clicking a Bandcamp album link offers Play.
 - [ ] A Bandcamp fan's page (`bandcamp.com/‹you›`, `/wishlist`) shows the button with only Diggr:
       Import collection & wishlist, and the player starts the import; `bandcamp.com/discover`
       shows none.
+- [ ] A Beatport release, track, chart (Top 100), label and search page each show the button;
+      its menu counts the tracks the page shows (a release only its own, not the
+      recommendations), and Play and Send to crate fill a crate with BP rows whose
+      tooltips show the store BPM and key. The cart and account pages show none.
+- [ ] A Traxsource title, track, chart and label page each show the button with the track
+      count; the crate's tracks wait "to search", then play from YouTube with "found for
+      Traxsource" in their tooltip.
+- [ ] On Beatport and Traxsource, the DevTools Network panel shows no request from the
+      extension but the one to `127.0.0.1`.
+- [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
+      its picture); clicking it adds the record to the crate on screen and plays it.
+- [ ] Send to crate lists no Top Sellers, label, collection, wantlist or friend's crate.
 - [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".
 - [ ] New crate… suggests "Artist - Title" on a release (no `*`, no `(2)`), the name on an
       artist, and "Wantlist: user" on a wantlist, within 40 characters.
 - [ ] Moving between pages without a reload (Discogs' own links) shows and hides the button.
-- [ ] Right-click a Discogs release link on another site (a forum post): Enqueue in Diggr adds
-      it and the toolbar shows ✓.
+- [ ] Right-click a Discogs release link on another site (a forum post): Play in Diggr adds
+      it to the crate on screen, plays it, and the toolbar shows ✓.
 - [ ] With the player closed, an action says that it isn't running, and nothing else happens.
 - [ ] After Forget browsers, an action opens the pairing screen.
 - [ ] A hostile page cannot use the bridge: serve this file from `python3 -m http.server` and
@@ -953,7 +1007,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron`, the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron` (and Beatport's and Traxsource's in `beatport.ron` and `traxsource.ron`), the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
 \* `DIGGR_CONFIG_DIR` covers settings, crates and presets. A `visuals/` folder (scenes and
 variants) left in the config folder by an earlier version is deleted at launch.
@@ -1023,7 +1077,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 846 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 865 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1138,7 +1192,7 @@ What's covered:
   - a record with one video for eleven tracks (*Mezzanine*): every track, in order, and nothing
     twice when sent again; one video found for two tracks; the full-album fallback, after a
     reload too; the vinyl release taking over a track found for its digital twin;
-  - Play mode naming its crate and playing;
+  - Play mode adding to the crate on screen and playing the first track it adds;
   - a missing page taking its crate away again;
   - `Y`, `N` and `I` with and without a token;
   - the entry menu;
@@ -1164,6 +1218,15 @@ What's covered:
   taking Juno entries over, a pasted Juno address refused, and three sources on one entry. The
   payload checks, keys, the bridge's Juno send, sample downloads against a local server, Juno
   limiting, and Download all tracks leaving Juno out are tested in `crates/dig` and `crates/ui`.
+- **Beatport and Traxsource in the player** (`crates/ui`, headless, `store_tests.rs`; and
+  `crates/dig`): a chart in page order with its BPM before any download (the BPM filter at
+  once), the key and price in the tooltip, Beatport samples playing, the analyser's tempo
+  taking over, Open on Beatport, pasted store addresses refused, a Discogs track not found
+  fixed by a Beatport sample, a Traxsource track found by search and one not found keeping its
+  details, and 500 tracks in under 50 ms. The send checks (ids, sample UUIDs, Camelot codes,
+  keys folded from names, one bad track alone, 501 refused), the bridge's store sends, Beatport
+  sample hosts and keys, Beatport limiting pausing only Beatport, and a real sample download
+  (ignored by default) are tested in `crates/dig`.
 - **A Bandcamp fan** (`crates/ui`, headless, `fan_tests.rs`, with fake pages and a fake Discogs;
   and `crates/dig`): both lists into crates made without a token and nothing sent to Discogs; an
   exact match added to the Discogs collection and taking the Bandcamp entries over, the rest

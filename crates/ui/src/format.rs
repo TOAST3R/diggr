@@ -228,8 +228,9 @@ pub struct DigMarks {
     pub cart: Option<String>,
     /// In a seller crate, the record's copies: "€9.00 VG+ / VG, €12.00 VG+ / VG+".
     pub copies: Option<String>,
-    /// What a Juno page last said of the record: "in stock, €14.78 (seen 14 Oct)".
-    pub juno: Option<String>,
+    /// What each store's page last said of the record: ("Juno", "in stock, €14.78 (seen 14
+    /// Oct)").
+    pub stores: Vec<(&'static str, String)>,
 }
 
 /// For a Discogs record with tracks searched for: how many entries it has, how many have a
@@ -291,10 +292,29 @@ pub fn entry_details(
         add("Side", &o.position);
         add("Year", &o.year.map(|y| y.to_string()).unwrap_or_default());
     }
+    // A store's tempo says so until the analyser has its own.
+    let store = e.origin.as_ref().and_then(|o| {
+        let name = match () {
+            _ if !o.beatport.is_empty() => "Beatport",
+            _ if !o.traxsource.is_empty() => "Traxsource",
+            _ => return None,
+        };
+        o.store_bpm.then_some(name)
+    });
     add(
         "Tempo",
-        &e.bpm.map(|b| format!("{b} BPM")).unwrap_or_default(),
+        &e.bpm
+            .map(|b| match store {
+                Some(s) => format!("{b} BPM (from {s})"),
+                None => format!("{b} BPM"),
+            })
+            .unwrap_or_default(),
     );
+    if let Some(o) = &e.origin
+        && let Some(name) = crate_key_name(&o.key)
+    {
+        add("Key", &format!("{} ({name})", o.key));
+    }
     add("Time", &e.duration.map(clock).unwrap_or_default());
     add("Status", &e.status.note().unwrap_or_default());
     // Where the audio comes from, with the Bandcamp album it is on.
@@ -307,6 +327,10 @@ pub fn entry_details(
                 format!("{} · {}", source.name(), o.album)
             }
             ClipSource::Juno => "Juno sample (2 min)".to_owned(),
+            ClipSource::Beatport => "Beatport sample (2 min)".to_owned(),
+            ClipSource::YouTube if !o.traxsource.is_empty() => {
+                "YouTube (found for Traxsource)".to_owned()
+            }
             _ => source.name().to_owned(),
         };
         add("Source", &text);
@@ -351,8 +375,8 @@ pub fn entry_details(
     if let Some(c) = &marks.copies {
         add("Copies", c);
     }
-    if let Some(j) = &marks.juno {
-        add("Juno", j);
+    for (store, note) in &marks.stores {
+        add(store, note);
     }
     if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
         let what = match (fs.count, fs.lowest_cents) {
@@ -397,6 +421,17 @@ pub fn scroll(text: &str, width: usize, offset: usize) -> String {
     (0..width)
         .map(|i| looped[(offset + i) % looped.len()])
         .collect()
+}
+
+/// "A minor" for the Camelot code "8A".
+fn crate_key_name(code: &str) -> Option<&'static str> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return dig::stores::key_name(code);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = code;
+        None
+    }
 }
 
 #[cfg(test)]
