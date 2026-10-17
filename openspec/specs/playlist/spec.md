@@ -113,7 +113,7 @@ An entry that has an origin SHALL keep it: the record the entry belongs to (sour
 - **THEN** the playlist and the title line still show "Nightcraft - Glasshouse", and the entry takes only its duration from the file
 
 ### Requirement: Entry tempo
-Each entry SHALL carry its tempo once any analysis of its audio is known: from preview preparation, from the playing track's analysis, or from the score cache. The tempo SHALL be the tempo of the score's longest steady-tempo stretch, doubled or halved until it lies within 88–176 BPM, and rounded to a whole number. The tempo SHALL be saved with the crate. The app SHALL NOT download or analyse audio only to learn a tempo, and SHALL NOT take a tempo from file tags.
+Each entry SHALL carry its tempo once any analysis of its audio is known: from preview preparation, from the playing track's analysis, or from the score cache. The tempo SHALL be the tempo of the score's longest steady-tempo stretch, doubled or halved until it lies within 88–176 BPM, and rounded to a whole number. The tempo SHALL be saved with the crate. Until its audio is analysed, an entry from Beatport or Traxsource SHALL carry the BPM its store gives, and analysis SHALL replace it. The app SHALL NOT download or analyse audio only to learn a tempo, and SHALL NOT take a tempo from file tags.
 
 #### Scenario: Prepared preview
 - **WHEN** the next entry's preview is prepared and its analysed tempo is 124.3 BPM
@@ -126,6 +126,10 @@ Each entry SHALL carry its tempo once any analysis of its audio is known: from p
 #### Scenario: Double time folded
 - **WHEN** a track is analysed at 280 BPM
 - **THEN** its entry shows "(140 BPM)"
+
+#### Scenario: Store BPM first
+- **WHEN** a Beatport track listed at 126 BPM is added, and later its preview is analysed at 125.7 BPM
+- **THEN** its entry shows "(126 BPM)" at once, and still "(126 BPM)" after analysis, now from the analyser
 
 #### Scenario: Survives a restart
 - **WHEN** an entry showing "(128 BPM)" is in a crate and the app is restarted
