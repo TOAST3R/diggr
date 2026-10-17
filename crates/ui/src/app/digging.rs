@@ -927,10 +927,12 @@ pub(super) fn release_of(e: &Entry) -> Option<u64> {
 /// single release was found for, "‹name› isn't linked to Discogs".
 fn not_on_discogs(e: &Entry) -> String {
     let name = e.display_name();
-    let from_store = e
-        .origin
-        .as_ref()
-        .is_some_and(|o| !o.juno.is_empty() || !o.beatport.is_empty() || !o.traxsource.is_empty());
+    let from_store = e.origin.as_ref().is_some_and(|o| {
+        !o.juno.is_empty()
+            || !o.beatport.is_empty()
+            || !o.traxsource.is_empty()
+            || !o.bleep.is_empty()
+    });
     match from_store {
         true => format!("{name} isn't linked to Discogs"),
         false => format!("{name} isn't from Discogs"),
@@ -1322,6 +1324,7 @@ impl DiggrApp {
             (dig::juno::looks_like_juno as fn(&str) -> bool, "Juno"),
             (dig::beatport::looks_like_beatport, "Beatport"),
             (dig::traxsource::looks_like_traxsource, "Traxsource"),
+            (dig::bleep::looks_like_bleep, "Bleep"),
         ] {
             if looks(text) {
                 return self.notify(format!("{store} pages are sent from the browser extension"));

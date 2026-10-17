@@ -1,4 +1,5 @@
-//! Records read from a store's page by the browser extension: Juno, Beatport and Traxsource.
+//! Records read from a store's page by the browser extension: Juno, Beatport, Traxsource and
+//! Bleep.
 //!
 //! Each store checks its own send (`crate::juno`, `crate::beatport`, `crate::traxsource`)
 //! and turns what passed into [`StoreRecord`]s, so the player merges, links to Discogs and
@@ -17,16 +18,23 @@ pub enum Store {
     Juno,
     Beatport,
     Traxsource,
+    Bleep,
 }
 
 impl Store {
-    pub const ALL: [Store; 3] = [Store::Juno, Store::Beatport, Store::Traxsource];
+    pub const ALL: [Store; 4] = [
+        Store::Juno,
+        Store::Beatport,
+        Store::Traxsource,
+        Store::Bleep,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Store::Juno => "Juno",
             Store::Beatport => "Beatport",
             Store::Traxsource => "Traxsource",
+            Store::Bleep => "Bleep",
         }
     }
 
@@ -35,6 +43,7 @@ impl Store {
             Store::Juno => "juno.ron",
             Store::Beatport => "beatport.ron",
             Store::Traxsource => "traxsource.ron",
+            Store::Bleep => "bleep.ron",
         }
     }
 }
@@ -167,7 +176,7 @@ impl std::fmt::Display for ListError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ListError::Unsupported => write!(f, "unsupported"),
-            ListError::TooMany => write!(f, "too many tracks (at most {MAX_LISTED})"),
+            ListError::TooMany => write!(f, "too many (at most {MAX_LISTED})"),
             ListError::NothingUsable { refused } => {
                 write!(f, "no track could be read ({refused} refused)")
             }

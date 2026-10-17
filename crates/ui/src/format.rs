@@ -331,6 +331,7 @@ pub fn entry_details(
             ClipSource::YouTube if !o.traxsource.is_empty() => {
                 "YouTube (found for Traxsource)".to_owned()
             }
+            ClipSource::YouTube if !o.bleep.is_empty() => "YouTube (found for Bleep)".to_owned(),
             _ => source.name().to_owned(),
         };
         add("Source", &text);

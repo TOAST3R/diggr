@@ -64,10 +64,19 @@ var WR = (() => {
     "signup", "register", "help", "about", "contact", "download", "downloads", "subscriptions",
   ]);
 
+  // Bleep: a release page, or any page listing records (label, artist, search, new
+  // releases…). The basket, checkout and account have none to read.
+  const BLEEP_HOST = /^(?:www\.)?bleep\.com$/;
+  const BLEEP_RELEASE = /^\/release\/\d{1,10}-[a-z0-9-]+\/?$/;
+  const NOT_BLEEP_PAGES = new Set([
+    "basket", "cart", "checkout", "account", "my-account", "login", "sign-in", "register",
+    "gift-vouchers", "help", "about", "contact", "terms", "privacy", "player", "rest",
+  ]);
+
   /**
    * "Label", "Release"… for a supported Discogs page; "BandcampLabel", "BandcampAlbum",
    * "BandcampTrack" or "BandcampFan" for a Bandcamp one; "JunoProduct" or "JunoListing" for a
-   * Juno one; "BeatportPage" or "TraxsourcePage"; else null.
+   * Juno one; "BeatportPage" or "TraxsourcePage"; "BleepRelease" or "BleepPage"; else null.
    */
   function pageKind(address) {
     let u;
@@ -84,6 +93,10 @@ var WR = (() => {
     if (u.protocol === "https:" && STORE_HOSTS[u.hostname]) {
       const first = u.pathname.split("/")[1].toLowerCase();
       return NOT_STORE_PAGES.has(first) ? null : `${STORE_HOSTS[u.hostname]}Page`;
+    }
+    if (u.protocol === "https:" && BLEEP_HOST.test(u.hostname)) {
+      if (BLEEP_RELEASE.test(u.pathname)) return "BleepRelease";
+      return NOT_BLEEP_PAGES.has(u.pathname.split("/")[1].toLowerCase()) ? null : "BleepPage";
     }
     if (u.protocol === "https:" && FAN_HOST.test(u.hostname)) {
       const m = u.pathname.match(FAN_PATH);
@@ -125,7 +138,7 @@ var WR = (() => {
     "or seller on Discogs; a label, album or track on Bandcamp, or a fan's collection or " +
     "wishlist (bandcamp.com/‹user›); a product, label, artist, genre, chart or search page " +
     "on Juno; a track, release, chart, label, artist, genre or search page on Beatport or " +
-    "Traxsource (from this button only)";
+    "Traxsource, or a release or list of records on Bleep (from this button only)";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -223,9 +236,10 @@ var WR = (() => {
     return typeof kind === "string" && kind.startsWith("Juno");
   }
 
-  /** The store whose page this is ("Juno", "Beatport", "Traxsource"), else null. */
+  /** The store whose page this is ("Juno", "Beatport", "Traxsource", "Bleep"), else null. */
   function storeOf(kind) {
     if (isJuno(kind)) return "Juno";
+    if (kind === "BleepRelease" || kind === "BleepPage") return "Bleep";
     if (kind === "BeatportPage") return "Beatport";
     if (kind === "TraxsourcePage") return "Traxsource";
     return null;

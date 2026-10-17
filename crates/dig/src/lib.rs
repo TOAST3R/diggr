@@ -15,6 +15,7 @@
 
 pub mod bandcamp;
 pub mod beatport;
+pub mod bleep;
 pub mod bridge;
 pub mod browser;
 pub mod clock;

@@ -7604,6 +7604,8 @@ mod headless_tests {
     mod fan_tests;
     // Juno records sent by the extension, with a fake Discogs and fake previews.
     mod juno_tests;
+    // Bleep records sent by the extension.
+    mod bleep_tests;
     // Beatport and Traxsource tracks sent by the extension.
     mod store_tests;
     // Top Sellers and the cart, with a fake Discogs.

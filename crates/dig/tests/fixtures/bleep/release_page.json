@@ -1,0 +1,36 @@
+{
+ "page": "https://bleep.com/release/100168-bibio-zen-drumsdada-drums",
+ "records": [
+  {
+   "id": "100168",
+   "slug": "bibio-zen-drumsdada-drums",
+   "artist": "Bibio",
+   "title": "Zen Drums/Dada Drums",
+   "label": "Warp Records",
+   "catno": "WAP419",
+   "image": "100168.jpg",
+   "formats": [
+    {
+     "name": "Download",
+     "price": "2.49 €"
+    }
+   ],
+   "tracks": [
+    {
+     "id": "635821",
+     "n": 1,
+     "title": "Zen Drums",
+     "artist": "",
+     "secs": 397
+    },
+    {
+     "id": "635822",
+     "n": 2,
+     "title": "Dada Drums",
+     "artist": "",
+     "secs": 339
+    }
+   ]
+  }
+ ]
+}
