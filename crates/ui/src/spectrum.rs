@@ -2,7 +2,8 @@
 //!
 //! Samples come from the engine's tap, stamped with track frames. Each frame the analyzer takes
 //! the 1024 samples that end at the *audible* frame reported by the playback clock, so bars
-//! move with what is heard, not with what was just decoded.
+//! move with what is heard, not with what was just decoded. Under varispeed a heard sample
+//! spans `speed` track frames.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -24,8 +25,9 @@ const PEAK_FALL: f32 = 0.8;
 pub struct Analyzer {
     rate: u32,
     track: TrackId,
-    /// Track frame of `history[0]`.
-    start: u64,
+    /// Track frame just after the newest sample, and the speed the history plays at.
+    end: u64,
+    speed: f64,
     history: VecDeque<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
     window: Vec<f32>,
@@ -46,7 +48,8 @@ impl Analyzer {
         let mut a = Self {
             rate,
             track: 0,
-            start: 0,
+            end: 0,
+            speed: 1.0,
             history: VecDeque::with_capacity(rate as usize * 2),
             input: fft.make_input_vec(),
             output: fft.make_output_vec(),
@@ -82,30 +85,33 @@ impl Analyzer {
     }
 
     pub fn push(&mut self, chunk: &TapChunk) {
+        // (±1: track frames are rounded per chunk under varispeed.)
         let contiguous = chunk.track == self.track
-            && chunk.start_frame == self.start + self.history.len() as u64;
+            && chunk.speed == self.speed
+            && chunk.start_frame.abs_diff(self.end) <= 1;
         if !contiguous {
             self.history.clear();
             self.track = chunk.track;
-            self.start = chunk.start_frame;
+            self.speed = chunk.speed;
         }
+        self.end = chunk.end_frame();
         self.history
             .extend(chunk.data().chunks(2).map(|f| 0.5 * (f[0] + f[1])));
         let cap = self.rate as usize * 2;
         if self.history.len() > cap {
             let drop = self.history.len() - cap;
             self.history.drain(..drop);
-            self.start += drop as u64;
         }
     }
 
     /// History indices of the `n` samples ending at the audible frame, if covered.
     fn window_at(&self, pos: &Position, n: usize) -> Option<std::ops::Range<usize>> {
-        if pos.track != self.track || pos.frame < self.start + n as u64 {
+        if pos.track != self.track || pos.frame > self.end {
             return None;
         }
-        let end = (pos.frame - self.start) as usize;
-        (end <= self.history.len()).then(|| end - n..end)
+        let behind = ((self.end - pos.frame) as f64 / self.speed).round() as usize;
+        let end = self.history.len().checked_sub(behind)?;
+        (end >= n).then(|| end - n..end)
     }
 
     /// Recomputes the bars for the audible position; `dt` is seconds since the last update.
@@ -184,6 +190,7 @@ mod tests {
             track,
             start_frame: start,
             frames: TAP_CHUNK_FRAMES,
+            speed: 1.0,
             samples,
         }
     }
@@ -203,6 +210,7 @@ mod tests {
             sample_rate: RATE,
             state: PlayState::Playing,
             discontinuity: false,
+            speed: 1.0,
         }
     }
 
@@ -291,5 +299,22 @@ mod tests {
         a.push(&chunk(1, 90_000, |_| 0.25));
         assert_eq!(a.scope(&playing(1_000), 4), [0.0; 4]);
         assert_eq!(a.scope(&playing(90_256), 2), [0.25, 0.25]);
+    }
+
+    #[test]
+    fn varispeed_history_follows_the_audible_track_frame() {
+        let mut a = Analyzer::new(RATE);
+        // 512 heard samples at 1.25: track frames 1000..1640, each sample its own index.
+        for (k, start) in [(0, 1_000), (1, 1_320)] {
+            let mut c = chunk(1, start, |_| 0.0);
+            for i in 0..TAP_CHUNK_FRAMES {
+                c.samples[i * 2] = (k * 256 + i) as f32;
+                c.samples[i * 2 + 1] = (k * 256 + i) as f32;
+            }
+            c.speed = 1.25;
+            a.push(&c);
+        }
+        // Track frame 1500 is heard at sample (1500 − 1000) / 1.25 = 400.
+        assert_eq!(a.scope(&playing(1_500), 2), [398.0, 399.0]);
     }
 }

@@ -80,6 +80,8 @@ pub struct Settings {
     pub spectrogram: crate::spectrogram::SpectroSettings,
     /// LABELS is folded in the crate sidebar.
     pub labels_folded: bool,
+    /// SYNC: on, its target tempo and range.
+    pub sync: crate::sync::SyncSettings,
 }
 
 impl Default for Settings {
@@ -104,6 +106,7 @@ impl Default for Settings {
             av_offset_ms: 0,
             spectrogram: Default::default(),
             labels_folded: false,
+            sync: Default::default(),
         }
     }
 }
@@ -120,6 +123,7 @@ impl Settings {
         self.volume = self.volume.clamp(0.0, 1.0);
         self.eq = self.eq.clamped();
         self.spectrogram = self.spectrogram.sanitized();
+        self.sync = self.sync.sanitized();
         self
     }
 }
@@ -262,6 +266,9 @@ mod tests {
         settings.eq.bands_db[3] = 6.0;
         settings.volume = 0.42;
         settings.repeat = Repeat::One;
+        settings.sync.on = true;
+        settings.sync.target = 126;
+        settings.sync.wide = true;
         s.save(SETTINGS_FILE, &settings).unwrap();
         assert_eq!(s.load_settings(), settings);
     }

@@ -7,6 +7,10 @@
 //! tracks exactly (a track that starts at input frame `i` starts at output frame
 //! `round(i * ratio)`), which keeps the playback clock precise at boundaries.
 //!
+//! Each queue entry has a speed (varispeed, pitch follows). A stream plays at one speed, so a
+//! track at a different speed than the one before starts a new stream, like a new source rate.
+//! Under varispeed an output frame plays `speed` track frames.
+//!
 //! [`DecodeWorker::step`] is a non-blocking state machine so a web worker can drive it; the
 //! native thread uses [`DecodeWorker::run`].
 
@@ -18,7 +22,7 @@ use std::time::Duration;
 use platform::{FileSource, TrackRef};
 
 use crate::decode::{DecodeError, StereoResampler, TrackDecoder};
-use crate::ring::{CHANNELS, PcmProducer};
+use crate::ring::{CHANNELS, PcmProducer, track_frames};
 use crate::{TrackId, TrackInfo};
 
 /// Largest segment pushed at once (keeps fast starts fast and headers frequent).
@@ -28,6 +32,9 @@ const PREWARM_BUFFER_SECS: f64 = 1.0;
 const RECENT_IDS: usize = 64;
 /// Crossfade at a splice (scheduled jump or loop wrap): 2 ms at 48 kHz.
 const SPLICE_XFADE_FRAMES: usize = 96;
+/// Source frames each side of a gapless change of resampler (new source rate or speed) that
+/// fill the filters with real neighbouring audio instead of silence, so the join can't ring.
+const JOIN_FRAMES: usize = 4096;
 
 /// What plays after the last track (or after every track, for `One`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,6 +74,18 @@ pub enum Command {
     },
     Seek {
         generation: u32,
+        secs: f64,
+    },
+    /// The speed of queue entry `index` from its next start (1 = its own tempo).
+    SetSpeed {
+        index: usize,
+        speed: f64,
+    },
+    /// Like [`Command::Seek`] to apply a new speed to `track` (the audible one), but an active
+    /// loop stays (a position past its end wraps into it).
+    Respeed {
+        generation: u32,
+        track: TrackId,
         secs: f64,
     },
     /// Jump within `track` to `target_secs`, splicing exactly at the first of `at_secs` (track
@@ -146,6 +165,7 @@ struct StreamTrack {
     start_frame: u64,
     /// Ring splice number for this stretch (see [`crate::ring::Segment::splice`]).
     splice: u16,
+    speed: f64,
 }
 
 /// Source-rate stereo in, output-rate stereo out, with exact per-track attribution.
@@ -153,32 +173,38 @@ struct Stream {
     resampler: Option<StereoResampler>,
     src_rate: u32,
     out_rate: u32,
+    speed: f64,
     ratio: f64,
     /// Output frame index at which this resampler's output begins.
     out_base: u64,
     in_total: u64,
     out_total: u64,
     tracks: VecDeque<StreamTrack>,
+    /// The last [`JOIN_FRAMES`] source frames fed.
+    tail: Vec<f32>,
 }
 
 impl Stream {
     fn new(
         src_rate: u32,
         out_rate: u32,
+        speed: f64,
         out_base: u64,
         tracks: VecDeque<StreamTrack>,
     ) -> Result<Self, DecodeError> {
         Ok(Self {
-            resampler: (src_rate != out_rate)
-                .then(|| StereoResampler::new(src_rate, out_rate))
+            resampler: (src_rate != out_rate || speed != 1.0)
+                .then(|| StereoResampler::with_speed(src_rate, out_rate, speed))
                 .transpose()?,
             src_rate,
             out_rate,
-            ratio: out_rate as f64 / src_rate as f64,
+            speed,
+            ratio: out_rate as f64 / src_rate as f64 / speed,
             out_base,
             in_total: 0,
             out_total: out_base,
             tracks,
+            tail: Vec::new(),
         })
     }
 
@@ -190,6 +216,7 @@ impl Stream {
             id,
             start_frame,
             splice,
+            speed: self.speed,
         });
         out_start
     }
@@ -204,7 +231,7 @@ impl Stream {
         splice: u16,
     ) -> Result<(), DecodeError> {
         if let Some(r) = &mut self.resampler {
-            *r = StereoResampler::new(self.src_rate, self.out_rate)?;
+            *r = StereoResampler::with_speed(self.src_rate, self.out_rate, self.speed)?;
         }
         self.out_base = at;
         self.in_total = 0;
@@ -219,12 +246,18 @@ impl Stream {
     /// The output frame at which `track_frame` of `id`'s latest stretch plays, if ahead of it.
     fn out_frame_of(&self, id: TrackId, track_frame: u64) -> Option<u64> {
         let t = self.tracks.iter().rev().find(|t| t.id == id)?;
-        (track_frame >= t.start_frame).then(|| t.out_start + (track_frame - t.start_frame))
+        (track_frame >= t.start_frame)
+            .then(|| t.out_start + ((track_frame - t.start_frame) as f64 / t.speed).round() as u64)
     }
 
     fn feed(&mut self, stereo: &[f32], out: &mut Vec<f32>) {
         let before = out.len();
         self.in_total += (stereo.len() / CHANNELS) as u64;
+        if self.resampler.is_some() {
+            self.tail.extend_from_slice(stereo);
+            let excess = self.tail.len().saturating_sub(JOIN_FRAMES * CHANNELS);
+            self.tail.drain(..excess);
+        }
         match &mut self.resampler {
             Some(r) => r.process(stereo, out),
             None => out.extend_from_slice(stereo),
@@ -232,18 +265,19 @@ impl Stream {
         self.out_total += ((out.len() - before) / CHANNELS) as u64;
     }
 
-    /// Flushes the resampler tail. Afterwards output is exactly `round(in_total * ratio)`.
-    fn finish(&mut self, out: &mut Vec<f32>) {
+    /// Flushes the resampler tail, as if continuing into `post_roll`. Afterwards output is
+    /// exactly `round(in_total * ratio)`.
+    fn finish(&mut self, post_roll: &[f32], out: &mut Vec<f32>) {
         if let Some(r) = &mut self.resampler {
             let before = out.len();
-            r.finish(out);
+            r.finish_with(post_roll, out);
             self.out_total += ((out.len() - before) / CHANNELS) as u64;
         }
     }
 
-    /// The track owning output frame `o`, its track frame, frames until the next stretch, and
-    /// its splice number.
-    fn locate(&self, o: u64) -> (TrackId, u64, Option<u64>, u16) {
+    /// The track owning output frame `o`, its track frame, frames until the next stretch, its
+    /// splice number and its speed.
+    fn locate(&self, o: u64) -> (TrackId, u64, Option<u64>, u16, f64) {
         let i = self
             .tracks
             .iter()
@@ -251,7 +285,8 @@ impl Stream {
             .unwrap_or(0);
         let t = self.tracks[i];
         let limit = self.tracks.get(i + 1).map(|n| n.out_start - o);
-        (t.id, t.start_frame + (o - t.out_start), limit, t.splice)
+        let frame = t.start_frame + track_frames((o - t.out_start) as usize, t.speed);
+        (t.id, frame, limit, t.splice, t.speed)
     }
 
     /// Forgets tracks that end before output frame `o`.
@@ -296,6 +331,8 @@ pub struct DecodeWorker {
     out_rate: u32,
     prewarm_secs: f64,
     queue: Vec<TrackRef>,
+    /// Speed per queue entry (missing: 1).
+    speeds: Vec<f64>,
     generation: u32,
     current: Option<Active>,
     stream: Option<Stream>,
@@ -336,6 +373,7 @@ impl DecodeWorker {
             out_rate: cfg.out_rate,
             prewarm_secs: cfg.prewarm_secs,
             queue: Vec::new(),
+            speeds: Vec::new(),
             generation: 0,
             current: None,
             stream: None,
@@ -396,7 +434,7 @@ impl DecodeWorker {
                 self.end_due = false;
                 return Step::Idle;
             };
-            let (track, frame, _, _) = stream.locate(stream.out_total);
+            let (track, frame, ..) = stream.locate(stream.out_total);
             if !self.pcm.push_end_of_queue(self.generation, track, frame) {
                 return Step::Full;
             }
@@ -441,6 +479,7 @@ impl DecodeWorker {
             }
             Command::SetQueue { tracks, current } => {
                 self.queue = tracks;
+                self.speeds.clear();
                 self.prewarm = None;
                 if let Some(cur) = self.current.as_mut() {
                     // A removed track finishes, then the queue ends.
@@ -459,31 +498,45 @@ impl DecodeWorker {
             Command::Seek { generation, secs } => {
                 self.generation = generation;
                 self.clear_splices();
-                let Some(cur) = self.current.as_mut() else {
-                    return;
-                };
-                if cur.dec.seek(secs).is_ok() {
-                    let (id, rate) = (cur.id, cur.dec.src_rate());
-                    cur.start_secs = secs;
-                    cur.in_frames = 0;
-                    cur.finished = false;
-                    self.reset_output();
-                    match Stream::new(rate, self.out_rate, 0, VecDeque::new()) {
-                        Ok(mut s) => {
-                            let out_start = s.begin_track(id, self.frame_at(secs), self.splice_no);
-                            self.current.as_mut().expect("checked").out_start = out_start;
-                            self.stream = Some(s);
-                        }
-                        Err(e) => {
-                            let index = cur_index(&self.current);
-                            self.current = None;
-                            self.fail(index, e.to_string());
+                self.reseek(secs);
+            }
+            Command::SetSpeed { index, speed } => {
+                if self.speeds.len() <= index {
+                    self.speeds.resize(index + 1, 1.0);
+                }
+                // (A pre-warmed track's buffered source audio doesn't depend on its speed.)
+                self.speeds[index] = speed;
+            }
+            Command::Respeed {
+                generation,
+                track,
+                secs,
+            } if self.current.as_ref().is_none_or(|c| c.id != track) => {
+                // Decoding is already in the next track: restart the audible one, as a reload.
+                self.generation = generation;
+                self.prewarm = None;
+                self.clear_splices();
+                match self.recent.iter().rev().find(|(id, _)| *id == track) {
+                    Some(&(_, index)) => self.start(index, secs),
+                    None => self.reset_output(),
+                }
+            }
+            Command::Respeed {
+                generation, secs, ..
+            } => {
+                self.generation = generation;
+                self.jump = None;
+                let secs = match self.looping {
+                    Some((t, a, b)) if self.current.as_ref().is_some_and(|c| c.id == t) => {
+                        if secs >= b {
+                            a + (secs - b) % (b - a)
+                        } else {
+                            secs
                         }
                     }
-                } else {
-                    let index = cur.index;
-                    self.start(index, secs);
-                }
+                    _ => secs,
+                };
+                self.reseek(secs);
             }
             Command::Stop => {
                 self.clear_splices();
@@ -574,6 +627,44 @@ impl DecodeWorker {
                 }
             }
             Command::Shutdown => self.shutdown = true,
+        }
+    }
+
+    fn speed_of(&self, index: usize) -> f64 {
+        self.speeds.get(index).copied().unwrap_or(1.0)
+    }
+
+    /// Restarts the current track at `secs` on a fresh stream at its speed.
+    fn reseek(&mut self, secs: f64) {
+        let Some(cur) = self.current.as_mut() else {
+            return;
+        };
+        if cur.dec.seek(secs).is_ok() {
+            let (id, rate, index) = (cur.id, cur.dec.src_rate(), cur.index);
+            cur.start_secs = secs;
+            cur.in_frames = 0;
+            cur.finished = false;
+            self.reset_output();
+            match Stream::new(
+                rate,
+                self.out_rate,
+                self.speed_of(index),
+                0,
+                VecDeque::new(),
+            ) {
+                Ok(mut s) => {
+                    let out_start = s.begin_track(id, self.frame_at(secs), self.splice_no);
+                    self.current.as_mut().expect("checked").out_start = out_start;
+                    self.stream = Some(s);
+                }
+                Err(e) => {
+                    self.current = None;
+                    self.fail(index, e.to_string());
+                }
+            }
+        } else {
+            let index = cur.index;
+            self.start(index, secs);
         }
     }
 
@@ -755,7 +846,9 @@ impl DecodeWorker {
         let Some((dec, index, buffered, finished)) = self.open_from(index, secs) else {
             return;
         };
-        let mut stream = match Stream::new(dec.src_rate(), self.out_rate, 0, VecDeque::new()) {
+        let speed = self.speed_of(index);
+        let mut stream = match Stream::new(dec.src_rate(), self.out_rate, speed, 0, VecDeque::new())
+        {
             Ok(s) => s,
             Err(e) => {
                 self.fail(index, e.to_string());
@@ -818,18 +911,35 @@ impl DecodeWorker {
             .next_index(cur.index, self.queue.len())
             .and_then(|i| self.open_from(i, 0.0));
         let Some((dec, index, buffered, finished)) = next else {
-            stream.finish(&mut self.pending);
+            stream.finish(&[], &mut self.pending);
             self.stream = Some(stream);
             self.end_due = true;
             return;
         };
-        if dec.src_rate() != stream.src_rate {
-            // Different source rate: flush this resampler and start another, continuing the
-            // output timeline.
-            stream.finish(&mut self.pending);
+        let (mut dec, mut buffered, mut finished) = (dec, buffered, finished);
+        let speed = self.speed_of(index);
+        if dec.src_rate() != stream.src_rate || speed != stream.speed {
+            // Different source rate or speed: flush this resampler and start another,
+            // continuing the output timeline, each filtering across the join.
+            while buffered.len() < JOIN_FRAMES * CHANNELS && !finished {
+                finished = !dec.decode_next(&mut buffered).unwrap_or(false);
+            }
+            let post_roll = &buffered[..buffered.len().min(JOIN_FRAMES * CHANNELS)];
+            stream.finish(post_roll, &mut self.pending);
             let tracks = std::mem::take(&mut stream.tracks);
-            match Stream::new(dec.src_rate(), self.out_rate, stream.out_total, tracks) {
-                Ok(s) => stream = s,
+            match Stream::new(
+                dec.src_rate(),
+                self.out_rate,
+                speed,
+                stream.out_total,
+                tracks,
+            ) {
+                Ok(mut s) => {
+                    if let Some(r) = &mut s.resampler {
+                        r.prime(&stream.tail);
+                    }
+                    stream = s;
+                }
                 Err(e) => {
                     self.fail(index, e.to_string());
                     self.stream = Some(stream);
@@ -877,7 +987,7 @@ impl DecodeWorker {
         let mut pushed_any = false;
         while self.pending_pushed < total {
             let o = self.pending_start + self.pending_pushed as u64;
-            let (id, frame, limit, splice) = stream.locate(o);
+            let (id, frame, limit, splice, speed) = stream.locate(o);
             let mut n = (total - self.pending_pushed)
                 .min(MAX_SEGMENT_FRAMES)
                 .min(self.pcm.free_frames());
@@ -893,6 +1003,7 @@ impl DecodeWorker {
                 splice,
                 id,
                 frame,
+                speed,
                 &self.pending[a..a + n * CHANNELS],
             );
             debug_assert!(ok);
@@ -966,13 +1077,20 @@ impl DecodeWorker {
     }
 }
 
-fn cur_index(current: &Option<Active>) -> usize {
-    current.as_ref().map_or(usize::MAX, |c| c.index)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::RepeatMode;
+    use super::*;
+
+    #[test]
+    fn varispeed_track_frames_are_stamped_not_accumulated() {
+        let mut s = Stream::new(48_000, 48_000, 1.06, 0, VecDeque::new()).unwrap();
+        s.begin_track(1, 0, 0);
+        // Ten minutes in, the stamp is still exact (well within the clock's 1 ms).
+        let o = 10 * 60 * 48_000;
+        let (_, frame, _, _, speed) = s.locate(o);
+        assert_eq!((frame, speed), ((o as f64 * 1.06).round() as u64, 1.06));
+        assert_eq!(s.out_frame_of(1, frame), Some(o));
+    }
 
     #[test]
     fn next_index_per_repeat_mode() {

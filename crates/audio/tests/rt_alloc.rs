@@ -101,8 +101,15 @@ fn renderer_never_allocates() {
         control.set_state(PlayState::Paused);
         call(&mut r, &mut out);
         control.set_state(PlayState::Playing);
-        tx.push(g2, 2, 90_700, &chunk);
-        tx.push_end_of_queue(g2, 2, 91_400);
+        tx.push_spliced(g2, 0, 2, 90_700, 1.04, &chunk);
+        tx.push_spliced(g2, 0, 2, 91_428, 1.04, &chunk);
+        call(&mut r, &mut out); // varispeed
+        control.mark_soft(); // a speed change
+        let g3 = control.bump_generation();
+        call(&mut r, &mut out); // the old speed plays on until the new one is queued
+        tx.push_spliced(g3, 0, 2, 92_500, 0.96, &chunk);
+        call(&mut r, &mut out); // crossfade
+        tx.push_end_of_queue(g3, 2, 93_000);
         call(&mut r, &mut out); // end of queue
         control.set_state(PlayState::Stopped);
         call(&mut r, &mut out);

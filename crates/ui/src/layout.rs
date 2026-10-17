@@ -8,7 +8,7 @@ use crate::skin::SkinDef;
 /// The player column's height: main, then the waveform (under its title bar) and the EQ when
 /// they show.
 pub fn player_height(settings: &Settings, d: &SkinDef) -> u16 {
-    let mut h = d.main_size.1;
+    let mut h = d.main_size.1 + deck_h(settings, d);
     if settings.show_waveform {
         h += wave_title_h(d) + crate::waveform::HEIGHT as u16;
     }
@@ -16,6 +16,16 @@ pub fn player_height(settings: &Settings, d: &SkinDef) -> u16 {
         h += d.eq_size.1;
     }
     h
+}
+
+/// The turntable under the main window while SYNC is on; 0 otherwise, or for a skin without
+/// one.
+pub fn deck_h(settings: &Settings, d: &SkinDef) -> u16 {
+    if settings.sync.on {
+        d.sprite("deck_bg").h
+    } else {
+        0
+    }
 }
 
 /// The waveform's title bar in the player column; 0 for a skin without one.
@@ -144,6 +154,14 @@ mod tests {
             ..s
         };
         assert_eq!(window_size(&tall, &d), (675, 20 + 16 + 30 * 13 + 38));
+    }
+
+    #[test]
+    fn sync_opens_the_turntable_under_the_main_window() {
+        let d = LoadedSkin::default_skin().def;
+        let mut s = settings(true, false, false);
+        s.sync.on = true;
+        assert_eq!(window_size(&s, &d), (275, 116 + 104 + 116));
     }
 
     #[test]

@@ -20,6 +20,33 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "SYNC (every track at one tempo)",
+        &[
+            (
+                "SYNC button",
+                "opens the turntable at the playing record's tempo (again, or its ×: off)",
+            ),
+            (
+                "Pitch fader: drag / scroll",
+                "your set's tempo: up faster, down slower (centre: the record's own); every \
+                 track then plays at it, pitch following",
+            ),
+            (
+                "Shift+Up / Shift+Down",
+                "tempo +1 / −1 BPM (player focused)",
+            ),
+            (
+                "RESET / 8%·16%",
+                "back to the record's own tempo / the pitch range",
+            ),
+            (
+                "OWN TEMPO",
+                "lit when a track is out of range or has no BPM: it plays at its own speed, \
+                 its strobe dots drift and its row says (own tempo)",
+            ),
+        ],
+    ),
+    (
         "Structure (on the beat)",
         &[
             ("]", "next section"),
@@ -275,8 +302,24 @@ mod tests {
             .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "X", "]", "[", "Shift+]", "L", "Shift+L", "W", "S", "H or F1", "Cmd+V", "Y", "N", "I",
-            "Tab", "P", "Shift+P", "Space",
+            "X",
+            "]",
+            "[",
+            "Shift+]",
+            "L",
+            "Shift+L",
+            "W",
+            "S",
+            "H or F1",
+            "Cmd+V",
+            "Y",
+            "N",
+            "I",
+            "Tab",
+            "P",
+            "Shift+P",
+            "Space",
+            "Shift+Up / Shift+Down",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

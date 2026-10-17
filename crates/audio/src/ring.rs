@@ -11,7 +11,7 @@ use crate::TrackId;
 /// The engine's internal channel count. Device channel mapping happens at the very end.
 pub const CHANNELS: usize = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Segment {
     pub generation: u32,
     pub track: TrackId,
@@ -23,6 +23,8 @@ pub struct Segment {
     /// Changes where the worker spliced the stream without a flush (a scheduled jump or a
     /// loop wrap), so the clock can report a discontinuity at exactly that point.
     pub splice: u16,
+    /// Track frames per output frame (varispeed; 1 at the track's own tempo).
+    pub speed: f64,
 }
 
 pub fn pcm_ring(capacity_frames: usize, max_segments: usize) -> (PcmProducer, PcmConsumer) {
@@ -65,16 +67,18 @@ impl PcmProducer {
         start_frame: u64,
         samples: &[f32],
     ) -> bool {
-        self.push_spliced(generation, 0, track, start_frame, samples)
+        self.push_spliced(generation, 0, track, start_frame, 1.0, samples)
     }
 
-    /// [`push`](Self::push) with a splice number (see [`Segment::splice`]).
+    /// [`push`](Self::push) with a splice number (see [`Segment::splice`]) and a speed (see
+    /// [`Segment::speed`]).
     pub fn push_spliced(
         &mut self,
         generation: u32,
         splice: u16,
         track: TrackId,
         start_frame: u64,
+        speed: f64,
         samples: &[f32],
     ) -> bool {
         debug_assert_eq!(samples.len() % CHANNELS, 0);
@@ -96,6 +100,7 @@ impl PcmProducer {
                 frames: frames as u32,
                 end_of_queue: false,
                 splice,
+                speed,
             })
             .expect("space checked");
         true
@@ -110,22 +115,40 @@ impl PcmProducer {
                 frames: 0,
                 end_of_queue: true,
                 splice: 0,
+                speed: 1.0,
             })
             .is_ok()
     }
 }
 
 /// One contiguous run of samples from a single segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Run {
     pub generation: u32,
     pub splice: u16,
     pub track: TrackId,
     pub start_frame: u64,
     pub frames: usize,
+    pub speed: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Run {
+    /// The track frame just after this run.
+    pub fn end_frame(&self) -> u64 {
+        self.start_frame + track_frames(self.frames, self.speed)
+    }
+}
+
+/// Track frames covered by `frames` output frames at `speed`.
+pub fn track_frames(frames: usize, speed: f64) -> u64 {
+    if speed == 1.0 {
+        frames as u64
+    } else {
+        (frames as f64 * speed).round() as u64
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ReadResult {
     /// `frames` were copied into the start of the destination.
     Audio(Run),
@@ -190,8 +213,9 @@ impl PcmConsumer {
                 generation: seg.generation,
                 splice: seg.splice,
                 track: seg.track,
-                start_frame: seg.start_frame + self.consumed as u64,
+                start_frame: seg.start_frame + track_frames(self.consumed as usize, seg.speed),
                 frames,
+                speed: seg.speed,
             };
             self.consumed += frames as u32;
             if self.consumed == seg.frames {
@@ -199,6 +223,23 @@ impl PcmConsumer {
             }
             return ReadResult::Audio(run);
         }
+    }
+
+    /// The generation of the next audio to be read, if any is queued.
+    pub fn next_generation(&mut self) -> Option<u32> {
+        match self.current {
+            Some(seg) => Some(seg.generation),
+            None => self.segments.peek().ok().map(|s| s.generation),
+        }
+    }
+
+    /// Whether any audio of `generation` or newer is queued (behind older audio, maybe).
+    pub fn has_generation(&mut self, generation: u32) -> bool {
+        let n = self.segments.slots();
+        self.segments.read_chunk(n).is_ok_and(|c| {
+            let (a, b) = c.as_slices();
+            a.iter().chain(b).any(|s| s.generation >= generation)
+        }) // dropped uncommitted: nothing is consumed
     }
 
     /// Drops everything older than `min_generation` that is already queued.
@@ -254,7 +295,8 @@ mod tests {
                 generation: 1,
                 track: 7,
                 start_frame: 0,
-                frames: 64
+                frames: 64,
+                speed: 1.0
             })
         );
         assert!(dst.iter().all(|&s| s == 0.5));
@@ -265,7 +307,8 @@ mod tests {
                 generation: 1,
                 track: 7,
                 start_frame: 64,
-                frames: 36
+                frames: 36,
+                speed: 1.0
             })
         );
         assert_eq!(
@@ -275,7 +318,8 @@ mod tests {
                 generation: 1,
                 track: 7,
                 start_frame: 100,
-                frames: 50
+                frames: 50,
+                speed: 1.0
             })
         );
         assert_eq!(dst[0], 0.25);
@@ -310,6 +354,25 @@ mod tests {
             !tx.push(2, 1, 0, &frames(101, 1.0)),
             "oversized push must be refused whole"
         );
+    }
+
+    #[test]
+    fn runs_advance_track_frames_at_their_speed() {
+        let (mut tx, mut rx) = pcm_ring(1024, 16);
+        assert!(tx.push_spliced(1, 0, 7, 1000, 1.04, &frames(100, 0.5)));
+        assert!(tx.push(2, 7, 0, &frames(10, 0.5)));
+        assert_eq!(rx.next_generation(), Some(1));
+        assert!(rx.has_generation(2) && !rx.has_generation(3));
+        let mut dst = vec![0.0; 50 * CHANNELS];
+        let ReadResult::Audio(a) = rx.read(1, &mut dst) else {
+            panic!()
+        };
+        let ReadResult::Audio(b) = rx.read(1, &mut dst) else {
+            panic!()
+        };
+        assert_eq!((a.start_frame, a.end_frame()), (1000, 1052));
+        assert_eq!((b.start_frame, b.speed), (1052, 1.04));
+        assert!(rx.has_generation(2), "peeking consumed nothing");
     }
 
     #[test]

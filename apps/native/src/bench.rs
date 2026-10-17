@@ -3,6 +3,9 @@
 //! For each file: time from play request to first audio at the device, then seeks at 25/50/75%.
 //! Finally the whole queue plays through gaplessly while underruns are counted.
 //!
+//! With `--speed S`, every track plays at speed S (varispeed), and after the seeks the speed
+//! moves to S ± 0.02 and back, timing how soon each change reaches the device.
+//!
 //! With `--analysis`, the music analyzer runs throughout (the playing track and, earlier than in
 //! real use, the next one) to show it does not slow playback down.
 
@@ -44,8 +47,14 @@ impl Load {
 
 const START_TARGET_MS: f64 = 30.0;
 const SEEK_TARGET_MS: f64 = 50.0;
+const SPEED_TARGET_MS: f64 = 50.0;
 
-pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(), String> {
+pub fn run(
+    files: Vec<TrackRef>,
+    volume: f32,
+    with_analysis: bool,
+    speed: Option<f64>,
+) -> Result<(), String> {
     if files.is_empty() {
         return Err("--bench needs audio files".into());
     }
@@ -62,6 +71,9 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
     );
     engine.set_volume(volume);
     engine.set_queue(files.clone());
+    for i in 0..files.len() {
+        engine.set_speed(i, speed.unwrap_or(1.0));
+    }
     // A fresh cache, so everything really gets analyzed during the run; deleted afterwards.
     let cache = with_analysis.then(|| platform::testing::TestDir::new("diggr-bench-cache"));
     let load = Load {
@@ -82,14 +94,18 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
             "off"
         }
     );
+    if let Some(s) = speed {
+        println!("speed {s} (pitch follows)");
+    }
     std::thread::sleep(Duration::from_millis(300)); // device fully running, as in a warm app
     let underruns_before = engine.stats().underruns;
 
     let mut worst_start = 0f64;
     let mut worst_seek = 0f64;
+    let mut worst_speed = 0f64;
     println!(
-        "\n{:<32} {:>9} {:>9} {:>9} {:>9}",
-        "file", "start ms", "seek25", "seek50", "seek75"
+        "\n{:<32} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "file", "start ms", "seek25", "seek50", "seek75", "speed ms"
     );
     for (i, f) in files.iter().enumerate() {
         engine.play_index(i);
@@ -107,13 +123,25 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
             worst_seek = worst_seek.max(ms);
             seeks.push(ms);
         }
+        let mut changes = None;
+        if let Some(s) = speed {
+            let mut worst = 0f64;
+            for to in [s + 0.02, s - 0.02, s] {
+                engine.set_speed(i, to);
+                load.sleep(&mut engine, Duration::from_millis(250));
+                worst = worst.max(engine.stats().last_start_latency_ms);
+            }
+            worst_speed = worst_speed.max(worst);
+            changes = Some(worst);
+        }
         println!(
-            "{:<32} {:>9.2} {:>9.2} {:>9.2} {:>9.2}",
+            "{:<32} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9}",
             truncate(f.file_name(), 32),
             start,
             seeks[0],
             seeks[1],
-            seeks[2]
+            seeks[2],
+            changes.map_or("-".into(), |ms| format!("{ms:.2}"))
         );
     }
 
@@ -138,6 +166,9 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
 
     println!("\nworst start {worst_start:.2} ms (target < {START_TARGET_MS})");
     println!("worst seek  {worst_seek:.2} ms (target < {SEEK_TARGET_MS})");
+    if speed.is_some() {
+        println!("worst speed {worst_speed:.2} ms (target < {SPEED_TARGET_MS})");
+    }
     println!("underruns   {underruns} (target 0)");
     if cfg!(debug_assertions) {
         println!("rt allocs   {} (target 0)", s.rt_alloc_violations);
@@ -161,6 +192,7 @@ pub fn run(files: Vec<TrackRef>, volume: f32, with_analysis: bool) -> Result<(),
     }
     let ok = worst_start < START_TARGET_MS
         && worst_seek < SEEK_TARGET_MS
+        && worst_speed < SPEED_TARGET_MS
         && underruns == 0
         && s.rt_alloc_violations == 0;
     if ok {

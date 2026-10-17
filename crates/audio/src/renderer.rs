@@ -2,6 +2,10 @@
 //! plus clock updates.
 //!
 //! Everything here is real-time safe: no allocation, no locks, no waiting.
+//!
+//! A speed change flushes the ring softly (see [`Control::mark_soft`]): the old audio keeps
+//! playing until the new one is queued, then a 2 ms crossfade joins them, so it is heard within
+//! a buffer or two, with no gap and no click.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -19,11 +23,15 @@ use crate::{PlayState, TrackId, rt_guard};
 /// Frames processed per internal block.
 pub const BLOCK_FRAMES: usize = 1024;
 const MAX_RUNS: usize = 16;
+/// The soft flush's crossfade: 2 ms at 48 kHz.
+const FADE_FRAMES: usize = 96;
 
 /// State shared between the control side (engine) and the callback.
 pub struct Control {
     /// Data with an older generation is discarded (seek/stop/load).
     pub target_generation: AtomicU32,
+    /// A generation whose audio replaces the old with a crossfade instead of a cut.
+    soft_generation: AtomicU32,
     state: AtomicU8,
     volume_bits: AtomicU32,
     balance_bits: AtomicU32,
@@ -41,6 +49,7 @@ impl Default for Control {
     fn default() -> Self {
         Self {
             target_generation: AtomicU32::new(0),
+            soft_generation: AtomicU32::new(0),
             state: AtomicU8::new(PlayState::Stopped as u8),
             volume_bits: AtomicU32::new(1f32.to_bits()),
             balance_bits: AtomicU32::new(0f32.to_bits()),
@@ -66,6 +75,13 @@ impl Control {
     /// Makes all queued audio stale and returns the new generation.
     pub fn bump_generation(&self) -> u32 {
         self.target_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Makes the next generation soft: the callback keeps playing the old audio until the new
+    /// one is queued, then crossfades. Call right before [`Self::bump_generation`].
+    pub fn mark_soft(&self) {
+        self.soft_generation
+            .store(self.generation().wrapping_add(1), Ordering::Release);
     }
 
     pub fn generation(&self) -> u32 {
@@ -150,6 +166,7 @@ pub struct RendererParts {
 struct RunNote {
     track: TrackId,
     start_frame: u64,
+    speed: f64,
     offset: usize,
     frames: usize,
 }
@@ -166,8 +183,13 @@ pub struct Renderer {
     device_channels: usize,
     scratch: Box<[f32]>,
     gains: (f32, f32),
-    /// Track and frame that will be audible after everything written so far.
+    /// Track and frame that will be audible after everything written so far, and its speed.
     pos: (TrackId, u64),
+    speed: f64,
+    /// The old audio a soft flush fades out, and how much of the fade has played.
+    fade: Box<[f32]>,
+    fade_len: usize,
+    fade_pos: usize,
     played_generation: u32,
     played_splice: u16,
     device_epoch: u32,
@@ -192,6 +214,10 @@ impl Renderer {
             scratch: vec![0.0; BLOCK_FRAMES * CHANNELS].into_boxed_slice(),
             gains: (v * l, v * r),
             pos: (0, 0),
+            speed: 1.0,
+            fade: vec![0.0; FADE_FRAMES * CHANNELS].into_boxed_slice(),
+            fade_len: 0,
+            fade_pos: FADE_FRAMES,
             played_generation: 0,
             played_splice: 0,
             device_epoch: 0,
@@ -239,6 +265,8 @@ impl Renderer {
             sample_rate: self.sample_rate,
             state,
             boundary: None,
+            speed: self.speed,
+            boundary_speed: 1.0,
             starved: false,
             buffer_frames: total as u32,
             epoch: self.epoch(),
@@ -254,6 +282,18 @@ impl Renderer {
             return;
         }
 
+        let mut min_generation = target;
+        if self.played_generation < target
+            && self.started
+            && self.control.soft_generation.load(Ordering::Acquire) == target
+        {
+            if self.pcm.has_generation(target) {
+                self.capture_fade(target);
+            } else {
+                min_generation = self.played_generation;
+            }
+        }
+
         let mut done = 0;
         let mut any_audio = false;
         let mut underrun = false;
@@ -263,16 +303,17 @@ impl Renderer {
             let mut runs = [RunNote {
                 track: 0,
                 start_frame: 0,
+                speed: 1.0,
                 offset: 0,
                 frames: 0,
             }; MAX_RUNS];
             let mut run_count = 0;
             let mut filled = 0;
             while filled < n && !ended {
-                match self
-                    .pcm
-                    .read(target, &mut self.scratch[filled * CHANNELS..n * CHANNELS])
-                {
+                match self.pcm.read(
+                    min_generation,
+                    &mut self.scratch[filled * CHANNELS..n * CHANNELS],
+                ) {
                     ReadResult::Audio(run) => {
                         let at = done + filled;
                         if run.generation != self.played_generation {
@@ -296,23 +337,30 @@ impl Renderer {
                         }
                         // Clock: the buffer starts where this run starts, unless audio already
                         // played in this buffer and this run is not its continuation.
-                        let continues = run.track == self.pos.0 && run.start_frame == self.pos.1;
+                        // (±1: track frames are rounded per run under varispeed.)
+                        let continues = run.track == self.pos.0
+                            && run.start_frame.abs_diff(self.pos.1) <= 1
+                            && run.speed == self.speed;
                         if at == 0 {
                             snap.track = run.track;
                             snap.frame = run.start_frame;
+                            snap.speed = run.speed;
                         } else if !continues && snap.boundary.is_none() {
                             snap.boundary = Some((run.track, at as u32, run.start_frame));
+                            snap.boundary_speed = run.speed;
                         }
                         if run_count < MAX_RUNS {
                             runs[run_count] = RunNote {
                                 track: run.track,
                                 start_frame: run.start_frame,
+                                speed: run.speed,
                                 offset: filled,
                                 frames: run.frames,
                             };
                             run_count += 1;
                         }
-                        self.pos = (run.track, run.start_frame + run.frames as u64);
+                        self.pos = (run.track, run.end_frame());
+                        self.speed = run.speed;
                         filled += run.frames;
                         any_audio = true;
                     }
@@ -327,12 +375,13 @@ impl Renderer {
                 }
             }
             self.scratch[filled * CHANNELS..n * CHANNELS].fill(0.0);
+            self.mix_fade(filled);
             self.eq.process(&mut self.scratch[..n * CHANNELS]);
             self.lowpass
                 .process(&mut self.scratch[..n * CHANNELS], knob);
             for r in &runs[..run_count] {
                 let data = &self.scratch[r.offset * CHANNELS..(r.offset + r.frames) * CHANNELS];
-                self.tap.write(r.track, r.start_frame, data);
+                self.tap.write(r.track, r.start_frame, r.speed, data);
             }
             self.write_device(&mut out[done * ch..(done + n) * ch], n);
             done += n;
@@ -360,6 +409,40 @@ impl Renderer {
         }
         snap.starved = !any_audio;
         self.clock.publish(&snap);
+    }
+
+    /// Takes the start of the old audio still queued before `target`'s, to fade out over the
+    /// new audio's first frames.
+    fn capture_fade(&mut self, target: u32) {
+        self.fade_len = 0;
+        self.fade_pos = 0;
+        while self.fade_len < FADE_FRAMES && self.pcm.next_generation().is_some_and(|g| g < target)
+        {
+            let dst = &mut self.fade[self.fade_len * CHANNELS..];
+            match self.pcm.read(self.played_generation, dst) {
+                ReadResult::Audio(run) => self.fade_len += run.frames,
+                _ => break,
+            }
+        }
+    }
+
+    /// Crossfades the captured old audio into the first `filled` frames of the block.
+    fn mix_fade(&mut self, filled: usize) {
+        let n = (FADE_FRAMES - self.fade_pos).min(filled);
+        for i in 0..n {
+            let j = self.fade_pos + i;
+            let w = (j as f32 + 0.5) / FADE_FRAMES as f32 * std::f32::consts::FRAC_PI_2;
+            for c in 0..CHANNELS {
+                let old = if j < self.fade_len {
+                    self.fade[j * CHANNELS + c]
+                } else {
+                    0.0
+                };
+                let k = i * CHANNELS + c;
+                self.scratch[k] = self.scratch[k] * w.sin() + old * w.cos();
+            }
+        }
+        self.fade_pos += n;
     }
 
     fn note_start_latency(&self, generation: u32, host_ns: u64) {

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::TrackId;
-use crate::ring::CHANNELS;
+use crate::ring::{CHANNELS, track_frames};
 
 pub const TAP_CHUNK_FRAMES: usize = 256;
 
@@ -16,6 +16,8 @@ pub struct TapChunk {
     /// Track frame of `samples[0]`, comparable with the playback clock.
     pub start_frame: u64,
     pub frames: usize,
+    /// Track frames per sample frame (varispeed; 1 at the track's own tempo).
+    pub speed: f64,
     /// Interleaved stereo; only the first `frames * 2` values are valid.
     pub samples: [f32; TAP_CHUNK_FRAMES * CHANNELS],
 }
@@ -25,8 +27,14 @@ impl TapChunk {
         track: 0,
         start_frame: 0,
         frames: 0,
+        speed: 1.0,
         samples: [0.0; TAP_CHUNK_FRAMES * CHANNELS],
     };
+
+    /// The track frame just after this chunk.
+    pub fn end_frame(&self) -> u64 {
+        self.start_frame + track_frames(self.frames, self.speed)
+    }
 
     pub fn data(&self) -> &[f32] {
         &self.samples[..self.frames * CHANNELS]
@@ -58,23 +66,27 @@ pub struct TapWriter {
 }
 
 impl TapWriter {
-    pub fn write(&mut self, track: TrackId, start_frame: u64, mut stereo: &[f32]) {
-        let mut frame = start_frame;
+    pub fn write(&mut self, track: TrackId, start_frame: u64, speed: f64, mut stereo: &[f32]) {
         let p = &self.pending;
-        if p.frames > 0 && (p.track != track || p.start_frame + p.frames as u64 != frame) {
+        // (±1: track frames are rounded per run under varispeed.)
+        if p.frames > 0
+            && (p.track != track || p.speed != speed || p.end_frame().abs_diff(start_frame) > 1)
+        {
             self.flush();
         }
+        let mut written = 0;
         while !stereo.is_empty() {
             if self.pending.frames == 0 {
                 self.pending.track = track;
-                self.pending.start_frame = frame;
+                self.pending.start_frame = start_frame + track_frames(written, speed);
+                self.pending.speed = speed;
             }
             let room = TAP_CHUNK_FRAMES - self.pending.frames;
             let n = room.min(stereo.len() / CHANNELS);
             let at = self.pending.frames * CHANNELS;
             self.pending.samples[at..at + n * CHANNELS].copy_from_slice(&stereo[..n * CHANNELS]);
             self.pending.frames += n;
-            frame += n as u64;
+            written += n;
             stereo = &stereo[n * CHANNELS..];
             if self.pending.frames == TAP_CHUNK_FRAMES {
                 self.flush();
@@ -120,9 +132,9 @@ mod tests {
     #[test]
     fn chunks_are_stamped_and_split_on_discontinuity() {
         let (mut w, mut r) = tap(8);
-        w.write(1, 1000, &vec![0.5; 300 * CHANNELS]);
-        w.write(1, 1300, &[0.25; 10 * CHANNELS]);
-        w.write(2, 0, &[0.75; 5 * CHANNELS]); // track change
+        w.write(1, 1000, 1.0, &vec![0.5; 300 * CHANNELS]);
+        w.write(1, 1300, 1.0, &[0.25; 10 * CHANNELS]);
+        w.write(2, 0, 1.0, &[0.75; 5 * CHANNELS]); // track change
         w.flush();
         let a = r.pop().unwrap();
         assert_eq!((a.track, a.start_frame, a.frames), (1, 1000, 256));
@@ -135,10 +147,23 @@ mod tests {
     }
 
     #[test]
+    fn varispeed_chunks_are_stamped_in_track_frames() {
+        let (mut w, mut r) = tap(8);
+        w.write(1, 1000, 1.04, &vec![0.5; 300 * CHANNELS]);
+        w.write(1, 1312, 1.04, &[0.25; 10 * CHANNELS]); // continues (1000 + 300 × 1.04)
+        w.flush();
+        let a = r.pop().unwrap();
+        assert_eq!((a.start_frame, a.end_frame()), (1000, 1266));
+        let b = r.pop().unwrap();
+        assert_eq!((b.start_frame, b.frames, b.speed), (1266, 54, 1.04));
+        assert!(r.pop().is_none());
+    }
+
+    #[test]
     fn full_ring_drops_and_counts() {
         let (mut w, mut r) = tap(2);
         for i in 0..10 {
-            w.write(1, i * 256, &vec![0.0; 256 * CHANNELS]);
+            w.write(1, i * 256, 1.0, &vec![0.0; 256 * CHANNELS]);
         }
         assert_eq!(r.take_dropped(), 8);
         assert_eq!(r.take_dropped(), 0);
