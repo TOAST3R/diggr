@@ -1156,8 +1156,8 @@ impl DiggrApp {
 
     // ---- files -----------------------------------------------------------------------------
 
-    /// Adds music to the shown crate (ADD, drag-and-drop, Cmd+O, M3U import), or replaces the
-    /// Playlist crate (Eject). Adding to an empty crate plays it if nothing else is playing.
+    /// Adds music to the shown crate (ADD, drag-and-drop, Cmd+O, M3U import). Adding to an
+    /// empty crate plays it if nothing else is playing.
     fn add_paths(&mut self, paths: Vec<PathBuf>, open: Open) {
         let found: Vec<TrackRef> = files::expand(&paths)
             .into_iter()
@@ -1166,26 +1166,16 @@ impl DiggrApp {
         if found.is_empty() {
             return;
         }
-        if open != Open::Replace && self.refuse_discogs_insert(self.crates.shown_id()) {
+        if self.refuse_discogs_insert(self.crates.shown_id()) {
             return;
         }
-        let (crate_id, added, play) = if open == Open::Replace {
-            let added = self.crates.replace_playlist(found);
-            self.queue_dirty = true;
-            (PLAYLIST, added, true)
-        } else {
-            let crate_id = self.crates.shown_id();
-            let was_empty = self.crates.shown().is_empty();
-            let added = self.crates.shown_mut().add(found);
-            let added: Vec<_> = added.into_iter().map(|(e, t)| ((crate_id, e), t)).collect();
-            self.mark_shown();
-            let idle = self.position.state == PlayState::Stopped;
-            (
-                crate_id,
-                added,
-                open == Open::AddAndPlay || (was_empty && idle),
-            )
-        };
+        let crate_id = self.crates.shown_id();
+        let was_empty = self.crates.shown().is_empty();
+        let added = self.crates.shown_mut().add(found);
+        let added: Vec<_> = added.into_iter().map(|(e, t)| ((crate_id, e), t)).collect();
+        self.mark_shown();
+        let idle = self.position.state == PlayState::Stopped;
+        let play = open == Open::AddAndPlay || (was_empty && idle);
         let first = added.first().map(|((_, id), _)| *id);
         if let Some(m) = &self.meta {
             m.request(added);
@@ -1744,7 +1734,7 @@ impl DiggrApp {
                 actions.push(Action::CycleVis);
             }
 
-            // Title, kbps, kHz, mono/stereo.
+            // Title, kbps, kHz.
             let tt = sk.def.at("title_text");
             let lcd = color(sk.def.colors.lcd);
             let left = self
@@ -1786,23 +1776,6 @@ impl DiggrApp {
                     lcd,
                 );
             }
-            let channels = info.as_ref().map_or(0, |i| i.channels);
-            let m = sk.def.at("mono");
-            sk.sprite(
-                if channels == 1 { "mono_on" } else { "mono_off" },
-                m.x as f32,
-                m.y as f32,
-            );
-            let s = sk.def.at("stereo");
-            sk.sprite(
-                if channels >= 2 {
-                    "stereo_on"
-                } else {
-                    "stereo_off"
-                },
-                s.x as f32,
-                s.y as f32,
-            );
 
             // Sliders.
             let vol = SliderSprites {
@@ -1824,6 +1797,7 @@ impl DiggrApp {
                 "tog_wave",
                 self.settings.show_waveform,
             )
+            .on_hover_text("Waveform (W)")
             .clicked()
             {
                 actions.push(Action::ToggleWaveform);
@@ -1836,6 +1810,7 @@ impl DiggrApp {
                 "tog_eq",
                 self.settings.show_eq,
             )
+            .on_hover_text("Equalizer")
             .clicked()
             {
                 actions.push(Action::ToggleEq);
@@ -1848,6 +1823,7 @@ impl DiggrApp {
                 "tog_pl",
                 self.settings.show_playlist,
             )
+            .on_hover_text("Playlist")
             .clicked()
             {
                 actions.push(Action::TogglePlaylist);
@@ -1880,7 +1856,6 @@ impl DiggrApp {
                 ("pause", Action::Pause),
                 ("stop", Action::Stop),
                 ("next", Action::Next),
-                ("eject", Action::Eject),
             ] {
                 if widgets::button(ui, &sk, name, name, name).clicked() {
                     actions.push(action);
@@ -1891,15 +1866,21 @@ impl DiggrApp {
             } else {
                 "shuffle_off"
             };
-            if widgets::button(ui, &sk, "shuffle", "shuffle", shuffle).clicked() {
+            if widgets::button(ui, &sk, "shuffle", "shuffle", shuffle)
+                .on_hover_text("Shuffle")
+                .clicked()
+            {
                 actions.push(Action::Shuffle);
             }
-            let repeat = match self.settings.repeat {
-                Repeat::Off => "repeat_off",
-                Repeat::All => "repeat_all",
-                Repeat::One => "repeat_one",
+            let (repeat, tip) = match self.settings.repeat {
+                Repeat::Off => ("repeat_off", "Repeat: off"),
+                Repeat::All => ("repeat_all", "Repeat: all"),
+                Repeat::One => ("repeat_one", "Repeat: one"),
             };
-            if widgets::button(ui, &sk, "repeat", "repeat", repeat).clicked() {
+            if widgets::button(ui, &sk, "repeat", "repeat", repeat)
+                .on_hover_text(tip)
+                .clicked()
+            {
                 actions.push(Action::Repeat);
             }
             let sync = if self.settings.sync.on {
@@ -2767,7 +2748,7 @@ impl DiggrApp {
                 .open_memory(open)
                 .show(|ui| {
                     if c.id == PLAYLIST {
-                        // The scratch crate stays (Eject and opened files fill it): it clears.
+                        // The scratch crate stays (command-line files fill it): it clears.
                         if ui
                             .add_enabled(entries > 0, egui::Button::new("Clear crate"))
                             .clicked()
@@ -2777,7 +2758,7 @@ impl DiggrApp {
                         }
                         ui.label(
                             egui::RichText::new(
-                                "Playlist can't be renamed or deleted:\nEject and opened files use it",
+                                "Playlist can't be renamed or deleted:\ncommand-line files use it",
                             )
                             .weak()
                             .small(),
@@ -2796,7 +2777,11 @@ impl DiggrApp {
                     if let Some((dug, busy)) = *seller {
                         use crate::app::sellers::SellerAction;
                         if dug {
-                            let label = if busy { "Refreshing…" } else { "Refresh seller" };
+                            let label = if busy {
+                                "Refreshing…"
+                            } else {
+                                "Refresh seller"
+                            };
                             if ui
                                 .add_enabled(!busy, egui::Button::new(label))
                                 .on_hover_text("Read this seller's copies for sale again")
@@ -2808,16 +2793,20 @@ impl DiggrApp {
                                 ui.close();
                             }
                             if ui.button("Narrow down…").clicked() {
-                                actions.push(Action::Dig(DigAction::Seller(
-                                    SellerAction::Narrow(c.id),
-                                )));
+                                actions.push(Action::Dig(DigAction::Seller(SellerAction::Narrow(
+                                    c.id,
+                                ))));
                                 ui.close();
                             }
                         }
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some((true, false, busy)) = friend {
-                        let label = if busy { "Refreshing…" } else { "Refresh friend" };
+                        let label = if busy {
+                            "Refreshing…"
+                        } else {
+                            "Refresh friend"
+                        };
                         if ui
                             .add_enabled(!busy, egui::Button::new(label))
                             .on_hover_text("Read this friend's collection again")
@@ -5459,7 +5448,6 @@ impl DiggrApp {
                 self.armed = None;
                 self.with_engine(|e| e.next());
             }
-            Action::Eject => self.open_files_dialog(Open::Replace),
             Action::Seek(s) => self.with_engine(|e| e.seek(s)),
             Action::Volume(v) => self.set_volume(v),
             Action::Shuffle => {
@@ -5833,7 +5821,6 @@ enum Action {
     Pause,
     Stop,
     Next,
-    Eject,
     Seek(f64),
     Volume(f32),
     ToggleWaveform,
@@ -5937,8 +5924,6 @@ enum Open {
     Add,
     /// Add to the shown crate and play the first one.
     AddAndPlay,
-    /// Replace the Playlist crate and play it (Eject).
-    Replace,
 }
 
 struct NameDialog {
@@ -7915,7 +7900,7 @@ mod headless_tests {
 
     /// The SYNC button, and on the turntable under the main window (at 1×) the pitch fader's
     /// top, centre and bottom, its 8/16 and RESET buttons and its ×.
-    const SYNC: Pos2 = pos2(255.0, 96.0);
+    const SYNC: Pos2 = pos2(253.0, 64.0);
     const PITCH_UP: Pos2 = pos2(251.0, 116.0 + 22.0);
     const PITCH_MID: Pos2 = pos2(251.0, 116.0 + 54.0);
     const DECK_RANGE: Pos2 = pos2(147.0, 116.0 + 92.0);
@@ -8186,7 +8171,7 @@ mod headless_tests {
     }
 
     #[test]
-    fn opening_files_replaces_only_the_playlist_crate() {
+    fn command_line_files_replace_only_the_playlist_crate() {
         let lowtide = std::cell::Cell::new(0);
         let mut rig = Rig::new(
             "open",
@@ -8235,14 +8220,9 @@ mod headless_tests {
                 .ends_with("tone.mp3")
         );
 
-        // Eject does the same while another crate is shown.
-        rig.app.apply(Action::ShowCrate(lt), &rig.ctx.clone());
-        rig.app.add_paths(vec![fixture("tone.m4a")], Open::Replace);
-        assert_eq!(
-            (rig.app.crates.shown_id(), rig.app.crates.playing_id()),
-            (PLAYLIST, PLAYLIST)
-        );
-        assert_eq!(rig.app.crates.shown().len(), 1);
+        // Cmd+O adds to the shown Playlist crate, never replaces it.
+        rig.app.add_paths(vec![fixture("tone.m4a")], Open::Add);
+        assert_eq!(rig.app.crates.shown().len(), 3);
         assert!(
             rig.app.crates.get(lt).unwrap().entries()[0]
                 .track

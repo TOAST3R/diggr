@@ -17,7 +17,7 @@ use crate::settings::{PLAYLIST_FILE, Store};
 
 pub type CrateId = u64;
 
-/// The scratch crate: files opened with Eject or on the command line replace it. It always
+/// The scratch crate: files given on the command line replace it. It always
 /// exists and can't be renamed or deleted.
 pub const PLAYLIST: CrateId = 1;
 pub const PLAYLIST_NAME: &str = "Playlist";
@@ -759,7 +759,7 @@ impl Crates {
         Ok(())
     }
 
-    /// Eject and command-line files: they replace the Playlist crate, which becomes both
+    /// Command-line files: they replace the Playlist crate, which becomes both
     /// shown and playing. No other crate is ever replaced. Returns the new entries (first one
     /// first) for metadata lookup.
     pub fn replace_playlist(

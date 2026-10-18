@@ -121,7 +121,7 @@ and Home/End jump), and Enter plays the entry under it.
   playlists are expanded), use **+** in the playlist's footer, or press Cmd+O. These add to the crate on screen.
   An empty crate says so in its list: *Paste a Discogs link · Cmd+V, or drop files*, and *Press H
   for help*.
-  **Eject** (and files given on the command line) replace the Playlist crate and play it.
+  Files given on the command line replace the Playlist crate and play it.
 - **Crates:** the playlist window shows one of several named playlists, and its title bar shows
   that crate's name.
   - Below 600 pixels wide, click the title bar for the crate menu: switch crate (• marks the
@@ -131,7 +131,7 @@ and Home/End jump), and Enter plays the entry under it.
   - Switching crates never interrupts playback: next, previous, shuffle and repeat follow the
     crate the playing track came from, until you start a track in another crate.
   - **Playlist** is the scratch crate. It always exists, can be cleared but not renamed or
-    deleted, and is the only crate that Eject and command-line files replace. Your playlist
+    deleted, and is the only crate that command-line files replace. Your playlist
     from earlier versions becomes this crate on the first launch.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
     another crate or a new one, skipping entries that crate already holds.
@@ -142,7 +142,7 @@ and Home/End jump), and Enter plays the entry under it.
     Your Discogs collection crate is pinned at the bottom under **DISCOGS**, in amber with a
     record icon, even if you rename it, followed by the labels you follow (**LABELS**, see
     [Labels](#labels)), **TOP SELLERS** and **FRIENDS** (see [Friends](#friends)). **Playlist**'s menu offers Clear crate (it can't be
-    renamed or deleted: Eject and opened files use it). Click one to
+    renamed or deleted: command-line files use it). Click one to
     show it, right-click it (Control-click on a Mac) for **Rename crate…** and **Delete crate…**, or
     click a crate and press Delete, or click **+ New crate**. Drag entries onto
     a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
@@ -292,9 +292,9 @@ and Home/End jump), and Enter plays the entry under it.
 - **Main window:**
   - click the time to switch between elapsed and remaining;
   - click the mini visualizer to cycle spectrum → oscilloscope → off;
-  - **SHUFFLE**;
-  - **REP** cycles off → all → one (all gapless);
-  - **SYNC** plays every track at one tempo, the way it will sit in a set. It opens the
+  - the **shuffle** icon (crossed arrows);
+  - the **repeat** icon cycles off → all → one, shown with a small 1 (all gapless);
+  - **SYNC**, beside the section icons, plays every track at one tempo, the way it will sit in a set. It opens the
     **turntable** under the main window, set to the playing record's tempo:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
       record's own tempo (±8%; the **8%/16%** button widens it). Scroll over it, or press
@@ -315,7 +315,8 @@ and Home/End jump), and Enter plays the entry under it.
       started while SYNC is on reads "REC ?" until its BPM is known, then is fitted to the tempo;
     - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
       jumps, loops and analysis all stay in the track's own time;
-  - **WAVE**, **EQ** and **PL** show or hide the other sections. There is no balance
+  - the **waveform**, **EQ** (sliders) and **playlist** (lines) icons show or hide the other
+    sections. There is no balance
     control: playback is always centred.
 - **Equalizer:**
   - **ON** enables it;
@@ -1263,8 +1264,8 @@ What's covered:
   - the whole player driven headlessly against `ManualSink`: switching crates leaves playback
     alone, starting a track re-targets next/previous, an armed entry is audible within 100 ms
     of its audio arriving (and searched first even from a crate that isn't playing), a
-    double-click retrying a "clip failed" or "not found" entry in any crate, Eject replaces
-    only the Playlist crate, dimmed rows, the title bar's
+    double-click retrying a "clip failed" or "not found" entry in any crate, command-line
+    files replace only the Playlist crate while Cmd+O adds, dimmed rows, the title bar's
     click (crate menu) versus drag (move), and the crate and entry menus.
 - **`crates/dig`**: the Discogs client against recorded JSON (`crates/dig/tests/fixtures/`),
   covering:

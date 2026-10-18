@@ -366,6 +366,17 @@ impl Canvas {
         }
     }
 
+    /// A pixel-art icon: '#' in `rows` is painted.
+    fn bits(&mut self, x: i32, y: i32, rows: &[&str], c: C) {
+        for (row, bits) in rows.iter().enumerate() {
+            for (col, b) in bits.bytes().enumerate() {
+                if b == b'#' {
+                    self.px(x + col as i32, y + row as i32, c);
+                }
+            }
+        }
+    }
+
     fn tiny_centered(&mut self, cx: i32, y: i32, s: &str, c: C) {
         self.tiny(cx - tiny_w(s) / 2, y, s, c);
     }
@@ -841,7 +852,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
 
     // ---- transport ------------------------------------------------------------------------
     type Icon = fn(&mut Canvas, i32, i32);
-    let icons: [(&str, u16, u16, Icon); 6] = [
+    let icons: [(&str, u16, u16, Icon); 5] = [
         ("prev", 23, 18, |c, x, y| {
             c.fill(x + 5, y + 4, 2, 10, ICON);
             c.tri(x, y, [(12.0, 4.0), (12.0, 14.0), (7.0, 9.0)], ICON);
@@ -859,10 +870,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tri(x, y, [(6.0, 4.0), (6.0, 14.0), (11.0, 9.0)], ICON);
             c.tri(x, y, [(11.0, 4.0), (11.0, 14.0), (16.0, 9.0)], ICON);
             c.fill(x + 16, y + 4, 2, 10, ICON);
-        }),
-        ("eject", 22, 16, |c, x, y| {
-            c.tri(x, y, [(11.0, 3.0), (5.0, 9.0), (17.0, 9.0)], ICON);
-            c.fill(x + 5, y + 11, 12, 2, ICON);
         }),
     ];
     for (name, w, h, icon) in icons {
@@ -890,49 +897,47 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 c.text_centered(x + w as i32 / 2 + o, y + (h as i32 - 7) / 2 + o, label, col);
             });
         };
-    for (state, lit) in [("off", false), ("on", true)] {
-        text_button(
-            &mut b,
-            &format!("shuffle_{state}"),
-            47,
-            15,
-            "SHUFFLE",
-            lit,
-            false,
-        );
-        text_button(
-            &mut b,
-            &format!("shuffle_{state}_p"),
-            47,
-            15,
-            "SHUFFLE",
-            lit,
-            true,
-        );
-    }
-    for (state, label, lit) in [
-        ("off", "REP", false),
-        ("all", "REP", true),
-        ("one", "REP1", true),
+    // Shuffle and repeat: icons, lit while on; repeat one adds a small 1 in the loop.
+    const SHUFFLE: [&str; 9] = [
+        ".............#.",
+        "####.....######",
+        "....#...#....#.",
+        ".....#.#.......",
+        "......#........",
+        ".....#.#.......",
+        "....#...#....#.",
+        "####.....######",
+        ".............#.",
+    ];
+    const REPEAT: [&str; 9] = [
+        "...............",
+        ".#############.",
+        "#.............#",
+        "#.............#",
+        "#.............#",
+        "#.............#",
+        "#....#........#",
+        ".#..##########.",
+        ".....#.........",
+    ];
+    for (state, icon, lit, one) in [
+        ("shuffle_off", &SHUFFLE, false, false),
+        ("shuffle_on", &SHUFFLE, true, false),
+        ("repeat_off", &REPEAT, false, false),
+        ("repeat_all", &REPEAT, true, false),
+        ("repeat_one", &REPEAT, true, true),
     ] {
-        text_button(
-            &mut b,
-            &format!("repeat_{state}"),
-            28,
-            15,
-            label,
-            lit,
-            false,
-        );
-        text_button(
-            &mut b,
-            &format!("repeat_{state}_p"),
-            28,
-            15,
-            label,
-            lit,
-            true,
-        );
+        for pressed in [false, true] {
+            let p = if pressed { "_p" } else { "" };
+            b.sprite(&format!("{state}{p}"), 22, 15, |c, x, y| {
+                button_face(c, x, y, 22, 15, pressed);
+                let (o, col) = (pressed as i32, if lit { rgb(170, 100, 0) } else { ICON });
+                c.bits(x + 3 + o, y + 3 + o, icon, col);
+                if one {
+                    c.tiny(x + 11 + o, y + 5 + o, "1", col);
+                }
+            });
+        }
     }
     for (state, lit) in [("off", false), ("on", true)] {
         for pressed in [false, true] {
@@ -940,8 +945,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             text_button(
                 &mut b,
                 &format!("sync_{state}{p}"),
-                26,
-                15,
+                30,
+                12,
                 "SYNC",
                 lit,
                 pressed,
@@ -963,12 +968,57 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             pressed,
         );
     }
-    for (name, w, label) in [
-        ("tog_eq", 23, "EQ"),
-        ("tog_pl", 23, "PL"),
-        ("tog_wave", 38, "WAVE"),
-        ("eq_on", 26, "ON"),
-    ] {
+    // The waveform, EQ and playlist toggles: icons, lit while their section shows.
+    const TOGGLE_ICONS: [(&str, [&str; 8]); 3] = [
+        (
+            "tog_wave",
+            [
+                "......#....",
+                "..#...#....",
+                "..#...#...#",
+                "#.#.#.#.#.#",
+                "#.#.#.#.#.#",
+                "..#...#...#",
+                "..#...#....",
+                "......#....",
+            ],
+        ),
+        (
+            "tog_eq",
+            [
+                ".#...#...#.",
+                ".#..###..#.",
+                ".#...#...#.",
+                "###..#...#.",
+                ".#...#..###",
+                ".#...#...#.",
+                ".#...#...#.",
+                ".#...#...#.",
+            ],
+        ),
+        (
+            "tog_pl",
+            [
+                "#.#########",
+                "...........",
+                "#.#########",
+                "...........",
+                "#.#########",
+                "...........",
+                "#.#########",
+                "...........",
+            ],
+        ),
+    ];
+    for (name, icon) in TOGGLE_ICONS {
+        for (state, lit) in [("off", false), ("on", true)] {
+            b.sprite(&format!("{name}_{state}"), 17, 12, |c, x, y| {
+                button_face(c, x, y, 17, 12, lit);
+                c.bits(x + 3, y + 2, &icon, if lit { ACCENT } else { ICON });
+            });
+        }
+    }
+    for (name, w, label) in [("eq_on", 26, "ON")] {
         for (state, lit) in [("off", false), ("on", true)] {
             b.sprite(&format!("{name}_{state}"), w, 12, |c, x, y| {
                 button_face(c, x, y, w as i32, 12, lit);
@@ -1052,14 +1102,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         c.fill(x, y, 9, 9, LCD_BG);
         c.fill(x + 2, y + 2, 5, 5, LCD_ON);
     });
-    for (name, w, label) in [("mono", 25, "MONO"), ("stereo", 36, "STEREO")] {
-        for (state, col) in [("off", rgb(70, 52, 22)), ("on", LCD_ON)] {
-            b.sprite(&format!("{name}_{state}"), w, 12, |c, x, y| {
-                c.inset(x, y, w as i32, 12, LCD_BG);
-                c.text_centered(x + w as i32 / 2, y + 3, label, col);
-            });
-        }
-    }
 
     // ---- sliders --------------------------------------------------------------------------
     b.sprite("seek_track", 248, 10, |c, x, y| {
@@ -1279,22 +1321,19 @@ fn layout() -> BTreeMap<String, R> {
         ("title_text", R::new(112, 25, 152, 7)),
         ("kbps", R::new(111, 40, 17, 7)),
         ("khz", R::new(158, 40, 12, 7)),
-        ("mono", R::new(206, 38, 25, 12)),
-        ("stereo", R::new(233, 38, 36, 12)),
         ("volume", R::new(107, 57, 68, 13)),
-        ("wave_toggle", R::new(177, 58, 38, 12)),
-        ("eq_toggle", R::new(219, 58, 23, 12)),
-        ("pl_toggle", R::new(243, 58, 23, 12)),
+        ("wave_toggle", R::new(177, 58, 17, 12)),
+        ("eq_toggle", R::new(197, 58, 17, 12)),
+        ("pl_toggle", R::new(217, 58, 17, 12)),
+        ("sync", R::new(238, 58, 30, 12)),
         ("seek", R::new(16, 72, 248, 10)),
         ("prev", R::new(16, 88, 23, 18)),
         ("play", R::new(39, 88, 23, 18)),
         ("pause", R::new(62, 88, 23, 18)),
         ("stop", R::new(85, 88, 23, 18)),
         ("next", R::new(108, 88, 23, 18)),
-        ("eject", R::new(136, 89, 22, 16)),
-        ("shuffle", R::new(164, 89, 47, 15)),
-        ("repeat", R::new(212, 89, 28, 15)),
-        ("sync", R::new(242, 89, 26, 15)),
+        ("shuffle", R::new(221, 89, 22, 15)),
+        ("repeat", R::new(246, 89, 22, 15)),
         // turntable (relative to its section)
         ("deck_titlebar", R::new(0, 0, 275, 14)),
         ("deck_close", R::new(262, 3, 9, 9)),
