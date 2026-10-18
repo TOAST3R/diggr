@@ -53,7 +53,7 @@ Switching the shown crate SHALL NOT interrupt playback. The playing track SHALL 
 - **THEN** that entry plays, and next and previous now follow crate B
 
 ### Requirement: The Playlist crate
-A crate named "Playlist" SHALL always exist. Files opened with Eject or on the command line SHALL replace its contents, and it SHALL then be shown and played. It SHALL be possible to clear it, but not to rename or delete it. Opening files SHALL NOT replace any other crate. Adding music (ADD, drag-and-drop, Cmd+O, M3U import) SHALL add to the shown crate.
+A crate named "Playlist" SHALL always exist. Files given on the command line SHALL replace its contents, and it SHALL then be shown and played. It SHALL be possible to clear it, but not to rename or delete it. Opening files from inside the app SHALL NOT replace any crate. Adding music (ADD, drag-and-drop, Cmd+O, M3U import) SHALL add to the shown crate.
 
 #### Scenario: Opening files leaves other crates alone
 - **WHEN** crate "Lowtide Tapes" is shown and the app is started with two files on the command line
@@ -62,6 +62,10 @@ A crate named "Playlist" SHALL always exist. Files opened with Eject or on the c
 #### Scenario: Playlist cannot be deleted
 - **WHEN** the user opens the crate menu while the Playlist crate is shown
 - **THEN** Rename crate… and Delete crate… are unavailable
+
+#### Scenario: Cmd+O adds, never replaces
+- **WHEN** the Playlist crate holds three files and is shown, and the user opens two files with Cmd+O
+- **THEN** the Playlist crate holds five files
 
 ### Requirement: Send entries to a crate
 The entry right-click menu SHALL offer Send to crate, listing the other crates and New crate…. It SHALL copy the selected entries, in their order and with their metadata and origin, to the end of the chosen crate, skipping entries that crate already holds (the same file, or the same origin clip). The source crate SHALL be unchanged.
