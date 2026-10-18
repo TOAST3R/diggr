@@ -18,6 +18,7 @@ pub mod beatport;
 pub mod bleep;
 pub mod bridge;
 pub mod browser;
+pub mod carts;
 pub mod clock;
 pub mod collection;
 pub mod config;

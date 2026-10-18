@@ -1,7 +1,8 @@
 // On bleep.com: reads the records the page in view shows, only when the button's menu opens
 // (or a record's ▶ is clicked), from markup the browser has already loaded. Bleep pages sit
 // behind a bot challenge the player must not get around, so the extension reads them and the
-// player never fetches them. Nothing here makes a network request or changes the page.
+// player never fetches them. Nothing here makes a network request or changes the page (the
+// basket requests are `carts.js`', made only for the player's cart pill).
 //
 // A release page (/release/‹id›-‹name›) shows its formats with prices and its tracks; a list
 // (label, artist, search…) shows tiles with no tracks, which the player brings in from Discogs.
@@ -46,9 +47,12 @@ var WRBleep = (() => {
     const m = new URL(address).pathname.match(RELEASE);
     const product = doc.querySelector(`#product-${m?.[1]}`);
     if (!m || !product) return [];
+    // A format's product id is on its first buy button (the variant its price shows), for
+    // the player's cart pill.
     const formats = [...product.querySelectorAll(".product-formats-list > li")].slice(0, 8).map((f) => ({
       name: text(f, ".media-format-name", 30),
       price: text(f, ".price-wrapper", 20),
+      id: f.querySelector('.buy-button[data-itemtype="ReleaseFormat"]')?.dataset.itemid ?? "",
     }));
     const tracks = [...doc.querySelectorAll(`#track-list-${m[1]} li.track[data-id]`)]
       .slice(0, 60)
@@ -60,7 +64,8 @@ var WRBleep = (() => {
         secs: seconds(text(t, ".track-duration")),
       }))
       .filter((t) => /^\d{1,10}$/.test(t.id) && t.n >= 1 && t.n <= 99 && t.title);
-    return [{ ...base(product, m[1], m[2]), formats: formats.filter((f) => f.name), tracks }];
+    const sold = formats.filter((f) => f.name).map((f) => (/^\d{1,10}$/.test(f.id) ? f : { ...f, id: "" }));
+    return [{ ...base(product, m[1], m[2]), formats: sold, tracks }];
   }
 
   /** A list's tile: no tracks, only the names of its formats. */

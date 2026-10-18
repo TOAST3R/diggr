@@ -17,8 +17,14 @@
 //!
 //! A Bleep list shows its records without tracks: each stands as one entry with no position
 //! until it is linked, when its release's tracks come in from Discogs and it goes.
+//!
+//! Each store entry has a cart pill. Juno and Bleep baskets are reached through the browser
+//! extension (`dig::carts`): a click queues the action and the pill changes at once; an answer
+//! other than added, already in, removed or sold out opens the store's page instead. Beatport
+//! and Traxsource baskets can't be reached, so their pill opens the page straight away.
 
 use dig::bandcamp::fan::DiscogsMatch;
+use dig::carts::{CartKind, CartResult, Outcome, StoreCarts};
 use dig::discogs::client::ApiError;
 use dig::discogs::search::Wanted;
 use dig::discogs::url::{Page, PageKind};
@@ -29,9 +35,9 @@ use dig::stores::{Store, StoreMemory, StoreRecord};
 use platform::TrackRef;
 use std::collections::{HashMap, HashSet};
 
-use super::DiggrApp;
 use super::bandcamp::{Step, catno_key, match_key};
 use super::digging::SendMode;
+use super::{DiggrApp, StorePill};
 use crate::crates::CrateId;
 use crate::playlist::{Entry, EntryId, EntryStatus, NewEntry, Origin, UnavailableKind, WaitKind};
 
@@ -58,6 +64,28 @@ pub(super) struct StoreState {
     /// Where `juno.ron`, `beatport.ron` and `traxsource.ron` snapshots go to be written (see
     /// `Dig::save_store`).
     pub(super) saver: Option<std::sync::mpsc::Sender<(Store, StoreMemory)>>,
+    /// The Juno and Bleep baskets as last known (`store-carts.ron`).
+    pub(super) carts: StoreCarts,
+    /// Cart actions queued and not answered yet, by action id.
+    pending: HashMap<u64, Pending>,
+    /// Items a store said were sold out this session.
+    sold: HashSet<(Store, String)>,
+}
+
+/// A cart action on its way: what the pill shows meanwhile, and the page to open if it fails.
+struct Pending {
+    store: Store,
+    item: String,
+    kind: CartKind,
+    page: String,
+    price: String,
+}
+
+/// What a click on an entry's pill does.
+enum CartClick {
+    Queue(Store, CartKind, String),
+    /// Beatport, Traxsource, or a Bleep record whose formats weren't sent: the page opens.
+    Page(Store),
 }
 
 impl StoreState {
@@ -73,8 +101,20 @@ impl StoreState {
             .collect();
         Self {
             memories,
+            carts: cache.map(StoreCarts::load).unwrap_or_default(),
             ..Self::default()
         }
+    }
+
+    /// Whether the item is in the basket: as the pending action will leave it, else as known.
+    fn in_cart(&self, store: Store, item: &str) -> bool {
+        let pending = self
+            .pending
+            .values()
+            .filter(|p| p.store == store && p.item == item)
+            .last()
+            .map(|p| p.kind == CartKind::Add);
+        pending.unwrap_or_else(|| self.carts.get(store, item).is_some())
     }
 
     pub(super) fn memory(&self, store: Store) -> &StoreMemory {
@@ -561,6 +601,194 @@ impl DiggrApp {
                 Some((store.name(), seen.note(dig::now_secs(), day_month)?))
             })
             .collect()
+    }
+
+    // ---- baskets --------------------------------------------------------------------------
+
+    /// The entry's store, item and what can be bought of it: a Juno product, a Bleep
+    /// release's formats, or (Beatport, Traxsource) only its page.
+    fn store_item(&self, e: &Entry) -> Option<(Store, Vec<(String, String)>)> {
+        let (d, o) = (self.dig.as_ref()?, e.origin.as_ref()?);
+        let price = |store, id: &str| {
+            d.stores
+                .memory(store)
+                .products
+                .get(id)
+                .map(|s| s.price.clone())
+                .unwrap_or_default()
+        };
+        if !o.juno.is_empty() {
+            return Some((
+                Store::Juno,
+                vec![(o.juno.clone(), price(Store::Juno, &o.juno))],
+            ));
+        }
+        if !o.bleep.is_empty() {
+            let buy = d.stores.memory(Store::Bleep).products.get(&o.bleep);
+            return Some((Store::Bleep, buy.map(|s| s.buy.clone()).unwrap_or_default()));
+        }
+        [
+            (Store::Beatport, &o.beatport_page),
+            (Store::Traxsource, &o.traxsource_page),
+        ]
+        .into_iter()
+        .find(|(_, page)| !page.is_empty())
+        .map(|(s, _)| (s, Vec::new()))
+    }
+
+    /// The entry's cart pill, when it came from a store.
+    pub(crate) fn store_pill_of(&self, e: &Entry) -> Option<StorePill> {
+        let (store, items) = self.store_item(e)?;
+        let s = &self.dig.as_ref()?.stores;
+        let name = store.name();
+        let held = items.iter().find(|(id, _)| s.in_cart(store, id));
+        let sold = items
+            .iter()
+            .any(|(id, _)| s.sold.contains(&(store, id.clone())));
+        // The price as the store shows it: the basket's, else the page's.
+        let price = |id: &str, shown: &str| {
+            let p = match s.carts.get(store, id) {
+                Some(b) if !b.price.is_empty() => b.price.as_str(),
+                _ => shown,
+            };
+            match p.is_empty() {
+                true => String::new(),
+                false => format!(", {p}"),
+            }
+        };
+        let tip = match (held, items.as_slice()) {
+            (Some((id, shown)), _) => {
+                format!("In your {name} cart{}: click to remove", price(id, shown))
+            }
+            (None, [(id, shown)]) => format!("Add to your {name} cart{}", price(id, shown)),
+            (None, []) => format!("Open on {name} to buy it there"),
+            (None, _) => format!("Add to your {name} cart: choose a format"),
+        };
+        Some(StorePill {
+            in_cart: held.is_some(),
+            sold,
+            choose: match held {
+                None if items.len() > 1 => items.clone(),
+                _ => Vec::new(),
+            },
+            tip,
+        })
+    }
+
+    /// A click on the pill of entry `id` in crate `c` (`format`: the Bleep format chosen):
+    /// queues the add or remove, or opens the store's page.
+    pub(super) fn store_cart_click(&mut self, c: CrateId, id: EntryId, format: Option<String>) {
+        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
+            return;
+        };
+        let Some((store, items)) = self.store_item(&e) else {
+            return;
+        };
+        let page = self
+            .store_pages(&e)
+            .into_iter()
+            .find(|(s, _)| *s == store)
+            .map(|(_, p)| p)
+            .unwrap_or_default();
+        let Some(d) = self.dig.as_mut() else { return };
+        let held = items.iter().find(|(i, _)| d.stores.in_cart(store, i));
+        let click = match (held, format, items.as_slice()) {
+            _ if !dig::carts::reachable(store) => CartClick::Page(store),
+            (Some((item, _)), _, _) => CartClick::Queue(store, CartKind::Remove, item.clone()),
+            (None, Some(f), _) if items.iter().any(|(i, _)| *i == f) => {
+                CartClick::Queue(store, CartKind::Add, f)
+            }
+            (None, _, [(item, _)]) => CartClick::Queue(store, CartKind::Add, item.clone()),
+            _ => CartClick::Page(store),
+        };
+        let queued = match &click {
+            CartClick::Queue(store, kind, item) => d
+                .bridge_shared
+                .as_ref()
+                .and_then(|sh| {
+                    sh.cart()
+                        .push(*store, *kind, item, std::time::Instant::now())
+                })
+                .map(|action| (action, *store, *kind, item.clone())),
+            CartClick::Page(_) => None,
+        };
+        match (queued, click) {
+            (Some((action, store, kind, item)), _) => {
+                let price = items
+                    .iter()
+                    .find(|(i, _)| *i == item)
+                    .map(|(_, p)| p.clone())
+                    .unwrap_or_default();
+                d.stores.pending.insert(
+                    action,
+                    Pending {
+                        store,
+                        item,
+                        kind,
+                        page,
+                        price,
+                    },
+                );
+            }
+            (None, CartClick::Page(s)) if !dig::carts::reachable(s) => {
+                self.cart_fallback(
+                    &page,
+                    format!("{}'s cart can't be reached from Diggr", s.name()),
+                );
+            }
+            // A Bleep record sent from a list: its tiles name no format to add.
+            (None, CartClick::Page(s)) if items.is_empty() => {
+                let why = format!(
+                    "Send the record's own page from {} to choose its format here",
+                    s.name()
+                );
+                self.cart_fallback(&page, why);
+            }
+            (None, _) => {
+                self.cart_fallback(&page, format!("Couldn't reach your {} cart", store.name()));
+            }
+        }
+    }
+
+    /// Opens the item's page on its store, saying why.
+    fn cart_fallback(&mut self, page: &str, why: String) {
+        let Some(d) = &self.dig else { return };
+        match page.is_empty() {
+            true => self.notify(why),
+            false => match d.open_url(page) {
+                Ok(()) => self.notify(format!("{why}: opened the page instead")),
+                Err(err) => self.notify(format!("{why}, and could not open the browser: {err}")),
+            },
+        }
+    }
+
+    /// A cart action ended: the basket and pill follow, the main window says how it went,
+    /// and anything but added, already in, removed or sold out opens the store's page.
+    pub(super) fn store_cart_result(&mut self, r: CartResult) {
+        let Some(d) = self.dig.as_mut() else { return };
+        let pending = d.stores.pending.remove(&r.action.id);
+        let price = pending.as_ref().map_or("", |p| p.price.as_str());
+        if d.stores.carts.apply(&r, price) {
+            d.save_store_carts();
+        }
+        // A read that didn't happen says nothing: there was nothing to do.
+        let Some(p) = pending else { return };
+        let name = p.store.name();
+        match r.outcome {
+            Outcome::Added => self.notify(format!("Added to your {name} cart")),
+            Outcome::AlreadyIn => self.notify(format!("Already in your {name} cart")),
+            Outcome::Removed => self.notify(format!("Removed from your {name} cart")),
+            Outcome::SoldOut => {
+                d.stores.sold.insert((p.store, p.item));
+                self.notify(format!("Sold out on {name}"));
+            }
+            Outcome::NotLoggedIn => {
+                self.cart_fallback(&p.page, format!("Log in to {name} to use its cart"));
+            }
+            Outcome::Failed | Outcome::Read | Outcome::NoExtension | Outcome::TimedOut => {
+                self.cart_fallback(&p.page, format!("Couldn't reach your {name} cart"));
+            }
+        }
     }
 
     /// The stores whose page an entry can open, with the page.

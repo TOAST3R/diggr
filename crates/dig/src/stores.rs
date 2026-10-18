@@ -89,6 +89,9 @@ pub struct StoreRecord {
     pub price: String,
     pub cover: String,
     pub tracks: Vec<StoreTrack>,
+    /// What can be put in the store's basket, when it is more than the record itself: Bleep's
+    /// formats as (product id, "MP3 2.49 €").
+    pub buy: Vec<(String, String)>,
 }
 
 /// What a send is called: "Artist - Title" for one record, else "Juno: 20 records".
@@ -304,6 +307,7 @@ pub(crate) fn check_listed(
                 price: t.price.clone(),
                 cover,
                 tracks: vec![track],
+                buy: Vec::new(),
             }),
         }
     }
@@ -455,6 +459,8 @@ pub struct Seen {
     pub release: Option<u64>,
     /// Looked up on Discogs already (found or not): never again.
     pub searched: bool,
+    /// What can be put in the basket (see [`StoreRecord::buy`]), as last sent.
+    pub buy: Vec<(String, String)>,
 }
 
 /// What a store's sends taught: per record, the stock and price note and the Discogs link
@@ -493,6 +499,10 @@ impl StoreMemory {
             s.slug = r.slug.clone();
             s.stock = r.stock;
             s.price = r.price.clone();
+            // A list's tile shows no formats: what a release page said stays.
+            if !r.buy.is_empty() {
+                s.buy = r.buy.clone();
+            }
             s.seen = now;
         }
     }
@@ -558,6 +568,32 @@ mod tests {
         assert_eq!(key_name("5A"), Some("C minor"));
         assert_eq!(key_name("8B"), Some("C major"));
         assert_eq!(key_name("x"), None);
+    }
+
+    #[test]
+    fn a_send_without_formats_keeps_the_ones_known() {
+        let mut m = StoreMemory::default();
+        let record = |buy: Vec<(String, String)>| StoreRecord {
+            store: Store::Bleep,
+            id: "626858".into(),
+            page: String::new(),
+            slug: "intellitronic-pixel".into(),
+            artist: "Intellitronic".into(),
+            title: "Pixel".into(),
+            label: String::new(),
+            catno: String::new(),
+            format: String::new(),
+            stock: Stock::Unknown,
+            price: String::new(),
+            cover: String::new(),
+            tracks: Vec::new(),
+            buy,
+        };
+        let vinyl = vec![("2085587".to_owned(), "Vinyl 19.99 €".to_owned())];
+        m.saw(&[record(vinyl.clone())], 1);
+        // A list's tile shows no formats: what the release page said stays.
+        m.saw(&[record(Vec::new())], 2);
+        assert_eq!(m.products["626858"].buy, vinyl);
     }
 
     #[test]

@@ -166,6 +166,8 @@ pub enum DigAction {
     OpenBandcamp(EntryId),
     /// The entry's page on a store (Juno: its own record, or the one linked to its release).
     OpenStore(EntryId, dig::stores::Store),
+    /// The entry's cart pill: add its store item (the Bleep format chosen) or take it out.
+    StoreCart(EntryId, Option<String>),
     /// Play the entry from another of its sources (YouTube, Bandcamp, Juno or Beatport).
     SwitchSource(EntryId, crate::playlist::ClipSource),
     /// The last Bandcamp import's report.
@@ -526,6 +528,13 @@ impl Dig {
         }
     }
 
+    /// `store-carts.ron`: a few lines, written when a basket changes.
+    pub(super) fn save_store_carts(&self) {
+        if let Some(root) = &self.setup.cache_root {
+            let _ = self.stores.carts.save(root);
+        }
+    }
+
     /// With a token: the first Top Sellers list (once ever) and the cart, behind other work.
     fn read_account_lists(&self) {
         if self.token.is_none() {
@@ -698,6 +707,13 @@ impl Dig {
             ));
             self.share_collection();
             self.start_bridge();
+            // What's in the Juno and Bleep baskets, when an extension is there to read them.
+            if let Some(sh) = &self.bridge_shared {
+                for store in [dig::stores::Store::Juno, dig::stores::Store::Bleep] {
+                    let read = dig::carts::CartKind::Read;
+                    sh.cart().push(store, read, "", Instant::now());
+                }
+            }
         }
         self.read_account_lists();
     }
@@ -2161,6 +2177,7 @@ impl DiggrApp {
                     d.send(Command::ResolveShopItem(id));
                 }
             }
+            BridgeCommand::CartResult(r) => self.store_cart_result(r),
             BridgeCommand::Paired => {
                 if let Some(dialog) = self.dig.as_mut().and_then(|d| d.bridge_dialog.as_mut()) {
                     dialog.paired = true;
@@ -3583,6 +3600,7 @@ impl DiggrApp {
                     self.notify(format!("Could not open the browser: {err}"));
                 }
             }
+            DigAction::StoreCart(id, format) => self.store_cart_click(c, id, format),
             DigAction::OpenStore(id, store) => {
                 let url = self
                     .crates

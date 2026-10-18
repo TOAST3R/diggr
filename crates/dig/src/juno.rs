@@ -225,6 +225,7 @@ impl JunoRecord {
     /// The record in the shape every store shares: its page, cover and sample keys rebuilt.
     pub fn to_store(&self) -> StoreRecord {
         StoreRecord {
+            buy: Vec::new(),
             store: Store::Juno,
             id: self.product.clone(),
             page: product_url(&self.slug, &self.product).unwrap_or_default(),

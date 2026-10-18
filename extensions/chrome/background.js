@@ -1,7 +1,7 @@
 // The service worker: every call to the player's bridge goes through here (the key never
-// reaches a web page), plus the link context menus and the toolbar badge.
+// reaches a web page), plus the link context menus, the toolbar badge and the store baskets.
 
-importScripts("pages.js");
+importScripts("pages.js", "carts.js");
 
 const DEFAULTS = {
   port: WR.DEFAULT_PORT,
@@ -195,3 +195,33 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
   await chrome.storage.session.set({ lastLink: { ok: r.ok, text } });
   if (r.error === "not-paired") chrome.runtime.openOptionsPage();
 });
+
+// ---- store baskets --------------------------------------------------------------------------
+
+// While the player runs, a wait for its next cart action is always open (the player holds it
+// up to 25 s), which also keeps this worker awake; each action is done and answered at once.
+let cartWaiting = false;
+
+async function cartLoop() {
+  if (cartWaiting) return;
+  cartWaiting = true;
+  try {
+    for (;;) {
+      const r = await bridge("cart/next");
+      if (!r.ok) {
+        // Not running or not paired (or a player without baskets): look again later.
+        await new Promise((ok) => setTimeout(ok, r.status === 404 ? 60_000 : 5_000));
+        continue;
+      }
+      const action = r.json.action;
+      if (!action) continue;
+      const out = await WRCarts.perform(action);
+      await bridge("cart/result", { method: "POST", body: { id: action.id, ...out } });
+    }
+  } finally {
+    cartWaiting = false;
+  }
+}
+
+// Every time the worker starts (installed, browser started, woken by a page or the popup).
+cartLoop();
