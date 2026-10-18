@@ -3828,6 +3828,55 @@ impl DiggrApp {
         }
     }
 
+    /// A store entry's cart pill.
+    fn store_pill(&self, e: &crate::playlist::Entry) -> Option<StorePill> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return DiggrApp::store_pill_of(self, e);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = e;
+            None
+        }
+    }
+
+    /// A store pill's click over the band `rr` of its row, registered after the row's: adds
+    /// the entry's store item, takes it out, or (Bleep, several formats) opens their menu.
+    fn store_pill_click(
+        &self,
+        ui: &mut Ui,
+        pill: Rect,
+        rr: Rect,
+        id: EntryId,
+        p: &StorePill,
+        actions: &mut Vec<Action>,
+    ) {
+        let hit = Rect::from_x_y_ranges(pill.x_range(), rr.y_range());
+        let resp = ui
+            .interact(hit, Id::new(("pl_store_pill", id)), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(&p.tip);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if p.choose.is_empty() {
+                if resp.clicked() {
+                    actions.push(Action::Dig(DigAction::StoreCart(id, None)));
+                }
+            } else {
+                egui::Popup::menu(&resp).show(|ui| {
+                    for (format, label) in &p.choose {
+                        if ui.button(label).clicked() {
+                            let a = DigAction::StoreCart(id, Some(format.clone()));
+                            actions.push(Action::Dig(a));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (resp, actions);
+    }
+
     /// The pointer for a cart pill on the band `rr` of its row, when it is over it and nothing
     /// covers it.
     fn pill_pointer(&self, ui: &Ui, rr: Rect) -> Option<Pos2> {
@@ -4006,14 +4055,19 @@ impl DiggrApp {
             (Some(c), None) => Some((*c, self.copy_in_cart(c.listing))),
             _ => None,
         };
+        // A Discogs copy's pill comes first; a store record's otherwise.
+        let store_pill = lone.is_none().then(|| self.store_pill(first)).flatten();
         let badges = Badges {
             owned: marks.owned.is_some(),
             cart: marks.cart.is_some(),
-            sold: all_sold,
-            pill: lone.map(|(_, in_cart)| Pill {
-                in_cart,
-                pointer: self.pill_pointer(ui, band),
-            }),
+            sold: all_sold || store_pill.as_ref().is_some_and(|p| p.sold),
+            pill: lone
+                .map(|(_, in_cart)| in_cart)
+                .or(store_pill.as_ref().map(|p| p.in_cart))
+                .map(|in_cart| Pill {
+                    in_cart,
+                    pointer: self.pill_pointer(ui, band),
+                }),
         };
         let (w, pill_rect) = entry_badges(
             &text_clip,
@@ -4027,6 +4081,9 @@ impl DiggrApp {
         at.x += w;
         if let (Some(rect), Some((c, in_cart))) = (pill_rect, lone) {
             self.cart_pill_click(ui, rect, band, c, in_cart, actions);
+        }
+        if let (Some(rect), Some(p)) = (pill_rect, &store_pill) {
+            self.store_pill_click(ui, rect, band, first.id, p, actions);
         }
         let album = if first.album().is_empty() {
             first.title.as_str()
@@ -4596,12 +4653,17 @@ impl DiggrApp {
                     .map(|s| s.badge());
                 let marks = self.dig_marks(e);
                 let owned = marks.owned.clone();
+                let store_pill = self.store_pill(e);
                 let badges = Badges {
                     owned: owned.is_some(),
                     cart: marks.cart.is_some(),
-                    sold: false,
-                    pill: None,
+                    sold: store_pill.as_ref().is_some_and(|p| p.sold),
+                    pill: store_pill.as_ref().map(|p| Pill {
+                        in_cart: p.in_cart,
+                        pointer: self.pill_pointer(ui, rr),
+                    }),
                 };
+                let mut pill_rect = None;
                 if marks.passed {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
@@ -4664,7 +4726,7 @@ impl DiggrApp {
                                 if badges.any() || e.format_mark().is_some() =>
                             {
                                 let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
-                                let (w, _) = entry_badges(
+                                let (w, r) = entry_badges(
                                     &cell_clip,
                                     at,
                                     badges,
@@ -4673,6 +4735,7 @@ impl DiggrApp {
                                     &d.colors,
                                     scale,
                                 );
+                                pill_rect = r;
                                 text_marked(
                                     &cell_clip,
                                     at + vec2(w, 0.0),
@@ -4732,7 +4795,7 @@ impl DiggrApp {
                             )
                             .width();
                         let at = at + vec2(num, 0.0);
-                        let (w, _) = entry_badges(
+                        let (w, r) = entry_badges(
                             &name_clip,
                             at,
                             badges,
@@ -4741,6 +4804,7 @@ impl DiggrApp {
                             &d.colors,
                             scale,
                         );
+                        pill_rect = r;
                         text_marked(
                             &name_clip,
                             at + vec2(w, 0.0),
@@ -4763,6 +4827,9 @@ impl DiggrApp {
                     }
                 }
                 let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
+                if let (Some(rect), Some(p)) = (pill_rect, &store_pill) {
+                    self.store_pill_click(ui, rect, rr, e.id, p, &mut actions);
+                }
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
                     let mut details = format::entry_details(e, marks.clone(), unix_now());
@@ -6188,6 +6255,16 @@ struct Pill {
     /// The pointer, when it is over the pill's row (and nothing covers it): the pill takes
     /// the row's full height, so only its x matters.
     pointer: Option<Pos2>,
+}
+
+/// A store entry's cart pill (see `stores`), drawn as a copy's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StorePill {
+    pub(crate) in_cart: bool,
+    pub(crate) sold: bool,
+    /// Bleep's formats to choose from (more than one, none in the cart): (product id, label).
+    pub(crate) choose: Vec<(String, String)>,
+    pub(crate) tip: String,
 }
 
 impl Badges {
@@ -7778,6 +7855,8 @@ mod headless_tests {
     mod bleep_tests;
     // Beatport and Traxsource tracks sent by the extension.
     mod store_tests;
+    // Juno and Bleep baskets through a fake extension.
+    mod store_cart_tests;
     // Top Sellers and the cart, with a fake Discogs.
     mod seller_tests;
 

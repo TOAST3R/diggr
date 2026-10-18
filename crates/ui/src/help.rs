@@ -158,6 +158,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  sale has the button on its own row)",
             ),
             (
+                "Juno or Bleep entry: + CART / IN CART",
+                "put it in your basket on that store through the browser extension (Bleep asks \
+                 which format) / take it out; Beatport and Traxsource open the track's page",
+            ),
+            (
                 "Copy: double-click / right-click",
                 "open its listing / Open on discogs.com",
             ),

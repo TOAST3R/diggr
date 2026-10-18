@@ -687,6 +687,32 @@ bleep.co.uk address is refused with a hint.
   with a token, each format and its price in the tooltip ("Bleep: LP 22.99 €, Download 7.99 €
   (seen 18 Oct)"), and **Open on Bleep** in the menu.
 
+### Buying from the stores
+
+An entry sent from Juno or Bleep has a **+ CART** pill on its row, drawn as a Discogs copy's.
+Clicking it puts the item in your real basket on that store: on Juno the record (its format is
+part of the product), on Bleep the record in a format, chosen from a small menu ("Vinyl
+22.99 €", "Download 2.49 €") when it is sold in more than one. The pill then reads **IN CART**,
+which turns into a red **REMOVE** under the pointer and takes it out again. The tooltip says
+the store and the price.
+
+- **Through the browser:** Diggr has no login to these stores, so the paired browser extension
+  does each add, remove or read in your browser's session, with the store's own basket requests.
+  Diggr itself never contacts the stores. Juno needs no account (its basket belongs to the
+  browser); Bleep's is the account you're logged in with.
+- **When the basket can't be reached** (no extension picked the action up within 3 s, no answer
+  within 10 s, not logged in, or an answer the extension doesn't recognise), the pill goes back,
+  the item's page opens on the store, and the main window says so. Sold out shows **SOLD** on
+  the row.
+- **Bleep formats come from a release page:** Bleep's lists (a label, a search) show no buy
+  buttons, so a record sent from a list opens its page on Bleep instead; send that release page
+  once and its pill adds the format from then on.
+- **Beatport and Traxsource** need an account for every basket request, so their pill opens the
+  track's page on the store straight away.
+- **At launch** the extension reads both baskets when it can, and Diggr keeps the last one read
+  in `store-carts.ron`, so IN CART shows from the first frame.
+- Diggr never checks out, pays or empties a basket: you pay on the store.
+
 ### Top Sellers
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
@@ -788,6 +814,15 @@ that the player starts once its window is up.
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
   playing, and the progress of sends.
+- **Store baskets:** the extension waits on `GET /v1/cart/next`, which the player holds open up
+  to 25 s and answers at once with a cart action (an id, `juno` or `bleep`, add, remove or read,
+  and the item's id; never an address). It reports each one on `POST /v1/cart/result` with its
+  outcome (added, already in, removed, sold out, not logged in, failed) and the basket it read
+  (at most 500 items, prices of at most 20 characters). A result for an action not given out,
+  or breaking any rule, is refused. Both need the key. The only requests the extension makes to
+  a store are these baskets' (see [Buying from the stores](#buying-from-the-stores)): Bleep's
+  `POST /rest/cart`, `GET /rest/cart` and `GET /cart/remove/‹line›`; Juno's `GET /cart/add/…`,
+  `GET /cart/remove/…` and `GET /cart/`.
 - **No web pages:** requests from web pages (a web origin, another host name, a preflight) are
   refused, and no answer allows other origins.
 
@@ -889,7 +924,18 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       record alone as one entry, and with a Discogs token its tracks replace it when one
       release fits. The basket shows no button.
 - [ ] On Beatport, Traxsource and Bleep, the DevTools Network panel shows no request from the
-      extension but the one to `127.0.0.1`.
+      extension but the one to `127.0.0.1` (and, on Juno and Bleep, the basket requests of a
+      + CART you clicked).
+- [ ] With the extension running, + CART on a Juno entry reads IN CART at once, says "Added to
+      your Juno cart", and the record is in the basket at juno.co.uk/cart; REMOVE takes it out
+      there too. The same with a Bleep entry logged in to Bleep (a record sold in several
+      formats asks which one); logged out of Bleep, the release's page opens instead.
+- [ ] A sold-out Juno record or Bleep format shows SOLD after + CART.
+- [ ] With the extension turned off in `chrome://extensions`, + CART goes back after 3 s, the
+      page opens on the store, and the main window says the basket couldn't be reached.
+- [ ] + CART on a Beatport or Traxsource entry opens the track's page there at once.
+- [ ] After 10 minutes with the player open and nothing clicked, + CART still reaches the
+      basket within a second.
 - [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
       its picture); clicking it adds the record to the crate on screen and plays it.
 - [ ] Send to crate lists no Top Sellers, label, collection, wantlist or friend's crate.
@@ -1072,7 +1118,7 @@ speakers audible to the mic, and macOS will ask for microphone permission.
 | | macOS | Linux | Windows | Override |
 |---|---|---|---|---|
 | config (settings, presets, `crates/`, `dig/`) | `~/Library/Application Support/Diggr/` | `~/.config/diggr/` | `%APPDATA%\Diggr\` | `DIGGR_CONFIG_DIR`* |
-| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, Juno links and stock notes in `juno.ron` (and Beatport's, Traxsource's and Bleep's in `beatport.ron`, `traxsource.ron` and `bleep.ron`), the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
+| cache (analysis scores, waveform `overviews/`, `annotations/` for `analysis-eval`, Discogs responses in `discogs/`, `previews/`, record `covers/`, your Discogs `collection.ron`, preview `searches.ron`, your Discogs `cart.ron`, your Juno and Bleep baskets in `store-carts.ron`, Juno links and stock notes in `juno.ron` (and Beatport's, Traxsource's and Bleep's in `beatport.ron`, `traxsource.ron` and `bleep.ron`), the app's own yt-dlp in `tools/`) | `~/Library/Caches/Diggr/` | `~/.cache/diggr/` | `%LOCALAPPDATA%\Diggr\` | `DIGGR_CACHE_DIR` |
 
 \* `DIGGR_CONFIG_DIR` covers settings, crates and presets. A `visuals/` folder (scenes and
 variants) left in the config folder by an earlier version is deleted at launch.
@@ -1100,7 +1146,8 @@ clips, and `covers/` the record covers shown in tooltips (150 px PNGs, about 10 
 delete). `collection.ron` is your Discogs collection (release ids, and each owned pressing's
 master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
 `cart.ron` is your Discogs cart as last read (listing ids, releases, sellers, prices and
-subtotals), for the CART badges at launch. `tools/` holds the yt-dlp the app downloaded (macOS,
+subtotals), for the CART badges at launch, and `store-carts.ron` the Juno and Bleep baskets
+as the extension last read them (item ids and prices), for IN CART at launch. `tools/` holds the yt-dlp the app downloaded (macOS,
 only when you have none) and `checked`, the time of its last update check.
 
 Other environment variables, mostly for unattended runs and measurements:
@@ -1142,7 +1189,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 909 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 928 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1316,6 +1363,15 @@ What's covered:
   in under 50 ms. The send checks, the bridge's Bleep send, and what the extension's reader
   made of a real release and label page (`crates/dig/tests/fixtures/bleep/`) are tested in
   `crates/dig`.
+- **Store baskets** (`crates/ui`, headless, `store_cart_tests.rs`, against a fake extension;
+  and `crates/dig`): + CART on a Juno entry turning IN CART before any answer, added and
+  removed, already in, sold out showing SOLD, not logged in, failed, no extension and a timeout
+  opening the store's page, Bleep's format menu, Beatport opening its page with nothing queued,
+  and the basket at launch. The queue (only Juno and Bleep ids, the 3 s and 10 s limits),
+  `store-carts.ron` failing soft, and the bridge's held wait (an action within 100 ms, answered
+  empty after its hold, other requests answered meanwhile), forged, unpaired and bad results
+  refused, are tested in `crates/dig`. The basket answers recorded from the stores are in
+  `crates/dig/tests/fixtures/store_carts/`.
 - **A Bandcamp fan** (`crates/ui`, headless, `fan_tests.rs`, with fake pages and a fake Discogs;
   and `crates/dig`): both lists into crates made without a token and nothing sent to Discogs; an
   exact match added to the Discogs collection and taking the Bandcamp entries over, the rest

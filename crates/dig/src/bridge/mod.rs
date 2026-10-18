@@ -13,13 +13,18 @@
 //!
 //! Every request is answered on the bridge thread without waiting for the UI or Discogs: a
 //! send is checked, answered `202` at once, and handed to the UI as a [`BridgeCommand`]; the
-//! crates and status come from a [`Snapshot`] the UI keeps up to date.
+//! crates and status come from a [`Snapshot`] the UI keeps up to date. The one request held
+//! open is the extension's wait for a store cart action (`/v1/cart/next`, see
+//! [`crate::carts`]): it is parked, and the thread, waking every [`TICK`], gives it the next
+//! action, answers it empty after [`carts::HOLD`], and expires actions no one answered.
 
 pub mod pairing;
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use platform::{Priority, Spawner};
@@ -27,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::bandcamp::{self, BandcampKind, BandcampPage, NameMatch};
+use crate::carts::{self, CartQueue, CartResult, ResultBody};
 use crate::collection::{Collection, Owned};
 use crate::discogs::cache::{DiskCache, Kind};
 use crate::discogs::url::{self, Page, PageKind};
@@ -45,6 +51,11 @@ pub const MAX_STORE_BODY: usize = 1 << 20;
 /// Crate names: 1 to 40 characters (the crates' own limit).
 pub const MAX_CRATE_NAME: usize = 40;
 pub const KEY_HEADER: &str = "X-Bridge-Key";
+/// How often the bridge thread looks at the cart queue while no request comes (a queued
+/// action reaches a waiting extension within this).
+pub const TICK: Duration = Duration::from_millis(50);
+/// `answer`'s status for a cart wait with nothing to give: parked, answered later.
+const PARK: u16 = 0;
 
 /// Where a sent page's tracks go.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +96,8 @@ pub enum BridgeCommand {
     /// The browser asked about a marketplace item whose release isn't known yet: look it up
     /// (once; it is cached for good).
     ResolveShopItem(u64),
+    /// A store cart action ended: answered by the extension, or expired.
+    CartResult(CartResult),
 }
 
 /// The URL that brings the app to the front, when `exe` runs inside `Diggr.app` (which
@@ -152,6 +165,10 @@ pub struct Shared {
     /// Discogs data already fetched (a release's master, a marketplace item's release), read
     /// for `/v1/owned` without any request.
     cache: DiskCache,
+    /// Store cart actions for the extension (queued by the UI).
+    pub cart: Mutex<CartQueue>,
+    /// How long a cart wait is held open, in ms ([`carts::HOLD`]; shorter in tests).
+    pub cart_hold_ms: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -167,11 +184,17 @@ impl Shared {
             collection: ArcSwap::from_pointee(None),
             has_token: std::sync::atomic::AtomicBool::new(false),
             cache: DiskCache::new(cache_root),
+            cart: Mutex::new(CartQueue::default()),
+            cart_hold_ms: std::sync::atomic::AtomicU64::new(carts::HOLD.as_millis() as u64),
         })
     }
 
     pub fn pairing(&self) -> std::sync::MutexGuard<'_, Pairing> {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn cart(&self) -> std::sync::MutexGuard<'_, CartQueue> {
+        self.cart.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -180,6 +203,7 @@ pub struct BridgeHandle {
     server: Arc<tiny_http::Server>,
     port: u16,
     commands: Receiver<BridgeCommand>,
+    stop: Arc<AtomicBool>,
 }
 
 impl BridgeHandle {
@@ -202,17 +226,20 @@ impl BridgeHandle {
         let port = server.server_addr().to_ip().map_or(port, |a| a.port());
         let (tx, rx) = channel();
         let s = server.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
         spawner
             .spawn(
                 "dig-bridge",
                 Priority::Low,
-                Box::new(move || serve(&s, &shared, port, &tx, &wake)),
+                Box::new(move || serve(&s, &shared, port, &tx, &wake, &stopped)),
             )
             .map_err(|e| format!("Could not start the bridge: {e:?}"))?;
         Ok(Self {
             server,
             port,
             commands: rx,
+            stop,
         })
     }
 
@@ -227,8 +254,19 @@ impl BridgeHandle {
 
 impl Drop for BridgeHandle {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         self.server.unblock();
     }
+}
+
+fn respond(req: tiny_http::Request, status: u16, body: &Value) {
+    let json =
+        tiny_http::Header::from_bytes("Content-Type", "application/json").expect("valid header");
+    let _ = req.respond(
+        tiny_http::Response::from_string(body.to_string())
+            .with_status_code(status)
+            .with_header(json),
+    );
 }
 
 fn serve(
@@ -237,23 +275,56 @@ fn serve(
     port: u16,
     tx: &Sender<BridgeCommand>,
     wake: &dyn Fn(),
+    stop: &AtomicBool,
 ) {
-    for mut req in server.incoming_requests() {
-        let (status, body, cmd) = answer(&mut req, shared, port);
-        // Queued before the answer goes out, so the UI never learns of a send after the browser.
-        if let Some(c) = cmd {
-            if tx.send(c).is_err() {
+    // Cart waits held open, oldest first, with when each is answered empty.
+    let mut parked: Vec<(tiny_http::Request, Instant)> = Vec::new();
+    let notify = |c: BridgeCommand| {
+        let sent = tx.send(c).is_ok();
+        wake();
+        sent
+    };
+    while !stop.load(Ordering::Relaxed) {
+        match server.recv_timeout(TICK) {
+            Ok(Some(mut req)) => {
+                let (status, body, cmd) = answer(&mut req, shared, port);
+                // Queued before the answer goes out, so the UI never learns of a send after
+                // the browser.
+                if let Some(c) = cmd
+                    && !notify(c)
+                {
+                    return;
+                }
+                match status {
+                    PARK => {
+                        let hold = shared.cart_hold_ms.load(Ordering::Relaxed);
+                        parked.push((req, Instant::now() + Duration::from_millis(hold)));
+                    }
+                    _ => respond(req, status, &body),
+                }
+            }
+            Ok(None) => {}
+            Err(_) => return,
+        }
+        let now = Instant::now();
+        while !parked.is_empty() {
+            let Some(action) = shared.cart().take(now) else {
+                break;
+            };
+            let (req, _) = parked.remove(0);
+            respond(req, 200, &json!({ "action": action.wire() }));
+        }
+        let (done, kept): (Vec<_>, Vec<_>) = parked.drain(..).partition(|(_, end)| now >= *end);
+        parked = kept;
+        for (req, _) in done {
+            respond(req, 200, &json!({ "action": null }));
+        }
+        let expired = shared.cart().expire(now);
+        for r in expired {
+            if !notify(BridgeCommand::CartResult(r)) {
                 return;
             }
-            wake();
         }
-        let json = tiny_http::Header::from_bytes("Content-Type", "application/json")
-            .expect("valid header");
-        let _ = req.respond(
-            tiny_http::Response::from_string(body.to_string())
-                .with_status_code(status)
-                .with_header(json),
-        );
     }
 }
 
@@ -330,6 +401,8 @@ fn answer(
         (Get, "/v1/status") => "status",
         (Post, "/v1/send") => "send",
         (Post, "/v1/owned") => "owned",
+        (Get, "/v1/cart/next") => "cart_next",
+        (Post, "/v1/cart/result") => "cart_result",
         _ => return error(404, "not found"),
     };
     // A send may be a Juno one, which is larger; anything else over 16 KB is refused once
@@ -389,6 +462,23 @@ fn answer(
             )
         }
         "owned" => owned(&body, shared),
+        "cart_next" => match shared.cart().take(Instant::now()) {
+            Some(a) => (200, json!({ "action": a.wire() }), None),
+            None => (PARK, Value::Null, None),
+        },
+        "cart_result" => {
+            let Ok(b) = serde_json::from_slice::<ResultBody>(&body) else {
+                return error(422, "invalid body");
+            };
+            match shared.cart().answer(b) {
+                Some(r) => (
+                    200,
+                    json!({ "ok": true }),
+                    Some(BridgeCommand::CartResult(r)),
+                ),
+                None => error(422, "invalid result"),
+            }
+        }
         _ if is_store(&body) => send_store(&body, shared),
         _ if body.len() > MAX_BODY => error(413, "too large"),
         _ => send(&body, shared),

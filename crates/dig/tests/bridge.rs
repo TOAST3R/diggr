@@ -1,7 +1,8 @@
 //! The browser bridge over real loopback HTTP on an ephemeral port: hello, pairing (expiry,
 //! lockout, single use), keys and Forget browsers, every refusal (host, origin, preflight,
 //! size, unknown fields, addresses that aren't Discogs pages), the snapshot answers, a send
-//! answered at once while Discogs is slow, and Juno sends (records, not addresses).
+//! answered at once while Discogs is slow, Juno sends (records, not addresses), and store cart
+//! actions (held waits, results and their checks).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -982,4 +983,168 @@ fn juno_sends_are_limited_in_size_and_shape() {
         "only the 500 records went through: {}",
         cmds.len()
     );
+}
+
+// ---- store cart actions --------------------------------------------------------------------
+
+const ADD_RESULT: &str =
+    r#"{"id":1,"outcome":"added","basket":[{"item":"277377","price":"2.49 €"}]}"#;
+
+fn cart_results(r: &Rig) -> Vec<dig::carts::CartResult> {
+    r.bridge
+        .poll()
+        .into_iter()
+        .filter_map(|c| match c {
+            BridgeCommand::CartResult(r) => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
+fn queue_add(r: &Rig, item: &str) -> u64 {
+    use dig::carts::CartKind;
+    use dig::stores::Store;
+    let store = if item.contains('-') {
+        Store::Juno
+    } else {
+        Store::Bleep
+    };
+    r.shared
+        .cart()
+        .push(store, CartKind::Add, item, Instant::now())
+        .unwrap()
+}
+
+/// A cart wait from another thread, as the extension makes it: its status, answer and when
+/// the answer came.
+fn wait_in_thread(r: &Rig, key: &str) -> std::sync::mpsc::Receiver<(u16, Value, Instant)> {
+    let (tx, rx) = channel();
+    let (host, port, key) = (r.host(), r.bridge.port(), key.to_owned());
+    std::thread::spawn(move || {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let req = format!(
+            "GET /v1/cart/next HTTP/1.1\r\nConnection: close\r\nHost: {host}\r\nX-Bridge-Key: {key}\r\nContent-Length: 0\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        let at = Instant::now();
+        let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
+        let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+        let _ = tx.send((
+            status,
+            serde_json::from_str(body).unwrap_or(Value::Null),
+            at,
+        ));
+    });
+    rx
+}
+
+#[test]
+fn a_waiting_extension_gets_an_action_within_100_ms() {
+    let r = rig("cart-wait");
+    let key = r.pair();
+    let rx = wait_in_thread(&r, &key);
+    // The wait is parked before anything is queued.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(rx.try_recv().is_err(), "held open while nothing is pending");
+    let queued = Instant::now();
+    queue_add(&r, "1170462-01");
+    let (status, json, at) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(
+        json["action"],
+        serde_json::json!({"id": 1, "store": "juno", "kind": "add", "item": "1170462-01"})
+    );
+    assert!(
+        at - queued < Duration::from_millis(100),
+        "{:?}",
+        at - queued
+    );
+}
+
+#[test]
+fn a_pending_action_is_given_at_once_and_a_wait_ends_empty() {
+    let r = rig("cart-empty");
+    let key = r.pair();
+    queue_add(&r, "277377");
+    let a = r.call("GET", "/v1/cart/next", Some(&key), "");
+    assert_eq!(a.json["action"]["item"], "277377");
+    r.shared
+        .cart_hold_ms
+        .store(300, std::sync::atomic::Ordering::Relaxed);
+    let t = Instant::now();
+    let a = r.call("GET", "/v1/cart/next", Some(&key), "");
+    assert_eq!((a.status, a.json["action"].clone()), (200, Value::Null));
+    assert!(t.elapsed() >= Duration::from_millis(300));
+    // Requests are still answered while a wait is held.
+    let rx = wait_in_thread(&r, &key);
+    std::thread::sleep(Duration::from_millis(50));
+    let t = Instant::now();
+    assert_eq!(r.call("GET", "/v1/crates", Some(&key), "").status, 200);
+    assert!(t.elapsed() < Duration::from_millis(100));
+    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn a_result_reaches_the_ui_once() {
+    let r = rig("cart-result");
+    let key = r.pair();
+    queue_add(&r, "277377");
+    r.call("GET", "/v1/cart/next", Some(&key), "");
+    let a = r.call("POST", "/v1/cart/result", Some(&key), ADD_RESULT);
+    assert_eq!(a.status, 200, "{}", a.json);
+    let got = cart_results(&r);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].outcome, dig::carts::Outcome::Added);
+    assert_eq!(got[0].basket.as_ref().unwrap()[0].price, "2.49 €");
+    // The same answer again names no pending action.
+    let a = r.call("POST", "/v1/cart/result", Some(&key), ADD_RESULT);
+    assert_eq!(a.status, 422);
+    assert!(cart_results(&r).is_empty());
+}
+
+#[test]
+fn forged_unpaired_and_bad_results_are_refused() {
+    let r = rig("cart-refused");
+    let key = r.pair();
+    queue_add(&r, "277377");
+    // Unpaired: no action is given out.
+    let a = r.call("GET", "/v1/cart/next", Some("not-the-key"), "");
+    assert_eq!(a.status, 401);
+    assert!(r.shared.cart().has_waiting());
+    r.call("GET", "/v1/cart/next", Some(&key), "");
+    for body in [
+        r#"{"id":7,"outcome":"added"}"#,
+        r#"{"id":1,"outcome":"exploded"}"#,
+        r#"{"id":1,"outcome":"added","basket":[{"item":"1170462-01","price":""}]}"#,
+        r#"{"id":1,"outcome":"added","basket":[{"item":"277377","price":"\u0007"}]}"#,
+        r#"{"id":1,"outcome":"added","url":"https://bleep.com/x"}"#,
+        r#"{"id":1,"outcome":"no_extension"}"#,
+    ] {
+        let a = r.call("POST", "/v1/cart/result", Some(&key), body);
+        assert_eq!(a.status, 422, "{body}");
+    }
+    let a = r.call("POST", "/v1/cart/result", None, ADD_RESULT);
+    assert_eq!(a.status, 401);
+    assert!(cart_results(&r).is_empty(), "no badge changes");
+    // The real answer still counts.
+    let a = r.call("POST", "/v1/cart/result", Some(&key), ADD_RESULT);
+    assert_eq!(a.status, 200);
+}
+
+#[test]
+fn an_action_no_extension_picks_up_expires() {
+    let r = rig("cart-expire");
+    queue_add(&r, "1170462-01");
+    let t = Instant::now();
+    let got = loop {
+        let got = cart_results(&r);
+        if !got.is_empty() || t.elapsed() > Duration::from_secs(5) {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(got[0].outcome, dig::carts::Outcome::NoExtension);
+    assert!(t.elapsed() >= dig::carts::PICK_UP);
 }

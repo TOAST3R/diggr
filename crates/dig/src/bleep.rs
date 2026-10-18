@@ -33,6 +33,10 @@ struct BleepFormat {
     /// As shown ("22.99 €"): only displayed.
     #[serde(default)]
     price: String,
+    /// Its product id on Bleep (the `ReleaseFormat` its buy button adds), to put it in the
+    /// basket; none on a list's tiles.
+    #[serde(default)]
+    id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -88,9 +92,9 @@ fn valid_record(r: &BleepRecord) -> bool {
         && text(&r.catno, 0, 40)
         && (r.image.is_empty() || valid_image(&r.image))
         && r.formats.len() <= MAX_FORMATS
-        && r.formats
-            .iter()
-            .all(|f| text(&f.name, 1, 30) && text(&f.price, 0, 20))
+        && r.formats.iter().all(|f| {
+            text(&f.name, 1, 30) && text(&f.price, 0, 20) && (f.id.is_empty() || valid_id(&f.id))
+        })
         && r.tracks.len() <= MAX_TRACKS
         && r.tracks.iter().all(|t| {
             valid_id(&t.id)
@@ -199,6 +203,17 @@ fn to_store(r: &BleepRecord) -> StoreRecord {
             false => String::new(),
         },
         tracks,
+        buy: r
+            .formats
+            .iter()
+            .filter(|f| !f.id.is_empty())
+            .map(|f| {
+                (
+                    f.id.clone(),
+                    format!("{} {}", f.name, f.price).trim().to_owned(),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -257,6 +272,26 @@ mod tests {
             ("1", "Zen Drums", 397)
         );
         assert_eq!((t.artist.as_str(), t.clip.clone()), ("Bibio", None));
+    }
+
+    #[test]
+    fn formats_with_product_ids_can_be_bought() {
+        let mut r = release();
+        r["formats"] = json!([
+            { "name": "Vinyl", "price": "22.99 €", "id": "277380" },
+            { "name": "Download", "price": "2.49 €", "id": "277377" },
+            { "name": "CD" },
+        ]);
+        let rec = &check(&send(vec![r.clone()])).unwrap().records[0];
+        assert_eq!(
+            rec.buy,
+            [
+                ("277380".to_owned(), "Vinyl 22.99 €".to_owned()),
+                ("277377".to_owned(), "Download 2.49 €".to_owned()),
+            ]
+        );
+        r["formats"][0]["id"] = json!("27/../x");
+        assert_eq!(check(&send(vec![release(), r])).unwrap().refused, 1);
     }
 
     #[test]
