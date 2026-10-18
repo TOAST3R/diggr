@@ -169,6 +169,7 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "digit_9",
     "digit_minus",
     "digit_blank",
+    "digit_q",
     "digit_colon",
     "mono_off",
     "mono_on",

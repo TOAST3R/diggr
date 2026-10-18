@@ -100,16 +100,27 @@ pub fn tempo(frames: &[Frame], onsets: &Onsets) -> Option<(f64, f32)> {
         // Reinforce with the bar (4 beats) and half-beat so the fundamental beat wins.
         autocorr(&env, lag) + 0.5 * autocorr(&env, 2.0 * lag) + 0.25 * autocorr(&env, 4.0 * lag)
     };
+    // The strongest periodicity picks the tempo family; the prior only chooses its octave.
+    // (Weighting every candidate by the prior lets a pulse 2/3 or 4/5 of the tempo, like a
+    // drum & bass break's kicks, beat the tempo itself.)
     let mut best = (0.0, 0.0);
     let mut bpm = MIN_BPM;
     while bpm <= MAX_BPM {
-        let s = score(bpm) * prior(bpm);
+        let s = score(bpm);
         if s > best.1 {
             best = (bpm, s);
         }
         bpm += 0.25;
     }
-    let (mut bpm, _) = best;
+    // Nothing repeats at any tempo (a lone hit): no tempo.
+    if best.1 <= 0.0 {
+        return None;
+    }
+    let mut bpm = [best.0 / 2.0, best.0, best.0 * 2.0]
+        .into_iter()
+        .filter(|b| (MIN_BPM..=MAX_BPM).contains(b))
+        .max_by(|a, b| (score(*a) * prior(*a)).total_cmp(&(score(*b) * prior(*b))))
+        .unwrap_or(best.0);
     // Octave check with hat density: at the true tempo, 8th/16th hats give 2–4 hats per beat;
     // more than that means we picked half the tempo.
     let secs = frames.last()?.t - frames.first()?.t;
@@ -474,6 +485,35 @@ mod tests {
                 segs[0].bpm()
             );
         }
+    }
+
+    #[test]
+    fn a_lone_hit_with_no_pulse_has_no_tempo() {
+        // Energy, but nothing repeats at any tempo: no tempo, rather than a 0 BPM grid.
+        let frames: Vec<Frame> = (0..(8.0 * FPS) as usize)
+            .map(|i| Frame {
+                t: i as f64 / FPS,
+                kick: if i == 300 { 1.0 } else { 0.0 },
+                snare: 0.0,
+                hat: 0.0,
+                full: 0.0,
+                mel: [0.0; crate::frontend::MEL_BANDS],
+                chroma: [0.0; 12],
+                rms: 0.0,
+                centroid: 0.0,
+                flatness: 0.0,
+            })
+            .collect();
+        assert_eq!(tempo(&frames, &Onsets::default()), None);
+    }
+
+    #[test]
+    fn a_drum_and_bass_break_reads_at_its_tempo_not_its_dotted_pulse() {
+        // Kicks 2.5 and 1.5 beats apart: 174 must not read as 116 (174 · 2/3).
+        let (fr, on, _) = analyze(&[part(Pattern::Break, 16, 174.0)]);
+        let (coarse, _) = tempo(&fr, &on).unwrap();
+        let folded = if coarse < 88.0 { coarse * 2.0 } else { coarse };
+        assert!((folded / 174.0 - 1.0).abs() < 0.01, "read as {coarse}");
     }
 
     #[test]

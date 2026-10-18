@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump when analysis results change meaningfully; cached scores of other versions are ignored.
-pub const ALGORITHM_VERSION: u32 = 2;
+pub const ALGORITHM_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SectionKind {

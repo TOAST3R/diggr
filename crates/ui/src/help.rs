@@ -194,6 +194,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Entry: right-click",
                 "play or arm, remove, Send to crate (the selection, when the entry is in it); \
+                 Analyze BPM (its audio first in the analysis queue); \
                  remove or select its whole album (tinted while the menu is open); keep, pass, \
                  for-sale page, open or copy its Discogs link; in the collection crate, remove \
                  one copy from your Discogs collection",

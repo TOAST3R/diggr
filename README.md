@@ -208,9 +208,16 @@ and Home/End jump), and Enter plays the entry under it.
   - entries read `(catno) Artist: Title · Album (124 BPM)`. The catalog number appears for
     entries from Discogs. The album is the Discogs release's title, or a local file's album tag;
     it's left out when it's the same as the title (a single), and a row too narrow for
-    everything loses it before any of the title. The BPM appears once the track has been analysed (when a preview is prepared, when
-    a track plays, or from the analysis cache), folded into 88–176 so half and double time read
-    alike (87 shows as 174). Nothing is downloaded just to find a BPM;
+    everything loses it before any of the title. The BPM appears once the track's whole file
+    has been analysed, folded into 88–176 so half and double time read alike (87 shows as 174).
+    Every downloaded preview of the playing and shown crates is analysed in the background, up
+    to 3 at a time (half the cores): the playing track first, then what you asked for, the next tracks to play, and
+    the rest in crate order. Local files are analysed when played or asked for. While a track is
+    analysed its BPM cell (or, without the BPM column, a slot before the time) shows a bar filling
+    up; a queued one shows the bar empty (its tooltip says "analyzing 40%" or "BPM queued"). **Analyze BPM** in
+    the entry menu puts the selection's audio at the front of the queue, and says what each one
+    gave ("Clue: 146 BPM", or "no steady tempo found"). Nothing is downloaded
+    just to find a BPM;
   - double-click an entry to play it;
   - Shift/Cmd-click to select several;
   - drag to reorder;
@@ -301,6 +308,11 @@ and Home/End jump), and Enter plays the entry under it.
       record is locked to the tempo. A track that would need more than the range, or has no
       BPM yet, plays at its own tempo: **OWN TEMPO** lights, the dots drift, and its row says
       "(own tempo)";
+    - turned on while the playing track's BPM isn't known yet, SYNC waits for it: the tempo
+      and record BPM read "?", the track is analysed next, and its BPM becomes the tempo. The
+      fader, scrolling, `Shift+↑` / `Shift+↓` and RESET meanwhile say "Analyzing the BPM, wait
+      a moment". Another track starting, or no tempo found, ends the wait with the old tempo. A track
+      started while SYNC is on reads "REC ?" until its BPM is known, then is fitted to the tempo;
     - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
       jumps, loops and analysis all stay in the track's own time;
   - **WAVE**, **EQ** and **PL** show or hide the other sections. There is no balance
@@ -1130,7 +1142,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 895 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 909 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1181,6 +1193,9 @@ What's covered:
   - SYNC: the speed for a BPM (fitted, half and double time, out of range, no BPM) and the
     "+2.4%" label; headless, SYNC opening the turntable, its pitch fader (top, centre detent,
     scroll), RESET, 8%/16% and ×, `Shift+↑`, what's heard following, and "(own tempo)" rows;
+    SYNC turned on before the BPM is known waiting ("?") for the analysed tempo, a track started
+    with SYNC on keeping the tempo while its BPM comes, refusing the
+    fader meanwhile, and a new track ending the wait;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
     300-entry `playlist.ron`, and Send to crate without duplicates;
   - spectrum bars following the *audible* frame;
@@ -1246,8 +1261,15 @@ What's covered:
   release: the checksum read for exactly `yt-dlp_macos`, a matching download installed and run,
   a mismatched one leaving nothing behind, a failed one keeping the old copy, and update checks
   once a day for newer releases only. Also
-  covered: the dig memory, and preparing a preview's score and overview behind the gate.
+  covered: the dig memory, and preparing a preview's score and overview behind the gate, its
+  progress while a file is analyzed, a track put at the front going right after the one in
+  progress, a file that fails being passed while the rest are still prepared, and workers
+  analyzing several files at once.
 - **Digging in the player** (`crates/ui`, headless, with a fake Discogs, yt-dlp and browser):
+  - BPM analysis: previews downloaded in the background getting their BPM without playing, a
+    played-and-skipped track getting its BPM, the playing track first in the queue, an entry
+    queued then analyzing then done, and Analyze BPM putting local files first (and absent
+    for an entry waiting for its download);
   - a pasted release filling the crate with playable previews;
   - a record with one video for eleven tracks (*Mezzanine*): every track, in order, and nothing
     twice when sent again; one video found for two tracks; the full-album fallback, after a
@@ -1321,7 +1343,9 @@ What's covered:
   in real time, with zero underruns.
 - **`crates/analysis`**: generated electronica with exact ground truth, testing:
   - kicks within 20 ms;
-  - tempo at 124/128/140/174 BPM, and tempo changes;
+  - tempo at 124/128/140/174 BPM, a drum & bass break read at 174 (not its kicks' 2/3 pulse), no tempo
+    (rather than a crash) where nothing repeats,
+    and tempo changes; analysis progress reported up to the whole file;
   - beatless intros;
   - downbeats and section boundaries on the right bar;
   - section kinds, and repeated drops sharing a label;
