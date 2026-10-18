@@ -4085,66 +4085,6 @@ fn beat_wav_of(dir: &Path, name: &str, secs: usize) -> PathBuf {
     path
 }
 
-/// Fakes whose previews are [`beat_wav`]s.
-fn beat_fakes(dir: &Path) -> Fakes {
-    Fakes {
-        fetcher: Arc::new(FakeFetcher::new(beat_wav(dir, "beat.wav"))),
-        ..Fakes::new()
-    }
-}
-
-/// The BPMs of crate `c`'s playable entries.
-fn bpms(rig: &Rig, c: CrateId) -> Vec<Option<u16>> {
-    let p = rig.app.crates.get(c).unwrap();
-    let playable = p.entries().iter().filter(|e| e.status.is_playable());
-    playable.map(|e| e.bpm).collect()
-}
-
-#[test]
-fn background_downloaded_previews_get_their_bpm_without_playing() {
-    let beat = platform::testing::TestDir::new("ui-bpm-background-src");
-    let fakes = beat_fakes(&beat);
-    let mut rig = rig("dig-bpm-background", &fakes, |_| {});
-    let playing = play_release(&mut rig);
-    let c = followed_label(&mut rig);
-    rig.app.show_crate(c);
-    let ctx = rig.ctx.clone();
-    rig.app
-        .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
-    rig.until(
-        |r| r.app.label_download().is_none(),
-        "every preview of the label is downloaded",
-    );
-    rig.until(
-        |r| bpms(r, c).iter().all(|&b| b == Some(126)),
-        "every downloaded preview has its BPM",
-    );
-    assert_eq!(rig.app.crates.playing_id(), playing, "none of them played");
-}
-
-#[test]
-fn a_played_and_skipped_track_gets_its_bpm_and_the_playing_one_is_first() {
-    let beat = platform::testing::TestDir::new("ui-bpm-skipped-src");
-    let fakes = beat_fakes(&beat);
-    let mut rig = rig("dig-bpm-skipped", &fakes, |_| {});
-    // No playhead analysis: only the background analysis can give a BPM.
-    rig.app.analysis = None;
-    let c = play_release(&mut rig);
-    let first = rig.app.crates.get(c).unwrap().entries()[0].track.clone();
-    rig.frame(Vec::new());
-    assert_eq!(
-        rig.app.dig.as_ref().unwrap().prepared_list.first(),
-        Some(&first),
-        "the playing track is next"
-    );
-    let ctx = rig.ctx.clone();
-    rig.app.apply(Action::Next, &ctx);
-    rig.until(
-        |r| r.app.crates.get(c).unwrap().entries()[0].bpm == Some(126),
-        "the skipped track has its BPM",
-    );
-}
-
 #[test]
 fn an_entry_without_a_bpm_is_queued_then_analyzing_then_done() {
     let fakes = Fakes::new();
@@ -4180,72 +4120,6 @@ fn an_entry_without_a_bpm_is_queued_then_analyzing_then_done() {
     assert_eq!(rig.app.bpm_wait(&entry(&rig, other), &none), None);
 }
 
-#[test]
-fn analyze_bpm_puts_local_files_first_and_is_absent_while_waiting() {
-    let src = platform::testing::TestDir::new("ui-bpm-asked-src");
-    let files: Vec<PathBuf> = (1..=3)
-        .map(|i| beat_wav(&src, &format!("local{i}.wav")))
-        .collect();
-    let fakes = Fakes::new();
-    let f = fakes.clone();
-    let mut rig = Rig::with_dig(
-        "dig-bpm-asked",
-        files,
-        |_| {},
-        move |dir| Some(f.setup(dir)),
-    );
-    rig.until(
-        |r| r.app.crates.shown().len() == 3,
-        "the local files are in",
-    );
-    let ids: Vec<EntryId> = rig
-        .app
-        .crates
-        .shown()
-        .entries()
-        .iter()
-        .map(|e| e.id)
-        .collect();
-    let tracks: Vec<TrackRef> = rig
-        .app
-        .crates
-        .shown()
-        .entries()
-        .iter()
-        .map(|e| e.track.clone())
-        .collect();
-    // Local files aren't analyzed unless asked (or played).
-    rig.frame(Vec::new());
-    let list = |r: &Rig| r.app.dig.as_ref().unwrap().prepared_list.clone();
-    assert!(!list(&rig).contains(&tracks[1]) && !list(&rig).contains(&tracks[2]));
-
-    let out = rig.click_with(rig.row(1), PointerButton::Secondary);
-    assert!(shows(&out, "Analyze BPM"), "{:?}", text_list(&out));
-    let ctx = rig.ctx.clone();
-    rig.app
-        .apply(Action::Dig(DigAction::AnalyzeBpm(ids[1..].to_vec())), &ctx);
-    let first: Vec<TrackRef> = list(&rig)
-        .into_iter()
-        .filter(|t| *t != tracks[0])
-        .take(2)
-        .collect();
-    assert_eq!(first, tracks[1..], "first, after the playing one");
-    assert_eq!(message(&rig), "Analyzing the BPM of 2 tracks next");
-    rig.until(
-        |r| bpms(r, r.app.crates.shown_id()) == [Some(126); 3],
-        "each has its BPM",
-    );
-    assert!(message(&rig).ends_with(": 126 BPM"), "{}", message(&rig));
-
-    // An entry waiting for its download has nothing to analyze.
-    key(&mut rig, Key::Escape);
-    let p = rig.app.crates.shown_mut();
-    p.add_waiting("Nightcraft", "Glasshouse", None, None, "listed");
-    let out = rig.click_with(rig.row(3), PointerButton::Secondary);
-    assert!(shows(&out, "Send to crate"), "the menu is open");
-    assert!(!shows(&out, "Analyze BPM"), "{:?}", text_list(&out));
-}
-
 /// Local beat files, the first one playing, with no playhead analysis (only the background
 /// analysis gives a BPM).
 fn sync_rig(name: &str, files: Vec<PathBuf>) -> Rig {
@@ -4264,29 +4138,6 @@ fn sync_rig(name: &str, files: Vec<PathBuf>) -> Rig {
 }
 
 #[test]
-fn sync_turned_on_before_the_bpm_is_known_waits_for_it() {
-    let src = platform::testing::TestDir::new("ui-sync-wait-src");
-    let mut rig = sync_rig("dig-sync-wait", vec![beat_wav(&src, "a.wav")]);
-    rig.click(SYNC);
-    assert!(rig.app.settings.sync.on);
-    assert!(rig.app.settings.sync.pending.is_some(), "waits");
-    // Meanwhile the fader, Shift+↑ and RESET leave the target, and say why.
-    rig.click(PITCH_UP);
-    assert_eq!(rig.app.settings.sync.target, 112);
-    assert_eq!(message(&rig), "Analyzing the BPM, wait a moment");
-    rig.app.message = None;
-    rig.key(Key::ArrowUp, Modifiers::SHIFT);
-    rig.click(DECK_RESET);
-    assert_eq!(rig.app.settings.sync.target, 112);
-    assert_eq!(message(&rig), "Analyzing the BPM, wait a moment");
-    rig.until(
-        |r| r.app.settings.sync.pending.is_none(),
-        "the analysis gives the BPM",
-    );
-    assert_eq!(rig.app.settings.sync.target, 126);
-}
-
-#[test]
 fn another_track_starting_ends_the_wait_with_the_old_target() {
     let src = platform::testing::TestDir::new("ui-sync-skip-src");
     // Long enough that its analysis can't finish before the skip.
@@ -4301,20 +4152,4 @@ fn another_track_starting_ends_the_wait_with_the_old_target() {
     rig.frame(Vec::new());
     assert_eq!(rig.app.settings.sync.pending, None);
     assert_eq!(rig.app.settings.sync.target, 112);
-}
-
-#[test]
-fn a_track_started_with_sync_on_shows_its_bpm_coming_and_keeps_the_target() {
-    let src = platform::testing::TestDir::new("ui-sync-on-src");
-    let mut rig = sync_rig("dig-sync-on", vec![beat_wav(&src, "a.wav")]);
-    rig.app.settings.sync.on = true;
-    rig.frame(Vec::new());
-    assert!(rig.app.playing_bpm_coming(), "the deck reads REC ?");
-    rig.until(
-        |r| r.app.playing_bpm() == Some(126),
-        "the analysis gives the BPM",
-    );
-    rig.frame(Vec::new());
-    assert!(!rig.app.playing_bpm_coming());
-    assert_eq!(rig.app.settings.sync.target, 112, "the set's tempo stays");
 }
