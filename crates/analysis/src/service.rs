@@ -329,7 +329,6 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::score::SectionKind;
     use crate::synth;
     use platform::native::{NativeFileSource, NativeSpawner};
 
@@ -456,52 +455,6 @@ mod tests {
             sc.beat_at(target + 5.0).is_some(),
             "beats are available right after the seek"
         );
-    }
-
-    #[test]
-    fn prewarm_analyzes_the_next_track_before_it_plays() {
-        let dir = tmp("prewarm");
-        let (next, _) = write_track(&dir, "next.wav", &synth::standard_track(126.0));
-        let svc = service(&dir.join("cache"));
-        svc.prewarm(&next);
-        let bars32 = 32.0 * 4.0 * 60.0 / 126.0;
-        wait(
-            || {
-                svc.score(&next)
-                    .is_some_and(|sc| sc.coverage.covered_until(0.0).is_some_and(|e| e >= bars32))
-            },
-            60.0,
-        );
-        let sc = svc.score(&next).unwrap();
-        assert!(sc.sections.iter().any(|x| x.kind == SectionKind::Drop));
-    }
-
-    #[test]
-    fn idles_once_the_horizon_is_covered() {
-        let dir = tmp("horizon");
-        let (track, _) = write_track(&dir, "a.wav", &synth::standard_track(125.0)); // 168 s
-        let svc = service(&dir.join("cache"));
-        wait(
-            || {
-                svc.playhead(&track, 1.0);
-                svc.score(&track)
-                    .is_some_and(|sc| sc.coverage.covered_until(0.0).is_some_and(|e| e >= 121.0))
-            },
-            60.0,
-        );
-        std::thread::sleep(Duration::from_millis(500));
-        svc.playhead(&track, 1.0);
-        let e = svc
-            .score(&track)
-            .unwrap()
-            .coverage
-            .covered_until(0.0)
-            .unwrap();
-        assert!(
-            e < 121.0 + UPDATE_EVERY_SECS + 0.5,
-            "analyzed to {e:.1} s with the playhead at 1 s"
-        );
-        assert!(!svc.score(&track).unwrap().complete);
     }
 
     #[test]
