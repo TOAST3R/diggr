@@ -131,6 +131,8 @@ pub enum DigAction {
     Unwant(Vec<EntryId>),
     /// Add one copy of each record of these entries to the collection.
     Collect(Vec<EntryId>),
+    /// Analyze BPM: these entries' audio to the front of the analysis queue.
+    AnalyzeBpm(Vec<EntryId>),
     /// Send a failed wantlist change again, from the start of its schedule.
     RetryWant(EntryId),
     /// Add again after a failure, asking Discogs first whether the add went through.
@@ -275,7 +277,11 @@ pub(super) struct Dig {
     horizon: Vec<String>,
     /// The tracks last asked to be searched for, best first.
     searching: Vec<SearchRequest>,
-    prepared_list: Vec<TrackRef>,
+    pub(super) prepared_list: Vec<TrackRef>,
+    /// Tracks whose whole file was analyzed this session (a `Prepared` came back).
+    pub(super) analyzed: HashSet<TrackRef>,
+    /// Analyze BPM: tracks asked for, in the order asked, until analyzed.
+    pub(super) asked: Vec<TrackRef>,
     /// Per crate being expanded: the focus entry and how many records were still listed.
     focus: HashMap<CrateId, (Option<EntryId>, usize)>,
     /// Crates whose unfinished sends were resumed this session.
@@ -382,6 +388,14 @@ pub(super) struct BridgeDialog {
 }
 
 impl Dig {
+    /// The tracks being analyzed for their BPM and the share of each done.
+    pub(super) fn prepare_progress(&self) -> HashMap<TrackRef, f32> {
+        self.prepare
+            .as_ref()
+            .map(PrepareHandle::progress)
+            .unwrap_or_default()
+    }
+
     /// Reads the dig settings, memory and token (small files); starts nothing.
     pub(super) fn new(
         setup: DigSetup,
@@ -439,6 +453,8 @@ impl Dig {
             horizon: Vec::new(),
             searching: Vec::new(),
             prepared_list: Vec::new(),
+            analyzed: HashSet::new(),
+            asked: Vec::new(),
             focus: HashMap::new(),
             active: HashSet::new(),
             created: HashSet::new(),
@@ -2038,8 +2054,21 @@ impl DiggrApp {
             .map(PrepareHandle::poll)
             .unwrap_or_default();
         for p in prepared {
+            let mut asked = false;
+            if let Some(d) = &mut self.dig {
+                asked = d.asked.contains(&p.track);
+                d.asked.retain(|t| *t != p.track);
+                d.analyzed.insert(p.track.clone());
+            }
+            // Analyze BPM says how it went.
+            if asked {
+                self.notify_bpm(&p.track, p.bpm);
+            }
             if let Some(bpm) = p.bpm {
                 self.set_track_bpm(&p.track, bpm);
+            } else if self.track_refs.get(&self.position.track) == Some(&p.track) {
+                // No tempo found: SYNC stops waiting for one, keeping its target.
+                self.settings.sync.pending = None;
             }
         }
         let commands = self
@@ -3107,6 +3136,49 @@ impl DiggrApp {
         self.play_entry(c, first);
     }
 
+    /// "Title: 124 BPM", or that none was found, for a track Analyze BPM asked for.
+    fn notify_bpm(&mut self, track: &TrackRef, bpm: Option<f64>) {
+        let title = self
+            .crates
+            .loaded_ids()
+            .iter()
+            .filter_map(|&c| self.crates.get(c))
+            .find_map(|p| p.entries().iter().find(|e| e.track == *track))
+            .map(|e| e.title.clone())
+            .unwrap_or_default();
+        let found = match bpm.and_then(crate::format::dj_bpm) {
+            Some(b) => format!("{b} BPM"),
+            None => "no steady tempo found".to_owned(),
+        };
+        self.notify(format!("{title}: {found}"));
+    }
+
+    /// Puts the playing track at the front of the analysis queue. False when there is nothing
+    /// to wait for: no background analysis, or its file was analyzed without finding a tempo.
+    pub(super) fn dig_analyze_playing(&mut self) -> bool {
+        let (Some(d), Some(t)) = (&mut self.dig, self.track_refs.get(&self.position.track)) else {
+            return false;
+        };
+        if d.prepare.is_none() || d.analyzed.contains(t) {
+            return false;
+        }
+        d.asked.retain(|x| x != t);
+        d.asked.insert(0, t.clone());
+        true
+    }
+
+    /// Whether Analyze BPM can do something for `e`: its audio is on disk (a downloaded
+    /// preview or a local file) and its tempo isn't known from a whole-file analysis yet.
+    fn analyzable(&self, e: &Entry) -> bool {
+        let store = e.origin.as_ref().is_some_and(|o| o.store_bpm);
+        e.status.is_playable()
+            && (e.bpm.is_none() || store)
+            && self
+                .dig
+                .as_ref()
+                .is_some_and(|d| !d.analyzed.contains(&e.track) && !d.asked.contains(&e.track))
+    }
+
     /// The previews to have ready: the armed entry, then from the playing entry (or the shown
     /// crate's current one when stopped) the next few of the play order. Also what to prepare.
     fn dig_horizon(&mut self) {
@@ -3168,20 +3240,49 @@ impl DiggrApp {
                 }
                 v
             });
-        // Downloaded previews near the playhead, to prepare (not the playing one: the
-        // analyzer is on it already).
-        let playing_id = if playing { start } else { None };
-        let prepare: Vec<TrackRef> = order
+        // What to analyze whole, for its BPM: the playing track (unless the playhead's
+        // analysis finished it), the tracks asked for, the downloaded previews near the
+        // playhead, then every other downloaded preview of the playing and shown crates.
+        // shortcut: rebuilt every frame, O(entries); fine for a few thousand, add a dirty flag
+        // if it shows up in a profile.
+        let playing_track = start
+            .filter(|_| playing && !self.score.as_ref().is_some_and(|s| s.complete))
+            .and_then(|id| p.get(id))
+            .filter(|e| e.status.is_playable())
+            .map(|e| e.track.clone());
+        let is_clip = |e: &&Entry| e.status.is_playable() && clip_of(e).is_some();
+        let near = order
             .iter()
             .skip(at)
             .take(scheduler::AHEAD + 1)
-            .filter(|&&id| Some(id) != playing_id)
             .filter_map(|&id| p.get(id))
-            .filter(|e| e.status.is_playable() && clip_of(e).is_some())
-            .map(|e| e.track.clone())
+            .filter(is_clip);
+        let shown = (self.crates.shown_id() != self.crates.playing_id())
+            .then(|| self.crates.shown().entries());
+        let rest = self
+            .crates
+            .playing()
+            .entries()
+            .iter()
+            .chain(shown.into_iter().flatten())
+            .filter(is_clip);
+        let asked = self
+            .dig
+            .as_ref()
+            .map(|d| d.asked.clone())
+            .unwrap_or_default();
+        let mut seen = HashSet::new();
+        let prepare: Vec<TrackRef> = playing_track
+            .into_iter()
+            .chain(asked)
+            .chain(near.chain(rest).map(|e| e.track.clone()))
+            .filter(|t| seen.insert(t.clone()))
             .collect();
+        // Open while nothing plays, or once the playing track is well under way: 32 bars
+        // analyzed, or 15 s heard (a beatless track never reaches 32 bars).
         let gate = !playing
             || self.analysis.is_none()
+            || self.position.seconds() >= 15.0
             || self
                 .score
                 .as_ref()
@@ -3382,6 +3483,32 @@ impl DiggrApp {
             DigAction::Want(ids) => self.dig_want(c, &ids),
             DigAction::Unwant(ids) => self.dig_unwant(c, &ids),
             DigAction::Collect(ids) => self.dig_collect(c, &ids, false),
+            DigAction::AnalyzeBpm(ids) => {
+                let tracks: Vec<TrackRef> = self
+                    .crates
+                    .get(c)
+                    .map(|p| ids.iter().filter_map(|&id| p.get(id)).collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| self.analyzable(e))
+                    .map(|e| e.track.clone())
+                    .collect();
+                let Some(d) = &mut self.dig else { return };
+                let n = tracks.len();
+                for t in tracks {
+                    if !d.asked.contains(&t) {
+                        d.asked.push(t);
+                    }
+                }
+                let what = if n == 1 {
+                    "1 track"
+                } else {
+                    &format!("{n} tracks")
+                };
+                self.notify(format!("Analyzing the BPM of {what} next"));
+                // Shown as queued at once.
+                self.dig_horizon();
+            }
             DigAction::RetryCollect(id) => self.dig_collect(c, &[id], true),
             DigAction::Discard(id) => self.dig_ask_discard(c, id),
             DigAction::RetryDiscard(id) => {
@@ -4465,6 +4592,19 @@ impl DiggrApp {
         // In the collection crate everything is owned: nothing to want or collect.
         let collection = self.crates.is_collection(c);
         let discogs = self.crates.is_discogs(c);
+        let analyzable = ids
+            .iter()
+            .filter_map(|&id| shown.get(id))
+            .any(|e| self.analyzable(e));
+        if analyzable
+            && ui
+                .button("Analyze BPM")
+                .on_hover_text("Find the tempo of this audio next")
+                .clicked()
+        {
+            actions.push(Action::Dig(DigAction::AnalyzeBpm(ids.clone())));
+            ui.close();
+        }
         ui.separator();
         let mut item = |ui: &mut egui::Ui, label: String, a: Option<DigAction>, tip: &str| {
             let r = ui.add_enabled(a.is_some(), egui::Button::new(label));

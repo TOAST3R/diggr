@@ -1031,6 +1031,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         });
     }
     b.sprite("digit_minus", 9, 13, |c, x, y| seven_seg(c, x, y, 0x40));
+    // "?" (segments a, b, g, e): SYNC waiting for a BPM.
+    b.sprite("digit_q", 9, 13, |c, x, y| seven_seg(c, x, y, 0x53));
     b.sprite("digit_blank", 9, 13, |c, x, y| c.fill(x, y, 9, 13, LCD_BG));
     b.sprite("digit_colon", 3, 13, |c, x, y| {
         c.fill(x, y, 3, 13, LCD_BG);

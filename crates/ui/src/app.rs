@@ -507,19 +507,60 @@ impl DiggrApp {
         false
     }
 
-    /// Turns SYNC on (at the playing track's tempo) or off.
+    /// Turns SYNC on (at the playing track's tempo) or off. A playing track whose BPM isn't
+    /// known yet is analyzed next, and SYNC waits for its BPM.
     fn toggle_sync(&mut self) {
         let sync = &mut self.settings.sync;
         sync.on = !sync.on;
-        if sync.on
-            && let Some(bpm) = self.playing_bpm()
-        {
-            self.settings.sync.target = bpm;
+        sync.pending = None;
+        if sync.on {
+            match self.playing_bpm() {
+                Some(bpm) => self.settings.sync.target = bpm,
+                // (A whole score without a tempo has nothing more to give.)
+                None if self.position.state != PlayState::Stopped
+                    && !self.score.as_ref().is_some_and(|s| s.complete) =>
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let wait = self.dig_analyze_playing();
+                    #[cfg(target_arch = "wasm32")]
+                    let wait = false;
+                    if wait {
+                        self.settings.sync.pending = Some(self.position.track);
+                    }
+                }
+                None => {}
+            }
         }
         self.mark_settings();
     }
 
+    /// SYNC waiting for the playing track's BPM takes it once known, and stops waiting
+    /// (keeping the target) when another track plays or playback stops.
+    fn sync_wait(&mut self) {
+        let sync = self.settings.sync;
+        let Some(track) = sync.pending else { return };
+        if !sync.on || self.position.state == PlayState::Stopped || self.position.track != track {
+            self.settings.sync.pending = None;
+        } else if let Some(bpm) = self.playing_bpm() {
+            self.settings.sync.target = bpm;
+            self.settings.sync.pending = None;
+            self.mark_settings();
+        }
+    }
+
+    /// While SYNC waits for a BPM its target stays put: says so.
+    fn sync_waiting(&mut self) -> bool {
+        let waiting = self.settings.sync.pending.is_some();
+        if waiting {
+            self.notify("Analyzing the BPM, wait a moment");
+        }
+        waiting
+    }
+
     fn nudge_sync(&mut self, bpm: i32) {
+        if self.sync_waiting() {
+            return;
+        }
         self.settings.sync.nudge(bpm);
         self.mark_settings();
     }
@@ -987,6 +1028,51 @@ impl DiggrApp {
         #[cfg(not(target_arch = "wasm32"))]
         return self.dig.as_ref().and_then(|d| d.line());
         #[cfg(target_arch = "wasm32")]
+        None
+    }
+
+    /// The tracks being analyzed for their BPM and the share of each done.
+    fn bpm_progress(&self) -> std::collections::HashMap<TrackRef, f32> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self
+            .dig
+            .as_ref()
+            .map(|d| d.prepare_progress())
+            .unwrap_or_default();
+        #[cfg(target_arch = "wasm32")]
+        Default::default()
+    }
+
+    /// The playing record's BPM is on its way: queued or being analyzed.
+    fn playing_bpm_coming(&self) -> bool {
+        let p = self.crates.playing();
+        let progress = self.bpm_progress();
+        self.position.state != PlayState::Stopped
+            && p.current()
+                .and_then(|id| p.get(id))
+                .is_some_and(|e| self.bpm_wait(e, &progress).is_some())
+    }
+
+    /// Where an entry with no BPM stands in the background analysis; `None` once it has one
+    /// (even while analyzed again), or when it isn't in the queue.
+    fn bpm_wait(
+        &self,
+        e: &crate::playlist::Entry,
+        progress: &std::collections::HashMap<TrackRef, f32>,
+    ) -> Option<BpmWait> {
+        if e.bpm.is_some() {
+            return None;
+        }
+        if let Some(&share) = progress.get(&e.track) {
+            return Some(BpmWait::Analyzing(share));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(d) = &self.dig
+            && !d.analyzed.contains(&e.track)
+            && d.prepared_list.contains(&e.track)
+        {
+            return Some(BpmWait::Queued);
+        }
         None
     }
 
@@ -1926,6 +2012,7 @@ impl DiggrApp {
         let sync = self.settings.sync;
         let bpm = self.playing_bpm();
         let state = self.position.state;
+        let analyzing = self.playing_bpm_coming();
         let fitted = sync.speed(bpm);
         if state == PlayState::Playing {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
@@ -1968,11 +2055,15 @@ impl DiggrApp {
 
             // The tempo in big digits, how far this record is pushed, and its own tempo.
             let t = sk.def.at("deck_target");
-            for (i, c) in format!("{:>3}", sync.target).chars().enumerate() {
-                let name = if c == ' ' {
-                    "digit_blank".to_owned()
-                } else {
-                    format!("digit_{c}")
+            let digits = match sync.pending {
+                Some(_) => "  ?".to_owned(),
+                None => format!("{:>3}", sync.target),
+            };
+            for (i, c) in digits.chars().enumerate() {
+                let name = match c {
+                    ' ' => "digit_blank".to_owned(),
+                    '?' => "digit_q".to_owned(),
+                    c => format!("digit_{c}"),
                 };
                 sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
             }
@@ -1982,7 +2073,11 @@ impl DiggrApp {
                 sk.text(r.x as f32, r.y as f32, &push, lcd);
             }
             let r = sk.def.at("deck_record");
-            let rec = bpm.map_or("REC ---".to_owned(), |b| format!("REC {b}"));
+            let rec = match (bpm, sync.pending.is_some() || analyzing) {
+                (Some(b), false) => format!("REC {b}"),
+                (_, true) => "REC ?".to_owned(),
+                (None, false) => "REC ---".to_owned(),
+            };
             sk.text(r.x as f32, r.y as f32, &rec, lcd);
             let r = sk.def.at("deck_lamp");
             let own = state != PlayState::Stopped && fitted.is_none();
@@ -2036,6 +2131,10 @@ impl DiggrApp {
                 if target != sync.target {
                     actions.push(Action::SyncTarget(target));
                 }
+            }
+            // Waiting for the record's BPM: the fader does nothing, and says why.
+            if sync.pending.is_some() && resp.is_pointer_button_down_on() {
+                actions.push(Action::SyncTarget(sync.target));
             }
             // Scrolling over it: 1 BPM per 4 skin pixels.
             if resp.hovered() {
@@ -4205,6 +4304,7 @@ impl DiggrApp {
         // The search's words, lit in the rows.
         let words = self.crates.shown().search().to_vec();
         let hl = color(self.def.colors.pl_current);
+        let bpm_progress = self.bpm_progress();
         // Wide enough: columns under a header row, which takes the first row.
         let columns = self.pl_columns();
         let visible = self.pl_visible_rows();
@@ -4510,6 +4610,11 @@ impl DiggrApp {
                     || marks.collection_failed.is_some()
                     || marks.discard_failed.is_some();
                 let sync = self.settings.sync;
+                let bpm_wait = self.bpm_wait(e, &bpm_progress);
+                let dim = {
+                    let [r, g, b, _] = col.to_array();
+                    lerp_color([r, g, b], d.colors.pl_bg, 0.55)
+                };
                 let row_name = |e: &crate::playlist::Entry| {
                     let name = e.row_name();
                     if sync.on && sync.speed(e.bpm).is_none() {
@@ -4580,6 +4685,11 @@ impl DiggrApp {
                                 continue;
                             }
                             Col::Field(Field::Title) => marked(e.title.clone()),
+                            Col::Field(Field::Bpm) if let Some(w) = bpm_wait => {
+                                let at = pos2(cell.left() + 3.0 * scale, cell.center().y);
+                                draw_bpm_wait(&cell_clip, at, w, scale, col, dim);
+                                continue;
+                            }
                             Col::Field(f) => crate::columns::cell_text(e, f),
                         };
                         text_marked(
@@ -4597,6 +4707,13 @@ impl DiggrApp {
                     if let Some(src) = source {
                         let right = rr.right() - dur_w - 9.0 * scale;
                         dur_w += source_badge(&clip, right, rr.center().y, src, &font, col, scale);
+                    }
+                    // The BPM analysis, in its own place before the time (a long name would
+                    // hide it).
+                    if let Some(w) = bpm_wait {
+                        dur_w += BPM_BAR_W * scale + 6.0 * scale;
+                        let at = pos2(rr.right() - dur_w, rr.center().y);
+                        draw_bpm_wait(&clip, at, w, scale, col, dim);
                     }
                     let name_clip = clip.with_clip_rect(Rect::from_min_max(
                         rr.min,
@@ -4649,6 +4766,9 @@ impl DiggrApp {
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
                     let mut details = format::entry_details(e, marks.clone(), unix_now());
+                    if let Some(w) = bpm_wait {
+                        details.push(("Tempo", w.label()));
+                    }
                     // While a source limits requests, what waits for it says so.
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(source) = self.waiting_for(e)
@@ -5289,11 +5409,13 @@ impl DiggrApp {
                 self.mark_settings();
             }
             Action::SyncNudge(bpm) => self.nudge_sync(bpm),
+            Action::SyncTarget(_) if self.sync_waiting() => {}
             Action::SyncTarget(bpm) => {
                 self.settings.sync.target = bpm;
                 self.settings.sync = self.settings.sync.sanitized();
                 self.mark_settings();
             }
+            Action::SyncTakeBpm if self.sync_waiting() => {}
             Action::SyncTakeBpm => match self.playing_bpm() {
                 Some(bpm) => {
                     self.settings.sync.target = bpm;
@@ -6521,6 +6643,53 @@ fn text_marked(
     rect
 }
 
+/// Where an entry without a BPM stands in the background analysis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BpmWait {
+    /// The share of its file analyzed so far.
+    Analyzing(f32),
+    Queued,
+}
+
+impl BpmWait {
+    /// For the entry's tooltip.
+    fn label(self) -> String {
+        match self {
+            Self::Analyzing(share) => format!("analyzing {}%", (share * 100.0).round() as u32),
+            Self::Queued => "BPM queued".into(),
+        }
+    }
+}
+
+/// The BPM analysis bar's width, in skin pixels.
+const BPM_BAR_W: f32 = 16.0;
+
+/// An entry's place in the BPM analysis (`at` is the bar's left centre): an empty frame while
+/// queued, filling up to the share analyzed.
+fn draw_bpm_wait(
+    p: &egui::Painter,
+    at: Pos2,
+    wait: BpmWait,
+    scale: f32,
+    col: Color32,
+    dim: Color32,
+) {
+    let bar = Rect::from_min_size(at - vec2(0.0, 3.0 * scale), vec2(BPM_BAR_W, 6.0) * scale);
+    let share = match wait {
+        BpmWait::Analyzing(share) => share.clamp(0.0, 1.0),
+        BpmWait::Queued => 0.0,
+    };
+    let done = vec2(bar.width() * share, bar.height());
+    p.rect_filled(Rect::from_min_size(bar.min, done), 0.0, col);
+    let frame = if share > 0.0 { col } else { dim };
+    p.rect_stroke(
+        bar,
+        0.0,
+        egui::Stroke::new(scale, frame),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> Color32 {
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)).round() as u8;
     Color32::from_rgb(l(a[0], b[0]), l(a[1], b[1]), l(a[2], b[2]))
@@ -6557,6 +6726,7 @@ impl DiggrApp {
         self.last_frame = now;
         self.update_audio(dt);
         self.show_playing_bpm();
+        self.sync_wait();
         self.handle_keys(ctx);
         if self.apply_sync() {
             ctx.request_repaint_after(Duration::from_millis(30));
@@ -7756,6 +7926,7 @@ mod headless_tests {
             on: true,
             target: 126,
             wide: false,
+            pending: None,
         };
         let out = rig.frame(Vec::new());
         let own: Vec<String> = text_list(&out)

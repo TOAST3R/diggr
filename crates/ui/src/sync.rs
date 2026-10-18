@@ -11,6 +11,10 @@ pub struct SyncSettings {
     pub target: u16,
     /// ±16% instead of ±8%.
     pub wide: bool,
+    /// Turned on while the playing track's BPM wasn't known: that track (its engine id),
+    /// whose BPM becomes the target once analyzed. Never saved.
+    #[serde(skip)]
+    pub pending: Option<u64>,
 }
 
 impl Default for SyncSettings {
@@ -19,6 +23,7 @@ impl Default for SyncSettings {
             on: false,
             target: 124,
             wide: false,
+            pending: None,
         }
     }
 }
@@ -70,6 +75,7 @@ mod tests {
             on: true,
             target,
             wide: false,
+            pending: None,
         }
     }
 

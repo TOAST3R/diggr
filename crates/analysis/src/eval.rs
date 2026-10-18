@@ -121,12 +121,31 @@ pub fn tapped_spans(taps: &[f64]) -> Vec<(f64, f64)> {
 
 /// Analyzes a whole file offline (same code path as playback, without the horizon).
 pub fn analyze_file(files: &dyn FileSource, track: &TrackRef) -> Option<SongScore> {
+    analyze_file_with(files, track, |_| {})
+}
+
+/// `analyze_file`, reporting the share decoded (0–1) after each chunk; nothing when the
+/// duration is unknown.
+pub fn analyze_file_with(
+    files: &dyn FileSource,
+    track: &TrackRef,
+    mut progress: impl FnMut(f32),
+) -> Option<SongScore> {
     let hash = crate::cache::content_hash(files, track).unwrap_or(0);
     let mut src = Source::open(files, track, 0.0).ok()?;
+    let duration = src.duration().filter(|&d| d > 0.0);
     let mut region = Region::new(0.0);
+    let mut decoded = 0usize;
     while let Some(chunk) = src.read(UPDATE_EVERY_SECS) {
+        decoded += chunk.len();
         region.push(&chunk);
         region.update(false);
+        if let Some(d) = duration {
+            progress((decoded as f64 / crate::frontend::SR as f64 / d).min(1.0) as f32);
+        }
+    }
+    if duration.is_some() {
+        progress(1.0);
     }
     region.update(true);
     Some(assemble(vec![Piece::from(region.latest())], hash))
@@ -185,6 +204,20 @@ mod tests {
             env!("CARGO_MANIFEST_DIR")
         ));
         assert!(analyze_file(&NativeFileSource, &track).is_some());
+    }
+
+    #[test]
+    fn progress_rises_to_one_and_the_score_is_unchanged() {
+        let track = TrackRef::new(format!(
+            "{}/../audio/tests/fixtures/tone.flac",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        let mut seen = Vec::new();
+        let score = analyze_file_with(&NativeFileSource, &track, |p| seen.push(p)).unwrap();
+        assert!(!seen.is_empty());
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+        assert_eq!(seen.last(), Some(&1.0));
+        assert_eq!(score, analyze_file(&NativeFileSource, &track).unwrap());
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub enum Pattern {
     Groove,
     /// Kick and hats only.
     Outro,
+    /// Drum & bass two-step: kick on 1 and the "and" of 3, snare on 2 and 4, 8th hats, loud
+    /// bass. The kicks fall 2.5 then 1.5 beats apart, a pulse that can pass for 2/3 the tempo.
+    Break,
 }
 
 impl Pattern {
@@ -29,7 +32,7 @@ impl Pattern {
         match self {
             Pattern::Beatless | Pattern::Intro => SectionKind::Intro,
             Pattern::Build => SectionKind::Build,
-            Pattern::Drop => SectionKind::Drop,
+            Pattern::Drop | Pattern::Break => SectionKind::Drop,
             Pattern::Breakdown => SectionKind::Breakdown,
             Pattern::Groove => SectionKind::Groove,
             Pattern::Outro => SectionKind::Outro,
@@ -178,6 +181,17 @@ pub fn render(parts: &[Part], rate: u32, seed: u64) -> Synth {
                 truth.kicks.push(bt);
                 add_kick(&mut out, at(bt), sr);
             }
+            if p.pattern == Pattern::Break {
+                let k = match pos {
+                    0 => Some(bt),
+                    2 => Some(bt + beat / 2.0),
+                    _ => None,
+                };
+                if let Some(k) = k {
+                    truth.kicks.push(k);
+                    add_kick(&mut out, at(k), sr);
+                }
+            }
             // Hats on 8ths (softer in breakdowns).
             let hat_gain = match p.pattern {
                 Pattern::Breakdown => 0.08,
@@ -195,7 +209,7 @@ pub fn render(parts: &[Part], rate: u32, seed: u64) -> Synth {
                     );
                 }
             }
-            if p.pattern == Pattern::Drop && (pos == 1 || pos == 3) {
+            if matches!(p.pattern, Pattern::Drop | Pattern::Break) && (pos == 1 || pos == 3) {
                 add_snare(&mut out, at(bt), sr, 0.5, &mut rng);
             }
             if p.pattern == Pattern::Build {
@@ -220,7 +234,7 @@ pub fn render(parts: &[Part], rate: u32, seed: u64) -> Synth {
                 }
             }
             let bass_gain = match p.pattern {
-                Pattern::Drop => 0.35,
+                Pattern::Drop | Pattern::Break => 0.35,
                 Pattern::Groove => 0.2,
                 _ => 0.0,
             };
