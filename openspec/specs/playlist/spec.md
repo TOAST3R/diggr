@@ -113,11 +113,11 @@ An entry that has an origin SHALL keep it: the record the entry belongs to (sour
 - **THEN** the playlist and the title line still show "Nightcraft - Glasshouse", and the entry takes only its duration from the file
 
 ### Requirement: Entry tempo
-Each entry SHALL carry its tempo once any analysis of its audio is known: from preview preparation, from the playing track's analysis, or from the score cache. The tempo SHALL be the tempo of the score's longest steady-tempo stretch, doubled or halved until it lies within 88–176 BPM, and rounded to a whole number. The tempo SHALL be saved with the crate. Until its audio is analysed, an entry from Beatport or Traxsource SHALL carry the BPM its store gives, and analysis SHALL replace it. The app SHALL NOT download or analyse audio only to learn a tempo, and SHALL NOT take a tempo from file tags.
+Each entry SHALL carry its tempo once any analysis of its audio is known: from the background analysis of its downloaded or requested audio, from the playing track's analysis, or from the score cache. The tempo SHALL be the tempo of the score's longest steady-tempo stretch, doubled or halved until it lies within 88–176 BPM, and rounded to a whole number. It SHALL be taken only from a complete score, never from part of a file. The tempo SHALL be saved with the crate. Until its audio is analysed, an entry from Beatport or Traxsource SHALL carry the BPM its store gives, and analysis SHALL replace it. The app SHALL NOT download audio only to learn a tempo, and SHALL NOT take a tempo from file tags.
 
 #### Scenario: Prepared preview
-- **WHEN** the next entry's preview is prepared and its analysed tempo is 124.3 BPM
-- **THEN** the entry shows "(124 BPM)" within one UI frame of preparation finishing
+- **WHEN** the next entry's preview is analyzed in the background and its analysed tempo is 124.3 BPM
+- **THEN** the entry shows "(124 BPM)" within one UI frame of the analysis finishing
 
 #### Scenario: Half time folded
 - **WHEN** a track is analysed at 87 BPM
@@ -137,7 +137,11 @@ Each entry SHALL carry its tempo once any analysis of its audio is known: from p
 
 #### Scenario: Nothing fetched for a BPM
 - **WHEN** a 312-release label crate is shown while entry 1 plays
-- **THEN** only previews within the download-ahead horizon are downloaded, and entries outside it show no BPM
+- **THEN** only previews within the download-ahead horizon are downloaded, and entries whose audio isn't downloaded show no BPM
+
+#### Scenario: No tempo from part of a file
+- **WHEN** the playing track's first 2 minutes are analyzed at 170 BPM and the user skips to the next track
+- **THEN** its entry shows no BPM until its whole file is analyzed
 
 ### Requirement: Playlist placement and size
 The playlist SHALL be drawn to the right of the player column (main, waveform and EQ sections) in the same window. Its corner handle SHALL resize it freely in width, from the skin's playlist width (275 points at 1×) upwards, and in whole rows in height, never shorter than the player column. Its width and rows SHALL be remembered across launches. Hiding the playlist SHALL shrink the window to the player column. A restored width SHALL be reduced if the window wouldn't fit on its monitor. Resizing SHALL NOT affect playback.
@@ -377,4 +381,3 @@ Each item SHALL act as the same item did in the footer's `≡` menu. A separator
 #### Scenario: No empty band
 - **WHEN** the collection crate is shown and the user right-clicks its empty space
 - **THEN** the menu shows no Remove selected or Clear crate, and no two separators in a row
-
