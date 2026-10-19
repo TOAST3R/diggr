@@ -53,7 +53,7 @@ Entries SHALL appear immediately with file-name titles; tags and durations SHALL
 - **THEN** playback has no underruns and entries update progressively
 
 ### Requirement: Playback order
-Double-clicking an entry SHALL play it; shuffle and repeat (off/all/one) SHALL determine the next track, and the Engine's pre-warm SHALL target the actual next track. Entries that are waiting for their audio or unavailable SHALL be skipped by next, previous, shuffle and repeat, and SHALL never be handed to the engine; an entry SHALL join the play order as soon as its audio arrives. Double-clicking an entry that is waiting for its audio SHALL arm it: the current track keeps playing, the main window says it is waiting for that entry, and the entry starts within 100 ms of its audio arriving. An armed entry SHALL come first among the previews to download or search, whichever crate it is in. Double-clicking an entry that is unavailable with "clip failed" or "not found", in any crate, SHALL retry it: it goes back to waiting (to be downloaded again, or searched again with its remembered "not found" forgotten), its retry starts before any other waiting preview, and it is armed. Double-clicking any other unavailable entry ("no clip") SHALL only say why it can't play. Starting another track SHALL cancel the arming.
+Double-clicking an entry SHALL play it; shuffle and repeat (off/all/one) SHALL determine the next track, and the Engine's pre-warm SHALL target the actual next track. Entries that are waiting for their audio or unavailable SHALL be skipped by next, previous, shuffle and repeat, and SHALL never be handed to the engine; an entry SHALL join the play order as soon as its audio arrives. When only waiting entries follow the playing one, Next (and Pass) SHALL arm the first of them. Double-clicking an entry that is waiting for its audio SHALL arm it: the current track keeps playing, the main window says it is waiting for that entry, and the entry starts within 100 ms of its audio arriving. An armed entry SHALL come first among the previews to download or search, whichever crate it is in. Double-clicking an entry that is unavailable with "clip failed" or "not found", in any crate, SHALL retry it: it goes back to waiting (to be downloaded again, or searched again with its remembered "not found" forgotten), its retry starts before any other waiting preview, and it is armed. Double-clicking any other unavailable entry ("no clip") SHALL only say why it can't play. Starting another track SHALL cancel the arming.
 
 #### Scenario: Shuffle pre-warm
 - **WHEN** shuffle is on and the current track nears its end
@@ -62,6 +62,10 @@ Double-clicking an entry SHALL play it; shuffle and repeat (off/all/one) SHALL d
 #### Scenario: Skip what is not ready
 - **WHEN** track 3 ends while track 4 is still downloading and track 5 is playable
 - **THEN** track 5 plays gaplessly after track 3, and track 4 is not marked as failed
+
+#### Scenario: Next with only waiting entries after
+- **WHEN** track 3 plays, tracks 4 and 5 are still downloading, and the user presses Next
+- **THEN** track 3 keeps playing, and track 4 starts once its audio arrives
 
 #### Scenario: Arm a waiting entry
 - **WHEN** the user double-clicks an entry whose audio is still downloading

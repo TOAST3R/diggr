@@ -360,20 +360,18 @@ fn exact_matches_go_to_discogs_and_take_the_bandcamp_entries_over() {
         "1001 added to the collection",
     );
     // The vinyl's record takes the Bandcamp tracks over, and brings the one Bandcamp lacked.
+    // Its tracks come in as "Release 1001" first, then by name.
+    let all = [
+        "Bonus",
+        "Glasshouse",
+        "Glasshouse (Lumen Remix)",
+        "Last Light",
+        "Swamp",
+        "The Ooze",
+    ];
     rig.until(
-        |r| titles(r, coll).len() == 6,
+        |r| titles(r, coll) == all,
         "the record arrives in the crate",
-    );
-    assert_eq!(
-        titles(&rig, coll),
-        [
-            "Bonus",
-            "Glasshouse",
-            "Glasshouse (Lumen Remix)",
-            "Last Light",
-            "Swamp",
-            "The Ooze"
-        ]
     );
     let p = rig.app.crates.get(coll).unwrap();
     let glass = p
