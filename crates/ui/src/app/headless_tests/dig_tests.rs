@@ -895,6 +895,12 @@ fn a_browser_send_is_answered_at_once_and_the_crate_fills_in_afterwards() {
     assert!(crates.contains(r#""Friday""#), "{crates}");
     assert!(!crates.contains("Label: Lowtide Tapes"), "{crates}");
     assert!(!crates.contains("Seller: decks.de"), "{crates}");
+    // A track's Send to crate menu doesn't offer them either.
+    let targets: Vec<CrateId> = rig.app.send_targets().into_iter().map(|(c, _)| c).collect();
+    assert!(
+        !targets.contains(&c) && !targets.contains(&seller),
+        "{targets:?}"
+    );
 
     // Sent again, once the first send is done: the same crate, refreshed, nothing doubled.
     let port = bridge_port(&rig);

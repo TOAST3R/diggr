@@ -134,7 +134,8 @@ and Home/End jump), and Enter plays the entry under it.
     deleted, and is the only crate that command-line files replace. Your playlist
     from earlier versions becomes this crate on the first launch.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
-    another crate or a new one, skipping entries that crate already holds.
+    another crate or a new one, skipping entries that crate already holds. It doesn't list
+    the crates the app fills itself (Discogs, label, seller and friend crates).
   - **Crate sidebar:** once the playlist is at least 600 pixels wide (or maximized), every crate
     is listed on its left with its number of records (grouped or flat; its tooltip also
     counts the tracks): • marks the one shown, and the player's

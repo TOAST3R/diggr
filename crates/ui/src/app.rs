@@ -1575,13 +1575,17 @@ impl DiggrApp {
         }
     }
 
-    /// The crates Send to crate offers: every other crate but the Discogs ones, which the
-    /// Discogs items alone fill.
+    /// The crates Send to crate offers: every other crate but the ones the app fills itself
+    /// (Discogs, label, seller and friend crates).
     fn send_targets(&self) -> Vec<(CrateId, String)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let takes = |c| self.takes_sends(c);
+        #[cfg(target_arch = "wasm32")]
+        let takes = |c| !self.crates.is_locked(c);
         self.crates
             .list()
             .iter()
-            .filter(|c| c.id != self.crates.shown_id() && !self.crates.is_locked(c.id))
+            .filter(|c| c.id != self.crates.shown_id() && takes(c.id))
             .map(|c| (c.id, c.name.clone()))
             .collect()
     }
