@@ -445,6 +445,8 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-pass", &fakes, |_| {});
     let c = play_release(&mut rig);
+    // Ready, so N doesn't skip a preview still downloading.
+    rig.until(|r| all_playable(r, c, 3), "all previews ready");
     key(&mut rig, Key::N);
     assert!(memory(&rig).is_passed(CLIPS[0]));
     assert_eq!(flash(&rig).as_deref(), Some("PASS"));
@@ -453,7 +455,6 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
         "the next preview plays",
     );
     // Dimmed in its row.
-    rig.until(|r| all_playable(r, c, 3), "all previews ready");
     let out = rig.frame(Vec::new());
     let col = |prefix: &str| {
         texts(&out)
@@ -478,6 +479,25 @@ fn n_passes_the_playing_preview_and_later_sends_leave_it_out() {
     let first = rig.ids(c)[0];
     rig.app.dig_act(c, DigAction::UndoPass(first));
     assert!(!memory(&rig).is_passed(CLIPS[0]));
+}
+
+#[test]
+fn n_with_only_previews_still_downloading_after_plays_the_next_once_it_arrives() {
+    let fakes = Fakes::new();
+    fakes.fetcher.hang(CLIPS[1]);
+    fakes.fetcher.hang(CLIPS[2]);
+    let mut rig = rig("dig-pass-waiting", &fakes, |_| {});
+    play_release(&mut rig);
+    key(&mut rig, Key::N);
+    for _ in 0..10 {
+        rig.pump();
+    }
+    assert_eq!(playing_clip(&rig).as_deref(), Some(CLIPS[0]), "plays on");
+    fakes.fetcher.release(CLIPS[1]);
+    rig.until(
+        |r| playing_clip(r).as_deref() == Some(CLIPS[1]),
+        "the next preview plays",
+    );
 }
 
 #[test]

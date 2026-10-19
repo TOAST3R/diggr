@@ -4333,8 +4333,7 @@ impl DiggrApp {
             && c == self.crates.playing_id()
             && self.crates.playing().current() == Some(id);
         if playing {
-            self.armed = None;
-            self.with_engine(|e| e.next());
+            self.play_next();
         }
     }
 

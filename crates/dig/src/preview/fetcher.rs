@@ -424,7 +424,7 @@ pub struct FakeFetcher {
     pub source: PathBuf,
     /// Clips that fail this many times before working (`u32::MAX`: always).
     pub failures: std::sync::Mutex<std::collections::HashMap<String, u32>>,
-    /// Clips that never finish until cancelled.
+    /// Clips that never finish until cancelled or released.
     pub hangs: std::sync::Mutex<std::collections::HashSet<String>>,
     pub delay: Duration,
     pub available: AtomicBool,
@@ -511,6 +511,11 @@ impl FakeFetcher {
         self.hangs.lock().unwrap().insert(clip.into());
     }
 
+    /// A hanging clip finishes after all.
+    pub fn release(&self, clip: &str) {
+        self.hangs.lock().unwrap().remove(clip);
+    }
+
     pub fn started(&self) -> Vec<String> {
         self.started.lock().unwrap().clone()
     }
@@ -551,7 +556,6 @@ impl FakeFetcher {
         std::fs::create_dir_all(dir).map_err(|e| FetchError::Failed(e.to_string()))?;
         let part = dir.join(format!("{clip}.{}.part", ext_of(clip)));
         let _ = std::fs::write(&part, b"partial");
-        let hang = self.hangs.lock().unwrap().contains(clip);
         for step in 0..=4u8 {
             if cancel.load(Ordering::Acquire) {
                 remove_partial(dir, clip);
@@ -559,7 +563,7 @@ impl FakeFetcher {
             }
             progress(step * 25);
             std::thread::sleep(self.delay / 4);
-            while hang && !cancel.load(Ordering::Acquire) {
+            while !cancel.load(Ordering::Acquire) && self.hangs.lock().unwrap().contains(clip) {
                 std::thread::sleep(Duration::from_millis(5));
             }
         }

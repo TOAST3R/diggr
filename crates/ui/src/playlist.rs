@@ -1026,7 +1026,8 @@ impl Playlist {
     }
 
     /// Metadata read from the file. An entry with an origin keeps its own artist, title and
-    /// album (the record is the truth, not the file's tags) and takes only the duration.
+    /// album (the record is the truth, not the file's tags), and its length when it has one
+    /// (a store's sample is shorter than the track); it takes only a missing duration.
     pub fn set_info(&mut self, id: EntryId, info: audio::TrackInfo) {
         if let Some(e) = self.entry_mut(id)
             && e.status.note().is_none()
@@ -1041,7 +1042,9 @@ impl Playlist {
                 }
             }
             if let Some(e) = self.entry_mut(id) {
-                e.duration = info.duration_secs;
+                if e.origin.is_none() || e.duration.is_none() {
+                    e.duration = info.duration_secs;
+                }
                 e.status = EntryStatus::Ready;
             }
         }
@@ -2739,6 +2742,9 @@ mod tests {
         assert_eq!(e.display_name(), "(LT-012) Nightcraft: Glasshouse");
         assert_eq!(e.album(), "", "the record's (empty) album, not the tag's");
         assert_eq!((e.duration, &e.status), (Some(301.0), &EntryStatus::Ready));
+        // A length it has stays: a store's sample is shorter than the track.
+        p.set_info(id, tags("t".into(), "a".into(), Some(30.0)));
+        assert_eq!(p.get(id).unwrap().duration, Some(301.0));
         // Entries without an origin still take the tags.
         let plain = p.add([TrackRef::new("/m/x.mp3")])[0].0;
         let mut info = tags("Title".into(), "Artist".into(), None);

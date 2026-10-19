@@ -621,6 +621,35 @@ impl DiggrApp {
         }
     }
 
+    /// The next playable entry, skipping those waiting for their audio. When only waiting ones
+    /// follow, the first is armed instead, and the current track plays on until it arrives.
+    fn play_next(&mut self) {
+        let p = self.crates.playing();
+        let order = p.play_order(self.settings.shuffle, p.current(), self.shuffle_seed);
+        let after = p
+            .current()
+            .and_then(|id| order.iter().position(|&o| o == id))
+            .map_or(&[][..], |i| &order[i + 1..]);
+        let status = |id: &EntryId| p.get(*id).map(|e| &e.status);
+        let waiting = if after
+            .iter()
+            .any(|id| status(id).is_some_and(EntryStatus::is_playable))
+        {
+            None
+        } else {
+            after
+                .iter()
+                .copied()
+                .find(|id| matches!(status(id), Some(EntryStatus::Waiting(_))))
+        };
+        if let Some(id) = waiting {
+            self.armed = Some((self.crates.playing_id(), id));
+        } else {
+            self.armed = None;
+            self.with_engine(|e| e.next());
+        }
+    }
+
     /// Starts an entry, which makes its crate the playing one. A waiting entry is armed
     /// instead: it starts when its audio arrives, and the current track plays on meanwhile.
     fn play_entry(&mut self, crate_id: CrateId, id: EntryId) {
@@ -1310,7 +1339,7 @@ impl DiggrApp {
             Key::X => self.play(),
             Key::C => self.with_engine(|e| e.toggle_pause()),
             Key::V => self.with_engine(|e| e.stop()),
-            Key::B => self.with_engine(|e| e.next()),
+            Key::B => self.play_next(),
             Key::ArrowLeft => self.with_engine(|e| e.seek((secs - 5.0).max(0.0))),
             Key::ArrowRight => self.with_engine(|e| e.seek(secs + 5.0)),
             // With the playlist focused, the arrows move its cursor instead (`window_key`).
@@ -5448,10 +5477,7 @@ impl DiggrApp {
             Action::Play => self.play(),
             Action::Pause => self.with_engine(|e| e.toggle_pause()),
             Action::Stop => self.with_engine(|e| e.stop()),
-            Action::Next => {
-                self.armed = None;
-                self.with_engine(|e| e.next());
-            }
+            Action::Next => self.play_next(),
             Action::Seek(s) => self.with_engine(|e| e.seek(s)),
             Action::Volume(v) => self.set_volume(v),
             Action::Shuffle => {

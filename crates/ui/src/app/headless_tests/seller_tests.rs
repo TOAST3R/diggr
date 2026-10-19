@@ -5,8 +5,9 @@ use super::*;
 use ::dig::browser::FakeBrowser;
 use ::dig::clock::RealClock;
 use ::dig::cover::{FakeImages, test_jpeg};
+use ::dig::discogs::cart::CartSnapshot;
 use ::dig::discogs::seller::inventory_path;
-use ::dig::discogs::transport::{FakeTransport, Method};
+use ::dig::discogs::transport::{FakeTransport, Fault, Method};
 use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
 use ::dig::preview::scheduler::Finder;
 use ::dig::sellers::SellerList;
@@ -1249,7 +1250,12 @@ fn a_double_click_on_the_pill_never_opens_the_listing() {
     fakes.empty_cart();
     open_record(&mut rig, 1001);
     let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
+    // The add is still unanswered when a cart read from before it lands.
+    fakes
+        .transport
+        .fault(Fault::Delay(Duration::from_millis(500)));
     rig.double_click(pill);
+    rig.app.dig_cart_read(Ok(CartSnapshot::default()));
     assert!(
         fakes.browser.opened.lock().unwrap().is_empty(),
         "no listing opened"

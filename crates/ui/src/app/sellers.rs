@@ -792,6 +792,8 @@ impl DiggrApp {
         }
         let item = self.cart_item(listing).map(|(_, i)| i);
         let Some(d) = &mut self.dig else { return };
+        // An add still unanswered no longer holds: a cart read must not put it back.
+        d.seller_ui.cart_pending.retain(|i| i.listing != listing);
         match item {
             Some(i) => d.cart.apply(i, false),
             None => d.cart.items.retain(|i| i.listing != listing),
