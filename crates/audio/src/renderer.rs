@@ -191,6 +191,10 @@ pub struct Renderer {
     fade_len: usize,
     fade_pos: usize,
     played_generation: u32,
+    /// The generation in the clock epoch: a speed change keeps the one it continues.
+    epoch_generation: u32,
+    /// Whether the next generation to play is a speed change (a soft flush) taking over.
+    soft_switch: bool,
     played_splice: u16,
     device_epoch: u32,
     /// Whether audio of the current generation has started (for underrun accounting).
@@ -219,6 +223,8 @@ impl Renderer {
             fade_len: 0,
             fade_pos: FADE_FRAMES,
             played_generation: 0,
+            epoch_generation: 0,
+            soft_switch: false,
             played_splice: 0,
             device_epoch: 0,
             started: false,
@@ -241,7 +247,7 @@ impl Renderer {
 
     fn epoch(&self) -> u64 {
         ((self.device_epoch as u64 & 0xffff) << 48)
-            | ((self.played_generation as u64) << 16)
+            | ((self.epoch_generation as u64) << 16)
             | self.played_splice as u64
     }
 
@@ -289,6 +295,7 @@ impl Renderer {
         {
             if self.pcm.has_generation(target) {
                 self.capture_fade(target);
+                self.soft_switch = true;
             } else {
                 min_generation = self.played_generation;
             }
@@ -317,6 +324,11 @@ impl Renderer {
                     ReadResult::Audio(run) => {
                         let at = done + filled;
                         if run.generation != self.played_generation {
+                            // A speed change restarts a little before what was already played
+                            // (crossfaded): one epoch, so the clock holds instead of going back.
+                            if !(std::mem::take(&mut self.soft_switch) && run.track == self.pos.0) {
+                                self.epoch_generation = run.generation;
+                            }
                             self.played_generation = run.generation;
                             self.played_splice = run.splice;
                             self.started = false;
@@ -605,6 +617,30 @@ mod tests {
         let s = g.clock.snapshot();
         assert_eq!(s.frame, 96_000);
         assert_ne!(s.epoch, before);
+    }
+
+    #[test]
+    fn a_late_speed_change_keeps_the_clock_from_going_back() {
+        let mut g = rig(2);
+        let g1 = g.control.bump_generation();
+        g.tx.push(g1, 1, 0, &vec![0.9; 2048 * 2]);
+        g.control.set_state(PlayState::Playing);
+        let mut out = vec![0.0; 512 * 2];
+        g.r.render(&mut out, info(0));
+        let buffer_ns = 512 * 1_000_000_000 / RATE as u64;
+        let mut reader = g.clock.clone();
+        let heard = reader.position(buffer_ns - 1).frame;
+        assert!(heard > 500, "{heard}");
+
+        // The new speed's audio starts before what the old one already played.
+        g.control.mark_soft();
+        let g2 = g.control.bump_generation();
+        g.tx.push_spliced(g2, 0, 1, 300, 0.96, &vec![0.1; 1024 * 2]);
+        g.r.render(&mut out, info(buffer_ns));
+        assert_eq!(g.clock.snapshot().frame, 300);
+        let p = reader.position(buffer_ns);
+        assert!(!p.discontinuity);
+        assert_eq!(p.frame, heard, "holds rather than going back");
     }
 
     #[test]
