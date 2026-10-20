@@ -6,6 +6,12 @@ members = ["crates/platform", "crates/audio", "apps/native", "crates/ui", "crate
 edition = "2024"
 license = "MIT"
 
+# macOS keeps one .o per codegen unit for split debuginfo, which grew target/ past 19 GB.
+# Line tables are enough for backtraces and panics.
+[profile.dev]
+split-debuginfo = "off"
+debug = "line-tables-only"
+
 # Decoders and resamplers are far too slow unoptimized to play audio in real time.
 [profile.dev.package."*"]
 opt-level = 3
