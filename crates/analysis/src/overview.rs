@@ -430,19 +430,22 @@ impl OverviewBuilder {
     }
 }
 
-fn cache_path(dir: &Path, hash: u64) -> PathBuf {
+/// Where the overview for this content is cached under the cache folder `dir`.
+pub fn cache_path(dir: &Path, hash: u64) -> PathBuf {
     dir.join("overviews").join(format!("{hash:016x}.bin"))
 }
 
 /// A cached overview for this content, if one exists in the current format.
+/// Marks it as just used, so the preview cache limit deletes the least recently used first.
 pub fn load_cached(dir: &Path, hash: u64) -> Option<Overview> {
-    let mut f = std::io::BufReader::new(std::fs::File::open(cache_path(dir, hash)).ok()?);
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(cache_path(dir, hash))
+        .ok()?;
+    let _ = file.set_modified(std::time::SystemTime::now());
+    let mut f = std::io::BufReader::new(file);
     Overview::read_from(&mut f).ok()
-}
-
-/// Deletes the cached overview for this content, if there is one.
-pub fn remove_cached(dir: &Path, hash: u64) {
-    let _ = std::fs::remove_file(cache_path(dir, hash));
 }
 
 pub fn save_cached(dir: &Path, hash: u64, o: &Overview) -> std::io::Result<()> {

@@ -1,10 +1,11 @@
-//! The preview folder, `<cache>/previews/`, kept within its size limit (10 GB by default).
+//! The preview folder, `<cache>/previews/`, and the overviews next to it in
+//! `<cache>/overviews/`, kept together within the preview cache size (10 GB by default).
 //!
-//! A preview's modification time is set to now when it starts playing, so the oldest files are
-//! the least recently played; those go first when a download takes the folder over its limit.
-//! The playing, armed and next previews are never deleted. The folder holds a few hundred
-//! files at most, so it is simply scanned each time. A deleted preview's overview
-//! (`<cache>/overviews/`) goes with it, so that folder stays bounded too.
+//! A preview's modification time is set to now when it starts playing, and an overview's when
+//! it is loaded, so the oldest files are the least recently played; those go first when a
+//! download takes the two folders over their limit. A deleted preview's overview goes with it.
+//! The playing, armed and next previews (and their overviews) are never deleted. The folders
+//! hold a few thousand files at most, so they are simply scanned each time.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -27,63 +28,103 @@ pub fn touch(path: &Path) {
     }
 }
 
-/// The bytes the previews in `dir` take.
-pub fn total_size(dir: &Path) -> u64 {
-    std::fs::read_dir(dir)
-        .map(|read| {
-            read.flatten()
-                .filter_map(|e| e.metadata().ok())
-                .filter(|m| m.is_file())
-                .map(|m| m.len())
-                .sum()
-        })
-        .unwrap_or(0)
+/// `<cache>/overviews`, next to the preview folder `dir`.
+fn overviews(dir: &Path) -> Option<PathBuf> {
+    Some(overview_path(dir, 0)?.parent()?.to_owned())
 }
 
-/// Deletes the least recently played previews until the folder fits in `limit` bytes, never
-/// one whose clip is in `protected`. Returns the deleted files.
-pub fn enforce_limit(dir: &Path, limit: u64, protected: &HashSet<String>) -> Vec<PathBuf> {
+fn overview_path(dir: &Path, hash: u64) -> Option<PathBuf> {
+    Some(analysis::overview::cache_path(dir.parent()?, hash))
+}
+
+/// The overview built from the preview at `path`, named by its content.
+fn overview_of(dir: &Path, path: &Path) -> Option<PathBuf> {
+    let file = TrackRef::new(path.to_string_lossy());
+    overview_path(
+        dir,
+        analysis::cache::content_hash(&NativeFileSource, &file)?,
+    )
+}
+
+/// Files in `dir`: modification time, length, path.
+fn files_in(dir: &Path) -> Vec<(SystemTime, u64, PathBuf)> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut files: Vec<(SystemTime, u64, PathBuf, String)> = read
-        .flatten()
+    read.flatten()
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            if !m.is_file() {
-                return None;
-            }
-            let path = e.path();
-            let clip = path
-                .file_name()?
-                .to_string_lossy()
-                .split('.')
-                .next()?
-                .to_owned();
-            Some((m.modified().ok()?, m.len(), path, clip))
+            m.is_file()
+                .then_some((m.modified().ok()?, m.len(), e.path()))
         })
+        .collect()
+}
+
+/// The bytes the previews in `dir` and the overviews next to it take.
+pub fn total_size(dir: &Path) -> u64 {
+    let ov = overviews(dir).map(|d| files_in(&d)).unwrap_or_default();
+    files_in(dir).iter().chain(&ov).map(|f| f.1).sum()
+}
+
+fn clip_of(path: &Path) -> Option<String> {
+    Some(
+        path.file_name()?
+            .to_string_lossy()
+            .split('.')
+            .next()?
+            .to_owned(),
+    )
+}
+
+/// Deletes the least recently used previews and overviews until both fit in `limit` bytes,
+/// never a preview whose clip is in `protected` or its overview. Returns the deleted previews.
+pub fn enforce_limit(dir: &Path, limit: u64, protected: &HashSet<String>) -> Vec<PathBuf> {
+    let previews = files_in(dir);
+    let ov_dir = overviews(dir);
+    let mut files: Vec<(SystemTime, u64, PathBuf, bool)> = previews
+        .iter()
+        .map(|(t, len, p)| (*t, *len, p.clone(), true))
+        .chain(
+            ov_dir
+                .iter()
+                .flat_map(|d| files_in(d))
+                .map(|(t, len, p)| (t, len, p, false)),
+        )
         .collect();
     let mut total: u64 = files.iter().map(|f| f.1).sum();
+    if total <= limit {
+        return Vec::new();
+    }
+    // Only the few protected previews are hashed to find their overviews.
+    let mut gone: HashSet<PathBuf> = previews
+        .iter()
+        .filter(|f| clip_of(&f.2).is_some_and(|c| protected.contains(&c)))
+        .flat_map(|f| [Some(f.2.clone()), overview_of(dir, &f.2)])
+        .flatten()
+        .collect();
     files.sort_by_key(|f| f.0);
     let mut deleted = Vec::new();
-    for (_, len, path, clip) in files {
+    for (_, len, path, is_preview) in files {
         if total <= limit {
             break;
         }
-        if protected.contains(&clip) {
+        if gone.contains(&path) {
             continue;
         }
         // Hashed before deleting: the overview is named by the preview's content.
-        let hash = analysis::cache::content_hash(
-            &NativeFileSource,
-            &TrackRef::new(path.to_string_lossy()),
-        );
+        let overview = is_preview.then(|| overview_of(dir, &path)).flatten();
         if std::fs::remove_file(&path).is_ok() {
-            if let (Some(h), Some(root)) = (hash, dir.parent()) {
-                analysis::overview::remove_cached(root, h);
-            }
             total -= len;
-            deleted.push(path);
+            if let Some(o) = overview
+                && let Ok(m) = std::fs::metadata(&o)
+                && std::fs::remove_file(&o).is_ok()
+            {
+                total = total.saturating_sub(m.len());
+                gone.insert(o);
+            }
+            if is_preview {
+                deleted.push(path);
+            }
         }
     }
     deleted
@@ -164,6 +205,39 @@ mod tests {
         assert_eq!(enforce_limit(&d, 150_000, &HashSet::new()).len(), 1);
         assert!(!old.exists(), "the evicted preview's overview is deleted");
         assert!(kept.exists(), "the kept preview's overview stays");
+    }
+
+    #[test]
+    fn overviews_count_toward_the_limit_and_the_oldest_go_first() {
+        let root = crate::test_dir("store-overviews-limit");
+        let d = dir(&root);
+        let ov = root.join("overviews");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(&ov).unwrap();
+        let aged = |p: &Path, age_secs: u64| {
+            let f = std::fs::File::options().write(true).open(p).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+                .unwrap();
+        };
+        // The protected preview's overview is the oldest file, then an orphan overview (a
+        // local track's), then an unprotected preview.
+        let playing = d.join("aaaaaaaaaaa.m4a");
+        std::fs::write(&playing, vec![1u8; 100_000]).unwrap();
+        let playing_ov = overview_of(&d, &playing).unwrap();
+        std::fs::write(&playing_ov, vec![0u8; 50_000]).unwrap();
+        aged(&playing_ov, 300);
+        let orphan = ov.join("00000000000000ff.bin");
+        std::fs::write(&orphan, vec![0u8; 50_000]).unwrap();
+        aged(&orphan, 200);
+        file(&d, "bbbbbbbbbbb", 100, 100);
+        assert_eq!(total_size(&d), 300_000);
+        let protected: HashSet<String> = ["aaaaaaaaaaa".to_owned()].into();
+        assert!(enforce_limit(&d, 250_000, &protected).is_empty());
+        assert!(!orphan.exists(), "the oldest unprotected file goes first");
+        assert!(playing_ov.exists(), "a protected preview's overview stays");
+        assert_eq!(enforce_limit(&d, 150_000, &protected).len(), 1);
+        assert!(playing.exists() && playing_ov.exists());
+        assert_eq!(total_size(&d), 150_000);
     }
 
     #[test]
