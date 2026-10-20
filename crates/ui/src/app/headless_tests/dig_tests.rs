@@ -356,6 +356,32 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
 }
 
 #[test]
+fn a_record_unwanted_before_its_fill_comes_in_stays_out_of_the_wantlist_crate() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-unwant-early", &fakes, with_token);
+    let c = play_release(&mut rig);
+    let id = rig.app.crates.get(c).unwrap().entries()[0].id;
+    let ctx = rig.ctx.clone();
+    // Both before a frame: the wantlist crate's fill of the record can only come in after.
+    rig.app.apply(Action::Dig(DigAction::Want(vec![id])), &ctx);
+    rig.app
+        .apply(Action::Dig(DigAction::Unwant(vec![id])), &ctx);
+    let wl = wantlist(&rig).unwrap();
+    // The fill reads the cached release, within a frame or two: nothing to wait for, so it
+    // gets ample time to (wrongly) bring the record back.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        rig.pump();
+        assert!(
+            clips_of(&rig, wl, 1001).is_empty(),
+            "{:?}",
+            clips_of(&rig, wl, 1001)
+        );
+    }
+    assert!(!memory(&rig).is_wanted(1001));
+}
+
+#[test]
 fn without_a_token_the_record_is_wanted_here_and_the_connect_dialog_explains() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-want-anon", &fakes, |_| {});
@@ -1871,6 +1897,11 @@ fn collection_rig(name: &str, fakes: &Fakes) -> (Rig, CrateId) {
                           "basic_information": {"id": 1001, "master_id": 0, "year": 1994,
                                                 "labels": [{"catno": "LT-012"}]}}]}"#,
     );
+    // Its previews never finish: a track turning ready (and "Analyze BPM" coming into its
+    // menu) would move the menu's items under a click.
+    for clip in CLIPS {
+        fakes.fetcher.hang(clip);
+    }
     let mut rig = rig(name, fakes, with_token);
     let coll = rig.app.crates.create("Collection: digger").unwrap();
     rig.app.crates.set_collection(coll);
@@ -2161,6 +2192,11 @@ fn a_window_shows_the_progress_and_stops_it_at_any_moment() {
     let ctx = rig.ctx.clone();
     rig.app
         .apply(Action::Dig(DigAction::DownloadLabel(c)), &ctx);
+    // Said once, so it can't come in after what Stop says.
+    rig.until(
+        |r| message(r).contains("brew install yt-dlp"),
+        "yt-dlp is missing",
+    );
     rig.frame(Vec::new());
     let out = rig.frame(Vec::new());
     let items = text_list(&out);
@@ -2995,12 +3031,15 @@ fn stop_while_adding_keeps_what_arrived_and_drops_what_is_only_listed() {
         |r| clips_of(r, coll, 1001).len() == 3,
         "the first record arrives",
     );
+    // Its send ended too, or it would pass for the fill below.
+    rig.until(
+        |r| r.app.dig.as_ref().unwrap().jobs.is_empty(),
+        "the first send ends",
+    );
     // The fill of a second record is under way: listed, its details slow to come.
-    for _ in 0..20 {
-        fakes
-            .transport
-            .fault(Fault::Delay(Duration::from_millis(300)));
-    }
+    fakes
+        .transport
+        .slow("/releases/1002", Duration::from_secs(1));
     rig.app.dig.as_mut().unwrap().refilling = Some((coll, false));
     rig.app.dig_send(
         url::parse("https://www.discogs.com/release/1002").unwrap(),

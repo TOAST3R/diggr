@@ -170,6 +170,8 @@ pub struct FakeTransport {
     routes: Mutex<HashMap<String, (u16, String)>>,
     fixtures: Option<PathBuf>,
     faults: Mutex<VecDeque<Fault>>,
+    /// Calls to paths starting with one of these answer after its delay.
+    slow: Mutex<Vec<(String, Duration)>>,
     offline: std::sync::atomic::AtomicBool,
     remaining: Mutex<Option<u32>>,
     log: Mutex<Vec<Logged>>,
@@ -215,6 +217,12 @@ impl FakeTransport {
         self.faults.lock().unwrap().push_back(f);
     }
 
+    /// Every call to a path starting with `prefix` answers after `delay` (unlike a
+    /// [`Fault::Delay`], which the next call takes, whatever it asks for).
+    pub fn slow(&self, prefix: impl Into<String>, delay: Duration) {
+        self.slow.lock().unwrap().push((prefix.into(), delay));
+    }
+
     /// Every call fails with a network error until this is set back.
     pub fn set_offline(&self, offline: bool) {
         self.offline
@@ -249,6 +257,15 @@ impl FakeTransport {
 impl Transport for FakeTransport {
     fn call(&self, req: &Request) -> Result<Response, NetError> {
         self.log.lock().unwrap().push((req.clone(), req.headers()));
+        let slow = self
+            .slow
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(prefix, d)| req.path.starts_with(prefix.as_str()).then_some(*d));
+        if let Some(d) = slow {
+            std::thread::sleep(d);
+        }
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(NetError("offline".into()));
         }

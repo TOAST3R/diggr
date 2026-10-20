@@ -2321,9 +2321,20 @@ impl DiggrApp {
                     let _ = self.crates.rename(j.target, &name);
                 }
             }
-            Event::Listed(j, items) => {
+            Event::Listed(j, mut items) => {
                 if !self.crates.load(j.target) {
                     return;
+                }
+                // A record's fill into the wantlist crate that comes in after the record left
+                // it (unwanted, bought) doesn't bring it back.
+                if let Some(d) = &self.dig
+                    && d.settings.wantlist == Some(j.target)
+                    && url::parse(&j.page)
+                        .is_ok_and(|p| matches!(p.kind, url::PageKind::Release(_)))
+                {
+                    items.retain(
+                        |l| !matches!(l.key, RecordKey::Release(r) if !d.memory.is_wanted(r)),
+                    );
                 }
                 // The user's own collection gets its place in the sidebar.
                 let own = self.dig.as_ref().and_then(|d| d.identity.as_ref()).is_some_and(|id| {

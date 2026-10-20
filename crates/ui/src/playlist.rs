@@ -3365,8 +3365,9 @@ mod tests {
                 .min()
                 .unwrap()
         };
-        // The target is for release builds; debug ones are several times slower.
-        let budget = if cfg!(debug_assertions) { 150 } else { 16 };
+        // The target is for release builds. Debug ones are ~15x slower and share the machine with
+        // the whole workspace's tests, so theirs only catches a search gone quadratic.
+        let budget = if cfg!(debug_assertions) { 500 } else { 16 };
         let took = best(&mut || {
             p.set_search("");
             p.set_search("sprinkles label 7");
