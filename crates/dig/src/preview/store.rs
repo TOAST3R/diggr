@@ -1,13 +1,17 @@
-//! The preview folder, `<cache>/previews/`, kept within its size limit (2 GB by default).
+//! The preview folder, `<cache>/previews/`, kept within its size limit (10 GB by default).
 //!
 //! A preview's modification time is set to now when it starts playing, so the oldest files are
 //! the least recently played; those go first when a download takes the folder over its limit.
 //! The playing, armed and next previews are never deleted. The folder holds a few hundred
-//! files at most, so it is simply scanned each time.
+//! files at most, so it is simply scanned each time. A deleted preview's overview
+//! (`<cache>/overviews/`) goes with it, so that folder stays bounded too.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use platform::TrackRef;
+use platform::native::NativeFileSource;
 
 pub const DIR: &str = "previews";
 
@@ -69,7 +73,15 @@ pub fn enforce_limit(dir: &Path, limit: u64, protected: &HashSet<String>) -> Vec
         if protected.contains(&clip) {
             continue;
         }
+        // Hashed before deleting: the overview is named by the preview's content.
+        let hash = analysis::cache::content_hash(
+            &NativeFileSource,
+            &TrackRef::new(path.to_string_lossy()),
+        );
         if std::fs::remove_file(&path).is_ok() {
+            if let (Some(h), Some(root)) = (hash, dir.parent()) {
+                analysis::overview::remove_cached(root, h);
+            }
             total -= len;
             deleted.push(path);
         }
@@ -121,6 +133,37 @@ mod tests {
             enforce_limit(&d, 300_000, &protected).is_empty(),
             "fits now"
         );
+    }
+
+    #[test]
+    fn a_deleted_previews_overview_goes_with_it() {
+        let root = crate::test_dir("store-overviews");
+        let d = dir(&root);
+        std::fs::create_dir_all(&d).unwrap();
+        let overview = |clip: &str, byte: u8| {
+            let p = d.join(format!("{clip}.m4a"));
+            std::fs::write(&p, vec![byte; 100_000]).unwrap();
+            let h = analysis::cache::content_hash(
+                &NativeFileSource,
+                &TrackRef::new(p.to_string_lossy()),
+            )
+            .unwrap();
+            let o = root.join("overviews").join(format!("{h:016x}.bin"));
+            std::fs::create_dir_all(o.parent().unwrap()).unwrap();
+            std::fs::write(&o, b"x").unwrap();
+            o
+        };
+        let old = overview("aaaaaaaaaaa", 1);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(d.join("aaaaaaaaaaa.m4a"))
+            .unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(100))
+            .unwrap();
+        let kept = overview("bbbbbbbbbbb", 2);
+        assert_eq!(enforce_limit(&d, 150_000, &HashSet::new()).len(), 1);
+        assert!(!old.exists(), "the evicted preview's overview is deleted");
+        assert!(kept.exists(), "the kept preview's overview stays");
     }
 
     #[test]
