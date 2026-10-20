@@ -440,6 +440,11 @@ pub fn load_cached(dir: &Path, hash: u64) -> Option<Overview> {
     Overview::read_from(&mut f).ok()
 }
 
+/// Deletes the cached overview for this content, if there is one.
+pub fn remove_cached(dir: &Path, hash: u64) {
+    let _ = std::fs::remove_file(cache_path(dir, hash));
+}
+
 pub fn save_cached(dir: &Path, hash: u64, o: &Overview) -> std::io::Result<()> {
     let path = cache_path(dir, hash);
     std::fs::create_dir_all(path.parent().expect("has parent"))?;

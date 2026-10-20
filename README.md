@@ -481,8 +481,9 @@ ahead of what plays. Other pasted text is ignored.
     entries say "needs yt-dlp" (elsewhere than macOS, install it yourself; it's found within
     30 s).
   - The dialog also sets the default filter for every send (skip what you've passed) and the
-    preview cache size (2 GB by default; the least recently played go first, except for
-    Download all tracks, which never deletes anything: see [Labels](#labels)). A track whose
+    preview cache size (10 GB by default; the least recently played go first, except for
+    Download all tracks, which never deletes anything: see [Labels](#labels)). A deleted
+    preview's waveform overview is deleted with it. A track whose
     preview was deleted, or left in an older version's cache folder, downloads again when
     it's played instead of turning red.
 - Previews are for listening while you dig. They stay in the cache and are never exported.
@@ -1191,7 +1192,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 924 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 925 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

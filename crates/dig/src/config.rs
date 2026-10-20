@@ -13,7 +13,7 @@ pub const DIR: &str = "dig";
 pub const SETTINGS_FILE: &str = "settings.ron";
 pub const TOKEN_FILE: &str = "token";
 /// Preview cache limit when nothing else is set.
-pub const DEFAULT_CACHE_GB: f32 = 2.0;
+pub const DEFAULT_CACHE_GB: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
