@@ -369,7 +369,27 @@ fn a_seller_menu_offers_refresh_narrow_and_remove() {
 fn a_click_shows_a_seller_crate_without_asking_discogs() {
     let fakes = Fakes::new();
     let (mut rig, _, logon) = two_sellers("sellers-click", &fakes);
-    // What launch reads in the background (cart, lists, details) settles first.
+    // What launch reads in the background (cart, lists, details) settles first. The wantlist's
+    // records are read after the wantlist comes in, which can be a while under load.
+    rig.until(
+        |r| {
+            let wl = r.app.dig.as_ref().unwrap().settings.wantlist;
+            wl.and_then(|wl| r.app.crates.get(wl)).is_some_and(|p| {
+                [1002, 1004, 1006].iter().all(|&release| {
+                    p.entries().iter().any(|e| {
+                        e.origin
+                            .as_ref()
+                            .is_some_and(|o| o.release == Some(release))
+                            && e.status
+                                != crate::playlist::EntryStatus::Waiting(
+                                    crate::playlist::WaitKind::Listed,
+                                )
+                    })
+                })
+            })
+        },
+        "the wantlist's records are read",
+    );
     let mut quiet = 0;
     while quiet < 30 {
         let n = fakes.transport.count();
@@ -390,7 +410,8 @@ fn a_click_shows_a_seller_crate_without_asking_discogs() {
     assert_eq!(
         fakes.transport.count(),
         before,
-        "a click never reaches Discogs"
+        "a click never reaches Discogs: {:?}",
+        &fakes.transport.paths()[before..]
     );
 }
 
