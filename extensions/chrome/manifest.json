@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Diggr bridge",
   "short_name": "Diggr",
-  "version": "0.2.0",
-  "description": "Send Discogs, Bandcamp, Juno, Beatport, Traxsource and Bleep pages, and YouTube and SoundCloud mixes, to Diggr on this computer.",
+  "version": "0.2.1",
+  "description": "Send the record or DJ mix on the page you're viewing to Diggr, the record-digging player running on your computer.",
   "permissions": [
     "storage",
     "contextMenus"
