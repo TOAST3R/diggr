@@ -130,6 +130,12 @@
         document.querySelector("#name-section h2")
       );
     }
+    // YouTube: its first h1 is the hidden miniplayer's, so the button would never show.
+    if (WR.pageKind(location.href) === "YouTubeMix") return document.querySelector("ytd-watch-metadata h1");
+    // SoundCloud: beside the big play button, where the eye already is (its h1 when that moves).
+    if (WR.pageKind(location.href) === "SoundCloudMix") {
+      return document.querySelector(".soundTitle__playButtonHero") || document.querySelector("h1");
+    }
     return document.querySelector("h1");
   }
 
@@ -139,7 +145,10 @@
     const wrap = root.querySelector(".wrap");
     if (h1) {
       if (host.previousElementSibling !== h1 || !host.isConnected) h1.after(host);
-      host.classList.toggle("beside", h1.tagName !== "H1" && WR.isJuno(WR.pageKind(location.href)));
+      const kind = WR.pageKind(location.href);
+      host.classList.toggle("beside", h1.tagName !== "H1" && (WR.isJuno(kind) || kind === "SoundCloudMix"));
+      // Level with the middle of SoundCloud's 64 px play button; its row is as tall as the title.
+      host.style.marginTop = h1.tagName !== "H1" && kind === "SoundCloudMix" ? "19px" : "";
       wrap?.classList.remove("floating");
     } else {
       if (host.parentElement !== document.body) document.body.append(host);

@@ -552,7 +552,7 @@ grouped by record. Click the heading to fold or unfold it.
 ### Mixes
 
 Paste the address of a DJ mix on **YouTube** or **SoundCloud** (Cmd+V), or use the extension's
-**▶ Diggr** button next to the mix's title on its page, and its tracklist becomes a crate,
+**▶ Diggr** button on its page (beside SoundCloud's big play button, under YouTube's title), and its tracklist becomes a crate,
 **Mix: ‹title›**, in mix order. From the button, Play in Diggr also starts its first track, and
 Send to crate fills the crate you pick. Diggr reads the mix's chapters, or else the tracklist
 in its description, with one yt-dlp read that downloads nothing; lines like `12:34 Artist –
@@ -994,8 +994,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       basket within a second.
 - [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
       its picture); clicking it adds the record to the crate on screen and plays it.
-- [ ] On a SoundCloud mix (`soundcloud.com/‹user›/‹mix›`) and a YouTube video, the button sits by
-      the title; Play in Diggr reads the mix into "Mix: ‹title›" and plays its first track. A
+- [ ] On a SoundCloud mix (`soundcloud.com/‹user›/‹mix›`) and a YouTube video, the button sits
+      beside SoundCloud's big play button, level with it, and under YouTube's title; Play in Diggr reads the mix into "Mix: ‹title›" and plays its first track. A
       SoundCloud playlist (`/sets/…`) or profile shows no button.
 - [ ] A ▶ after each result plays just that one, without leaving the page, on: a Discogs search
       and a label page (one ▶ per release, after its visible title); bandcamp.com/search and an
