@@ -531,6 +531,18 @@ impl DiggrApp {
                 None => {}
             }
         }
+        let sync = self.settings.sync;
+        let range = if sync.wide { 16 } else { 8 };
+        self.notify(match (sync.on, sync.pending) {
+            (false, _) => "SYNC off: every track plays at its own tempo".to_owned(),
+            (true, Some(_)) => {
+                "SYNC on: every track will play at this one's BPM once it's analyzed".to_owned()
+            }
+            (true, None) => format!(
+                "SYNC on: every track in the list plays at {} BPM (within ±{range}%)",
+                sync.target
+            ),
+        });
         self.mark_settings();
     }
 
@@ -1301,6 +1313,11 @@ impl DiggrApp {
                 .collect();
             (keys, i.modifiers)
         });
+        // Space is play/pause: taken before a focused button could read it as a click.
+        ctx.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Space);
+            i.consume_key(Modifiers::SHIFT, Key::Space);
+        });
         for key in pressed {
             // Cmd+F (Ctrl+F) finds in the shown crate.
             if key == Key::F && mods.command {
@@ -1335,6 +1352,17 @@ impl DiggrApp {
         }
         let secs = self.position.seconds();
         match key {
+            Key::Space if mods.shift => self.with_engine(|e| e.stop()),
+            Key::Space if self.position.state == PlayState::Playing => {
+                self.with_engine(|e| e.toggle_pause())
+            }
+            Key::Space => self.play(),
+            // In a grouped playlist with the keyboard, the arrows open and close records.
+            Key::ArrowLeft | Key::ArrowRight
+                if self.arrows_move_cursor() && self.crates.shown().is_grouped() =>
+            {
+                return false;
+            }
             Key::Z => self.with_engine(|e| e.previous()),
             Key::X => self.play(),
             Key::C => self.with_engine(|e| e.toggle_pause()),
@@ -1389,10 +1417,18 @@ impl DiggrApp {
                     self.play_entry(self.crates.shown_id(), id);
                 }
             }
-            // Space opens or closes the record under the cursor (grouped): its record row, or
-            // one of its tracks while it's open.
-            Key::Space if self.arrows_move_cursor() => match self.pl_cursor_row() {
-                Some(ListRow::Record(rec)) if !rec.single => {
+            // → opens the record under the cursor (grouped); ← closes it, from its record row
+            // or one of its tracks, which leaves the cursor on the record row.
+            Key::ArrowRight => {
+                if let Some(ListRow::Record(rec)) = self.pl_cursor_row()
+                    && !rec.single
+                    && !rec.open
+                {
+                    self.apply(Action::ToggleRecord(rec.key), ctx);
+                }
+            }
+            Key::ArrowLeft => match self.pl_cursor_row() {
+                Some(ListRow::Record(rec)) if !rec.single && rec.open => {
                     self.apply(Action::ToggleRecord(rec.key), ctx);
                 }
                 Some(ListRow::Entry { idx, track: true }) => {
@@ -1882,7 +1918,12 @@ impl DiggrApp {
                 sk.sprite("seek_track", r.x as f32, r.y as f32);
             }
 
-            // Transport.
+            // Transport: the button of the play state is lit.
+            let lit = match self.position.state {
+                PlayState::Playing => "play",
+                PlayState::Paused => "pause",
+                PlayState::Stopped => "stop",
+            };
             for (name, action) in [
                 ("prev", Action::Prev),
                 ("play", Action::Play),
@@ -1890,7 +1931,12 @@ impl DiggrApp {
                 ("stop", Action::Stop),
                 ("next", Action::Next),
             ] {
-                if widgets::button(ui, &sk, name, name, name).clicked() {
+                let sprite = if name == lit {
+                    format!("{name}_on")
+                } else {
+                    name.to_owned()
+                };
+                if widgets::button(ui, &sk, name, name, &sprite).clicked() {
                     actions.push(action);
                 }
             }
@@ -2353,7 +2399,9 @@ impl DiggrApp {
     /// window leaves under the band (the chosen ones are kept for restoring).
     fn pl_geometry(&self) -> (u16, usize) {
         if self.settings.playlist_maximized {
-            let (w, rows) = crate::layout::maximized(&self.skin.def, self.win_px.x, self.win_px.y);
+            let d = &self.skin.def;
+            let band = crate::layout::band_h(&self.settings, d);
+            let (w, rows) = crate::layout::maximized(d, band, self.win_px.x, self.win_px.y);
             (w, rows as usize)
         } else {
             (
@@ -6940,7 +6988,8 @@ impl DiggrApp {
         }) {
             // Maximized, the player is the band on top; otherwise the column on the left.
             let on_playlist = if maximized {
-                p.y >= origin.y + crate::layout::BAND_H as f32 * scale
+                p.y >= origin.y
+                    + crate::layout::band_h(&self.settings, &self.skin.def) as f32 * scale
             } else {
                 p.x >= origin.x + d.main_size.0 as f32 * scale
             };
@@ -7052,14 +7101,21 @@ impl DiggrApp {
         }
     }
 
-    /// The maximized playlist: a band on top with the mini player on the left and the
-    /// waveform (when on) beside it, and the playlist under it, filling the window.
+    /// The maximized playlist: a band on top with the mini player on the left, SYNC's
+    /// turntable beside it while on, then the waveform (when on), and the playlist under it,
+    /// filling the window.
     fn maximized_layout(&mut self, ui: &mut Ui, origin: Pos2) {
         let scale = self.settings.scale as f32;
-        let (mini_w, band_h) = (self.def.main_size.0 as f32, crate::layout::BAND_H as f32);
+        let mini_w = self.def.main_size.0 as f32;
+        let band_h = crate::layout::band_h(&self.settings, &self.skin.def) as f32;
+        let mut left = mini_w;
+        if self.settings.sync.on {
+            self.deck_section(ui, origin + vec2(mini_w * scale, 0.0));
+            left += mini_w;
+        }
         let rest = Rect::from_min_size(
-            origin + vec2(mini_w * scale, 0.0),
-            vec2(self.win_px.x - mini_w, band_h) * scale,
+            origin + vec2(left * scale, 0.0),
+            vec2(self.win_px.x - left, band_h) * scale,
         );
         if self.settings.show_waveform {
             self.waveform_section(ui, rest);
@@ -7080,12 +7136,15 @@ impl DiggrApp {
     /// controls opens the Options menu.
     fn mini_player(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut def = (*self.def).clone();
-        let (w, h) = (def.main_size.0 as f32, crate::layout::BAND_H as f32);
+        let (w, h) = (
+            def.main_size.0 as f32,
+            crate::layout::band_h(&self.settings, &def) as f32,
+        );
         // The volume slider's place here: `hslider` reads its rectangle from the layout.
         def.layout.insert(
             "mini_volume".into(),
             crate::skin::R {
-                x: 104,
+                x: 123,
                 y: 36,
                 ..def.at("volume")
             },
@@ -7132,22 +7191,29 @@ impl DiggrApp {
         let ty = 4.0 + ((22.0 - def.font.glyph_h as f32) / 2.0).round();
         let shown = format::scroll(&title, fits, self.title_offset);
         sk.text(tx, ty, &shown, color(colors.lcd));
-        let (play_sprite, play_action) = if state == PlayState::Playing {
-            ("pause", Action::Pause)
-        } else {
-            ("play", Action::Play)
+        // The main transport's buttons, the one of the play state lit.
+        let lit = match state {
+            PlayState::Playing => "play",
+            PlayState::Paused => "pause",
+            PlayState::Stopped => "stop",
         };
-        for (i, (id, sprite, action)) in [
-            ("mini_prev", "prev", Action::Prev),
-            ("mini_play", play_sprite, play_action),
-            ("mini_stop", "stop", Action::Stop),
-            ("mini_next", "next", Action::Next),
+        for (i, (name, action)) in [
+            ("prev", Action::Prev),
+            ("play", Action::Play),
+            ("pause", Action::Pause),
+            ("stop", Action::Stop),
+            ("next", Action::Next),
         ]
         .into_iter()
         .enumerate()
         {
             let r = sk.rect(4.0 + 23.0 * i as f32, 34.0, 23.0, 18.0);
-            if sprite_button(ui, &sk, id, r, sprite).clicked() {
+            let sprite = if name == lit {
+                format!("{name}_on")
+            } else {
+                name.to_owned()
+            };
+            if sprite_button(ui, &sk, &format!("mini_{name}"), r, &sprite).clicked() {
                 actions.push(action);
             }
         }
@@ -7165,6 +7231,18 @@ impl DiggrApp {
             self.settings.volume,
         ) {
             actions.push(Action::Volume(v));
+        }
+        let sync = if self.settings.sync.on {
+            "sync_on"
+        } else {
+            "sync_off"
+        };
+        let r = sk.rect(w - 49.0, 37.0, 30.0, 12.0);
+        if sprite_button(ui, &sk, "mini_sync", r, sync)
+            .on_hover_text("SYNC: every track at one tempo, set on the turntable")
+            .clicked()
+        {
+            actions.push(Action::Sync);
         }
         let r = sk.rect(w - 13.0, 38.0, 9.0, 9.0);
         if sprite_button(ui, &sk, "mini_max", r, "btn_max").clicked() {
@@ -8702,8 +8780,41 @@ mod headless_tests {
         // W off still keeps the band: the rows don't move.
         rig.key(Key::W, Modifiers::NONE);
         assert_eq!(rig.app.pl_geometry().1, rows);
-        // Next is the fourth button of the second line.
-        rig.click(pos2(4.0 + 23.0 * 3.0 + 11.0, 34.0 + 9.0));
+        // Pause is the third button of the second line, play the second.
+        let button = |i: f32| pos2(4.0 + 23.0 * i + 11.0, 34.0 + 9.0);
+        rig.click(button(2.0));
+        rig.until(
+            |r| r.app.position.state == PlayState::Paused,
+            "pause pauses",
+        );
+        rig.click(button(1.0));
+        rig.until(
+            |r| r.app.position.state == PlayState::Playing,
+            "play resumes",
+        );
+        // SYNC, left of ⇔, turns SYNC on, says what it does, and puts the turntable in the
+        // band beside the mini player, which grows to hold it.
+        rig.click(pos2(275.0 - 49.0 + 15.0, 37.0 + 6.0));
+        assert!(rig.app.settings.sync.on);
+        let said = rig.app.message.as_ref().map(|(t, _)| t.clone());
+        assert!(
+            said.as_deref()
+                .is_some_and(|t| t.starts_with("SYNC on: every track")),
+            "{said:?}"
+        );
+        assert!(rig.app.pl_geometry().1 < rows, "the band is taller");
+        // Its × (at the turntable's top right) turns SYNC off again.
+        rig.click(pos2(275.0 + 262.0 + 4.0, 3.0 + 4.0));
+        assert!(!rig.app.settings.sync.on);
+        assert_eq!(rig.app.pl_geometry().1, rows);
+        assert!(
+            rig.app
+                .message
+                .as_ref()
+                .is_some_and(|(t, _)| t.starts_with("SYNC off"))
+        );
+        // Next is the fifth.
+        rig.click(button(4.0));
         rig.until(
             |r| r.app.crates.playing().current() == Some(ids[1]),
             "the mini player's next starts the next track",
@@ -8730,6 +8841,31 @@ mod headless_tests {
             "the visuals folder is gone",
         );
         assert!(dir.exists(), "the config folder stays");
+    }
+
+    #[test]
+    fn space_plays_and_pauses_and_shift_space_stops() {
+        let mut rig = Rig::new("space", Vec::new(), |_| {});
+        rig.fill_playlist(2);
+        let state = |r: &Rig| r.app.position.state;
+        rig.key(Key::Space, Modifiers::NONE);
+        rig.until(
+            |r| state(r) == PlayState::Playing,
+            "Space plays from stopped",
+        );
+        rig.key(Key::Space, Modifiers::NONE);
+        rig.until(|r| state(r) == PlayState::Paused, "Space pauses");
+        rig.key(Key::Space, Modifiers::NONE);
+        rig.until(|r| state(r) == PlayState::Playing, "Space resumes");
+        // The same with the playlist focused.
+        rig.app.focus = Focus::Playlist;
+        rig.key(Key::Space, Modifiers::NONE);
+        rig.until(
+            |r| state(r) == PlayState::Paused,
+            "Space pauses, playlist focused",
+        );
+        rig.key(Key::Space, Modifiers::SHIFT);
+        rig.until(|r| state(r) == PlayState::Stopped, "Shift+Space stops");
     }
 
     #[test]

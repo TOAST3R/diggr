@@ -236,8 +236,8 @@ and Home/End jump), and Enter plays the entry under it.
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
   - **⇔** in the playlist's title bar (or `Shift+P`) maximizes the playlist: the window fills
     the screen below the menu bar, a band runs across the top with a mini player on the left
-    (play state, elapsed time and title on an LCD line; previous, play/pause, stop, next,
-    volume and ⇔ to restore under it) and the waveform beside it when it's on, the EQ hides,
+    (play state, elapsed time and title on an LCD line; previous, play, pause, stop, next,
+    volume, SYNC and ⇔ to restore under it), SYNC's turntable next to it while SYNC is on, and the waveform beside them when it's on, the EQ hides,
     and the playlist takes the full width under the band. Press
     ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
     app opens maximized next time;
@@ -245,7 +245,7 @@ and Home/End jump), and Enter plays the entry under it.
     per record: its cover, "Artist – Album" (the record's credit, so a compilation reads
     "Various – …") with its Discogs styles at the right, the catalog
     number, year, number of tracks and what's for sale (or, while one of its tracks plays, that
-    track). The column header is hidden while grouped (the list menu's Sort ▸ still sorts). **⏵** (or `Space` on it)
+    track). The column header is hidden while grouped (the list menu's Sort ▸ still sorts). **⏵** (or `→` on it, playlist focused; `←` closes)
     opens a record to show its tracks. A click selects the whole record, a double-click (or
     `Enter`) plays it from its first playable track, its menu acts on all of it, and dragging
     it moves it whole (a track moves only within its record). The arrows step over records.
@@ -333,11 +333,11 @@ and Home/End jump), and Enter plays the entry under it.
 
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
-| `Z` | previous | | `←` / `→` | seek −5 s / +5 s |
-| `X` | play | | `↑` / `↓` | volume (playlist focused: move in the list) |
-| `C` | pause / resume | | | |
-| `V` | stop | | `Delete` / `Backspace` | remove selected entries |
-| `B` | next | | `Enter` | play the entry under the cursor (or the first selected) |
+| `Space` | play / pause | | `←` / `→` | seek −5 s / +5 s (grouped playlist focused: close / open the record) |
+| `Shift+Space` | stop | | `↑` / `↓` | volume (playlist focused: move in the list) |
+| `Z` `X` `C` `V` `B` | previous, play, pause, stop, next (the classic keys) | | | |
+| | | | `Delete` / `Backspace` | remove selected entries |
+| | | | `Enter` | play the entry under the cursor (or the first selected) |
 | `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
 | `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
@@ -346,7 +346,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | `Shift+P` | maximize the playlist (again: restore) | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
-| `Space` | open or close the record under the cursor (grouped) | | `Cmd+F` | search the crate on screen |
+| | | | `Cmd+F` | search the crate on screen |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -1192,7 +1192,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 926 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 927 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

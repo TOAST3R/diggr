@@ -99,3 +99,6 @@ scenarios with numeric targets where they apply. Tasks should be verifiable in o
 
 After a change that adds a key, flag, env var, file location or test area, update
 `README.md` (and the test count in its Tests section) in the same commit.
+
+After any change a user would notice, add its entries to `## Unreleased` in `CHANGELOG.md` in
+the same commit, written as landing-page copy (see the `changelog` skill in `.claude/skills/`).

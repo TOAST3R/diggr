@@ -851,39 +851,47 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
 
     // ---- transport ------------------------------------------------------------------------
-    type Icon = fn(&mut Canvas, i32, i32);
-    let icons: [(&str, u16, u16, Icon); 5] = [
-        ("prev", 23, 18, |c, x, y| {
-            c.fill(x + 5, y + 4, 2, 10, ICON);
-            c.tri(x, y, [(12.0, 4.0), (12.0, 14.0), (7.0, 9.0)], ICON);
-            c.tri(x, y, [(17.0, 4.0), (17.0, 14.0), (12.0, 9.0)], ICON);
+    // Play, pause and stop also come lit (`_on`): the one matching the play state.
+    type Icon = fn(&mut Canvas, i32, i32, C);
+    let icons: [(&str, u16, u16, bool, Icon); 5] = [
+        ("prev", 23, 18, false, |c, x, y, ink| {
+            c.fill(x + 5, y + 4, 2, 10, ink);
+            c.tri(x, y, [(12.0, 4.0), (12.0, 14.0), (7.0, 9.0)], ink);
+            c.tri(x, y, [(17.0, 4.0), (17.0, 14.0), (12.0, 9.0)], ink);
         }),
-        ("play", 23, 18, |c, x, y| {
-            c.tri(x, y, [(8.0, 4.0), (8.0, 14.0), (16.0, 9.0)], ICON)
+        ("play", 23, 18, true, |c, x, y, ink| {
+            c.tri(x, y, [(8.0, 4.0), (8.0, 14.0), (16.0, 9.0)], ink)
         }),
-        ("pause", 23, 18, |c, x, y| {
-            c.fill(x + 8, y + 4, 3, 10, ICON);
-            c.fill(x + 13, y + 4, 3, 10, ICON);
+        ("pause", 23, 18, true, |c, x, y, ink| {
+            c.fill(x + 8, y + 4, 3, 10, ink);
+            c.fill(x + 13, y + 4, 3, 10, ink);
         }),
-        ("stop", 23, 18, |c, x, y| c.fill(x + 7, y + 5, 9, 8, ICON)),
-        ("next", 23, 18, |c, x, y| {
-            c.tri(x, y, [(6.0, 4.0), (6.0, 14.0), (11.0, 9.0)], ICON);
-            c.tri(x, y, [(11.0, 4.0), (11.0, 14.0), (16.0, 9.0)], ICON);
-            c.fill(x + 16, y + 4, 2, 10, ICON);
+        ("stop", 23, 18, true, |c, x, y, ink| {
+            c.fill(x + 7, y + 5, 9, 8, ink)
+        }),
+        ("next", 23, 18, false, |c, x, y, ink| {
+            c.tri(x, y, [(6.0, 4.0), (6.0, 14.0), (11.0, 9.0)], ink);
+            c.tri(x, y, [(11.0, 4.0), (11.0, 14.0), (16.0, 9.0)], ink);
+            c.fill(x + 16, y + 4, 2, 10, ink);
         }),
     ];
-    for (name, w, h, icon) in icons {
-        for pressed in [false, true] {
-            let n = if pressed {
-                format!("{name}_p")
-            } else {
-                name.to_owned()
-            };
-            b.sprite(&n, w, h, |c, x, y| {
-                button_face(c, x, y, w as i32, h as i32, pressed);
-                let o = pressed as i32;
-                icon(c, x + o, y + o);
-            });
+    for (name, w, h, lights, icon) in icons {
+        for lit in [false, true] {
+            if lit && !lights {
+                continue;
+            }
+            for pressed in [false, true] {
+                let n = format!(
+                    "{name}{}{}",
+                    if lit { "_on" } else { "" },
+                    if pressed { "_p" } else { "" }
+                );
+                b.sprite(&n, w, h, |c, x, y| {
+                    button_face(c, x, y, w as i32, h as i32, pressed);
+                    let o = pressed as i32;
+                    icon(c, x + o, y + o, if lit { rgb(170, 100, 0) } else { ICON });
+                });
+            }
         }
     }
 

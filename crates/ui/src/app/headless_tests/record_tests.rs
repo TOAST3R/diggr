@@ -130,7 +130,7 @@ fn grouping_gathers_each_record_and_playback_follows() {
 }
 
 #[test]
-fn a_record_opens_with_its_mark_or_space_and_arrows_still_seek() {
+fn a_record_opens_with_its_mark_or_the_arrows_and_space_leaves_it() {
     let (mut rig, _) = records_rig("group-open", &[1, 1, 2]);
     group(&mut rig);
     rig.click(open_mark_at(0));
@@ -144,14 +144,28 @@ fn a_record_opens_with_its_mark_or_space_and_arrows_still_seek() {
     assert_eq!(rig.app.pl_list().len(), 4, "record, two tracks, record");
     rig.click(open_mark_at(0));
     assert_eq!(rig.app.pl_list().len(), 2);
-    // Space on the cursor's record row, with the playlist focused.
+    // → and ← on the cursor's record row, with the playlist focused.
     rig.app.focus = Focus::Playlist;
     rig.click(record_at(0));
-    rig.key(Key::Space, Modifiers::NONE);
+    rig.key(Key::ArrowRight, Modifiers::NONE);
     assert_eq!(rig.app.pl_list().len(), 4);
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(rig.app.pl_list().len(), 2);
+    // ← on one of its tracks closes it, the cursor back on the record row.
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    rig.key(Key::ArrowDown, Modifiers::NONE);
+    assert!(matches!(
+        rig.app.pl_cursor_row(),
+        Some(ListRow::Entry { track: true, .. })
+    ));
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(rig.app.pl_list().len(), 2);
+    assert!(matches!(rig.app.pl_cursor_row(), Some(ListRow::Record(_))));
+    // Space plays and pauses; it opens nothing.
     rig.key(Key::Space, Modifiers::NONE);
     assert_eq!(rig.app.pl_list().len(), 2);
-    // → seeks (nothing plays here) and opens nothing.
+    // With the player focused, → seeks (nothing plays here) and opens nothing.
+    rig.app.focus = Focus::Player;
     rig.key(Key::ArrowRight, Modifiers::NONE);
     assert_eq!(rig.app.pl_list().len(), 2);
 }

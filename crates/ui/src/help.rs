@@ -8,11 +8,16 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Playback",
         &[
-            ("X", "play"),
-            ("C", "pause / resume"),
-            ("V", "stop"),
-            ("Z / B", "previous / next track"),
-            ("Left / Right", "seek −5 s / +5 s"),
+            ("Space", "play / pause"),
+            ("Shift+Space", "stop"),
+            (
+                "Z X C V B",
+                "previous, play, pause, stop, next (the classic keys)",
+            ),
+            (
+                "Left / Right",
+                "seek −5 s / +5 s (with a grouped playlist focused: close / open the record)",
+            ),
             (
                 "Up / Down",
                 "volume (with the playlist focused: move in the list)",
@@ -90,8 +95,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "maximize the playlist under a mini player (again: restore)",
             ),
             (
-                "Space",
-                "open or close the record under the cursor (grouped)",
+                "Right / Left (playlist focused, grouped)",
+                "open / close the record under the cursor",
             ),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
@@ -308,7 +313,9 @@ mod tests {
             .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
             .collect();
         for k in [
-            "X",
+            "Space",
+            "Shift+Space",
+            "Z X C V B",
             "]",
             "[",
             "Shift+]",
@@ -324,14 +331,15 @@ mod tests {
             "Tab",
             "P",
             "Shift+P",
-            "Space",
+            "Right / Left (playlist focused, grouped)",
             "Shift+Up / Shift+Down",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }
-        for k in ["F", "F or Esc", "T", "A", "D", "K"] {
+        for k in ["F", "F or Esc", "T", "A", "D", "K", "X"] {
             assert!(!keys.contains(&k), "help still lists {k}");
         }
+        assert_eq!(GROUPS[0].1[0], ("Space", "play / pause"), "Space leads");
     }
 
     #[test]
