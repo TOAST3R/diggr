@@ -152,5 +152,20 @@ var WRBeatport = (() => {
     return { page: address, tracks: list };
   }
 
-  return { read, camelot, seconds };
+  // The page's tracks, read once: its data describes the address it was loaded at only. A
+  // search's results carry no sample, so none of them can be read.
+  let listed = null;
+  const tracksOf = (doc) =>
+    location.href === LOADED ? (listed ??= read(doc, LOADED)?.tracks ?? []) : [];
+
+  /** Track `id` of the page, as the player takes it, or null. */
+  const track = (doc, id) => tracksOf(doc).find((t) => t.id === id) ?? null;
+
+  /** Whether track `id` of the page can be read (only those get a ▶). */
+  const has = (doc, id) => tracksOf(doc).some((t) => t.id === id);
+
+  /** The track id a `/track/‹slug›/‹id›` address names, or undefined. */
+  const trackOf = (href) => href.match(/\/track\/[^/]+\/(\d+)/)?.[1];
+
+  return { read, camelot, seconds, track, trackOf, has };
 })();

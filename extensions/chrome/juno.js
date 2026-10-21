@@ -196,5 +196,18 @@ var WRJuno = (() => {
     };
   }
 
-  return { read, seconds };
+  /** The product id a `/products/…` address names, or undefined. */
+  const productOf = (href) => href.match(PRODUCT_LINK)?.[2];
+
+  /** Record `product` of a listing, as the player takes it, or null. */
+  function record(doc, product) {
+    try {
+      const r = readListing(doc).find((x) => x.product === product);
+      return r && r.artist && r.title && r.tracks.length > 0 ? r : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return { read, seconds, productOf, record };
 })();

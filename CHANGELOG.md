@@ -25,6 +25,10 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Improved
 
+- **Play any record you see in a store.** With the browser extension, every record on Discogs,
+  Bandcamp, Juno, Traxsource, Beatport and Bleep listings and search results gets a small ▶:
+  one click plays just that record in Diggr, without leaving the page.
+
 - **See at a glance what's playing.** The play, pause or stop button lights up to show the
   current state, in the player and in the mini player of the maximized playlist.
 - **A full mini player.** The maximized playlist's mini player now has its own pause button and
