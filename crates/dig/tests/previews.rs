@@ -1130,3 +1130,81 @@ fn a_missing_juno_sample_fails_after_two_tries() {
     assert!(ev.contains(&PreviewEvent::Failed(JN.into(), "clip failed".into())));
     assert_eq!(fake.started(), [JN, JN]);
 }
+
+// ---- mixes ----------------------------------------------------------------------------------
+
+#[test]
+fn a_mix_is_read_off_the_worker_and_nothing_is_downloaded() {
+    use dig::tracklist::{MixError, MixSource};
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let mix = MixSource::YouTube("dQw4w9WgXcQ".into());
+    fake.mix(
+        &mix.url(),
+        r#"{"title": "Deep House Mix", "description": "00:00 A - B\n05:00 C - D\n10:00 ID - ID"}"#,
+    );
+    let (h, d) = start("mix-read", &fake, |_| {});
+    h.send(PreviewCommand::ReadMix(mix.clone()));
+    let ev = until(&h, |ev| {
+        ev.iter().any(|e| matches!(e, PreviewEvent::MixRead { .. }))
+    });
+    let Some(PreviewEvent::MixRead { source, result }) = ev
+        .into_iter()
+        .find(|e| matches!(e, PreviewEvent::MixRead { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(source, mix);
+    let list = result.unwrap();
+    assert_eq!(
+        (list.title.as_str(), list.tracks.len()),
+        ("Deep House Mix", 3)
+    );
+    assert!(list.tracks[2].is_id);
+    assert_eq!(
+        fake.pages_read(),
+        [mix.url()],
+        "one read of the mix's own address"
+    );
+    assert!(fake.started().is_empty(), "nothing downloaded");
+    assert_eq!(
+        std::fs::read_dir(&*d)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "m4a"))
+            .count(),
+        0
+    );
+    // A video that can't be read says why.
+    let gone = MixSource::YouTube("aaaaaaaaaaa".into());
+    h.send(PreviewCommand::ReadMix(gone));
+    let ev = until(&h, |ev| {
+        ev.iter().any(|e| matches!(e, PreviewEvent::MixRead { .. }))
+    });
+    assert!(ev.iter().any(|e| matches!(e,
+        PreviewEvent::MixRead { result: Err(MixError::Failed(why)), .. } if why.contains("unavailable"))));
+}
+
+/// The real yt-dlp reading a YouTube and a SoundCloud mix: run by hand (`cargo test -p dig
+/// --test previews -- --ignored --nocapture`), it needs yt-dlp and the network.
+#[test]
+#[ignore]
+fn real_mixes_are_read_into_tracklists() {
+    use dig::tracklist::{from_ytdlp, parse_url};
+    let (ytdlp, version) = dig::preview::fetcher::find(None).expect("yt-dlp on this machine");
+    println!("yt-dlp {version}");
+    for url in [
+        "https://www.youtube.com/watch?v=1nQzXzBvcWk",
+        "https://soundcloud.com/benedictquinn/discodeeplofielectrohousemix?si=x",
+    ] {
+        let source = parse_url(url).unwrap();
+        let json = ytdlp.read_mix(&source).expect("read");
+        let list = from_ytdlp(source, &json).expect("a tracklist");
+        println!(
+            "{}: {} tracks, first {:?}",
+            list.title,
+            list.tracks.len(),
+            list.tracks[0]
+        );
+        assert!(list.tracks.len() >= 10, "{url}");
+    }
+}

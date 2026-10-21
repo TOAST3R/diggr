@@ -89,6 +89,16 @@ pub enum BridgeCommand {
         mode: Mode,
         filters: Filters,
     },
+    /// A YouTube or SoundCloud mix's address from its page: the app reads its tracklist.
+    SendMix {
+        source: crate::tracklist::MixSource,
+        mode: Mode,
+    },
+    /// A 1001tracklists or Mixcloud tracklist, read by the extension (see `mix-tracklists`).
+    SendTracklist {
+        list: crate::tracklist::Tracklist,
+        mode: Mode,
+    },
     /// A Bandcamp fan's page: import (or refresh) their collection and wishlist.
     ImportFan(bandcamp::fan::FanPage),
     /// A browser was paired.
@@ -479,7 +489,9 @@ fn answer(
                 None => error(422, "invalid result"),
             }
         }
+        // A store send first: its body (up to 1 MiB) is parsed once more only when it isn't.
         _ if is_store(&body) => send_store(&body, shared),
+        _ if is_tracklist(&body) => send_tracklist(&body, shared),
         _ if body.len() > MAX_BODY => error(413, "too large"),
         _ => send(&body, shared),
     }
@@ -565,6 +577,20 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
     }
     if b.title.is_some() {
         return error(422, "invalid body");
+    }
+    // A YouTube or SoundCloud mix: the app reads its tracklist (with yt-dlp) and names its
+    // crate then.
+    if let Ok(source) = crate::tracklist::parse_url(&b.url) {
+        let mode = match mode_of(b.mode, b.crate_name) {
+            Ok(m) => m,
+            Err(why) => return error(422, why),
+        };
+        let answer = json!({
+            "page": "Mix",
+            "crate": match &mode { Mode::Crate(n) => n.clone(), _ => "Mix".to_owned() },
+            "message": "Reading the mix's tracklist",
+        });
+        return (202, answer, Some(BridgeCommand::SendMix { source, mode }));
     }
     let Ok(page) = url::parse(&b.url) else {
         return error(422, "unsupported");
@@ -840,6 +866,61 @@ fn send_store(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand
         },
     };
     (202, answer, Some(cmd))
+}
+
+/// Whether a send's body is a tracklist send: a JSON object with a `tracklist` member.
+fn is_tracklist(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Map<String, Value>>(body)
+        .is_ok_and(|m| m.contains_key("tracklist"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TracklistBody {
+    tracklist: Value,
+    mode: ModeName,
+    #[serde(rename = "crate", default)]
+    crate_name: Option<String>,
+    /// Sent with every send; a mix has nothing passed to skip.
+    #[serde(default, rename = "skip_passed")]
+    _skip_passed: bool,
+}
+
+/// A mix's tracklist from a 1001tracklists or Mixcloud page: each track checked on its own
+/// (see [`crate::tracklist::check`]). Never brings the app to the front.
+fn send_tracklist(body: &[u8], _shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
+    if body.len() > crate::tracklist::MAX_SEND_BODY {
+        return error(413, "too large");
+    }
+    let Ok(b) = serde_json::from_slice::<TracklistBody>(body) else {
+        return error(422, "invalid body");
+    };
+    let mode = match mode_of(b.mode, b.crate_name) {
+        Ok(m) => m,
+        Err(why) => return error(422, why),
+    };
+    let (list, refused) = match crate::tracklist::check(&b.tracklist) {
+        Ok(c) => c,
+        Err(why) => return error(422, why),
+    };
+    let name = format!("Mix: {}", list.title);
+    let taken = list.tracks.len();
+    let message = match refused {
+        0 => format!("Sent {}", plural(taken, "track")),
+        n => format!("Sent {}, {} refused", plural(taken, "track"), n),
+    };
+    let answer = json!({
+        "page": name,
+        "crate": match &mode { Mode::Crate(n) => n.clone(), _ => name.clone() },
+        "records": taken,
+        "refused": refused,
+        "message": message,
+    });
+    (
+        202,
+        answer,
+        Some(BridgeCommand::SendTracklist { list, mode }),
+    )
 }
 
 fn plural(n: usize, what: &str) -> String {

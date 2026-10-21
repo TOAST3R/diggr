@@ -170,6 +170,8 @@ pub enum DigAction {
     StoreCart(EntryId, Option<String>),
     /// A buy pill: buy where the record is known, or open the Buy chooser.
     Buy(EntryId),
+    /// Find on Discogs, for a mix's track.
+    FindMixTrack(EntryId),
     /// Retry missing tracks: the record's tracks found nowhere are tried again.
     RetryRecord(crate::playlist::AlbumKey),
     /// Play the entry from another of its sources (YouTube, Bandcamp, Juno or Beatport).
@@ -344,6 +346,8 @@ pub(super) struct Dig {
     pub(super) bandcamp: super::bandcamp::BandcampState,
     pub(super) stores: super::stores::StoreState,
     pub(super) not_found: super::not_found::NotFoundState,
+    /// Mixes sent from the browser being read, with the send's mode.
+    pub(super) mix_modes: HashMap<dig::tracklist::MixSource, Mode>,
     last_playing: Option<(CrateId, EntryId)>,
     pub(super) dialog: Option<DigDialog>,
     /// Shared with the bridge thread once digging has started (unless the bridge is off).
@@ -445,6 +449,7 @@ impl Dig {
             cart,
             seller_ui: Default::default(),
             not_found: Default::default(),
+            mix_modes: HashMap::new(),
             setup,
             spawner,
             files,
@@ -1362,6 +1367,9 @@ impl DiggrApp {
     /// Cmd+V / Ctrl+V: a Discogs or Bandcamp address goes to the shown crate; other text is
     /// ignored.
     pub(super) fn dig_paste(&mut self, text: &str) {
+        if self.mix_paste(text) {
+            return;
+        }
         // The app can't read these stores: their pages come from the browser extension.
         for (looks, store) in [
             (dig::juno::looks_like_juno as fn(&str) -> bool, "Juno"),
@@ -2183,6 +2191,8 @@ impl DiggrApp {
                 };
                 self.store_send(records, mode, filters.skip_passed);
             }
+            BridgeCommand::SendTracklist { list, mode } => self.mix_send(list, mode),
+            BridgeCommand::SendMix { source, mode } => self.mix_ask(source, mode),
             BridgeCommand::ImportFan(page) => self.fan_import(page),
             BridgeCommand::ResolveShopItem(id) => {
                 if let Some(d) = &self.dig {
@@ -2280,6 +2290,7 @@ impl DiggrApp {
             Event::Found(key, result) if Self::is_store_find(&key) => {
                 self.store_found(&key, result)
             }
+            Event::Found(key, result) if Self::is_mix_find(&key) => self.mix_found(&key, result),
             Event::Found(key, result) => self.fan_found(&key, result),
             Event::Copies(j, copies) => self.seller_copies(j.target, copies),
             Event::FirstSellers(result) => self.dig_first_sellers(result),
@@ -2954,6 +2965,7 @@ impl DiggrApp {
                     d.search_now = key;
                 }
             }
+            PreviewEvent::MixRead { source, result } => self.mix_read(source, result),
             PreviewEvent::NotFound { key, duration } => {
                 let gone = self.dig_each_searched(&key, duration, None, |e, _| {
                     e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
@@ -3632,6 +3644,7 @@ impl DiggrApp {
             }
             DigAction::StoreCart(id, format) => self.store_cart_click(c, id, format),
             DigAction::Buy(id) => self.buy_click(c, id),
+            DigAction::FindMixTrack(id) => self.mix_find(c, id),
             DigAction::RetryRecord(key) => self.not_found_retry(c, &key),
             DigAction::OpenStore(id, store) => {
                 let url = self
@@ -4643,6 +4656,17 @@ impl DiggrApp {
             vec![e.id]
         };
         let c = self.crates.shown_id();
+        // Back to the moment in its mix.
+        if let Some((label, url)) = Self::mix_link(e)
+            && ui.button(label).clicked()
+        {
+            actions.push(Action::Dig(DigAction::OpenUrl(url)));
+            ui.close();
+        }
+        if Self::mix_findable(e) && ui.button("Find on Discogs").clicked() {
+            actions.push(Action::Dig(DigAction::FindMixTrack(e.id)));
+            ui.close();
+        }
         // Look for it on the other store by hand.
         if let Some((shop, url)) = super::not_found::cross_search(e)
             && ui.button(format!("Search on {}", shop.name())).clicked()

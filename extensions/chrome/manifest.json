@@ -3,8 +3,11 @@
   "name": "Diggr bridge",
   "short_name": "Diggr",
   "version": "0.1.0",
-  "description": "Send Discogs, Bandcamp, Juno, Beatport, Traxsource and Bleep pages and links to the player running on this computer.",
-  "permissions": ["storage", "contextMenus"],
+  "description": "Send Discogs, Bandcamp, Juno, Beatport, Traxsource and Bleep pages, and YouTube and SoundCloud mixes, and links to the player running on this computer.",
+  "permissions": [
+    "storage",
+    "contextMenus"
+  ],
   "host_permissions": [
     "https://www.discogs.com/*",
     "https://discogs.com/*",
@@ -14,6 +17,8 @@
     "https://www.traxsource.com/*",
     "https://bleep.com/*",
     "https://*.bleep.com/*",
+    "https://www.youtube.com/*",
+    "https://soundcloud.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -21,28 +26,71 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.discogs.com/*", "https://discogs.com/*", "https://*.bandcamp.com/*"],
-      "js": ["pages.js", "content.js"],
+      "matches": [
+        "https://www.discogs.com/*",
+        "https://discogs.com/*",
+        "https://*.bandcamp.com/*"
+      ],
+      "js": [
+        "pages.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://*.juno.co.uk/*"],
-      "js": ["pages.js", "juno.js", "content.js"],
+      "matches": [
+        "https://*.juno.co.uk/*"
+      ],
+      "js": [
+        "pages.js",
+        "juno.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.beatport.com/*"],
-      "js": ["pages.js", "beatport.js", "content.js"],
+      "matches": [
+        "https://www.beatport.com/*"
+      ],
+      "js": [
+        "pages.js",
+        "beatport.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.traxsource.com/*"],
-      "js": ["pages.js", "traxsource.js", "content.js"],
+      "matches": [
+        "https://www.traxsource.com/*"
+      ],
+      "js": [
+        "pages.js",
+        "traxsource.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://bleep.com/*", "https://*.bleep.com/*"],
-      "js": ["pages.js", "bleep.js", "content.js"],
+      "matches": [
+        "https://bleep.com/*",
+        "https://*.bleep.com/*"
+      ],
+      "js": [
+        "pages.js",
+        "bleep.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://soundcloud.com/*"
+      ],
+      "js": [
+        "pages.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

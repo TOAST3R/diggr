@@ -121,6 +121,8 @@ pub enum PreviewCommand {
     ReadBandcampPages { job: u64, pages: Vec<BandcampPage> },
     /// Download the app's own yt-dlp (the user said yes, or Update now); needs [`Tools`].
     DownloadYtDlp,
+    /// Read a YouTube or SoundCloud mix's tracklist (see [`crate::tracklist`]).
+    ReadMix(crate::tracklist::MixSource),
     /// Read a Bandcamp fan's collection and wishlist for job `job` (see
     /// [`crate::bandcamp::fan`]).
     ReadFan { job: u64, page: FanPage },
@@ -201,6 +203,11 @@ pub enum PreviewEvent {
         job: u64,
         result: Result<FanLists, String>,
     },
+    /// A mix was read: its tracklist, or why there is none.
+    MixRead {
+        source: crate::tracklist::MixSource,
+        result: Result<crate::tracklist::Tracklist, crate::tracklist::MixError>,
+    },
     /// A search found nothing usable for the entries under `key` of length `duration`.
     NotFound {
         key: String,
@@ -264,6 +271,7 @@ enum Msg {
     Read(u64, BandcampPage, Result<Listing, FetchError>),
     FanProgress(u64, FanList, usize, usize),
     FanRead(u64, Result<FanLists, FetchError>),
+    MixRead(crate::tracklist::MixSource, Result<String, FetchError>),
     ToolProgress(u8),
     /// A download the user asked for ended.
     Installed(Result<(), String>),
@@ -434,6 +442,7 @@ impl Scheduler {
                 self.reads.extend(pages.into_iter().map(|p| (job, p)));
             }
             PreviewCommand::ReadFan { job, page } => self.read_fan(job, page),
+            PreviewCommand::ReadMix(source) => self.read_mix(source),
             PreviewCommand::StopBandcamp(job) => {
                 if let Some(stop) = self.fan_stops.get(&job) {
                     stop.store(true, Ordering::Release);
@@ -573,6 +582,56 @@ impl Scheduler {
             self.reading = None;
             self.reads.push_front((job, page));
         }
+    }
+
+    /// Reads a mix's metadata on a thread of its own: one request, not to wait behind a
+    /// label's reads.
+    fn read_mix(&mut self, source: crate::tracklist::MixSource) {
+        if self.fetcher.is_none() {
+            self.look();
+        }
+        let Some(fetcher) = self.fetcher.clone() else {
+            self.events.push(PreviewEvent::MixRead {
+                source,
+                result: Err(crate::tracklist::MixError::Failed(
+                    "yt-dlp is needed to read mixes".into(),
+                )),
+            });
+            return;
+        };
+        let inbox = self.inbox.clone();
+        let s2 = source.clone();
+        let spawned = self.spawner.spawn(
+            "dig-mix",
+            Priority::Low,
+            Box::new(move || {
+                let result = fetcher.read_mix(&s2);
+                let _ = inbox.send(Msg::MixRead(s2, result));
+            }),
+        );
+        if spawned.is_err() {
+            self.events.push(PreviewEvent::MixRead {
+                source,
+                result: Err(crate::tracklist::MixError::Failed(
+                    "couldn't start the read".into(),
+                )),
+            });
+        }
+    }
+
+    fn mix_read(&mut self, source: crate::tracklist::MixSource, r: Result<String, FetchError>) {
+        use crate::tracklist::{MixError, from_ytdlp};
+        let result = match r {
+            Ok(json) => from_ytdlp(source.clone(), &json).map_err(MixError::NoTracklist),
+            Err(FetchError::NoProgram) => {
+                Err(MixError::Failed("yt-dlp is needed to read mixes".into()))
+            }
+            Err(FetchError::Failed(t) | FetchError::Limited(t) | FetchError::Unreachable(t)) => {
+                Err(MixError::Failed(t))
+            }
+            Err(other) => Err(MixError::Failed(format!("{other:?}"))),
+        };
+        self.events.push(PreviewEvent::MixRead { source, result });
     }
 
     /// Reads a fan's lists on a thread of its own: it's a handful of requests, paced by the
@@ -1189,6 +1248,7 @@ impl PreviewHandle {
                             });
                         }
                         Ok(Msg::FanRead(job, r)) => s.fan_read(job, r),
+                        Ok(Msg::MixRead(source, r)) => s.mix_read(source, r),
                         Ok(Msg::ToolProgress(p)) => s.events.push(PreviewEvent::YtDlpProgress(p)),
                         Ok(Msg::Installed(r)) => s.installed(r),
                         Ok(Msg::Updated(true)) => s.installed(Ok(())),

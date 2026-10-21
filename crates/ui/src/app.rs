@@ -40,6 +40,8 @@ mod fan;
 #[cfg(not(target_arch = "wasm32"))]
 mod friends;
 #[cfg(not(target_arch = "wasm32"))]
+mod mixes;
+#[cfg(not(target_arch = "wasm32"))]
 mod not_found;
 #[cfg(not(target_arch = "wasm32"))]
 mod sellers;

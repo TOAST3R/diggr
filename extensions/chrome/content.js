@@ -166,7 +166,9 @@
             ? `Follow this label in ${appName}: it goes under LABELS`
             : kind === "BandcampFan"
               ? `Import this fan's Bandcamp collection & wishlist into ${appName}`
-              : WR.storeOf(kind)
+              : WR.isMix(kind)
+                ? `Send this mix's tracklist to ${appName}: its tracks become a crate, in order`
+                : WR.storeOf(kind)
                 ? `Send the tracks on this ${WR.storeOf(kind)} page to ${appName}`
                 : `Send this ${kind.replace("Bandcamp", "").toLowerCase()} to ${appName}`,
     });

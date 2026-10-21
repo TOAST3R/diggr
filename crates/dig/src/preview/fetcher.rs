@@ -117,6 +117,9 @@ pub trait Fetcher: Send + Sync {
     /// Reads a Bandcamp page: a label's albums, or an album's tracks; downloads nothing.
     fn read_bandcamp(&self, page: &BandcampPage) -> Result<Listing, FetchError>;
 
+    /// Reads a YouTube or SoundCloud mix's metadata (yt-dlp's JSON); downloads nothing.
+    fn read_mix(&self, source: &crate::tracklist::MixSource) -> Result<String, FetchError>;
+
     /// Reads a Bandcamp fan's collection and wishlist whole (see [`crate::bandcamp::fan`]),
     /// telling `progress` (list, items read, items listed), until done or `stop`.
     fn read_fan(
@@ -384,6 +387,13 @@ impl Fetcher for YtDlp {
         bandcamp::parse_listing(page, &out).map_err(FetchError::Failed)
     }
 
+    fn read_mix(&self, source: &crate::tracklist::MixSource) -> Result<String, FetchError> {
+        let args = source
+            .read_args()
+            .ok_or_else(|| FetchError::Failed("not a mix yt-dlp reads".into()))?;
+        self.run(args, READ_TIMEOUT, "mix read")
+    }
+
     /// Not through yt-dlp, which doesn't read fan pages: over HTTP, as Bandcamp's site does.
     fn read_fan(
         &self,
@@ -450,6 +460,8 @@ pub struct FakeFetcher {
     pub pages: std::sync::Mutex<std::collections::HashMap<String, Listing>>,
     /// Every Bandcamp page read, in order.
     pub read: std::sync::Mutex<Vec<String>>,
+    /// Canned mixes' metadata (yt-dlp's JSON), by address (none listed: the read fails).
+    pub mixes: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// Canned fans' lists, by username (none listed: the read fails).
     pub fans: std::sync::Mutex<std::collections::HashMap<String, FanLists>>,
 }
@@ -473,6 +485,7 @@ impl FakeFetcher {
             beatport_limited: AtomicBool::new(false),
             pages: Default::default(),
             read: Default::default(),
+            mixes: Default::default(),
             fans: Default::default(),
         }
     }
@@ -480,6 +493,14 @@ impl FakeFetcher {
     /// What reading the Bandcamp page at `url` gives.
     pub fn page(&self, url: &str, listing: Listing) {
         self.pages.lock().unwrap().insert(url.to_owned(), listing);
+    }
+
+    /// What reading the mix at `url` gives: yt-dlp's JSON.
+    pub fn mix(&self, url: &str, json: &str) {
+        self.mixes
+            .lock()
+            .unwrap()
+            .insert(url.to_owned(), json.to_owned());
     }
 
     /// What reading fan `user`'s lists gives.
@@ -629,6 +650,20 @@ impl Fetcher for FakeFetcher {
             .get(query)
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn read_mix(&self, source: &crate::tracklist::MixSource) -> Result<String, FetchError> {
+        if !self.available.load(Ordering::SeqCst) {
+            return Err(FetchError::NoProgram);
+        }
+        let url = source.url();
+        self.read.lock().unwrap().push(url.clone());
+        self.mixes
+            .lock()
+            .unwrap()
+            .get(&url)
+            .cloned()
+            .ok_or_else(|| FetchError::Failed("ERROR: Video unavailable".into()))
     }
 
     fn read_bandcamp(&self, page: &BandcampPage) -> Result<Listing, FetchError> {

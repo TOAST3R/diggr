@@ -1148,3 +1148,111 @@ fn an_action_no_extension_picks_up_expires() {
     assert_eq!(got[0].outcome, dig::carts::Outcome::NoExtension);
     assert!(t.elapsed() >= dig::carts::PICK_UP);
 }
+
+// ---- tracklist sends (1001tracklists, Mixcloud) --------------------------------------------
+
+fn tracklist_body(tracks: Vec<Value>, mode: &str) -> String {
+    serde_json::json!({
+        "tracklist": {
+            "url": "https://www.1001tracklists.com/tracklist/2p7bd3vt/duarte-sterium.html",
+            "title": "Duarte b2b Sterium @ Boiler Room",
+            "tracks": tracks,
+        },
+        "mode": mode,
+        "skip_passed": true,
+    })
+    .to_string()
+}
+
+#[test]
+fn a_tracklist_send_is_answered_at_once_and_refuses_bad_tracks_alone() {
+    let r = rig("tracklist-send");
+    let key = r.pair();
+    r.bridge.poll();
+    let mut tracks: Vec<Value> = (0..17)
+        .map(|i| serde_json::json!({ "time": i * 200, "artist": format!("A{i}"), "title": "T" }))
+        .collect();
+    tracks.push(serde_json::json!({ "time": 4000, "id": true }));
+    tracks.push(serde_json::json!({ "time": 99999, "artist": "Late", "title": "T" }));
+    let started = Instant::now();
+    let a = r.send(&key, &tracklist_body(tracks, "play"));
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["page"], "Mix: Duarte b2b Sterium @ Boiler Room");
+    assert_eq!(
+        (a.json["records"].as_u64(), a.json["refused"].as_u64()),
+        (Some(18), Some(1))
+    );
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendTracklist { list, mode }] => {
+            assert_eq!(list.tracks.len(), 18);
+            assert!(list.tracks[17].is_id);
+            assert_eq!(*mode, Mode::Play);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn tracklist_sends_are_limited_in_size_and_shape() {
+    let r = rig("tracklist-shape");
+    let key = r.pair();
+    r.bridge.poll();
+    // Over 300 tracks, or over 256 KB, or from another site: refused whole.
+    let many: Vec<Value> = (0..301)
+        .map(|i| serde_json::json!({ "artist": format!("A{i}"), "title": "T" }))
+        .collect();
+    assert_eq!(r.send(&key, &tracklist_body(many, "play")).status, 422);
+    let pad = "x".repeat(190);
+    let big: Vec<Value> = (0..300)
+        .map(|i| serde_json::json!({ "artist": format!("{pad}{i}"), "title": pad, "label": pad, "version": pad, "x": pad }))
+        .collect();
+    let body = tracklist_body(big, "play");
+    assert!(body.len() > 256 * 1024, "{}", body.len());
+    assert_eq!(r.send(&key, &body).status, 413);
+    let other = tracklist_body(
+        vec![serde_json::json!({ "artist": "A", "title": "T" })],
+        "play",
+    )
+    .replace("www.1001tracklists.com", "evil.net");
+    assert_eq!(r.send(&key, &other).status, 422);
+    assert!(r.bridge.poll().is_empty(), "nothing reached the player");
+}
+
+#[test]
+fn a_youtube_or_soundcloud_mix_page_is_sent_by_its_address() {
+    use dig::tracklist::MixSource;
+    let r = rig("mix-page");
+    let key = r.pair();
+    r.bridge.poll();
+    let a = r.send(
+        &key,
+        &send_body(
+            "https://soundcloud.com/tracklistings3-0/tracklistings-mixtape-781?in=toast3r/sets/x",
+            "play",
+        ),
+    );
+    assert_eq!(a.status, 202, "{}", a.json);
+    assert_eq!(a.json["message"], "Reading the mix's tracklist");
+    match &r.bridge.poll()[..] {
+        [BridgeCommand::SendMix { source, mode }] => {
+            assert_eq!(
+                *source,
+                MixSource::SoundCloud {
+                    user: "tracklistings3-0".into(),
+                    slug: "tracklistings-mixtape-781".into()
+                }
+            );
+            assert_eq!(*mode, Mode::Play);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A playlist, or a look-alike host, isn't a mix.
+    for url in [
+        "https://soundcloud.com/toast3r/sets/2023-2025-vinyl-mixes",
+        "https://soundcloud.com.evil.net/a/b",
+    ] {
+        assert_eq!(r.send(&key, &send_body(url, "play")).status, 422, "{url}");
+    }
+    assert!(r.bridge.poll().is_empty());
+}

@@ -56,6 +56,7 @@ yt-dlp SHALL only be given one of:
 - **A YouTube clip id:** exactly 11 letters, digits, `-` or `_`.
 - **A YouTube search** (see `preview-search`): a query built only from a tracklist's artist and title, without control characters, at most 120 characters, with the `ytsearch5:` prefix, listing results without downloading them.
 - **A Bandcamp address** that passes the check in `bandcamp-intake`, rebuilt from its parts, given to read a page without downloading or to download one track.
+- **A mix to read** (see `mix-tracklists`): a YouTube video id passing the clip id check, or a SoundCloud track address `https://soundcloud.com/‹user›/‹slug›` with both parts matching `[a-z0-9_-]{1,100}`, rebuilt by the app, given only to read its metadata (`--dump-single-json --skip-download --no-playlist`), never to download. Mixcloud and 1001tracklists addresses SHALL never be given to yt-dlp.
 
 How it is run:
 - Only a search result's id that passes the same check SHALL ever be kept.
@@ -101,6 +102,10 @@ Failures:
 #### Scenario: A redirect elsewhere
 - **WHEN** a Juno sample request is redirected to `https://example.net/x.mp3`
 - **THEN** the redirect is not followed, and the try fails
+
+#### Scenario: Reading a mix
+- **WHEN** the user pastes `https://soundcloud.com/some-dj/summer-mix-2026?si=abc`
+- **THEN** yt-dlp receives `https://soundcloud.com/some-dj/summer-mix-2026` after `--` with `--skip-download`, and no media is written
 
 ### Requirement: Preview cache
 Previews SHALL be stored in `previews/` in the cache folder. Together with the waveform overviews in `overviews/`, they SHALL use at most the preview cache size, which is 10 GB by default and set in Options ▸ Discogs…. When a new preview doesn't fit, the previews and overviews used least recently SHALL be deleted first. A preview downloaded for Download all tracks SHALL never cause a deletion: downloading pauses instead (see `label-crates`). The previews of the playing entry, the armed entry and the next 3 entries, and their overviews, SHALL never be deleted. A deleted preview SHALL be downloaded again when it is needed, whether or not its crate was open when it was deleted, and also when its file is missing for any other reason (such as a cache folder from an older version). Such an entry SHALL go back to waiting for its download, never to failed. A deleted preview's waveform overview SHALL be deleted with it. When the downloaded file is identical, its cached analysis SHALL be reused.

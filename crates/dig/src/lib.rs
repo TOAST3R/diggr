@@ -35,6 +35,7 @@ pub mod preview;
 pub mod sellers;
 pub mod stores;
 pub mod tools;
+pub mod tracklist;
 pub mod traxsource;
 
 /// The player's name, as the browser extension shows it ("Play in ‹name›"). A placeholder

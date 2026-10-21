@@ -22,6 +22,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
   its row, pulsing, so you can tell it apart from tracks still waiting their turn.
 - **Click a track, hear the record.** If the track you clicked has no preview, Diggr moves on to
   the next track of the same record by itself, until it finds one that plays.
+- **Dig a DJ's mix.** Paste a YouTube or SoundCloud mix, or click the extension's button on its
+  page, and its tracklist becomes a crate, in mix order: every track is found and plays, unidentified ones keep their place, and "Open in
+  mix" takes you back to the moment it played. Find on Discogs links a track to its record.
 
 ### Improved
 
