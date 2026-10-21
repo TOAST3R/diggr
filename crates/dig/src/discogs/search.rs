@@ -20,6 +20,9 @@ pub struct Wanted {
     pub catno: String,
     /// A record (vinyl, cassette, CD…), else the File release.
     pub physical: bool,
+    /// `title` names a track on the release, not the release (a mix's tracks): searched as a
+    /// track, and only the artist must match.
+    pub track: bool,
 }
 
 impl Wanted {
@@ -34,6 +37,18 @@ impl Wanted {
             title: title.to_owned(),
             catno: catno.trim().to_owned(),
             physical,
+            track: false,
+        }
+    }
+
+    /// A track by `artist` called `title`, on a record.
+    pub fn track(artist: &str, title: &str) -> Self {
+        Self {
+            artist: artist.trim().to_owned(),
+            title: title.trim().to_owned(),
+            catno: String::new(),
+            physical: true,
+            track: true,
         }
     }
 }
@@ -75,7 +90,7 @@ pub fn pick(results: &Value, w: &Wanted) -> DiscogsMatch {
             .unwrap_or("")
             .split_once(" - ")
             .unwrap_or(("", ""));
-        if artist_key(a) != artist || key(t) != title {
+        if artist_key(a) != artist || (!w.track && key(t) != title) {
             continue;
         }
         let theirs = key(r["catno"].as_str().unwrap_or(""));
@@ -96,8 +111,9 @@ pub fn pick(results: &Value, w: &Wanted) -> DiscogsMatch {
 /// The search request's path.
 pub fn path(w: &Wanted) -> String {
     let mut p = format!(
-        "/database/search?type=release&artist={}&release_title={}&per_page=50",
+        "/database/search?type=release&artist={}&{}={}&per_page=50",
         path_segment(&w.artist),
+        if w.track { "track" } else { "release_title" },
         path_segment(&w.title)
     );
     if !w.catno.is_empty() {
@@ -125,6 +141,30 @@ mod tests {
 
     fn wanted(physical: bool, catno: &str) -> Wanted {
         Wanted::new("Patricia", "The Ooze EP", catno, physical)
+    }
+
+    #[test]
+    fn a_track_is_searched_by_its_name_and_matched_by_artist() {
+        let w = Wanted::track("Kerri Chandler", "Rain");
+        assert_eq!(
+            path(&w),
+            "/database/search?type=release&artist=Kerri%20Chandler&track=Rain&per_page=50"
+        );
+        let one = json!({"results": [
+            result(1, "Kerri Chandler - Rain EP", &["Vinyl"], "MAD-01"),
+            result(2, "Various - House Classics", &["Vinyl"], "HC-1"),
+            result(3, "Kerri Chandler - Rain", &["File"], "none"),
+        ]});
+        assert_eq!(
+            pick(&one, &w),
+            DiscogsMatch::Found(1),
+            "the record, not the compilation"
+        );
+        let two = json!({"results": [
+            result(1, "Kerri Chandler - Rain EP", &["Vinyl"], "MAD-01"),
+            result(4, "Kerri Chandler - Rain EP", &["Vinyl"], "MAD-01R"),
+        ]});
+        assert_eq!(pick(&two, &w), DiscogsMatch::Ambiguous(2));
     }
 
     #[test]

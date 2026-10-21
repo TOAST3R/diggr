@@ -4433,3 +4433,231 @@ fn a_track_being_searched_says_so_on_its_row() {
         .dig_preview_event(::dig::preview::scheduler::PreviewEvent::Searching(None));
     assert!(!shows(&rig.frame(Vec::new()), "SEARCHING…"));
 }
+
+// ---- mixes ----------------------------------------------------------------------------------
+
+const MIX_JSON: &str = r#"{"title": "Boiler Room: Kerri Chandler", "chapters": [
+    {"start_time": 0, "title": "Intro"},
+    {"start_time": 95, "title": "Kerri Chandler - Rain (Dennis Ferrer Remix)"},
+    {"start_time": 412, "title": "ID - ID"},
+    {"start_time": 754, "title": "Moodymann - Shades of Jae"}]}"#;
+
+fn mix_crate(rig: &Rig) -> Option<CrateId> {
+    rig.app
+        .crates
+        .loaded_ids()
+        .into_iter()
+        .find(|&c| rig.app.crates.name(c).starts_with("Mix: "))
+}
+
+#[test]
+fn a_pasted_youtube_mix_becomes_a_crate_in_mix_order() {
+    let fakes = Fakes::new();
+    fakes
+        .fetcher
+        .mix("https://www.youtube.com/watch?v=dQw4w9WgXcQ", MIX_JSON);
+    let mut rig = rig("mix-paste", &fakes, |_| {});
+    rig.app.dig_paste("https://youtu.be/dQw4w9WgXcQ?t=5");
+    rig.until(|r| mix_crate(r).is_some(), "the Mix crate");
+    let c = mix_crate(&rig).unwrap();
+    assert_eq!(rig.app.crates.name(c), "Mix: Boiler Room: Kerri Chandler");
+    assert_eq!(rig.app.crates.shown_id(), c, "shown");
+    let rows: Vec<(String, String)> = rig
+        .app
+        .crates
+        .get(c)
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|e| (e.display_name(), e.status.note().unwrap_or_default()))
+        .collect();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(
+        rows[0]
+            .0
+            .contains("Kerri Chandler: Rain (Dennis Ferrer Remix)"),
+        "{rows:?}"
+    );
+    assert_eq!(rows[1].1, "unidentified in the mix");
+    assert!(rows[2].0.contains("Moodymann: Shades of Jae"), "{rows:?}");
+    // The identified ones wait to be searched, by their own key.
+    let e = rig.app.crates.get(c).unwrap().entries()[0].clone();
+    assert_eq!(
+        e.origin.as_ref().unwrap().search_key,
+        "track/kerri chandler/rain dennis ferrer remix"
+    );
+    // Open in mix at the track's moment.
+    let (label, url) = DiggrApp::mix_link(&e).unwrap();
+    assert_eq!(label, "Open in mix at 1:35");
+    assert_eq!(url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=95s");
+    let ctx = rig.ctx.clone();
+    rig.app
+        .apply(Action::Dig(DigAction::OpenUrl(url.clone())), &ctx);
+    assert_eq!(fakes.browser.opened.lock().unwrap().last().unwrap(), &url);
+    // The same mix again: nothing doubled.
+    rig.app
+        .dig_paste("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    rig.until(|r| message(r).ends_with("nothing new"), "read again");
+    assert_eq!(rig.app.crates.get(c).unwrap().entries().len(), 3);
+}
+
+#[test]
+fn a_mix_without_tracklist_or_from_mixcloud_says_so() {
+    let fakes = Fakes::new();
+    fakes.fetcher.mix(
+        "https://soundcloud.com/some-dj/summer",
+        r#"{"title": "Summer vibes", "description": "enjoy!"}"#,
+    );
+    let mut rig = rig("mix-none", &fakes, |_| {});
+    rig.app
+        .dig_paste("https://soundcloud.com/some-dj/summer?si=1");
+    rig.until(
+        |r| message(r) == "No tracklist found in Summer vibes",
+        "no tracklist",
+    );
+    assert!(mix_crate(&rig).is_none());
+    rig.app.dig_paste("https://www.mixcloud.com/dj/show/");
+    assert_eq!(
+        message(&rig),
+        "Mixcloud tracklists are sent from the browser extension"
+    );
+    assert!(
+        fakes
+            .fetcher
+            .pages_read()
+            .iter()
+            .all(|u| !u.contains("mixcloud")),
+        "never given to yt-dlp"
+    );
+}
+
+#[test]
+fn a_tracklist_from_the_extension_plays_its_first_track() {
+    let fakes = Fakes::new();
+    let mut rig = rig("mix-send", &fakes, |_| {});
+    let v: serde_json::Value = serde_json::from_str(
+        r#"{"url": "https://www.mixcloud.com/dj/sunday-show/", "title": "Sunday Show",
+            "tracks": [{"time": 0, "id": true},
+                       {"time": 180, "artist": "Kerri Chandler", "title": "Rain"},
+                       {"time": 420, "artist": "Moodymann", "title": "Shades of Jae"}]}"#,
+    )
+    .unwrap();
+    let (list, _) = ::dig::tracklist::check(&v).unwrap();
+    rig.app
+        .dig_bridge_command(::dig::bridge::BridgeCommand::SendTracklist {
+            list: list.clone(),
+            mode: ::dig::bridge::Mode::Play,
+        });
+    let c = mix_crate(&rig).expect("the Mix crate");
+    assert_eq!(rig.app.crates.name(c), "Mix: Sunday Show");
+    assert_eq!(rig.app.crates.shown_id(), c);
+    let second = rig.app.crates.get(c).unwrap().entries()[1].id;
+    assert_eq!(
+        rig.app.armed,
+        Some((c, second)),
+        "the first identified track, waiting for its search"
+    );
+    // Mixcloud has no time to open at: the mix page.
+    let e = rig.app.crates.get(c).unwrap().entries()[1].clone();
+    assert_eq!(
+        DiggrApp::mix_link(&e).unwrap(),
+        (
+            "Open in mix at 3:00".to_owned(),
+            "https://www.mixcloud.com/dj/sunday-show/".to_owned()
+        )
+    );
+    // Sent again with the ID named: only the new track comes in.
+    let mut named = list;
+    named.tracks[0] = ::dig::tracklist::MixTrack {
+        time: Some(0),
+        artist: "Larry Heard".into(),
+        title: "Can You Feel It".into(),
+        ..Default::default()
+    };
+    rig.app
+        .dig_bridge_command(::dig::bridge::BridgeCommand::SendTracklist {
+            list: named,
+            mode: ::dig::bridge::Mode::Play,
+        });
+    assert_eq!(rig.app.crates.get(c).unwrap().entries().len(), 4);
+}
+
+#[test]
+fn find_on_discogs_links_a_mix_track_or_opens_the_search() {
+    let fakes = Fakes::new();
+    fakes
+        .fetcher
+        .mix("https://www.youtube.com/watch?v=dQw4w9WgXcQ", MIX_JSON);
+    let one = r#"{"results": [{"id": 4242, "title": "Kerri Chandler - Rain EP", "format": ["Vinyl"], "catno": "MAD-01"}]}"#;
+    fakes.transport.route(
+        "/database/search?type=release&artist=Kerri%20Chandler&track=Rain%20%28Dennis%20Ferrer%20Remix%29&per_page=50",
+        200,
+        one,
+    );
+    let two = r#"{"results": [
+        {"id": 1, "title": "Moodymann - Silentintroduction", "format": ["Vinyl"], "catno": "PE65234"},
+        {"id": 2, "title": "Moodymann - Silentintroduction", "format": ["Vinyl"], "catno": "PE65234R"}]}"#;
+    fakes.transport.route(
+        "/database/search?type=release&artist=Moodymann&track=Shades%20of%20Jae&per_page=50",
+        200,
+        two,
+    );
+    let mut rig = rig("mix-find", &fakes, with_token);
+    rig.app
+        .dig_paste("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    rig.until(|r| mix_crate(r).is_some(), "the Mix crate");
+    let c = mix_crate(&rig).unwrap();
+    let ids = rig.ids(c);
+    let entry = |r: &Rig, i: usize| r.app.crates.get(c).unwrap().get(ids[i]).unwrap().clone();
+    assert!(DiggrApp::mix_findable(&entry(&rig, 0)));
+    assert!(
+        !DiggrApp::mix_findable(&entry(&rig, 1)),
+        "an ID has nothing to find"
+    );
+    let ctx = rig.ctx.clone();
+    rig.app
+        .apply(Action::Dig(DigAction::FindMixTrack(ids[0])), &ctx);
+    rig.until(
+        |r| entry(r, 0).origin.unwrap().release == Some(4242),
+        "linked to its one release",
+    );
+    assert!(!DiggrApp::mix_findable(&entry(&rig, 0)));
+    // Two pressings fit: nothing linked, Discogs' search opens instead.
+    rig.app
+        .apply(Action::Dig(DigAction::FindMixTrack(ids[2])), &ctx);
+    rig.until(|r| message(r).contains("2 releases fit"), "ambiguous");
+    assert_eq!(entry(&rig, 2).origin.unwrap().release, None);
+    assert_eq!(
+        fakes.browser.opened.lock().unwrap().last().unwrap(),
+        "https://www.discogs.com/search/?q=Moodymann%20Shades%20of%20Jae&type=release"
+    );
+}
+
+#[test]
+fn a_mix_sent_from_its_page_is_read_then_played() {
+    let fakes = Fakes::new();
+    fakes
+        .fetcher
+        .mix("https://www.youtube.com/watch?v=dQw4w9WgXcQ", MIX_JSON);
+    let mut rig = rig("mix-page-send", &fakes, |_| {});
+    let shown = rig.app.crates.shown_id();
+    rig.app
+        .dig_bridge_command(::dig::bridge::BridgeCommand::SendMix {
+            source: ::dig::tracklist::MixSource::YouTube("dQw4w9WgXcQ".into()),
+            mode: ::dig::bridge::Mode::Play,
+        });
+    assert_eq!(
+        rig.app.crates.shown_id(),
+        shown,
+        "nothing changes until it is read"
+    );
+    rig.until(|r| mix_crate(r).is_some(), "the Mix crate");
+    let c = mix_crate(&rig).unwrap();
+    assert_eq!(rig.app.crates.shown_id(), c);
+    let first = rig.app.crates.get(c).unwrap().entries()[0].id;
+    assert_eq!(
+        rig.app.armed,
+        Some((c, first)),
+        "its first track, waiting for its search"
+    );
+}

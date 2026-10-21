@@ -228,6 +228,9 @@ pub struct Origin {
     /// The track's Traxsource page, to open it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub traxsource_page: String,
+    /// Seconds into the mix it was heard in, for an entry of a mix (see `app::mixes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mix_time: Option<u32>,
     /// The release on Bleep (`100168`), when it was sent from a Bleep page.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub bleep: String,

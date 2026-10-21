@@ -45,6 +45,21 @@ var WR = (() => {
     "signup", "tag", "terms_of_use", "track", "yum", "pricing",
   ]);
 
+  // Mixes: a YouTube video, or a SoundCloud track (‹user›/‹name›, not one of SoundCloud's own
+  // pages nor a user's lists). The app reads its tracklist itself; only the address is sent.
+  const YOUTUBE_HOST = /^(?:www\.|m\.|music\.)?youtube\.com$/;
+  const SOUNDCLOUD_HOST = /^(?:www\.|m\.)?soundcloud\.com$/;
+  const SOUNDCLOUD_TRACK = /^\/([a-z0-9_-]{1,100})\/([a-z0-9_-]{1,100})\/?$/;
+  const NOT_SOUNDCLOUD_USERS = new Set([
+    "discover", "stream", "you", "search", "upload", "charts", "settings", "messages",
+    "notifications", "pages", "jobs", "terms-of-use", "people", "tags", "mobile", "imprint",
+    "pro", "artists", "feed", "signin", "logout",
+  ]);
+  const NOT_SOUNDCLOUD_TRACKS = new Set([
+    "sets", "tracks", "albums", "likes", "reposts", "followers", "following", "popular-tracks",
+    "comments", "spotlight", "playlists", "toptracks",
+  ]);
+
   // Juno: a product page, or a page listing records (label, artist, genre, chart, search, new
   // releases). Its first path part tells; equipment, the cart and the account have no records.
   // www and the regional sites (es., de.…), which share product ids.
@@ -98,6 +113,15 @@ var WR = (() => {
       if (BLEEP_RELEASE.test(u.pathname)) return "BleepRelease";
       return NOT_BLEEP_PAGES.has(u.pathname.split("/")[1].toLowerCase()) ? null : "BleepPage";
     }
+    if (u.protocol === "https:" && YOUTUBE_HOST.test(u.hostname)) {
+      return u.pathname === "/watch" && /^[A-Za-z0-9_-]{11}$/.test(u.searchParams.get("v") || "")
+        ? "YouTubeMix"
+        : null;
+    }
+    if (u.protocol === "https:" && SOUNDCLOUD_HOST.test(u.hostname)) {
+      const m = u.pathname.match(SOUNDCLOUD_TRACK);
+      return m && !NOT_SOUNDCLOUD_USERS.has(m[1]) && !NOT_SOUNDCLOUD_TRACKS.has(m[2]) ? "SoundCloudMix" : null;
+    }
     if (u.protocol === "https:" && FAN_HOST.test(u.hostname)) {
       const m = u.pathname.match(FAN_PATH);
       return m && !NOT_FANS.has(m[1]) ? "BandcampFan" : null;
@@ -138,7 +162,8 @@ var WR = (() => {
     "or seller on Discogs; a label, album or track on Bandcamp, or a fan's collection or " +
     "wishlist (bandcamp.com/‹user›); a product, label, artist, genre, chart or search page " +
     "on Juno; a track, release, chart, label, artist, genre or search page on Beatport or " +
-    "Traxsource, or a release or list of records on Bleep (from this button only)";
+    "Traxsource, a release or list of records on Bleep (from this button only), or a mix on " +
+    "YouTube or SoundCloud";
 
   const MAX_NAME = 40; // the player's limit for a crate name
 
@@ -170,6 +195,14 @@ var WR = (() => {
       return user ? fit(`Wantlist: ${user}`) : "";
     }
     let t = String(title || "");
+    // A mix: "Mix: ‹title›", without the site's own words.
+    if (kind === "YouTubeMix" || kind === "SoundCloudMix") {
+      t = t.replace(/^\(\d+\)\s*/, "").replace(/\s*-\s*YouTube\s*$/i, "");
+      t = t.replace(/^Stream\s+/i, "").split(/\s+\|\s+Listen online/i)[0];
+      // SoundCloud: "Stream ‹title› by ‹uploader›".
+      if (kind === "SoundCloudMix" && t.lastIndexOf(" by ") > 0) t = t.slice(0, t.lastIndexOf(" by "));
+      return fit(`Mix: ${t.replace(/\s+/g, " ").trim()}`);
+    }
     // Bandcamp: "Album | Artist", "Track | Artist" (a label's own page: "Music | Label").
     if (kind === "BandcampAlbum" || kind === "BandcampTrack") {
       const [what, who] = t.split(" | ");
@@ -236,6 +269,11 @@ var WR = (() => {
     return typeof kind === "string" && kind.startsWith("Juno");
   }
 
+  /** A YouTube or SoundCloud mix's page (see pageKind). */
+  function isMix(kind) {
+    return kind === "YouTubeMix" || kind === "SoundCloudMix";
+  }
+
   /** The store whose page this is ("Juno", "Beatport", "Traxsource", "Bleep"), else null. */
   function storeOf(kind) {
     if (isJuno(kind)) return "Juno";
@@ -249,6 +287,7 @@ var WR = (() => {
     PLACEHOLDER,
     isBandcamp,
     isJuno,
+    isMix,
     storeOf,
     DEFAULT_PORT,
     pageKind,

@@ -549,6 +549,28 @@ grouped by record. Click the heading to fold or unfold it.
   and at most 10. The main window says "Can't reach YouTube: trying again in 1 min", adding the
   interception hint for a certificate error. Bandcamp and Juno pause the same way on their own.
 
+### Mixes
+
+Paste the address of a DJ mix on **YouTube** or **SoundCloud** (Cmd+V), or use the extension's
+**▶ Diggr** button next to the mix's title on its page, and its tracklist becomes a crate,
+**Mix: ‹title›**, in mix order. From the button, Play in Diggr also starts its first track, and
+Send to crate fills the crate you pick. Diggr reads the mix's chapters, or else the tracklist
+in its description, with one yt-dlp read that downloads nothing; lines like `12:34 Artist –
+Title (Remix) [Label]` are understood, and a mix that names fewer than 3 tracks says "No
+tracklist found in ‹title›". Each track is then searched for and played like a Discogs track
+without a clip. An unidentified track ("ID") stays in its place, unplayable ("unidentified in
+the mix"), so the crate keeps the mix's shape; pasting the same mix again adds only what's new.
+
+A mix track's right-click menu offers **Open in mix at 12:34**, opening the mix at that moment
+(YouTube and SoundCloud), and **Find on Discogs**: one Discogs search by artist and track
+(with a token); when one record fits, the track is linked to it and gets the Discogs actions
+(Y, for sale, OWNED, + CART), and when several or none do, Discogs' search for it opens in the
+browser. Nothing is looked up on Discogs for a mix unless you ask.
+
+Mixcloud and 1001tracklists sit behind bot checks: pasting their addresses says they come from
+the browser extension. The app already takes a tracklist sent by the extension (up to 300
+tracks, each checked on its own); the extension's readers for those pages come later.
+
 ### Bandcamp
 
 Tracks YouTube doesn't have, and digital-only releases Discogs doesn't list, are often on the
@@ -858,7 +880,8 @@ that the player starts once its window is up.
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
    the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com,
-   juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com and 127.0.0.1 only. (An older copy needs
+   juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com, www.youtube.com, soundcloud.com and
+   127.0.0.1 only (YouTube and SoundCloud for the mix button, which sends only the address). (An older copy needs
    reloading in `chrome://extensions` for new sites, and Chrome asks you to accept the new site
    access.)
 2. Start the player and open Options ▸ Browser…. The extension's options page opens on install (or
@@ -923,7 +946,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 **Manual checklist** (the extension has no automated tests):
 
 - [ ] Load unpacked in a fresh Chrome profile: the site access listed is discogs.com,
-      bandcamp.com, juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com and 127.0.0.1
+      bandcamp.com, juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com, www.youtube.com,
+      soundcloud.com and 127.0.0.1
       only.
 - [ ] Pair with the code from Options ▸ Browser…; the dialog says a browser was paired, and the same
       code no longer works.
@@ -970,6 +994,9 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       basket within a second.
 - [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
       its picture); clicking it adds the record to the crate on screen and plays it.
+- [ ] On a SoundCloud mix (`soundcloud.com/‹user›/‹mix›`) and a YouTube video, the button sits by
+      the title; Play in Diggr reads the mix into "Mix: ‹title›" and plays its first track. A
+      SoundCloud playlist (`/sets/…`) or profile shows no button.
 - [ ] A ▶ after each result plays just that one, without leaving the page, on: a Discogs search
       and a label page (one ▶ per release, after its visible title); bandcamp.com/search and an
       account's /music; a Juno search; a Traxsource search; the Beatport Top 100 (and none on a
@@ -1225,7 +1252,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 947 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 965 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1373,6 +1400,13 @@ What's covered:
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget
     browsers, and a taken port that leaves the player working.
+- **Mixes**: the tracklist parser over about 25 real line shapes and real yt-dlp answers
+  (`crates/dig/tests/fixtures/mix-*.json`: chapters, chapters without artists, a SoundCloud
+  description), mix addresses and the yt-dlp arguments, the worker's mix read (nothing
+  downloaded), the bridge's tracklist send (size, 300 tracks, bad tracks refused alone), a
+  Discogs search by track; headless, a pasted mix's crate in order with IDs, read again without
+  doubles, a Play send starting its first track, a mix sent from its page (the bridge's `SendMix`), Open in mix, and Find on Discogs linking one
+  record or opening the search.
 - **Bandcamp in the player** (`crates/ui`, headless, `bandcamp_tests.rs`, with fake pages): a
   pasted album playing from Bandcamp, a merge that skips, fixes and adds, a label followed from
   the browser and refreshed with new albums only, merged by name into a Discogs label (and the
