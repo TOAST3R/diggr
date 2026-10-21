@@ -1,6 +1,6 @@
 ## Why
 
-Early users don't find play/pause: the keys are Winamp's bottom row (Z X C V B), and Space, the key every other player uses, opens and closes records instead. Nor does the player show at a glance whether it is playing, paused or stopped: the play, pause and stop buttons look the same in every state.
+Early users don't find play/pause: the keys are the classic bottom row (Z X C V B), and Space, the key every other player uses, opens and closes records instead. Nor does the player show at a glance whether it is playing, paused or stopped: the play, pause and stop buttons look the same in every state.
 
 ## What Changes
 
