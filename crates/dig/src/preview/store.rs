@@ -76,6 +76,20 @@ fn clip_of(path: &Path) -> Option<String> {
     )
 }
 
+/// Deletes the previews of `clips` in `dir` and their overviews (their crates are gone).
+pub fn forget(dir: &Path, clips: &[String]) {
+    for clip in clips {
+        let path = super::fetcher::preview_path(dir, clip);
+        // Hashed before deleting: the overview is named by the preview's content.
+        let overview = overview_of(dir, &path);
+        if std::fs::remove_file(&path).is_ok()
+            && let Some(o) = overview
+        {
+            let _ = std::fs::remove_file(o);
+        }
+    }
+}
+
 /// Deletes the least recently used previews and overviews until both fit in `limit` bytes,
 /// never a preview whose clip is in `protected` or its overview. Returns the deleted previews.
 pub fn enforce_limit(dir: &Path, limit: u64, protected: &HashSet<String>) -> Vec<PathBuf> {
@@ -238,6 +252,21 @@ mod tests {
         assert_eq!(enforce_limit(&d, 150_000, &protected).len(), 1);
         assert!(playing.exists() && playing_ov.exists());
         assert_eq!(total_size(&d), 150_000);
+    }
+
+    #[test]
+    fn forgotten_previews_go_with_their_overviews() {
+        let root = crate::test_dir("store-forget");
+        let d = dir(&root);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(root.join("overviews")).unwrap();
+        file(&d, "aaaaaaaaaaa", 1, 0);
+        file(&d, "bbbbbbbbbbb", 1, 0);
+        let ov = overview_of(&d, &d.join("aaaaaaaaaaa.m4a")).unwrap();
+        std::fs::write(&ov, b"x").unwrap();
+        forget(&d, &["aaaaaaaaaaa".into(), "ccccccccccc".into()]);
+        assert!(!d.join("aaaaaaaaaaa.m4a").exists() && !ov.exists());
+        assert!(d.join("bbbbbbbbbbb.m4a").exists(), "other previews stay");
     }
 
     #[test]

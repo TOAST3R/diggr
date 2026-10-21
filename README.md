@@ -504,6 +504,9 @@ ahead of what plays. Other pasted text is ignored.
     preview was deleted, or left in an older version's cache folder, downloads again when
     it's played instead of turning red.
 - Previews are for listening while you dig. They stay in the cache and are never exported.
+  Removing a track or record, or deleting a crate, deletes its previews and their waveform
+  overviews at once, unless another crate still holds them (nothing is deleted while a crate
+  can't be read).
 
 ### Labels
 
@@ -1252,7 +1255,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 965 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 968 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

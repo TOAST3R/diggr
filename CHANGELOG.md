@@ -6,6 +6,16 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### New
+
+- **Deleting frees the space.** Remove a track or a record, or delete a whole crate, and its
+  downloaded previews leave the cache too, unless another crate still has them.
+
+### Fixed
+
+- **Deleting a crate no longer closes Diggr.** Deleting the crate you were looking at right after
+  launch used to quit the app; now Playlist simply takes its place.
+
 ## 0.1.1 — 2026-10-21
 
 ### New

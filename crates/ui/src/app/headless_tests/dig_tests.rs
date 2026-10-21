@@ -202,6 +202,42 @@ fn a_pasted_release_fills_the_shown_crate_with_playable_previews() {
 }
 
 #[test]
+fn removed_tracks_and_deleted_crates_take_their_previews_unless_another_crate_holds_them() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-forget", &fakes, |_| {});
+    let c = rig.app.crates.create("Release").unwrap();
+    rig.app.show_crate(c);
+    rig.frame(vec![Event::Paste(RELEASE.into())]);
+    rig.until(|r| all_playable(r, c, 3), "three previews ready");
+    let file = |rig: &Rig, i: usize| rig.dir.join(format!("cache/previews/{}.m4a", CLIPS[i]));
+    let ids: Vec<EntryId> = rig
+        .app
+        .crates
+        .shown()
+        .entries()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let keepers = rig.app.crates.create("Keepers").unwrap();
+    rig.app.crates.send(c, &ids[..1], keepers).unwrap();
+
+    rig.app.remove_entries(&ids[1..2]);
+    rig.until(
+        |r| !file(r, 1).exists(),
+        "the removed track's preview is deleted",
+    );
+    rig.app.delete_crate(c);
+    rig.until(
+        |r| !file(r, 2).exists(),
+        "the deleted crate's preview is deleted",
+    );
+    assert!(
+        file(&rig, 0).exists(),
+        "Keepers still holds the first track"
+    );
+}
+
+#[test]
 fn a_preview_whose_file_is_gone_downloads_again_instead_of_failing() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-gone", &fakes, |_| {});

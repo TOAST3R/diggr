@@ -98,6 +98,9 @@ pub enum PreviewCommand {
     /// Clips to download after the horizon, in order (replacing the previous list; empty
     /// stops it). They never cause an eviction: the list pauses when the cache is full.
     Background(Vec<String>),
+    /// Delete these clips' previews and overviews: no crate holds them any more. A protected
+    /// or downloading one waits until it no longer is (the next horizon drops it).
+    Forget(Vec<String>),
     /// While YouTube limits requests: try again now instead of at the end of the wait.
     TryNow,
     /// Try these again: clips given up on, and searches remembered as not found (or failed).
@@ -326,6 +329,9 @@ struct Scheduler {
     failures: HashMap<String, u32>,
     given_up: HashSet<String>,
     delivered: HashSet<String>,
+    /// Clips to delete once they are neither protected nor downloading (see
+    /// [`PreviewCommand::Forget`]).
+    forgotten: HashSet<String>,
     events: Vec<PreviewEvent>,
     /// Search results remembered across sessions.
     remembered: Searches,
@@ -408,6 +414,10 @@ impl Scheduler {
                 self.cfg.limit = l;
                 self.paused = false;
                 self.evict();
+            }
+            PreviewCommand::Forget(clips) => {
+                self.background.retain(|c| !clips.contains(c));
+                self.forgotten.extend(clips);
             }
             PreviewCommand::TryNow => {
                 for l in self.limits.values_mut() {
@@ -903,6 +913,20 @@ impl Scheduler {
         }
     }
 
+    fn forget_due(&mut self) {
+        let due: Vec<String> = self
+            .forgotten
+            .iter()
+            .filter(|c| !self.protected.contains(*c) && !self.running.contains_key(*c))
+            .cloned()
+            .collect();
+        for c in &due {
+            self.forgotten.remove(c);
+            self.delivered.remove(c);
+        }
+        store::forget(&self.cfg.dir, &due);
+    }
+
     fn give_up(&mut self, clip: String) {
         self.background.retain(|c| *c != clip);
         self.given_up.insert(clip.clone());
@@ -1196,6 +1220,7 @@ impl PreviewHandle {
             failures: HashMap::new(),
             given_up: HashSet::new(),
             delivered: HashSet::new(),
+            forgotten: HashSet::new(),
             events: Vec::new(),
             remembered: Searches::default(),
             to_search: Vec::new(),
@@ -1257,6 +1282,9 @@ impl PreviewHandle {
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                     s.check_timeouts();
+                    if !s.forgotten.is_empty() {
+                        s.forget_due();
+                    }
                     // Searches first: a found track joins the downloads at the next horizon.
                     if !s.to_search.is_empty() {
                         s.search_next();
@@ -1325,6 +1353,7 @@ mod tests {
             failures: HashMap::new(),
             given_up: HashSet::new(),
             delivered: HashSet::new(),
+            forgotten: HashSet::new(),
             events: Vec::new(),
             remembered: Searches::default(),
             to_search: Vec::new(),

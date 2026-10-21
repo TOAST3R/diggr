@@ -297,6 +297,20 @@ impl ClipSource {
 }
 
 impl Origin {
+    /// Every clip it has: in use, set aside, or its record's album upload.
+    pub fn clips(&self) -> impl Iterator<Item = &str> {
+        [
+            self.clip.as_deref().unwrap_or_default(),
+            &self.youtube_clip,
+            &self.bandcamp_clip,
+            &self.juno_clip,
+            &self.beatport_clip,
+            &self.album_clip,
+        ]
+        .into_iter()
+        .filter(|c| !c.is_empty())
+    }
+
     /// Where the clip in use comes from (`None`: no clip yet).
     pub fn source(&self) -> Option<ClipSource> {
         self.clip.as_deref().map(ClipSource::of)

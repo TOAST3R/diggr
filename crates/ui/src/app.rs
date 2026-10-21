@@ -1678,8 +1678,12 @@ impl DiggrApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_before_remove(ids);
+        #[cfg(not(target_arch = "wasm32"))]
+        let clips = digging::clips_of(self.crates.shown(), |e| ids.contains(&e.id));
         if self.crates.shown_mut().remove_ids(ids) > 0 {
             self.mark_shown();
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dig_forget_clips(clips);
         }
     }
 
@@ -5633,10 +5637,18 @@ impl DiggrApp {
         if self.armed.is_some_and(|(c, _)| c == id) {
             self.armed = None;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let clips = match self.crates.load(id) {
+            true => self.crates.get(id).map(|p| digging::clips_of(p, |_| true)),
+            false => None,
+        };
         match self.crates.delete(id) {
             Ok(()) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                self.dig_crate_deleted(id);
+                {
+                    self.dig_crate_deleted(id);
+                    self.dig_forget_clips(clips.unwrap_or_default());
+                }
             }
             Err(e) => self.notify(e),
         }

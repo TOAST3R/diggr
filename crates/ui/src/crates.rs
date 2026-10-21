@@ -534,6 +534,32 @@ impl Crates {
             .map(|c| c.id)
     }
 
+    /// Every clip some crate holds, read from the files of the crates not loaded; `None` when
+    /// a crate can't be read, so nothing it may hold is deleted.
+    pub fn clips_in_use(&self) -> Option<HashSet<String>> {
+        let mut clips: HashSet<String> = self
+            .loaded
+            .values()
+            .flat_map(|p| p.entries())
+            .filter_map(|e| e.origin.as_ref())
+            .flat_map(|o| o.clips().map(str::to_owned))
+            .collect();
+        for c in &self.index.crates {
+            if self.loaded.contains_key(&c.id) {
+                continue;
+            }
+            let Some(store) = &self.store else { continue };
+            let file = store.try_load::<CrateFile>(&file_name(c.id)).ok()?;
+            clips.extend(
+                file.iter()
+                    .flat_map(|f| &f.playlist.entries)
+                    .filter_map(|e| e.origin.as_ref())
+                    .flat_map(|o| o.clips().map(str::to_owned)),
+            );
+        }
+        Some(clips)
+    }
+
     // ---- create, rename, delete ------------------------------------------------------------
 
     /// Checks a crate name: 1 to 40 characters, unique ignoring case (`except` is the crate
@@ -753,6 +779,8 @@ impl Crates {
         if self.playing == id {
             self.playing = PLAYLIST;
         }
+        // Playlist isn't read at launch when another crate was shown.
+        self.load_playlist();
         // Save the list now, so the deleted crate can't come back.
         self.mark_index();
         self.save_index();
@@ -985,6 +1013,28 @@ mod tests {
     }
 
     #[test]
+    fn clips_in_use_include_crates_not_loaded() {
+        let cfg = config("clips");
+        let mut c = Crates::open(&cfg);
+        let lt = c.create("Lowtide").unwrap();
+        let origin = Origin {
+            clip: Some("aaaaaaaaaaa".into()),
+            bandcamp_clip: "bc.1".into(),
+            ..Default::default()
+        };
+        c.show(lt);
+        c.shown_mut()
+            .add_waiting("Nightcraft", "Glasshouse", None, Some(origin), "listed");
+        c.touch(lt);
+        c.show(PLAYLIST);
+        assert!(c.save_due(true, Duration::ZERO).is_empty());
+        let c = Crates::open(&cfg);
+        assert!(!c.is_loaded(lt));
+        let used = c.clips_in_use().unwrap();
+        assert!(used.contains("aaaaaaaaaaa") && used.contains("bc.1"));
+    }
+
+    #[test]
     fn crates_load_lazily_and_restart_where_they_were() {
         let cfg = config("restart");
         {
@@ -1000,7 +1050,7 @@ mod tests {
             c.touch(lt);
             assert!(c.save_due(true, Duration::ZERO).is_empty());
         }
-        let c = Crates::open(&cfg);
+        let mut c = Crates::open(&cfg);
         assert_eq!(c.name(c.shown_id()), "Lowtide Tapes");
         assert_eq!(names(c.shown()), ["1", "2", "3", "4", "5", "6", "7", "8"]);
         assert_eq!(c.shown().current_index(), Some(6));
@@ -1009,6 +1059,14 @@ mod tests {
             "only the shown crate is read at launch"
         );
         assert_eq!(c.entry_count(PLAYLIST), 2, "counts come from the index");
+
+        c.delete(c.shown_id()).unwrap();
+        assert_eq!(
+            names(c.shown()),
+            ["a", "b"],
+            "Playlist is read when it takes over"
+        );
+        assert_eq!(names(c.playing()), ["a", "b"]);
     }
 
     #[test]

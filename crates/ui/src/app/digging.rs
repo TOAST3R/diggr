@@ -5418,6 +5418,19 @@ impl DiggrApp {
         }
     }
 
+    /// Clips whose entries were removed: their previews are deleted, unless a crate still
+    /// holds them.
+    pub(super) fn dig_forget_clips(&self, clips: HashSet<String>) {
+        let Some(d) = &self.dig else { return };
+        let Some(used) = self.crates.clips_in_use() else {
+            return;
+        };
+        let gone: Vec<String> = clips.into_iter().filter(|c| !used.contains(c)).collect();
+        if !gone.is_empty() {
+            d.preview(PreviewCommand::Forget(gone));
+        }
+    }
+
     /// A crate was deleted: its sends stop.
     pub(super) fn dig_crate_deleted(&mut self, id: CrateId) {
         let Some(d) = &mut self.dig else { return };
@@ -5432,6 +5445,16 @@ impl DiggrApp {
         }
         self.bandcamp_crate_deleted(id);
     }
+}
+
+/// The clips of `p`'s entries that `keep` picks.
+pub(super) fn clips_of(p: &Playlist, keep: impl Fn(&Entry) -> bool) -> HashSet<String> {
+    p.entries()
+        .iter()
+        .filter(|e| keep(e))
+        .filter_map(|e| e.origin.as_ref())
+        .flat_map(|o| o.clips().map(str::to_owned))
+        .collect()
 }
 
 #[cfg(test)]
