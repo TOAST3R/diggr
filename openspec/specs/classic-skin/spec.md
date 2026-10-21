@@ -26,11 +26,15 @@ The system SHALL bundle an original default skin that follows the classic layout
 - **THEN** the panels are graphite, the time digits and title line are amber on black, and the main and EQ title bars show groove lines around the caption, with no gold stripes
 
 ### Requirement: Button states
-Skinned buttons SHALL show distinct normal and pressed sprites, and toggle buttons SHALL show on/off sprites.
+Skinned buttons SHALL show distinct normal and pressed sprites, and toggle buttons SHALL show on/off sprites. The play, pause and stop buttons SHALL each have an `_on` sprite (`play_on`, `pause_on`, `stop_on`), drawn by the skin generator in the same frame as the normal sprite with the glyph in the lit colour the shuffle and repeat icons use.
 
 #### Scenario: Toggle EQ button
 - **WHEN** the EQ toggle is clicked
 - **THEN** its sprite switches to the "on" state and the EQ section appears
+
+#### Scenario: Transport sprites generated
+- **WHEN** the skin generator runs
+- **THEN** the atlas holds `play_on`, `pause_on` and `stop_on` of the same size as `play`, `pause` and `stop`, and the skin test passes
 
 ### Requirement: LCD colour from the skin
 Every LCD text the app draws (the title line, kbps and kHz, the filter bar's search text, BPM range, filters and cart switch, and the playlist footer's info) SHALL use the skin's LCD colour. A skin file that names no LCD colour SHALL get the earlier green (0, 236, 0).

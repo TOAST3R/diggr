@@ -66,11 +66,16 @@ pub fn window_size(settings: &Settings, d: &SkinDef) -> (u16, u16) {
 /// waveform beside it. Shown with the waveform off too, so W doesn't move the rows.
 pub const BAND_H: u16 = crate::waveform::HEIGHT as u16;
 
+/// The band's height now: taller while SYNC puts the turntable in it.
+pub fn band_h(settings: &Settings, d: &SkinDef) -> u16 {
+    BAND_H.max(deck_h(settings, d))
+}
+
 /// The maximized layout in a window `w` × `h` skin pixels: the playlist's width and rows,
-/// under the band.
-pub fn maximized(d: &SkinDef, w: f32, h: f32) -> (u16, u16) {
+/// under a band `band` tall.
+pub fn maximized(d: &SkinDef, band: u16, w: f32, h: f32) -> (u16, u16) {
     let width = w.max(d.pl_width as f32) as u16;
-    let free = h - BAND_H as f32 - playlist_chrome(d) as f32;
+    let free = h - band as f32 - playlist_chrome(d) as f32;
     let rows = (free / d.pl_row_h as f32).floor().max(4.0) as u16;
     (width, rows)
 }
@@ -198,9 +203,17 @@ mod tests {
     fn a_maximized_playlist_takes_the_window_under_the_band() {
         let d = LoadedSkin::default_skin().def;
         // 1440 × 870 points at 2×: 720 × 435 skin pixels.
-        assert_eq!(maximized(&d, 720.0, 435.0), (720, (435 - 58 - 74) / 13));
+        assert_eq!(
+            maximized(&d, BAND_H, 720.0, 435.0),
+            (720, (435 - 58 - 74) / 13)
+        );
         // A tiny window still gets the minimum playlist.
-        assert_eq!(maximized(&d, 100.0, 50.0), (275, 4));
+        assert_eq!(maximized(&d, BAND_H, 100.0, 50.0), (275, 4));
+        // SYNC's turntable makes the band taller.
+        let mut s = Settings::default();
+        assert_eq!(band_h(&s, &d), BAND_H);
+        s.sync.on = true;
+        assert_eq!(band_h(&s, &d), d.sprite("deck_bg").h);
     }
 
     #[test]
