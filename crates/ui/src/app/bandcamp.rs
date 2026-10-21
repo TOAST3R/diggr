@@ -848,7 +848,9 @@ impl DiggrApp {
         if j.fan.is_some() {
             return self.fan_pages_done(job);
         }
-        if j.fallback.is_some() {
+        if let Some(f) = &j.fallback {
+            let looked: Vec<_> = f.entries.iter().map(|&id| (j.target, id)).collect();
+            self.not_found_touch(&looked);
             if j.fixed > 0 {
                 let name = self.crates.name(j.target).to_owned();
                 let tracks = match j.fixed {
@@ -968,6 +970,27 @@ impl DiggrApp {
             }
             f.entries.extend(want.entries);
         }
+    }
+
+    /// A Bandcamp look for entry `id` of crate `c` waits or runs.
+    pub(super) fn bandcamp_pending(&self, c: CrateId, id: EntryId) -> bool {
+        let Some(d) = &self.dig else { return false };
+        let has = |f: &Fallback| f.entries.contains(&id);
+        d.bandcamp
+            .pending
+            .iter()
+            .any(|((pc, _), f)| *pc == c && has(f))
+            || d.bandcamp
+                .jobs
+                .values()
+                .any(|j| j.target == c && j.fallback.as_ref().is_some_and(has))
+    }
+
+    /// Entry `id` of crate `c` was looked for on Bandcamp this session.
+    pub(super) fn bandcamp_tried(&self, c: CrateId, id: EntryId) -> bool {
+        self.dig
+            .as_ref()
+            .is_some_and(|d| d.bandcamp.tried.contains(&(c, id)))
     }
 
     /// Retry failed tracks or Refresh label: these entries may be looked for again.

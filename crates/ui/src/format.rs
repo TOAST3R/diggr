@@ -231,6 +231,8 @@ pub struct DigMarks {
     /// What each store's page last said of the record: ("Juno", "in stock, €14.78 (seen 14
     /// Oct)").
     pub stores: Vec<(&'static str, String)>,
+    /// Its preview is being searched for on YouTube right now.
+    pub searching: bool,
 }
 
 /// For a Discogs record with tracks searched for: how many entries it has, how many have a
@@ -345,6 +347,8 @@ pub fn entry_details(
             "already in crate".to_owned()
         } else if matches!(&e.status, EntryStatus::Unavailable(_)) {
             "not found by search".to_owned()
+        } else if marks.searching {
+            "searching YouTube…".to_owned()
         } else {
             "to search".to_owned()
         };

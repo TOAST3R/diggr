@@ -206,6 +206,9 @@ pub enum PreviewEvent {
         key: String,
         duration: Option<f64>,
     },
+    /// A search for the entries under this key started; `None`: it ended (its `Found` or
+    /// `NotFound`, if any, follows).
+    Searching(Option<String>),
 }
 
 pub struct Config {
@@ -725,6 +728,7 @@ impl Scheduler {
         let req = self.to_search.remove(i);
         let fetcher = self.fetcher.clone().expect("checked");
         let inbox = self.inbox.clone();
+        let key = req.key.clone();
         self.searching = Some(req.key.clone());
         let spawned = self.spawner.spawn(
             "dig-search",
@@ -736,11 +740,14 @@ impl Scheduler {
         );
         if spawned.is_err() {
             self.searching = None;
+        } else {
+            self.events.push(PreviewEvent::Searching(Some(key)));
         }
     }
 
     fn searched(&mut self, req: SearchRequest, result: Result<Vec<SearchResult>, FetchError>) {
         self.searching = None;
+        self.events.push(PreviewEvent::Searching(None));
         let found = match result {
             Ok(results) => {
                 self.answered(Source::YouTube);

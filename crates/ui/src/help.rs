@@ -163,6 +163,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  sale has the button on its own row; with several, it opens the record)",
             ),
             (
+                "Empty crate: a store's name",
+                "open the store's site; SET UP THE EXTENSION opens Options › Browser…",
+            ),
+            (
                 "Any other dig entry: + CART",
                 "buy it where it is known (the Discogs marketplace, Bandcamp, a store's \
                  basket); known on several stores or none: choose, or search the others",

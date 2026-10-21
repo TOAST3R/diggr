@@ -432,6 +432,23 @@ fn tracks_are_searched_one_at_a_time_and_remembered() {
         duration: Some(299.0),
     }));
     assert_eq!(fake.searched().len(), 2, "one search each");
+    // Each search says when it starts and ends, one at a time: start, end, start, end.
+    let marks: Vec<Option<String>> = ev
+        .iter()
+        .filter_map(|e| match e {
+            PreviewEvent::Searching(k) => Some(k.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            Some("release/1/A1".to_owned()),
+            None,
+            Some("release/1/A2".to_owned()),
+            None
+        ]
+    );
     assert_eq!(
         Searches::load(&d).tracks.len(),
         2,

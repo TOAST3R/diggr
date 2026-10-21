@@ -559,3 +559,43 @@ fn a_bleep_record_known_on_discogs_lists_each_format() {
         ]
     );
 }
+
+// ---- the empty crate's hint ----------------------------------------------------------------
+
+/// Where the hint's link `label` was drawn this frame, if it was.
+fn hint_link(rig: &mut Rig, label: &'static str) -> Option<egui::Rect> {
+    rig.frame(Vec::new());
+    rig.app
+        .pl_hint_links
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, r)| *r)
+}
+
+#[test]
+fn an_empty_crate_links_the_stores_and_the_extension() {
+    let (mut rig, fakes) = rig("hint-stores");
+    let c = rig.app.crates.create("asdf").unwrap();
+    rig.app.show_crate(c);
+    // Tall enough for the stores.
+    rig.app.settings.playlist_rows = 20;
+    let at = hint_link(&mut rig, "BANDCAMP").expect("the Bandcamp link");
+    rig.click(at.center());
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://bandcamp.com"]
+    );
+    assert_eq!(rig.app.crates.shown_id(), c, "the crate stays shown");
+    let at = hint_link(&mut rig, "SET UP THE EXTENSION").expect("the extension link");
+    rig.click(at.center());
+    assert!(rig.app.dig.as_ref().unwrap().bridge_dialog.is_some());
+}
+
+#[test]
+fn a_short_empty_crate_keeps_the_four_lines() {
+    let (mut rig, _) = rig("hint-short");
+    let c = rig.app.crates.create("asdf").unwrap();
+    rig.app.show_crate(c);
+    rig.app.settings.playlist_rows = 4;
+    assert!(hint_link(&mut rig, "BANDCAMP").is_none(), "no store links");
+}

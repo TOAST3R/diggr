@@ -40,6 +40,8 @@ mod fan;
 #[cfg(not(target_arch = "wasm32"))]
 mod friends;
 #[cfg(not(target_arch = "wasm32"))]
+mod not_found;
+#[cfg(not(target_arch = "wasm32"))]
 mod sellers;
 #[cfg(not(target_arch = "wasm32"))]
 mod stores;
@@ -134,6 +136,8 @@ pub struct DiggrApp {
     pl_rows_cache: RefCell<Option<(RowsKey, Rc<Vec<ListRow>>)>>,
     /// The rest of the album of the entry whose menu is open (tinted; the selection stays).
     pl_tint: Vec<EntryId>,
+    /// The empty crate's hint links as last drawn (label, where), for tests to click.
+    pl_hint_links: Vec<(&'static str, Rect)>,
     /// The BPM range handle being dragged: 0 the low one, 1 the high one.
     bpm_drag: Option<u8>,
     /// The crate last clicked in the sidebar, until the list is clicked: Delete deletes it.
@@ -330,6 +334,7 @@ impl DiggrApp {
             pl_open_rev: 0,
             pl_rows_cache: RefCell::new(None),
             pl_tint: Vec::new(),
+            pl_hint_links: Vec::new(),
             bpm_drag: None,
             side_crate: None,
             #[cfg(test)]
@@ -1059,8 +1064,40 @@ impl DiggrApp {
         if playable && matches!(self.engine, EngineSlot::Ready(_)) {
             self.play_entry(c, id);
         } else if !waiting && !playable {
-            self.armed = None; // removed, or it will never play
+            // Not found or failed: the record's next track that may still play is armed, so
+            // the search goes on down the record; removed, or none left, it is forgotten.
+            self.armed = self.next_in_record(c, id).map(|next| (c, next));
+            if let Some((c, next)) = self.armed {
+                let title = self.crates.get(c).and_then(|p| p.get(id));
+                if let Some(t) = title.map(|e| e.display_name()) {
+                    self.notify(format!("{t}: no preview, trying the next track"));
+                }
+                self.check_armed_next(c, next);
+            }
         }
+    }
+
+    /// An entry armed in place of one that won't play starts at once if it is ready.
+    fn check_armed_next(&mut self, c: CrateId, id: EntryId) {
+        let ready = self
+            .crates
+            .get(c)
+            .and_then(|p| p.get(id))
+            .is_some_and(|e| e.status.is_playable());
+        if ready && matches!(self.engine, EngineSlot::Ready(_)) {
+            self.play_entry(c, id);
+        }
+    }
+
+    /// The entry after `id` in its crate, of the same record, that plays or may still play.
+    fn next_in_record(&self, c: CrateId, id: EntryId) -> Option<EntryId> {
+        let p = self.crates.get(c)?;
+        let key = p.get(id)?.album_key()?;
+        let at = p.index_of(id)?;
+        p.entries()[at + 1..]
+            .iter()
+            .find(|e| e.album_key().as_ref() == Some(&key) && e.status.in_play_order())
+            .map(|e| e.id)
     }
 
     /// "Waiting for ‹title› (downloading 40%)" while an entry is armed.
@@ -1172,6 +1209,10 @@ impl DiggrApp {
                     (!text.is_empty()).then(|| text.join(", "))
                 }),
                 stores: self.store_notes(e),
+                searching: e.status == EntryStatus::Waiting(crate::playlist::WaitKind::Search)
+                    && e.origin
+                        .as_ref()
+                        .is_some_and(|o| d.search_now.as_deref() == Some(o.search_key.as_str())),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -4256,7 +4297,16 @@ impl DiggrApp {
                 rec.total,
                 &copies,
             ),
-            None => format::record_line(first.origin.as_ref(), rec.members.len(), rec.total),
+            None => {
+                let line = format::record_line(first.origin.as_ref(), rec.members.len(), rec.total);
+                // Fully tried with some tracks left without a preview.
+                #[cfg(not(target_arch = "wasm32"))]
+                let line = match self.record_tried(self.crates.shown_id(), &rec.key) {
+                    Some((n, m)) if n > 0 && n < m => format!("{line} · {n}/{m} previews"),
+                    _ => line,
+                };
+                line
+            }
         };
         text_clip.text(
             pos2(x0, line2),
@@ -4586,20 +4636,57 @@ impl DiggrApp {
                     "× after the BPM range, or ☰ › Show all tempos, shows every track"
                 });
             }
+            // The hint's links: the list's own click area below the rows takes their clicks.
+            let mut hint_links: Vec<(Rect, Rect, HintLink, [u8; 3])> = Vec::new();
             // An empty crate says how to fill it (not the Discogs crates: a paste can't).
             if shown.is_empty() && !self.crates.is_locked(self.crates.shown_id()) {
-                #[cfg(not(target_arch = "wasm32"))]
-                let lines = self
-                    .friend_hint(self.crates.shown_id())
-                    .unwrap_or_else(|| empty_crate_hint(PASTE_MODIFIER).to_vec());
-                #[cfg(target_arch = "wasm32")]
-                let lines = empty_crate_hint(PASTE_MODIFIER);
                 let line_h = sk.def.font.glyph_h as f32 + 4.0;
                 let body = list_h - (rows_top - top);
+                #[cfg(not(target_arch = "wasm32"))]
+                let friend = self.friend_hint(self.crates.shown_id());
+                #[cfg(target_arch = "wasm32")]
+                let friend: Option<Vec<String>> = None;
+                let lines: Vec<HintLine> = match friend {
+                    Some(f) => f.into_iter().map(HintLine::Text).collect(),
+                    None => {
+                        let long = store_hint(PASTE_MODIFIER);
+                        // Too short a list for the stores: the four short lines.
+                        if line_h * long.len() as f32 <= body {
+                            long
+                        } else {
+                            empty_crate_hint(PASTE_MODIFIER)
+                                .into_iter()
+                                .map(HintLine::Text)
+                                .collect()
+                        }
+                    }
+                };
                 let mut y = rows_top + ((body - line_h * lines.len() as f32) / 2.0).round();
+                let gap = sk.text_width(" ");
                 for line in lines {
-                    let x = l.x as f32 + ((l.w as f32 - sk.text_width(&line)) / 2.0).round();
-                    sk.text(x, y, &line, color(d.colors.pl_text));
+                    match line {
+                        HintLine::Text(t) => {
+                            let x = l.x as f32 + ((l.w as f32 - sk.text_width(&t)) / 2.0).round();
+                            sk.text(x, y, &t, color(d.colors.pl_text));
+                        }
+                        HintLine::Links(links) => {
+                            let w: f32 = links.iter().map(|k| sk.text_width(k.label)).sum::<f32>()
+                                + gap * 2.0 * (links.len() - 1) as f32;
+                            let mut x = l.x as f32 + ((l.w as f32 - w) / 2.0).round();
+                            for k in links {
+                                let tint = readable(k.color, d.colors.pl_bg);
+                                let w = sk.text_width(k.label);
+                                sk.text(x, y, k.label, color(tint));
+                                hint_links.push((
+                                    sk.rect(x, y - 1.0, w, line_h - 2.0),
+                                    sk.rect(x, y + line_h - 4.0, w, 1.0),
+                                    k,
+                                    tint,
+                                ));
+                                x += w + gap * 2.0;
+                            }
+                        }
+                    }
                     y += line_h;
                 }
             }
@@ -4744,7 +4831,7 @@ impl DiggrApp {
                     );
                 }
                 let current = shown.current() == Some(e.id);
-                let (mut col, dur) = row_look(e, current, &d.colors);
+                let (mut col, mut dur) = row_look(e, current, &d.colors);
                 // Where the audio comes from: "YT", "BC" (nothing for local files).
                 let source = e
                     .origin
@@ -4752,6 +4839,19 @@ impl DiggrApp {
                     .and_then(|o| o.source())
                     .map(|s| s.badge());
                 let marks = self.dig_marks(e);
+                // Being searched for: SEARCHING… at its end, pulsing about once a second.
+                if marks.searching {
+                    let t = ui.input(|i| i.time) as f32;
+                    let k = 0.5 + 0.5 * (t * std::f32::consts::TAU).sin();
+                    let bright = if current {
+                        d.colors.pl_current
+                    } else {
+                        d.colors.pl_text
+                    };
+                    col = lerp_color(bright, d.colors.pl_bg, 0.55 * (1.0 - k));
+                    dur = RowEnd::Text("SEARCHING…".into());
+                    ui.ctx().request_repaint_after(Duration::from_millis(50));
+                }
                 let owned = marks.owned.clone();
                 // Already in the Discogs cart: its CART badge says so, no buy pill.
                 let store_pill = self
@@ -5005,6 +5105,7 @@ impl DiggrApp {
             }
             // Below the last row (all of an empty crate's list): the crate's own menu.
             let below = rows_top + y as f32 * row_h;
+            let mut below_click = None;
             if below < top + list_h {
                 let rect = sk.rect(l.x as f32, below, l.w as f32, top + list_h - below);
                 let resp = ui.interact(rect, Id::new("pl_below"), Sense::click());
@@ -5014,9 +5115,30 @@ impl DiggrApp {
                     ui.input(|i| i.modifiers),
                 )
                 .then_some(egui::SetOpenCommand::Bool(true));
+                below_click = resp
+                    .clicked()
+                    .then(|| resp.interact_pointer_pos())
+                    .flatten();
                 egui::Popup::context_menu(&resp)
                     .open_memory(open)
                     .show(|ui| self.crate_items(ui, &mut actions));
+            }
+            self.pl_hint_links = hint_links
+                .iter()
+                .map(|(r, _, k, _)| (k.label, *r))
+                .collect();
+            for (r, underline, k, tint) in hint_links {
+                if ui.rect_contains_pointer(r) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    ui.painter().rect_filled(underline, 0.0, color(tint));
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if below_click.is_some_and(|p| r.contains(p)) {
+                    actions.push(Action::Dig(match k.to {
+                        Some(url) => DigAction::OpenUrl(url.to_owned()),
+                        None => DigAction::OpenBrowserDialog,
+                    }));
+                }
             }
             if let Some(from) = self.pl_drag_from
                 && ui.input(|i| i.pointer.any_released())
@@ -6695,12 +6817,114 @@ const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
     "CTRL"
 };
 
-/// What an empty crate shows in its list: how to fill it, and where the help is. An empty
-/// line is a gap.
+/// A line of the empty crate's hint: text, or links side by side.
+enum HintLine {
+    Text(String),
+    Links(Vec<HintLink>),
+}
+
+/// A store name in its own colour (made readable on the list), opening its home page; or,
+/// with no address, the extension's pairing dialog.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HintLink {
+    label: &'static str,
+    color: [u8; 3],
+    to: Option<&'static str>,
+}
+
+/// The stores' names in their brand colours: pasted links (Discogs, Bandcamp), and through
+/// the extension (Juno, Bleep, Beatport, Traxsource).
+const PASTE_STORES: [HintLink; 2] = [
+    HintLink {
+        label: "DISCOGS",
+        color: [51, 51, 51],
+        to: Some("https://www.discogs.com"),
+    },
+    HintLink {
+        label: "BANDCAMP",
+        color: [29, 160, 195],
+        to: Some("https://bandcamp.com"),
+    },
+];
+const EXTENSION_STORES: [HintLink; 4] = [
+    HintLink {
+        label: "JUNO",
+        color: [255, 102, 0],
+        to: Some("https://www.juno.co.uk"),
+    },
+    HintLink {
+        label: "BLEEP",
+        color: [230, 30, 80],
+        to: Some("https://bleep.com"),
+    },
+    HintLink {
+        label: "BEATPORT",
+        color: [1, 255, 149],
+        to: Some("https://www.beatport.com"),
+    },
+    HintLink {
+        label: "TRAXSOURCE",
+        color: [58, 157, 211],
+        to: Some("https://www.traxsource.com"),
+    },
+];
+
+/// The empty crate's hint where the list is tall enough: where to dig, by paste or through
+/// the browser extension.
+fn store_hint(modifier: &str) -> Vec<HintLine> {
+    vec![
+        HintLine::Text(format!("PASTE A LINK HERE · {modifier}+V")),
+        HintLine::Links(PASTE_STORES.to_vec()),
+        HintLine::Text(String::new()),
+        HintLine::Text("WITH THE BROWSER EXTENSION".into()),
+        HintLine::Links(EXTENSION_STORES.to_vec()),
+        HintLine::Links(vec![HintLink {
+            label: "SET UP THE EXTENSION",
+            color: [47, 228, 90],
+            to: None,
+        }]),
+        HintLine::Text(String::new()),
+        HintLine::Text("OR DROP FILES · PRESS H FOR HELP".into()),
+    ]
+}
+
+/// WCAG contrast ratio of two colours.
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let lum = |c: [u8; 3]| {
+        let ch = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// `c`, moved toward white or black (away from `bg`) until it reads at 3:1 on `bg`.
+fn readable(c: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
+    let away = if contrast([255; 3], bg) >= contrast([0; 3], bg) {
+        [255, 255, 255]
+    } else {
+        [0, 0, 0]
+    };
+    (0..=10)
+        .map(|i| lerp_color(c, away, i as f32 / 10.0).to_array())
+        .map(|[r, g, b, _]| [r, g, b])
+        .find(|&m| contrast(m, bg) >= 3.0)
+        .unwrap_or(away)
+}
+
+/// What an empty crate shows in its list when it is too short for the stores: how to fill
+/// it, and where the help is. An empty line is a gap.
 fn empty_crate_hint(modifier: &str) -> [String; 4] {
     [
-        format!("PASTE A DISCOGS LINK · {modifier}+V"),
-        "OR DROP FILES".into(),
+        "PASTE A DISCOGS OR BANDCAMP LINK".into(),
+        format!("{modifier}+V · OR DROP FILES"),
         String::new(),
         "PRESS H FOR HELP".into(),
     ]
@@ -7567,13 +7791,13 @@ mod tests {
         assert_eq!(
             empty_crate_hint("CMD"),
             [
-                "PASTE A DISCOGS LINK · CMD+V",
-                "OR DROP FILES",
+                "PASTE A DISCOGS OR BANDCAMP LINK",
+                "CMD+V · OR DROP FILES",
                 "",
                 "PRESS H FOR HELP"
             ]
         );
-        assert_eq!(empty_crate_hint("CTRL")[0], "PASTE A DISCOGS LINK · CTRL+V");
+        assert_eq!(empty_crate_hint("CTRL")[1], "CTRL+V · OR DROP FILES");
         // Every character is in the skin font, and the longer line fits the narrowest list.
         let def = LoadedSkin::default_skin().def;
         for line in empty_crate_hint("CTRL")
@@ -7584,6 +7808,29 @@ mod tests {
             let w = line.chars().count() as u16 * def.font.advance - 1;
             assert!(w <= def.at("pl_list").w, "{line}: {w}");
         }
+    }
+
+    #[test]
+    fn the_store_hint_fits_and_every_store_reads_on_the_list() {
+        let def = LoadedSkin::default_skin().def;
+        for line in store_hint("CTRL") {
+            let text = match line {
+                HintLine::Text(t) => t,
+                HintLine::Links(links) => {
+                    links.iter().map(|k| k.label).collect::<Vec<_>>().join("  ")
+                }
+            };
+            assert!(text.chars().all(|c| def.glyph(c).is_some()), "{text}");
+            let w = (text.chars().count() as u16 * def.font.advance).saturating_sub(1);
+            assert!(w <= def.at("pl_list").w, "{text}: {w}");
+        }
+        for k in PASTE_STORES.iter().chain(&EXTENSION_STORES) {
+            let c = readable(k.color, def.colors.pl_bg);
+            assert!(contrast(c, def.colors.pl_bg) >= 3.0, "{}", k.label);
+        }
+        // Discogs' near-black is lightened on the black list; Beatport's green is kept.
+        assert_ne!(readable([51, 51, 51], [0, 0, 0]), [51, 51, 51]);
+        assert_eq!(readable([1, 255, 149], [0, 0, 0]), [1, 255, 149]);
     }
 
     #[test]
