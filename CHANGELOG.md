@@ -6,6 +6,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+## 0.1.1 — 2026-10-21
+
 ### New
 
 - **Space plays and pauses.** Like every other player: Space plays and pauses wherever the
