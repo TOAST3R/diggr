@@ -160,7 +160,12 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Copy (open record, seller crate): + CART / IN CART",
                 "put the copy in your Discogs cart / take it out (a record with one copy for \
-                 sale has the button on its own row)",
+                 sale has the button on its own row; with several, it opens the record)",
+            ),
+            (
+                "Any other dig entry: + CART",
+                "buy it where it is known (the Discogs marketplace, Bandcamp, a store's \
+                 basket); known on several stores or none: choose, or search the others",
             ),
             (
                 "Juno or Bleep entry: + CART / IN CART",

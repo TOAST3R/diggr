@@ -699,6 +699,14 @@ part of the product), on Bleep the record in a format, chosen from a small menu 
 which turns into a red **REMOVE** under the pointer and takes it out again. The tooltip says
 the store and the price.
 
+Every other dig entry has the pill too. When its record is known on one store only, the pill
+acts there at once: the Discogs marketplace for a release (no copy picked), the Bandcamp page,
+or the store's basket for a record a Juno or Bleep send linked to its release. Known on
+several stores, or on none, it opens **Buy**: a button per store it is known on (with the price
+or how many are for sale), and a link to search each other store (Discogs, Bandcamp, Juno,
+Bleep, Beatport, Traxsource) for its artist and title. Esc closes it. Local files have no
+pill.
+
 - **Through the browser:** Diggr has no login to these stores, so the paired browser extension
   does each add, remove or read in your browser's session, with the store's own basket requests.
   Diggr itself never contacts the stores. Juno needs no account (its basket belongs to the
@@ -754,9 +762,9 @@ the heading to fold or unfold it; right-click it for **Add seller…**.
 - **Your cart:** in a seller crate, each copy row has a cart button. Click **+ CART** to put
   that copy in your real Discogs cart; it then reads **IN CART**, which turns into a red
   **REMOVE** under the pointer, and a click takes the copy out again. A record with only one
-  copy for sale has the button on its own row, so you don't need to open it; a record with
-  several shows a cyan **CART** badge when one of them is in, and its copy rows have the
-  buttons. Any entry of that release in any other crate, your wantlist and collection
+  copy for sale has the button on its own row, so you don't need to open it; on a record with
+  several, the button opens the record (reading **IN CART** when one of them is in), and its
+  copy rows have the buttons. Any entry of that release in any other crate, your wantlist and collection
   included, shows the **CART** badge (the tooltip says from whom and for how much). If the
   copy sold meanwhile it gets SOLD; if the cart can't be reached, the listing opens on
   discogs.com instead. The cart is read at launch,
@@ -1192,7 +1200,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 927 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 936 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

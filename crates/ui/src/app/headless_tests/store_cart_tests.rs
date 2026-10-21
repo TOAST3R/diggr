@@ -372,3 +372,190 @@ fn an_added_item_is_kept_for_the_next_launch() {
     let saved = ::dig::carts::StoreCarts::load(&rig.dir.join("cache"));
     assert_eq!(saved.get(Store::Juno, PRODUCT).unwrap().price, "€13,56");
 }
+
+// ---- the buy pill on every dig entry ------------------------------------------------------
+
+/// Adds a Discogs entry of release `release` (none: a record known nowhere) to the Playlist.
+fn discogs_entry(rig: &mut Rig, release: Option<u64>, bandcamp: &str) -> EntryId {
+    let origin = crate::playlist::Origin {
+        release,
+        artist: "Kerri Chandler".into(),
+        album: "Rain".into(),
+        bandcamp: bandcamp.into(),
+        for_sale: release.map(|_| crate::playlist::ForSale {
+            count: 12,
+            lowest_cents: Some(900),
+            currency: "EUR".into(),
+            fetched_at: 0,
+        }),
+        ..Default::default()
+    };
+    let p = rig.app.crates.get_mut(PLAYLIST).unwrap();
+    p.add_waiting("Kerri Chandler", "Rain", None, Some(origin), "listed")
+}
+
+fn buy(rig: &mut Rig, id: EntryId) {
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::Buy(id)), &ctx);
+}
+
+/// The chooser on screen (a new window is measured in its first frame, drawn in the next).
+fn chooser(rig: &mut Rig) -> egui::FullOutput {
+    rig.frame(Vec::new());
+    rig.frame(Vec::new())
+}
+
+fn choosing(rig: &Rig) -> bool {
+    rig.app.dig.as_ref().unwrap().stores.buy.is_some()
+}
+
+#[test]
+fn a_record_known_only_on_discogs_opens_its_marketplace() {
+    let (mut rig, fakes) = rig("buy-discogs");
+    let id = discogs_entry(&mut rig, Some(555), "");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "+ CART"),
+        "every dig entry: {:?}",
+        text_list(&out)
+    );
+    assert_eq!(pill(&rig).tip, "Open it on the Discogs marketplace");
+    buy(&mut rig, id);
+    assert!(!choosing(&rig), "one store: no chooser");
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://www.discogs.com/sell/release/555"]
+    );
+}
+
+#[test]
+fn a_bandcamp_entry_opens_its_page() {
+    let (mut rig, fakes) = rig("buy-bandcamp");
+    let page = "https://kerrichandler.bandcamp.com/track/rain";
+    let id = discogs_entry(&mut rig, None, page);
+    buy(&mut rig, id);
+    assert!(!choosing(&rig));
+    assert_eq!(*fakes.browser.opened.lock().unwrap(), [page]);
+}
+
+#[test]
+fn a_record_known_nowhere_offers_six_searches_and_holds_the_keys() {
+    let (mut rig, fakes) = rig("buy-nowhere");
+    let id = discogs_entry(&mut rig, None, "");
+    assert_eq!(pill(&rig).tip, "Search the stores for it");
+    buy(&mut rig, id);
+    assert!(choosing(&rig));
+    let out = chooser(&mut rig);
+    assert!(
+        shows(&out, "Buy Kerri Chandler – Rain"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(!shows(&out, "KNOWN"));
+    for shop in [
+        "Discogs",
+        "Bandcamp",
+        "Juno",
+        "Bleep",
+        "Beatport",
+        "Traxsource",
+    ] {
+        assert!(shows(&out, shop), "{shop}: {:?}", text_list(&out));
+    }
+    // It holds the keyboard: H doesn't open the help.
+    rig.key(Key::H, Modifiers::NONE);
+    assert!(!rig.app.help);
+    // A search link opens the store's search, and the chooser stays.
+    rig.click_text("Bandcamp");
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://bandcamp.com/search?q=Kerri%20Chandler%20Rain&item_type=a"]
+    );
+    assert!(choosing(&rig));
+    rig.key(Key::Escape, Modifiers::NONE);
+    assert!(!choosing(&rig), "Esc closes it");
+}
+
+#[test]
+fn a_juno_record_linked_to_discogs_chooses_between_them() {
+    let (mut rig, _) = rig("buy-juno-discogs");
+    send(&mut rig, juno());
+    let id = first(&rig).id;
+    let p = rig.app.crates.get_mut(PLAYLIST).unwrap();
+    p.entries_mut()
+        .next()
+        .unwrap()
+        .origin
+        .as_mut()
+        .unwrap()
+        .release = Some(555);
+    assert!(pill(&rig).buy, "known on two stores");
+    buy(&mut rig, id);
+    let out = chooser(&mut rig);
+    assert!(shows(&out, "KNOWN"), "{:?}", text_list(&out));
+    assert!(shows(&out, "Discogs"), "{:?}", text_list(&out));
+    assert!(shows(&out, "Juno · €13,56"), "{:?}", text_list(&out));
+    // Juno's button adds to the Juno basket, as its own pill does, and closes the chooser.
+    rig.click_text("Juno · €13,56");
+    assert!(!choosing(&rig));
+    let a = next_action(&rig).expect("queued");
+    assert_eq!((a.store, a.kind), (Store::Juno, CartKind::Add));
+}
+
+#[test]
+fn a_discogs_record_a_juno_send_linked_gets_the_juno_basket() {
+    let (mut rig, _) = rig("buy-linked");
+    send(&mut rig, juno());
+    // The send's record is linked to release 777 as a Discogs lookup would.
+    let d = rig.app.dig.as_mut().unwrap();
+    let seen = d.stores.memory_mut(Store::Juno).products.get_mut(PRODUCT);
+    seen.expect("sent").release = Some(777);
+    let id = discogs_entry(&mut rig, Some(777), "");
+    let e = rig
+        .app
+        .crates
+        .get(PLAYLIST)
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .clone();
+    let known: Vec<_> = rig.app.known_stores(&e).iter().map(|k| k.shop).collect();
+    assert_eq!(known, [::dig::buy::Shop::Discogs, ::dig::buy::Shop::Juno]);
+}
+
+#[test]
+fn a_local_file_has_no_pill() {
+    let (mut rig, _) = rig("buy-local");
+    rig.fill_playlist(1);
+    assert!(rig.app.store_pill_of(&first(&rig)).is_none());
+}
+
+#[test]
+fn a_bleep_record_known_on_discogs_lists_each_format() {
+    let (mut rig, _) = rig("buy-bleep");
+    let page = "https://bleep.com/release/100168-acid-pauli-gwar";
+    let formats = vec![("501", "Vinyl £22.99"), ("502", "Digital £7.99")];
+    send(&mut rig, record(Store::Bleep, "100168", page, "", formats));
+    let p = rig.app.crates.get_mut(PLAYLIST).unwrap();
+    p.entries_mut()
+        .next()
+        .unwrap()
+        .origin
+        .as_mut()
+        .unwrap()
+        .release = Some(555);
+    let known = rig.app.known_stores(&first(&rig));
+    let notes: Vec<(&str, &str)> = known
+        .iter()
+        .map(|k| (k.shop.name(), k.note.as_str()))
+        .collect();
+    // Its Discogs release (nothing known for sale), then each format apart.
+    assert_eq!(
+        notes,
+        [
+            ("Discogs", ""),
+            ("Bleep", "Vinyl £22.99"),
+            ("Bleep", "Digital £7.99"),
+        ]
+    );
+}

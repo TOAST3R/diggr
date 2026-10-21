@@ -1213,14 +1213,13 @@ fn a_record_with_one_copy_left_carries_its_pill() {
     // Release 1002 has one copy (12); release 1001 three, the €9.00 one in the cart.
     rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     let out = rig.frame(Vec::new());
-    assert_eq!(
-        pills(&out),
-        1,
-        "only 1002's record row: {:?}",
-        text_list(&out)
-    );
+    // 1002's pill adds its copy; 1001's, with several copies, reads IN CART and opens it.
+    assert_eq!(pills(&out), 2, "{:?}", text_list(&out));
     assert!(shows(&out, "+ CART"));
-    assert!(shows(&out, "CART"), "1001's record row keeps the badge");
+    assert!(
+        shows(&out, "IN CART"),
+        "1001's record row says a copy is in the cart"
+    );
     let pos = texts(&out)
         .into_iter()
         .find(|t| t.text == "+ CART")
@@ -1232,6 +1231,16 @@ fn a_record_with_one_copy_left_carries_its_pill() {
     assert_eq!(rig.app.pl_open_rev, opened, "the record didn't open");
     rig.until(|r| message(r) == "Added to your cart", "Discogs answers");
     assert_eq!(posted(&fakes), [r#"{"item_ids":[12]}"#]);
+    // 1001's pill (the first) opens the record to its copies' pills, and adds nothing.
+    let pos = texts(&rig.frame(Vec::new()))
+        .into_iter()
+        .find(|t| ["+ CART", "IN CART"].contains(&t.text.as_str()))
+        .unwrap()
+        .rect
+        .center();
+    rig.click(pos);
+    assert_eq!(rig.app.pl_open_rev, opened + 1, "the record opened");
+    assert_eq!(posted(&fakes).len(), 1);
 }
 
 #[test]
@@ -1544,6 +1553,7 @@ fn the_flat_view_keeps_the_cart_badge() {
     rig.app.apply(Action::ToggleGrouped, &ctx);
     assert!(!rig.app.crates.shown().is_grouped());
     let out = rig.frame(Vec::new());
-    assert_eq!(pills(&out), 0, "{:?}", text_list(&out));
+    // 1001's tracks keep the CART badge; 1002's lone copy has its + CART.
+    assert_eq!(pills(&out), 1, "{:?}", text_list(&out));
     assert!(shows(&out, "CART"), "{:?}", text_list(&out));
 }

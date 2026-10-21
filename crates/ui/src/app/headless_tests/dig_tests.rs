@@ -324,15 +324,17 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
         message(&rig)
     );
     let out = rig.frame(Vec::new());
-    for n in 1..=3 {
-        assert!(
-            texts(&out)
-                .iter()
-                .any(|t| t.text.starts_with(&format!("{n}. ★ "))),
-            "every entry of the record: {:?}",
-            text_list(&out)
-        );
-    }
+    // Each row: its number, its cart pill, then the starred name.
+    let starred = texts(&out)
+        .iter()
+        .filter(|t| t.text.starts_with("★ "))
+        .count();
+    assert_eq!(
+        starred,
+        3,
+        "every entry of the record: {:?}",
+        text_list(&out)
+    );
     let put = (Method::Put, "/users/digger/wants/1001".to_owned());
     rig.until(
         |r| !r.app.dig.as_ref().unwrap().memory.is_want_pending(1001),
@@ -770,7 +772,7 @@ fn a_want_while_discogs_is_offline_waits_as_wantlist_pending() {
     assert!(
         texts(&out)
             .iter()
-            .any(|t| t.text.starts_with("1. ★ ") && t.text.ends_with("(wantlist pending)")),
+            .any(|t| t.text.starts_with("★ ") && t.text.ends_with("(wantlist pending)")),
         "{:?}",
         text_list(&out)
     );
@@ -1671,7 +1673,7 @@ fn a_wantlist_change_that_keeps_failing_says_so_and_retries_on_request() {
     );
     let out = rig.frame(Vec::new());
     assert!(
-        texts(&out).iter().any(|t| t.text.starts_with("1. ⚑ ★ ")),
+        texts(&out).iter().any(|t| t.text.starts_with("⚑ ★ ")),
         "{:?}",
         text_list(&out)
     );
@@ -1713,7 +1715,7 @@ fn a_failed_collection_add_is_retried_only_on_request_and_never_twice() {
     });
     assert!(message(&rig).contains("Could not add"), "{}", message(&rig));
     let out = rig.frame(Vec::new());
-    assert!(texts(&out).iter().any(|t| t.text.starts_with("1. ⚑ ")));
+    assert!(texts(&out).iter().any(|t| t.text.starts_with("⚑ ")));
     for _ in 0..20 {
         rig.pump();
     }
