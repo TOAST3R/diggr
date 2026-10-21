@@ -4220,3 +4220,216 @@ fn another_track_starting_ends_the_wait_with_the_old_target() {
     assert_eq!(rig.app.settings.sync.pending, None);
     assert_eq!(rig.app.settings.sync.target, 112);
 }
+
+// ---- records with no preview anywhere ------------------------------------------------------
+
+/// "Various – Sixty": two tracks to search, into a new crate shown; `found` of them have an
+/// upload.
+fn sixty(rig: &mut Rig, fakes: &Fakes, found: usize) -> CrateId {
+    for (i, title) in ["Paper Wings", "Hidden Soul"].iter().enumerate() {
+        let results = if i < found {
+            vec![::dig::preview::search::SearchResult {
+                id: format!("sixty{i:06}"),
+                duration: Some(295.0),
+                channel: "Analogical Force".into(),
+                title: format!("The 89th Passenger - {title}"),
+            }]
+        } else {
+            Vec::new()
+        };
+        fakes
+            .fetcher
+            .answer(&format!("The 89th Passenger {title}"), results);
+    }
+    let c = rig.app.crates.create("Sixty").unwrap();
+    let j = af_job(c);
+    rig.app.dig_intake_event(Intake::Listed(
+        j.clone(),
+        vec![af_listed(VINYL, Format::Vinyl)],
+    ));
+    rig.app.dig_intake_event(Intake::Record(
+        j,
+        af_info(VINYL, Format::Vinyl),
+        af_tracks(),
+    ));
+    rig.app.show_crate(c);
+    c
+}
+
+fn notice(rig: &Rig) -> usize {
+    rig.app.dig.as_ref().unwrap().not_found.notice.len()
+}
+
+#[test]
+fn a_record_found_nowhere_is_told_in_one_notice_once() {
+    let fakes = Fakes::new();
+    let mut rig = rig("not-found", &fakes, |_| {});
+    let c = sixty(&mut rig, &fakes, 0);
+    rig.until(|r| notice(r) == 1, "the record is told");
+    let key = crate::playlist::AlbumKey::Release(VINYL);
+    assert_eq!(rig.app.record_tried(c, &key), Some((0, 2)));
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "No preview found"), "{:?}", text_list(&out));
+    assert!(
+        shows(&out, "Various – Sixty (2025)"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(
+        texts(&out)
+            .iter()
+            .any(|t| t.text.starts_with("Tried YouTube")
+                && t.text.ends_with("No preview anywhere yet")),
+        "{:?}",
+        text_list(&out)
+    );
+    // A Discogs record can be looked for on Bandcamp by hand.
+    rig.click_text("Search on Bandcamp");
+    assert_eq!(
+        fakes.browser.opened.lock().unwrap().last().unwrap(),
+        "https://bandcamp.com/search?q=The%2089th%20Passenger%20Sixty&item_type=a"
+    );
+    // It holds the keyboard; Esc closes it, and the record isn't told again.
+    rig.key(Key::H, Modifiers::NONE);
+    assert!(!rig.app.help);
+    rig.key(Key::Escape, Modifiers::NONE);
+    assert_eq!(notice(&rig), 0);
+    rig.app
+        .not_found_touch(&[(c, rig.app.crates.get(c).unwrap().entries()[0].id)]);
+    rig.frame(Vec::new());
+    assert_eq!(notice(&rig), 0, "once a session");
+}
+
+#[test]
+fn a_partly_found_record_says_how_many_and_tells_nothing() {
+    let fakes = Fakes::new();
+    let mut rig = rig("partly-found", &fakes, |_| {});
+    let c = sixty(&mut rig, &fakes, 1);
+    let key = crate::playlist::AlbumKey::Release(VINYL);
+    rig.until(|r| r.app.record_tried(c, &key).is_some(), "both tried");
+    assert_eq!(rig.app.record_tried(c, &key), Some((1, 2)));
+    assert_eq!(notice(&rig), 0);
+    // Grouped, its record row says so.
+    let ctx = rig.ctx.clone();
+    if !rig.app.crates.shown().is_grouped() {
+        rig.app.apply(Action::ToggleGrouped, &ctx);
+    }
+    let out = rig.frame(Vec::new());
+    assert!(
+        texts(&out).iter().any(|t| t.text.ends_with("1/2 previews")),
+        "{:?}",
+        text_list(&out)
+    );
+}
+
+#[test]
+fn retry_sends_the_record_back_to_search() {
+    let fakes = Fakes::new();
+    let mut rig = rig("not-found-retry", &fakes, |_| {});
+    let c = sixty(&mut rig, &fakes, 0);
+    rig.until(|r| notice(r) == 1, "the record is told");
+    rig.frame(Vec::new());
+    rig.frame(Vec::new());
+    rig.click_text("Retry");
+    assert_eq!(notice(&rig), 0, "it leaves the notice");
+    let waiting = rig
+        .app
+        .crates
+        .get(c)
+        .unwrap()
+        .entries()
+        .iter()
+        .filter(|e| matches!(e.status, EntryStatus::Waiting(_)))
+        .count();
+    assert_eq!(waiting, 2, "both back to search");
+    // Not found again: told again.
+    rig.until(|r| notice(r) == 1, "told again after failing again");
+}
+
+#[test]
+fn a_clicked_track_not_found_hands_over_to_the_next_of_its_record() {
+    let fakes = Fakes::new();
+    // T4 and T5 have no upload, T6 has; T1 to T3 do too, but they aren't asked for.
+    for i in 1..=6 {
+        let results = if i == 4 || i == 5 {
+            Vec::new()
+        } else {
+            vec![::dig::preview::search::SearchResult {
+                id: format!("track{i:06}"),
+                duration: Some(181.0),
+                channel: "Analogical Force".into(),
+                title: format!("The 89th Passenger - T{i}"),
+            }]
+        };
+        fakes
+            .fetcher
+            .answer(&format!("The 89th Passenger T{i}"), results);
+    }
+    let mut rig = rig("search-next-in-record", &fakes, |_| {});
+    let c = six_tracks(&mut rig, "AF069");
+    let ids = rig.ids(c);
+    // Nothing plays: T4 is armed with a click, beyond the top of the list.
+    rig.app.play_entry(c, ids[3]);
+    assert_eq!(rig.app.armed, Some((c, ids[3])));
+    rig.until(
+        |r| r.app.position.state == PlayState::Playing,
+        "a track of the record plays",
+    );
+    assert_eq!(
+        rig.app.crates.playing().current(),
+        Some(ids[5]),
+        "T4 and T5 weren't found, T6 was"
+    );
+    let status = |i: usize| {
+        rig.app.crates.get(c).unwrap().entries()[i]
+            .status
+            .note()
+            .unwrap_or_default()
+    };
+    assert_eq!(status(3), "not found by search");
+    assert_eq!(status(4), "not found by search");
+}
+
+#[test]
+fn a_track_being_searched_says_so_on_its_row() {
+    let fakes = Fakes::new();
+    // YouTube limits the first search, so the worker pauses searching: nothing else moves.
+    fakes
+        .fetcher
+        .limited
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut rig = rig("searching-row", &fakes, |_| {});
+    let c = six_tracks(&mut rig, "AF069");
+    // The worker says the search ended before it says YouTube is limiting: once the pause
+    // is known, nothing else is on its way.
+    rig.until(
+        |r| !r.app.dig.as_ref().unwrap().limited.is_empty(),
+        "the first search tried and paused",
+    );
+    assert!(rig.app.dig.as_ref().unwrap().search_now.is_none());
+    let t6 = rig.app.crates.get(c).unwrap().entries()[5].clone();
+    assert_eq!(t6.status, EntryStatus::Waiting(WaitKind::Search));
+    assert!(!rig.app.dig_marks(&t6).searching);
+    assert!(!shows(&rig.frame(Vec::new()), "SEARCHING…"));
+    // As the preview worker says T6's search started.
+    let key = t6.origin.as_ref().unwrap().search_key.clone();
+    rig.app
+        .dig_preview_event(::dig::preview::scheduler::PreviewEvent::Searching(Some(
+            key,
+        )));
+    assert!(rig.app.dig_marks(&t6).searching);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "SEARCHING…"), "{:?}", text_list(&out));
+    let details = format::entry_details(&t6, rig.app.dig_marks(&t6), 0);
+    assert!(
+        details
+            .iter()
+            .any(|(k, v)| *k == "Preview" && v == "searching YouTube…"),
+        "{details:?}"
+    );
+    // It ended: the row is quiet again.
+    rig.app
+        .dig_preview_event(::dig::preview::scheduler::PreviewEvent::Searching(None));
+    assert!(!shows(&rig.frame(Vec::new()), "SEARCHING…"));
+}

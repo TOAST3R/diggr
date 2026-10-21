@@ -351,11 +351,28 @@ Each item SHALL act as the same item did in the footer's earlier menus. No app s
 - **THEN** the menu holds Import M3U… and Export M3U…, and Export M3U… writes the shown crate as ≡ ▸ Export M3U… did
 
 ### Requirement: Empty crate hint
-When the shown crate has no entries and is not a Discogs crate (wantlist or collection), its list SHALL show, centred in the list area under the column header, "PASTE A DISCOGS LINK · CMD+V" over "OR DROP FILES", then after a blank line "PRESS H FOR HELP", in the playlist text colour, with CTRL+V instead of CMD+V off macOS. It SHALL show in the normal and maximized layouts, SHALL NOT move, and SHALL go away as soon as the crate has an entry.
+When the shown crate has no entries and is not a Discogs crate (wantlist or collection), its list SHALL show, centred in the list area under the column header:
+- "PASTE A LINK HERE · CMD+V" (CTRL+V off macOS), then the store names **Discogs** and **Bandcamp**;
+- "WITH THE BROWSER EXTENSION", then **Juno**, **Bleep**, **Beatport** and **Traxsource**, then **Set up the extension**;
+- after a gap, "OR DROP FILES · PRESS H FOR HELP".
+
+Each store name SHALL be drawn in the store's brand colour, with at least 3:1 contrast against the playlist background, and SHALL open the store's home page in the default browser when clicked. **Set up the extension** SHALL open the Browser dialog (Options ▸ Browser…). When the list area is too short for these lines, the hint SHALL show "PASTE A DISCOGS OR BANDCAMP LINK", "CMD+V · OR DROP FILES", a gap and "PRESS H FOR HELP" instead. It SHALL show in the normal and maximized layouts, SHALL NOT move, and SHALL go away as soon as the crate has an entry.
 
 #### Scenario: New crate
-- **WHEN** the user creates the crate "asdf" on macOS and it is shown
-- **THEN** its list shows "PASTE A DISCOGS LINK · CMD+V", "OR DROP FILES" and, after a gap, "PRESS H FOR HELP", centred
+- **WHEN** the user creates the crate "asdf" on macOS, the list is tall enough, and it is shown
+- **THEN** its list shows "PASTE A LINK HERE · CMD+V" with Discogs and Bandcamp, "WITH THE BROWSER EXTENSION" with Juno, Bleep, Beatport, Traxsource and Set up the extension, and "OR DROP FILES · PRESS H FOR HELP", centred
+
+#### Scenario: Store link
+- **WHEN** the user clicks Bandcamp in the hint
+- **THEN** `https://bandcamp.com` opens in the default browser and the crate stays shown
+
+#### Scenario: Extension link
+- **WHEN** the user clicks Set up the extension
+- **THEN** the Browser dialog opens with its pairing code
+
+#### Scenario: Short list
+- **WHEN** the playlist shows only 4 rows and the shown crate is empty
+- **THEN** the hint shows the four short lines
 
 #### Scenario: Maximized
 - **WHEN** the playlist is maximized and the shown crate is empty

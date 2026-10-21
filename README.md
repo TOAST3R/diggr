@@ -119,8 +119,11 @@ and Home/End jump), and Enter plays the entry under it.
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
   playlists are expanded), use **+** in the playlist's footer, or press Cmd+O. These add to the crate on screen.
-  An empty crate says so in its list: *Paste a Discogs link · Cmd+V, or drop files*, and *Press H
-  for help*.
+  An empty crate says how to fill it: paste a link from **Discogs** or **Bandcamp** (Cmd+V),
+  or send pages from **Juno**, **Bleep**, **Beatport** and **Traxsource** with the browser
+  extension. Each store's name, in its own colour, opens its site; **Set up the extension**
+  opens Options ▸ Browser…. A list too short for all that keeps four lines: paste a Discogs or
+  Bandcamp link, Cmd+V or drop files, and Press H for help.
   Files given on the command line replace the Playlist crate and play it.
 - **Crates:** the playlist window shows one of several named playlists, and its title bar shows
   that crate's name.
@@ -380,7 +383,21 @@ ahead of what plays. Other pasted text is ignored.
   playing one and the next 3), your yt-dlp lists a few YouTube results for "artist title"
   (nothing is downloaded for that), one search at a time. A result is used only when its title
   holds the track's title, the artist is in its title or channel, and its length is within
-  10 s (or 5 %) of the tracklist's; otherwise the track says "not found by search". A found
+  10 s (or 5 %) of the tracklist's; otherwise the track says "not found by search". While
+  a track is being searched for, its row ends with a pulsing **SEARCHING…** (and its tooltip
+  says "searching YouTube…").
+  A track you started that turns out to have no preview hands over to the next track of its
+  record ("…: no preview, trying the next track"), which is searched for and plays as soon
+  as it can, down the record until one is found.
+  Once every track of a record has been tried everywhere (its clip or a search, the record's
+  album upload, Bandcamp) and none plays, a **No preview found** window says so, with what
+  was tried and, for a record from this year or later, that it is probably not released yet.
+  Records found empty while it is open join its list; **Retry** (or **Retry all**) searches
+  them again, **Search on Bandcamp** (for a Discogs record; **Search on Discogs** for a
+  Bandcamp one) opens that store's search for it in the browser, and Esc, Enter or **Close**
+  closes it. A track's right-click menu offers the same search. Playback goes on. A record with some
+  tracks found and some not says "· 2/5 previews" on its record row, whose menu offers
+  **Retry missing tracks**. A found
   video then downloads and plays like any clip, and the tooltip names it ("Preview: found by
   search (…)"); a video the crate has already (one track listed twice) says "already in
   crate". Results are remembered by the track in the cache's `searches.ron` (a track not found
@@ -1200,7 +1217,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 936 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 947 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1261,7 +1278,10 @@ What's covered:
   - that the committed app and extension icons match `icon-gen`;
   - skin validation, that the committed skin matches its generator, and that a skin without
     an LCD colour keeps green (and one without a filter bar height gets the default);
-  - the empty crate hint and the verdict flash wording (and, headless, which verdicts flash);
+  - the empty crate hint (its store links, their contrast, the short form) and the verdict
+    flash wording (and, headless, which verdicts flash);
+  - records with no preview: fully tried only once nothing waits, the No preview found
+    window told once a session, Retry, and "n/m previews" on a partly found record;
   - label crates: the label field and `is_locked`, every refused edit while pass still works,
     Move to Labels, the LABELS group and its fold, the label crate menu, Export to crate,
     Delete label, Refresh label's summary, a label sent from the browser (followed, then

@@ -170,12 +170,16 @@ pub enum DigAction {
     StoreCart(EntryId, Option<String>),
     /// A buy pill: buy where the record is known, or open the Buy chooser.
     Buy(EntryId),
+    /// Retry missing tracks: the record's tracks found nowhere are tried again.
+    RetryRecord(crate::playlist::AlbumKey),
     /// Play the entry from another of its sources (YouTube, Bandcamp, Juno or Beatport).
     SwitchSource(EntryId, crate::playlist::ClipSource),
     /// The last Bandcamp import's report.
     ShowFanReport,
     OpenDialog,
     OpenBrowserDialog,
+    /// A store's home page, from the empty crate's hint.
+    OpenUrl(String),
     /// Top Sellers and the cart.
     Seller(super::sellers::SellerAction),
     Friend(super::friends::FriendAction),
@@ -281,6 +285,8 @@ pub(super) struct Dig {
     horizon: Vec<String>,
     /// The tracks last asked to be searched for, best first.
     searching: Vec<SearchRequest>,
+    /// The search running now (its key), for its rows' SEARCHING.
+    pub(super) search_now: Option<String>,
     pub(super) prepared_list: Vec<TrackRef>,
     /// Tracks whose whole file was analyzed this session (a `Prepared` came back).
     pub(super) analyzed: HashSet<TrackRef>,
@@ -337,6 +343,7 @@ pub(super) struct Dig {
     /// Bandcamp sends, memory and questions.
     pub(super) bandcamp: super::bandcamp::BandcampState,
     pub(super) stores: super::stores::StoreState,
+    pub(super) not_found: super::not_found::NotFoundState,
     last_playing: Option<(CrateId, EntryId)>,
     pub(super) dialog: Option<DigDialog>,
     /// Shared with the bridge thread once digging has started (unless the bridge is off).
@@ -437,6 +444,7 @@ impl Dig {
             friend_refresh: None,
             cart,
             seller_ui: Default::default(),
+            not_found: Default::default(),
             setup,
             spawner,
             files,
@@ -456,6 +464,7 @@ impl Dig {
             jobs: BTreeMap::new(),
             horizon: Vec::new(),
             searching: Vec::new(),
+            search_now: None,
             prepared_list: Vec::new(),
             analyzed: HashSet::new(),
             asked: Vec::new(),
@@ -2099,6 +2108,7 @@ impl DiggrApp {
             self.dig_bridge_command(c);
         }
         self.bandcamp_fallback_flush();
+        self.not_found_check();
         self.dig_play_when_ready();
         self.dig_horizon();
         self.dig_focus();
@@ -2939,6 +2949,11 @@ impl DiggrApp {
                     }
                 }
             }
+            PreviewEvent::Searching(key) => {
+                if let Some(d) = &mut self.dig {
+                    d.search_now = key;
+                }
+            }
             PreviewEvent::NotFound { key, duration } => {
                 let gone = self.dig_each_searched(&key, duration, None, |e, _| {
                     e.status = EntryStatus::Unavailable(UnavailableKind::NotFound);
@@ -2947,6 +2962,7 @@ impl DiggrApp {
                     self.dig_album_fallback(c, id);
                 }
                 self.bandcamp_fallback(&gone);
+                self.not_found_touch(&gone);
             }
             PreviewEvent::Progress(clip, pct) => {
                 self.dig_each_clip(&clip, |p, id| {
@@ -2991,6 +3007,7 @@ impl DiggrApp {
                 }
                 self.dig_each_clip(&clip, |p, id| p.set_unavailable(id, reason.clone()));
                 self.bandcamp_fallback(&failed);
+                self.not_found_touch(&failed);
                 let Some(d) = &mut self.dig else { return };
                 d.fail_streak += 1;
                 if d.fail_streak == FAILS_BEFORE_UPDATE_HINT {
@@ -3615,6 +3632,7 @@ impl DiggrApp {
             }
             DigAction::StoreCart(id, format) => self.store_cart_click(c, id, format),
             DigAction::Buy(id) => self.buy_click(c, id),
+            DigAction::RetryRecord(key) => self.not_found_retry(c, &key),
             DigAction::OpenStore(id, store) => {
                 let url = self
                     .crates
@@ -3688,6 +3706,13 @@ impl DiggrApp {
             }
             DigAction::OpenDialog => self.dig_open_dialog(),
             DigAction::OpenBrowserDialog => self.dig_open_bridge_dialog(),
+            DigAction::OpenUrl(url) => {
+                if let Some(d) = &self.dig
+                    && let Err(err) = d.open_url(&url)
+                {
+                    self.notify(format!("Could not open the browser: {err}"));
+                }
+            }
         }
     }
 
@@ -4618,6 +4643,21 @@ impl DiggrApp {
             vec![e.id]
         };
         let c = self.crates.shown_id();
+        // Look for it on the other store by hand.
+        if let Some((shop, url)) = super::not_found::cross_search(e)
+            && ui.button(format!("Search on {}", shop.name())).clicked()
+        {
+            actions.push(Action::Dig(DigAction::OpenUrl(url)));
+            ui.close();
+        }
+        // A record with some tracks found nowhere: its missing ones can be searched again.
+        if let Some(key) = e.album_key()
+            && matches!(self.record_tried(c, &key), Some((n, m)) if n > 0 && n < m)
+            && ui.button("Retry missing tracks").clicked()
+        {
+            actions.push(Action::Dig(DigAction::RetryRecord(key)));
+            ui.close();
+        }
         let (records, _) = self.dig_records(c, &ids);
         let marks = d.marks(e);
         // In the collection crate everything is owned: nothing to want or collect.
@@ -4980,6 +5020,7 @@ impl DiggrApp {
                 || d.ask_ytdlp
                 || d.confirm_discard.is_some()
                 || d.stores.buy.is_some()
+                || !d.not_found.notice.is_empty()
                 || d.seller_ui.dialog.is_some()
                 || !d.bandcamp.asks.is_empty()
         })
@@ -4994,6 +5035,7 @@ impl DiggrApp {
         self.fan_report_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
         self.buy_chooser_ui(ctx);
+        self.not_found_ui(ctx);
         self.dig_ask_ytdlp_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };
