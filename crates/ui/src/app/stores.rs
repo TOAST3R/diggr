@@ -18,12 +18,18 @@
 //! A Bleep list shows its records without tracks: each stands as one entry with no position
 //! until it is linked, when its release's tracks come in from Discogs and it goes.
 //!
-//! Each store entry has a cart pill. Juno and Bleep baskets are reached through the browser
+//! Every dig entry has a cart pill. One that came from a store (and is known nowhere else)
+//! acts on that store as below; any other acts on the one store its record is known on, or
+//! opens the Buy chooser: the stores it is known on, and a search link for each other one
+//! (see `dig::buy`).
+//!
+//! A store entry's pill: Juno and Bleep baskets are reached through the browser
 //! extension (`dig::carts`): a click queues the action and the pill changes at once; an answer
 //! other than added, already in, removed or sold out opens the store's page instead. Beatport
 //! and Traxsource baskets can't be reached, so their pill opens the page straight away.
 
 use dig::bandcamp::fan::DiscogsMatch;
+use dig::buy::Shop;
 use dig::carts::{CartKind, CartResult, Outcome, StoreCarts};
 use dig::discogs::client::ApiError;
 use dig::discogs::search::Wanted;
@@ -39,6 +45,7 @@ use super::bandcamp::{Step, catno_key, match_key};
 use super::digging::SendMode;
 use super::{DiggrApp, StorePill};
 use crate::crates::CrateId;
+use crate::format;
 use crate::playlist::{Entry, EntryId, EntryStatus, NewEntry, Origin, UnavailableKind, WaitKind};
 
 /// Discogs lookups for a store's records are keyed `‹store›:‹record›` (`juno:1178909-01`).
@@ -70,6 +77,50 @@ pub(super) struct StoreState {
     pending: HashMap<u64, Pending>,
     /// Items a store said were sold out this session.
     sold: HashSet<(Store, String)>,
+    /// The Buy chooser, while open.
+    pub(super) buy: Option<BuyChoice>,
+}
+
+/// The Buy chooser of one entry: where its record is known, and where to search for it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct BuyChoice {
+    crate_id: CrateId,
+    id: EntryId,
+    title: String,
+    known: Vec<Known>,
+    search: Vec<(Shop, String)>,
+}
+
+/// A store an entry's record is known on, and what buying it there does.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Known {
+    pub(super) shop: Shop,
+    /// The price, the format and price, or the number for sale; empty when unknown.
+    pub(super) note: String,
+    way: Way,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Way {
+    /// The one Discogs copy for sale in the crate: into the Discogs cart.
+    Copy(u64),
+    /// The entry's store item (the Bleep format chosen): as its store pill does.
+    Store(Option<String>),
+    /// A page to open: the release's Discogs marketplace, or the Bandcamp page.
+    Page(String),
+}
+
+impl Known {
+    fn tip(&self) -> String {
+        match &self.way {
+            Way::Copy(_) => format!("Add the {} copy to your Discogs cart", self.note),
+            Way::Store(_) => format!("Add to your {} cart", self.shop.name()),
+            Way::Page(_) if self.shop == Shop::Discogs => {
+                "Open it on the Discogs marketplace".to_owned()
+            }
+            Way::Page(_) => format!("Open it on {}", self.shop.name()),
+        }
+    }
 }
 
 /// A cart action on its way: what the pill shows meanwhile, and the page to open if it fails.
@@ -627,6 +678,15 @@ impl DiggrApp {
             let buy = d.stores.memory(Store::Bleep).products.get(&o.bleep);
             return Some((Store::Bleep, buy.map(|s| s.buy.clone()).unwrap_or_default()));
         }
+        // A Discogs record a store send linked to its release.
+        if let Some(r) = o.release {
+            if let Some((product, seen)) = d.stores.memory(Store::Juno).product_of(r) {
+                return Some((Store::Juno, vec![(product.to_owned(), seen.price.clone())]));
+            }
+            if let Some((_, seen)) = d.stores.memory(Store::Bleep).product_of(r) {
+                return Some((Store::Bleep, seen.buy.clone()));
+            }
+        }
         [
             (Store::Beatport, &o.beatport_page),
             (Store::Traxsource, &o.traxsource_page),
@@ -636,9 +696,40 @@ impl DiggrApp {
         .map(|(s, _)| (s, Vec::new()))
     }
 
-    /// The entry's cart pill, when it came from a store.
+    /// The entry's cart pill: its store's when its record is known on that store only, else
+    /// one that buys it where it is known or opens the Buy chooser. None for a local file.
     pub(crate) fn store_pill_of(&self, e: &Entry) -> Option<StorePill> {
-        let (store, items) = self.store_item(e)?;
+        let known = self.known_stores(e);
+        match self.store_item(e) {
+            Some(item) if known.iter().all(|k| k.shop == Shop::from(item.0)) => {
+                self.item_pill(item)
+            }
+            _ => self.buy_pill(e, &known),
+        }
+    }
+
+    /// The pill of a record known on more stores than its own, or on one or none.
+    fn buy_pill(&self, e: &Entry, known: &[Known]) -> Option<StorePill> {
+        e.origin.as_ref()?;
+        let tip = match known {
+            [] => "Search the stores for it".to_owned(),
+            [k] => k.tip(),
+            _ => {
+                let names: Vec<&str> = known.iter().map(|k| k.shop.name()).collect();
+                format!("Buy it: {}", names.join(", "))
+            }
+        };
+        Some(StorePill {
+            in_cart: false,
+            sold: false,
+            choose: Vec::new(),
+            tip,
+            buy: true,
+        })
+    }
+
+    /// A store item's pill.
+    fn item_pill(&self, (store, items): (Store, Vec<(String, String)>)) -> Option<StorePill> {
         let s = &self.dig.as_ref()?.stores;
         let name = store.name();
         let held = items.iter().find(|(id, _)| s.in_cart(store, id));
@@ -672,7 +763,175 @@ impl DiggrApp {
                 _ => Vec::new(),
             },
             tip,
+            buy: false,
         })
+    }
+
+    /// Where the entry's record is known, in the chooser's order: its store item (each Bleep
+    /// format apart), its Bandcamp page, and its Discogs release (the crate's one copy for
+    /// sale, else the marketplace).
+    pub(super) fn known_stores(&self, e: &Entry) -> Vec<Known> {
+        let Some(o) = e.origin.as_ref() else {
+            return Vec::new();
+        };
+        let mut known = Vec::new();
+        if let Some(r) = o.release {
+            let shown = self.crates.shown();
+            let unsold: Vec<_> = shown.copies_of(r).into_iter().filter(|c| !c.sold).collect();
+            known.push(match unsold.as_slice() {
+                [c] => Known {
+                    shop: Shop::Discogs,
+                    note: format::price(c.cents, &c.currency),
+                    way: Way::Copy(c.listing),
+                },
+                _ => Known {
+                    shop: Shop::Discogs,
+                    note: o
+                        .for_sale
+                        .as_ref()
+                        .map_or(String::new(), |fs| match fs.lowest_cents {
+                            Some(c) if fs.count > 0 => format!(
+                                "{} for sale from {}",
+                                fs.count,
+                                format::price(c, &fs.currency)
+                            ),
+                            _ => String::new(),
+                        }),
+                    way: Way::Page(format!("https://www.discogs.com/sell/release/{r}")),
+                },
+            });
+        }
+        if !o.bandcamp.is_empty() {
+            known.push(Known {
+                shop: Shop::Bandcamp,
+                note: String::new(),
+                way: Way::Page(o.bandcamp.clone()),
+            });
+        }
+        if let Some((store, items)) = self.store_item(e) {
+            let shop = Shop::from(store);
+            match items.as_slice() {
+                [_, _, ..] => known.extend(items.iter().map(|(id, label)| Known {
+                    shop,
+                    note: label.clone(),
+                    way: Way::Store(Some(id.clone())),
+                })),
+                _ => known.push(Known {
+                    shop,
+                    note: items.first().map_or(String::new(), |(_, p)| p.clone()),
+                    way: Way::Store(None),
+                }),
+            }
+        }
+        known.sort_by_key(|k| Shop::ALL.iter().position(|s| *s == k.shop));
+        known
+    }
+
+    /// A click on a buy pill: buys where the record is known when that's one store, else
+    /// opens the Buy chooser.
+    pub(super) fn buy_click(&mut self, c: CrateId, id: EntryId) {
+        let Some(e) = self.crates.get(c).and_then(|p| p.get(id)).cloned() else {
+            return;
+        };
+        let known = self.known_stores(&e);
+        if let [k] = known.as_slice() {
+            return self.buy_at(c, id, k.way.clone());
+        }
+        let shops: HashSet<Shop> = known.iter().map(|k| k.shop).collect();
+        let (record_artist, album) = match e.origin.as_ref() {
+            Some(o) => (o.artist.as_str(), o.album.as_str()),
+            None => ("", ""),
+        };
+        let title = if album.is_empty() { &e.title } else { album };
+        let q = dig::buy::query(record_artist, &e.artist, title);
+        let artist = match record_artist {
+            "" => e.artist.as_str(),
+            a => a,
+        };
+        let choice = BuyChoice {
+            crate_id: c,
+            id,
+            title: format!("Buy {artist} – {title}"),
+            known,
+            search: Shop::ALL
+                .into_iter()
+                .filter(|s| !shops.contains(s))
+                .map(|s| (s, s.search_url(&q)))
+                .collect(),
+        };
+        if let Some(d) = &mut self.dig {
+            d.stores.buy = Some(choice);
+        }
+    }
+
+    fn buy_at(&mut self, c: CrateId, id: EntryId, way: Way) {
+        match way {
+            Way::Copy(listing) => {
+                self.seller_act(super::sellers::SellerAction::CartAdd(vec![listing]))
+            }
+            Way::Store(format) => self.store_cart_click(c, id, format),
+            Way::Page(url) => self.open_page(&url),
+        }
+    }
+
+    fn open_page(&mut self, url: &str) {
+        let Some(d) = &self.dig else { return };
+        if let Err(err) = d.open_url(url) {
+            self.notify(format!("Could not open the browser: {err}"));
+        }
+    }
+
+    /// The Buy chooser: a button per store the record is known on, a link per other store.
+    /// It holds the keyboard (see `dig_asking`) and closes on Esc, Close or a purchase.
+    pub(super) fn buy_chooser_ui(&mut self, ctx: &egui::Context) {
+        let Some(choice) = self.dig.as_ref().and_then(|d| d.stores.buy.clone()) else {
+            return;
+        };
+        let (mut act, mut open, mut close) = (None, None, false);
+        let modal = egui::Modal::new(egui::Id::new("buy-chooser")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.strong(&choice.title);
+            if !choice.known.is_empty() {
+                ui.add_space(6.0);
+                ui.label("KNOWN");
+                for k in &choice.known {
+                    let label = match k.note.as_str() {
+                        "" => k.shop.name().to_owned(),
+                        n => format!("{} · {n}", k.shop.name()),
+                    };
+                    if ui.button(label).on_hover_text(k.tip()).clicked() {
+                        act = Some(k.way.clone());
+                    }
+                }
+            }
+            ui.add_space(6.0);
+            ui.label("SEARCH");
+            ui.horizontal_wrapped(|ui| {
+                for (shop, url) in &choice.search {
+                    if ui
+                        .link(shop.name())
+                        .on_hover_text(format!("Search {} for it", shop.name()))
+                        .clicked()
+                    {
+                        open = Some(url.clone());
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            close = ui.button("Close").clicked();
+        });
+        close |= modal.should_close();
+        if let Some(url) = open {
+            self.open_page(&url);
+        }
+        if (act.is_some() || close)
+            && let Some(d) = &mut self.dig
+        {
+            d.stores.buy = None;
+        }
+        if let Some(way) = act {
+            self.buy_at(choice.crate_id, choice.id, way);
+        }
     }
 
     /// A click on the pill of entry `id` in crate `c` (`format`: the Bleep format chosen):

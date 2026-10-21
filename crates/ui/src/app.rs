@@ -3927,7 +3927,11 @@ impl DiggrApp {
             .on_hover_text(&p.tip);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if p.choose.is_empty() {
+            if p.buy {
+                if resp.clicked() {
+                    actions.push(Action::Dig(DigAction::Buy(id)));
+                }
+            } else if p.choose.is_empty() {
                 if resp.clicked() {
                     actions.push(Action::Dig(DigAction::StoreCart(id, None)));
                 }
@@ -4125,18 +4129,27 @@ impl DiggrApp {
             (Some(c), None) => Some((*c, self.copy_in_cart(c.listing))),
             _ => None,
         };
-        // A Discogs copy's pill comes first; a store record's otherwise.
-        let store_pill = lone.is_none().then(|| self.store_pill(first)).flatten();
+        // A Discogs copy's pill comes first; with several copies, one that opens the record
+        // to its copies' pills; a store's or buy pill otherwise.
+        let several = lone.is_none() && copies.iter().filter(|c| !c.sold).count() > 1;
+        let store_pill = (lone.is_none() && !several)
+            .then(|| self.store_pill(first))
+            .flatten()
+            .filter(|p| !(p.buy && marks.cart.is_some()));
         let badges = Badges {
             owned: marks.owned.is_some(),
             cart: marks.cart.is_some(),
             sold: all_sold || store_pill.as_ref().is_some_and(|p| p.sold),
             pill: lone
                 .map(|(_, in_cart)| in_cart)
+                .or(several.then_some(marks.cart.is_some()))
                 .or(store_pill.as_ref().map(|p| p.in_cart))
                 .map(|in_cart| Pill {
                     in_cart,
-                    pointer: self.pill_pointer(ui, band),
+                    // It only opens the record: no REMOVE on hover.
+                    pointer: self
+                        .pill_pointer(ui, band)
+                        .filter(|_| !(several && in_cart)),
                 }),
         };
         let (w, pill_rect) = entry_badges(
@@ -4154,6 +4167,23 @@ impl DiggrApp {
         }
         if let (Some(rect), Some(p)) = (pill_rect, &store_pill) {
             self.store_pill_click(ui, rect, band, first.id, p, actions);
+        }
+        if let Some(rect) = pill_rect.filter(|_| several) {
+            let hit = Rect::from_x_y_ranges(rect.x_range(), band.y_range());
+            let tip = if rec.open {
+                "Its copies are listed below"
+            } else {
+                "Open the record to pick a copy"
+            };
+            if ui
+                .interact(hit, Id::new(("pl_copies_pill", first.id)), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(tip)
+                .clicked()
+                && !rec.open
+            {
+                actions.push(Action::ToggleRecord(rec.key.clone()));
+            }
         }
         let album = if first.album().is_empty() {
             first.title.as_str()
@@ -4723,7 +4753,10 @@ impl DiggrApp {
                     .map(|s| s.badge());
                 let marks = self.dig_marks(e);
                 let owned = marks.owned.clone();
-                let store_pill = self.store_pill(e);
+                // Already in the Discogs cart: its CART badge says so, no buy pill.
+                let store_pill = self
+                    .store_pill(e)
+                    .filter(|p| !(p.buy && marks.cart.is_some()));
                 let badges = Badges {
                     owned: owned.is_some(),
                     cart: marks.cart.is_some(),
@@ -6328,6 +6361,8 @@ pub(crate) struct StorePill {
     /// Bleep's formats to choose from (more than one, none in the cart): (product id, label).
     pub(crate) choose: Vec<(String, String)>,
     pub(crate) tip: String,
+    /// A click buys where the record is known, or opens the Buy chooser.
+    pub(crate) buy: bool,
 }
 
 impl Badges {
@@ -7900,9 +7935,10 @@ mod headless_tests {
             pos2(PL_LEFT + 60.0, PL_TOP + 10.0)
         }
 
+        /// A point on row `index`, right of its badges and cart pill.
         fn row(&self, index: usize) -> Pos2 {
             pos2(
-                PL_LEFT + 60.0,
+                PL_LEFT + 200.0,
                 PL_TOP + LIST_TOP + index as f32 * 13.0 + 6.5,
             )
         }
@@ -8689,7 +8725,7 @@ mod headless_tests {
         let out = rig.frame(Vec::new());
         assert!(!shows(&out, "Cat#"));
         assert!(
-            shows(&out, "1. (LT-012) Nightcraft: Glasshouse (124 BPM)"),
+            shows(&out, "(LT-012) Nightcraft: Glasshouse (124 BPM)"),
             "{:?}",
             text_list(&out)
         );
@@ -8932,10 +8968,10 @@ mod headless_tests {
         // A preview prepared at half time.
         rig.app.set_track_bpm(&track, 62.1);
         let out = rig.frame(Vec::new());
-        for n in 1..=2 {
-            let row = format!("{n}. (LT-012) Nightcraft: Glasshouse (124 BPM)");
-            assert!(shows(&out, &row), "{row}: {:?}", text_list(&out));
-        }
+        // Both rows (after their number and cart pill).
+        let row = "(LT-012) Nightcraft: Glasshouse (124 BPM)";
+        let rows = texts(&out).iter().filter(|t| t.text == row).count();
+        assert_eq!(rows, 2, "{row}: {:?}", text_list(&out));
         rig.app.crates.save_due(true, Duration::ZERO);
         let reopened = Crates::open(&Store::new(rig.dir.join("config")));
         let bpms: Vec<_> = reopened.shown().entries().iter().map(|e| e.bpm).collect();

@@ -47,7 +47,7 @@ fn records_rig(name: &str, releases: &[u64]) -> (Rig, Vec<EntryId>) {
 /// The middle of the record row that starts at list row `unit` (record rows are two high).
 fn record_at(unit: usize) -> Pos2 {
     pos2(
-        PL_LEFT + 120.0,
+        PL_LEFT + 200.0,
         PL_TOP + LIST_TOP + (unit as f32 + 1.0) * 13.0,
     )
 }

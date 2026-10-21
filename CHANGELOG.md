@@ -10,6 +10,10 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 - **Space plays and pauses.** Like every other player: Space plays and pauses wherever the
   keyboard is, and Shift+Space stops. The classic Z X C V B keys still work.
+- **Buy from any list.** Every record now has a **+ CART** button, not just the ones from a
+  seller or a store. If Diggr knows one place to buy it, a click takes you there; if it knows
+  several, or none, you choose a store, or search Discogs, Bandcamp, Juno, Bleep, Beatport and
+  Traxsource for it in one click.
 
 ### Improved
 

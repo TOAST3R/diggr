@@ -168,6 +168,8 @@ pub enum DigAction {
     OpenStore(EntryId, dig::stores::Store),
     /// The entry's cart pill: add its store item (the Bleep format chosen) or take it out.
     StoreCart(EntryId, Option<String>),
+    /// A buy pill: buy where the record is known, or open the Buy chooser.
+    Buy(EntryId),
     /// Play the entry from another of its sources (YouTube, Bandcamp, Juno or Beatport).
     SwitchSource(EntryId, crate::playlist::ClipSource),
     /// The last Bandcamp import's report.
@@ -3612,6 +3614,7 @@ impl DiggrApp {
                 }
             }
             DigAction::StoreCart(id, format) => self.store_cart_click(c, id, format),
+            DigAction::Buy(id) => self.buy_click(c, id),
             DigAction::OpenStore(id, store) => {
                 let url = self
                     .crates
@@ -4976,6 +4979,7 @@ impl DiggrApp {
             d.connect.is_some()
                 || d.ask_ytdlp
                 || d.confirm_discard.is_some()
+                || d.stores.buy.is_some()
                 || d.seller_ui.dialog.is_some()
                 || !d.bandcamp.asks.is_empty()
         })
@@ -4989,6 +4993,7 @@ impl DiggrApp {
         self.fan_progress_ui(ctx);
         self.fan_report_ui(ctx);
         self.dig_confirm_discard_ui(ctx);
+        self.buy_chooser_ui(ctx);
         self.dig_ask_ytdlp_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };
