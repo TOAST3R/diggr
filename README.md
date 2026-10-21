@@ -900,9 +900,13 @@ that the player starts once its window is up.
    On a Bleep release or list page, the button does the same and says how many records it
    read, and on a list a ▶ after each record plays that record alone (see [Bleep](#bleep)).
    The basket, checkout and account pages show no button.
-   On a Discogs page listing records for sale (a seller's shop, the marketplace), a small **▶**
-   after each record's title plays that record in Diggr (added to the crate on screen, as Play
-   in Diggr).
+   On store listings a small **▶** after each record's title plays just that record in Diggr
+   (added to the crate on screen, as Play in Diggr), without leaving the page: on Discogs
+   (marketplace items, search results, labels, artists, lists, wantlists and collections; not a
+   release's own page), Bandcamp (search results and an account's music page), Juno (listings
+   and search), Traxsource (each track, search too), Beatport (each track on charts, releases,
+   labels and artists; not search results, whose page data carries no preview) and Bleep
+   (lists and search).
 4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr (a
    label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -966,6 +970,10 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       basket within a second.
 - [ ] On a seller's shop (`/seller/‹name›/profile`), each record has a ▶ after its title (none on
       its picture); clicking it adds the record to the crate on screen and plays it.
+- [ ] A ▶ after each result plays just that one, without leaving the page, on: a Discogs search
+      and a label page (one ▶ per release, after its visible title); bandcamp.com/search and an
+      account's /music; a Juno search; a Traxsource search; the Beatport Top 100 (and none on a
+      Beatport search); a Bleep search. A release's own Discogs page has no ▶ on its versions.
 - [ ] Send to crate lists no Top Sellers, label, collection, wantlist or friend's crate.
 - [ ] A seller's page shows the button with only Add seller to Diggr; it adds the seller in the
       player, and a second time says "Refreshed seller ‹name›".

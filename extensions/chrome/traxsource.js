@@ -121,5 +121,14 @@ var WRTraxsource = (() => {
     return { page: address, tracks: list };
   }
 
-  return { read, seconds };
+  /** Track `id` of a listing, as the player takes it, or null. */
+  function track(doc, id) {
+    try {
+      return readListing(doc).find((t) => t.id === id) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  return { read, seconds, track, trackOf: (href) => href.match(TRACK)?.[1] };
 })();

@@ -382,11 +382,9 @@
     else toast(WR.problem(r.error, appName), false);
   }
 
-  // Discogs changes pages without reloading: follow the address, and put the button back if
-  // the page redraws its heading.
-  // A Discogs page listing records for sale (a seller's shop, the marketplace): a small
-  // ▶ after each record's title plays it in the app (sent as its marketplace item's address).
-  const ITEM = /\/(?:[a-z]{2}\/)?(?:shop|sell)\/item\/(\d+)/;
+  // A ▶ after each record's (or, on Beatport and Traxsource, each track's) title on a
+  // store's listing plays only that one in the app, without leaving the page. Placing it only
+  // finds title links; the row is read when the ▶ is clicked.
   const PLAY_STYLE = `
     :host { all: initial; }
     button { font: 11px/1 "Trebuchet MS", Tahoma, sans-serif; margin-left: 6px; padding: 2px 6px;
@@ -395,63 +393,137 @@
     button:hover { border-color: #2fe45a; }
   `;
 
-  function itemButtons() {
-    if (!/(^|\.)discogs\.com$/.test(location.hostname) || ITEM.test(location.pathname)) return;
+  /**
+   * A ▶ after `anchor`, once. A click sends what `go()` asks the player (null: `go` said why
+   * it couldn't) and says it plays `name`.
+   */
+  function playButton(anchor, name, go) {
+    if (anchor.nextElementSibling?.classList.contains("wr-item-play")) return;
+    const span = el("span", { className: "wr-item-play" });
+    const shadow = span.attachShadow({ mode: "closed" });
+    const b = el("button", { textContent: "▶", title: `Play in ${appName}` });
+    b.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = await go();
+      if (!r) return;
+      if (r.ok) toast(`Playing in ${appName}: ${name.trim().slice(0, 80)}`);
+      else toast(WR.problem(r.error, appName), false);
+    });
+    shadow.append(el("style", { textContent: PLAY_STYLE }), b);
+    anchor.after(span);
+  }
+
+  const playAddress = (url) => () => ask({ type: "send", url, mode: "play" });
+
+  /** A store's item, read from the page at the click (null: it couldn't be). */
+  const playItem = (store, read) => async () => {
+    const item = read();
+    if (!item) {
+      toast(`Couldn't read this ${store} item`, false);
+      return null;
+    }
+    return ask({ type: "sendStore", store, page: location.href, items: [item], mode: "play" });
+  };
+
+  /**
+   * Each shown text link (not a picture) matching `parse`, once per what it names. Hidden
+   * copies (another layout's) are passed over, so the one on screen gets the ▶.
+   */
+  function titleLinks(selector, parse) {
     const seen = new Set();
-    for (const a of document.querySelectorAll('a[href*="/item/"]')) {
-      const m = (a.getAttribute("href") || "").match(ITEM);
-      // The title link only: one button per record, none on its picture.
-      if (!m || seen.has(m[1]) || !a.textContent.trim()) continue;
-      seen.add(m[1]);
-      if (a.nextElementSibling?.classList.contains("wr-item-play")) continue;
-      const span = el("span", { className: "wr-item-play" });
-      const shadow = span.attachShadow({ mode: "closed" });
-      const b = el("button", { textContent: "▶", title: `Play in ${appName}` });
-      b.addEventListener("click", async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const url = new URL(`/sell/item/${m[1]}`, location.origin).href;
-        const r = await ask({ type: "send", url, mode: "play" });
-        if (r.ok) toast(`Playing in ${appName}: ${a.textContent.trim().slice(0, 80)}`);
-        else toast(WR.problem(r.error, appName), false);
-      });
-      shadow.append(el("style", { textContent: PLAY_STYLE }), b);
-      a.after(span);
+    const out = [];
+    for (const a of document.querySelectorAll(selector)) {
+      const id = parse(a.getAttribute("href") || "");
+      if (!id || seen.has(id) || !a.textContent.trim() || a.getClientRects().length === 0) continue;
+      seen.add(id);
+      out.push([a, id]);
+    }
+    return out;
+  }
+
+  // Discogs: marketplace items (sent as `/sell/item/‹id›`) and releases and masters on any
+  // page listing them; not on a release's or master's own page, whose links are its other
+  // versions.
+  const ITEM = /\/(?:[a-z]{2}\/)?(?:shop|sell)\/item\/(\d+)/;
+  const RECORD = /^\/(?:[a-z]{2}\/)?(release|master)\/(\d+)/;
+  function discogsButtons() {
+    if (!/(^|\.)discogs\.com$/.test(location.hostname)) return;
+    const kind = WR.pageKind(location.href);
+    if (kind === "Listing") return;
+    for (const [a, id] of titleLinks('a[href*="/item/"]', (h) => h.match(ITEM)?.[1])) {
+      playButton(a, a.textContent, playAddress(new URL(`/sell/item/${id}`, location.origin).href));
+    }
+    if (kind === "Release" || kind === "Master") return;
+    const record = (h) => {
+      try {
+        const m = new URL(h, location.origin).pathname.match(RECORD);
+        return m && `${m[1]}/${m[2]}`;
+      } catch {
+        return null;
+      }
+    };
+    for (const [a, id] of titleLinks('a[href*="/release/"], a[href*="/master/"]', record)) {
+      playButton(a, a.textContent, playAddress(new URL(`/${id}`, location.origin).href));
     }
   }
 
-  // A Bleep page listing records: a small ▶ after each record's title plays that record
-  // alone (read from its tile, which shows no tracks: the player brings them from Discogs).
+  // Bandcamp: albums and tracks on bandcamp.com's search and on an account's music page,
+  // sent by address (a search result's tracking query left out).
+  const BANDCAMP_ITEM = /^\/(?:album|track)\/[a-z0-9-]+\/?$/;
+  function bandcampButtons() {
+    const search = /^(?:www\.)?bandcamp\.com$/.test(location.hostname) && location.pathname.startsWith("/search");
+    if (!search && WR.pageKind(location.href) !== "BandcampLabel") return;
+    const item = (h) => {
+      try {
+        const u = new URL(h, location.href);
+        return /\.bandcamp\.com$/.test(u.hostname) && BANDCAMP_ITEM.test(u.pathname) ? u.origin + u.pathname : null;
+      } catch {
+        return null;
+      }
+    };
+    for (const [a, url] of titleLinks('a[href*="/album/"], a[href*="/track/"]', item)) {
+      playButton(a, a.textContent, playAddress(url));
+    }
+  }
+
+  // Juno, Beatport, Traxsource: one record (Juno) or track on a listing, read when played. A
+  // product's or track's own page has the page's button.
+  function storeButtons() {
+    const kind = WR.pageKind(location.href);
+    if (kind === "JunoListing") {
+      for (const [a, product] of titleLinks('a[href*="/products/"]', WRJuno.productOf)) {
+        playButton(a, a.textContent, playItem("Juno", () => WRJuno.record(document, product)));
+      }
+    }
+    const tracks = { BeatportPage: [self.WRBeatport, "Beatport"], TraxsourcePage: [self.WRTraxsource, "Traxsource"] }[kind];
+    if (tracks && !/\/track\//.test(location.pathname)) {
+      const [reader, store] = tracks;
+      for (const [a, id] of titleLinks('a[href*="/track/"]', reader.trackOf)) {
+        // Beatport: only tracks its page data can give (a search's can't).
+        if (reader.has && !reader.has(document, id)) continue;
+        playButton(a, a.textContent, playItem(store, () => reader.track(document, id)));
+      }
+    }
+  }
+
+  // A Bleep page listing records: each record alone, read from its tile (which shows no
+  // tracks: the player brings them from Discogs).
   function bleepButtons() {
     if (WR.pageKind(location.href) !== "BleepPage") return;
     for (const tile of WRBleep.tiles(document)) {
       const title = tile.querySelector("dd.release-title a") || tile.querySelector("dd.release-title");
-      if (!title || title.nextElementSibling?.classList.contains("wr-item-play")) continue;
-      const span = el("span", { className: "wr-item-play" });
-      const shadow = span.attachShadow({ mode: "closed" });
-      const b = el("button", { textContent: "▶", title: `Play in ${appName}` });
-      b.addEventListener("click", async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const record = WRBleep.readTile(tile);
-        if (!record) return toast("Couldn't read this Bleep record", false);
-        const r = await ask({
-          type: "sendStore",
-          store: "Bleep",
-          page: location.href,
-          items: [record],
-          mode: "play",
-        });
-        if (r.ok) toast(`Playing in ${appName}: ${record.title.slice(0, 80)}`);
-        else toast(WR.problem(r.error, appName), false);
-      });
-      shadow.append(el("style", { textContent: PLAY_STYLE }), b);
-      title.after(span);
+      if (!title) continue;
+      playButton(title, title.textContent, playItem("Bleep", () => WRBleep.readTile(tile)));
     }
   }
 
+  // Discogs changes pages without reloading: follow the address, and put the button back if
+  // the page redraws its heading.
   function tick() {
-    itemButtons();
+    discogsButtons();
+    bandcampButtons();
+    storeButtons();
     bleepButtons();
     if (location.href !== lastHref) {
       lastHref = location.href;
