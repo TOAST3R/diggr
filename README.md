@@ -19,6 +19,16 @@ signed by Apple (that costs $99 a year), so macOS refuses the first open: then g
 Settings ▸ Privacy & Security and click **Open Anyway** next to Diggr, once. It opens normally
 from then on.
 
+**[Download for Linux](https://github.com/TOAST3R/diggr/releases/latest)** (x86_64, any
+distribution with glibc 2.31 or later: Debian 11, Ubuntu 20.04, Fedora 32 and newer): extract
+`Diggr-‹version›-x86_64-linux.tar.gz` and run `./install.sh` in its folder to add Diggr to your
+applications menu, or just run `./diggr`. It needs ALSA and a Vulkan or OpenGL driver, which
+desktop distributions have. `install.sh` needs no root and writes three files, which are all an
+uninstall has to delete: `~/.local/bin/diggr`,
+`~/.local/share/icons/hicolor/256x256/apps/diggr.png` and
+`~/.local/share/applications/diggr.desktop` (under `$XDG_DATA_HOME` when it's set). Run a newer
+version's `install.sh` to upgrade.
+
 ## Launch the app
 
 To build it yourself, starting from nothing on macOS, run these from the project folder:
@@ -499,15 +509,16 @@ ahead of what plays. Other pasted text is ignored.
     readable only by you, and is shown only by its last 4 characters.
   - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp). Yours is used when there is one
     (`brew install yt-dlp`, your package manager, or a path in the dialog if it isn't on the
-    `PATH`), and the app never updates it; if clips keep failing, try `yt-dlp -U`. On a Mac
-    without one, the first preview asks "Previews need yt-dlp, a free downloader (37 MB).
-    Download it?": the app then fetches yt-dlp's official macOS build, installs it only if its
+    `PATH`), and the app never updates it; if clips keep failing, try `yt-dlp -U`. On a Mac or
+    x86_64 Linux without one, the first preview asks "Previews need yt-dlp, a free downloader
+    (37 MB; 41 MB on Linux). Download it?": the app then fetches yt-dlp's official build for
+    that system, installs it only if its
     SHA-256 matches the one published with the release, keeps it in the cache's `tools/`, and
     checks for a newer release at most once a day while previews download. **Not now** isn't
     asked again that session. The dialog shows the version and whether it's "installed by you"
     or "downloaded by the app", with **Download** or **Update now**. Until yt-dlp is there,
-    entries say "needs yt-dlp" (elsewhere than macOS, install it yourself; it's found within
-    30 s).
+    entries say "needs yt-dlp" (elsewhere, such as Windows, install it yourself; it's found
+    within 30 s).
   - The dialog also sets the default filter for every send (skip what you've passed) and the
     preview cache size (10 GB by default, for previews and waveform overviews together; the
     least recently played go first, a preview with its overview, except for Download all
@@ -1241,6 +1252,7 @@ Other environment variables, mostly for unattended runs and measurements:
 
 ```sh
 scripts/make-dmg.sh             # dist/Diggr.app and dist/Diggr-<version>[-unsigned].dmg
+scripts/make-linux.sh           # dist/Diggr-<version>-x86_64-linux.tar.gz (needs Docker)
 scripts/release.sh --unsigned --dry-run    # every check, then stops before tagging
 scripts/release.sh --unsigned [--notes-file NOTES.md]
 ```
@@ -1259,10 +1271,21 @@ already has. `--dry-run` only says which build it would make.
   and `spctl` must accept both. It needs a paid Apple Developer account. No secret is kept in
   the repository.
 
-`release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg` as GitHub Release
-`v<version>`, with its SHA-256 and the Open Anyway steps appended to the notes, after checking
-that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
-`--unsigned` it publishes the signed image instead, and only if `spctl` accepts it. Disk images are never committed: `dist/` is in `.gitignore`.
+`make-linux.sh` builds `diggr` on the Mac, in an x86_64 Debian 11 Docker container
+(`rust:<toolchain>-bullseye`, or `LINUX_IMAGE`), so it runs on glibc 2.31 and later. Crates are
+fetched on the host first and the container builds offline, so a TLS-intercepting proxy
+doesn't break it. Its objects go to `target/linux-x86_64/`. The script fails if the binary needs
+a newer glibc, runs `diggr --help` in a bare Debian 11 with only ALSA installed, and packs the
+binary, `packaging/linux/diggr.desktop`, `packaging/linux/install.sh` and the 256 px icon into
+the tarball. On Apple Silicon the container runs under emulation, so the first build is slow;
+later ones are incremental.
+
+`release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg` and
+`dist/Diggr-<version>-x86_64-linux.tar.gz` as GitHub Release `v<version>`, with one
+`Diggr-<version>-SHA256SUMS` for both (check with `sha256sum -c`) and the macOS Open Anyway and
+Linux install steps appended to the notes, after checking that the tree is clean, both files
+exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
+`--unsigned` it publishes the signed image instead, and only if `spctl` accepts it. Release files are never committed: `dist/` is in `.gitignore`.
 
 ## Tests
 
@@ -1582,7 +1605,7 @@ AGENTS.md         conventions and checks for anyone (human or AI) changing the c
 - **Top Sellers rely on undocumented Discogs calls** (`/purchases`, `/cart`): see
   [Top Sellers](#top-sellers) for what happens if they change. Bringing the player to the front
   from the browser asks the system; macOS often only bounces the Dock icon. A
-  `diggr://` link that macOS would honour needs the app bundle (`macos-release`).
+  `diggr://` link that macOS would honour needs the app bundle (`release`).
 
 ## Roadmap (OpenSpec)
 

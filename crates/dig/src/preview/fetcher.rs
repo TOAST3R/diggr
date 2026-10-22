@@ -1,5 +1,5 @@
 //! Fetching one clip's audio. The real fetcher runs yt-dlp: the user's own when there is one,
-//! else (on macOS, when the user agrees) the app's own copy (see [`crate::tools`]).
+//! else (on macOS and x86_64 Linux, when the user agrees) the app's own copy (see [`crate::tools`]).
 //!
 //! yt-dlp gets an argument list (never a shell), only a validated 11-character id and a URL
 //! rebuilt from that id, or a checked Bandcamp track address (see [`crate::bandcamp`]),

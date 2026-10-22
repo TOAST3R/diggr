@@ -80,7 +80,7 @@ pub struct DigSetup {
     /// The app's cache folder: Discogs responses, previews, scores and overviews.
     pub cache_root: Option<PathBuf>,
     pub bridge: BridgeSetup,
-    /// Where the app's own yt-dlp comes from when the user has none (macOS); `None`: the user
+    /// Where the app's own yt-dlp comes from when the user has none (macOS, x86_64 Linux); `None`: the user
     /// installs it.
     pub tools: Option<Arc<dyn ToolSource>>,
 }
@@ -107,7 +107,7 @@ impl DigSetup {
             browser: Arc::new(SystemBrowser),
             cache_root,
             bridge: BridgeSetup::Configured,
-            tools: cfg!(target_os = "macos").then(|| Arc::new(GitHub::default()) as _),
+            tools: dig::tools::MANAGED.then(|| Arc::new(GitHub::default()) as _),
         }
     }
 }

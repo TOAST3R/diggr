@@ -6,6 +6,14 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### New
+
+- **Diggr on Linux.** A download for x86_64 Linux sits next to the Mac one: extract it and run
+  the player, or run `install.sh` to add it to your applications menu. No root, and it works on
+  any distribution from Debian 11 and Ubuntu 20.04 on.
+- **Previews ready on Linux too.** Without yt-dlp installed, the first preview offers to download
+  it for you, checks it and keeps it up to date, as it does on a Mac.
+
 ## 0.1.2 — 2026-10-22
 
 ### New
