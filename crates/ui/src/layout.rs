@@ -5,14 +5,14 @@
 use crate::settings::Settings;
 use crate::skin::SkinDef;
 
-/// The player column's height: main, then the waveform (under its title bar) and the EQ when
-/// they show.
+/// The player column's height: main, then the waveform (under its title bar) and the EQ (or
+/// the CRATES panel in its place) when they show.
 pub fn player_height(settings: &Settings, d: &SkinDef) -> u16 {
     let mut h = d.main_size.1 + deck_h(settings, d);
     if settings.show_waveform {
         h += wave_title_h(d) + crate::waveform::HEIGHT as u16;
     }
-    if settings.show_eq {
+    if settings.show_eq || settings.show_crates {
         h += d.eq_size.1;
     }
     h
@@ -118,6 +118,42 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
         }
     }
     out
+}
+
+/// How the crate sidebar's rows go to its two scrolling lists: the user's crates (`crates`
+/// long) and the open Discogs group (`group` long), around `fixed` rows that always show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SideLayout {
+    pub crates_rows: usize,
+    pub group_rows: usize,
+    /// Too short to give each open list a row: the whole sidebar scrolls as one list.
+    pub single: bool,
+}
+
+/// Each list gets what it needs when both fit; otherwise each gets up to half of the free rows
+/// (the crates one more when odd) and the rows one leaves go to the other.
+pub fn side_layout(rows: usize, fixed: usize, crates: usize, group: usize) -> SideLayout {
+    let free = rows.saturating_sub(fixed);
+    if crates + group <= free {
+        return SideLayout {
+            crates_rows: crates,
+            group_rows: group,
+            single: false,
+        };
+    }
+    if free < usize::from(crates > 0) + usize::from(group > 0) {
+        return SideLayout {
+            crates_rows: 0,
+            group_rows: 0,
+            single: true,
+        };
+    }
+    let group_rows = group.min(free - crates.min(free.div_ceil(2)));
+    SideLayout {
+        crates_rows: crates.min(free - group_rows),
+        group_rows,
+        single: false,
+    }
 }
 
 #[cfg(test)]
@@ -227,5 +263,65 @@ mod tests {
             275,
             "never below the minimum"
         );
+    }
+
+    #[test]
+    fn the_sidebar_lists_share_the_free_rows() {
+        let l = |c, g| side_layout(20, 9, c, g);
+        assert_eq!(
+            (l(3, 5).crates_rows, l(3, 5).group_rows),
+            (3, 5),
+            "both fit"
+        );
+        assert_eq!(
+            (l(3, 31).crates_rows, l(3, 31).group_rows),
+            (3, 8),
+            "the leftover"
+        );
+        assert_eq!((l(40, 2).crates_rows, l(40, 2).group_rows), (9, 2));
+        assert_eq!(
+            (l(40, 31).crates_rows, l(40, 31).group_rows),
+            (6, 5),
+            "half each"
+        );
+        assert_eq!((l(40, 0).crates_rows, l(0, 31).group_rows), (11, 11));
+        assert!(
+            side_layout(10, 9, 40, 31).single,
+            "one free row for two lists"
+        );
+        assert!(!side_layout(10, 9, 40, 0).single);
+        for rows in 8..=40 {
+            for c in (0..=100).step_by(7) {
+                for g in (0..=100).step_by(9) {
+                    let s = side_layout(rows, 8, c, g);
+                    let free = rows.saturating_sub(8);
+                    if s.single {
+                        assert!(free < usize::from(c > 0) + usize::from(g > 0));
+                        continue;
+                    }
+                    assert!(s.crates_rows <= c && s.group_rows <= g);
+                    assert_eq!(
+                        s.crates_rows + s.group_rows,
+                        (c + g).min(free),
+                        "no row wasted"
+                    );
+                    assert!(c == 0 || s.crates_rows > 0, "an open list shows a row");
+                    assert!(g == 0 || s.group_rows > 0, "an open list shows a row");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_crates_panel_takes_the_eqs_height() {
+        let d = LoadedSkin::default_skin().def;
+        let eq = settings(true, true, true);
+        let crates = Settings {
+            show_eq: false,
+            show_crates: true,
+            ..eq.clone()
+        };
+        assert_eq!(player_height(&eq, &d), player_height(&crates, &d));
+        assert_eq!(window_size(&eq, &d), window_size(&crates, &d));
     }
 }

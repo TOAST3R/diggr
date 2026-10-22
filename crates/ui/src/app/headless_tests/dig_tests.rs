@@ -2084,6 +2084,7 @@ fn a_label_crates_menu_is_delete_export_refresh() {
     let mut rig = rig("dig-label-menu", &fakes, |_| {});
     followed_label(&mut rig);
     rig.app.settings.playlist_width = 700;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     rig.frame(Vec::new());
     let at = {
         let out = rig.frame(Vec::new());
@@ -2306,6 +2307,7 @@ fn a_label_crates_menu_offers_download_then_stop() {
     let mut rig = rig("dig-label-dl-menu", &fakes, |_| {});
     let c = followed_label(&mut rig);
     rig.app.settings.playlist_width = 700;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     let open_menu = |rig: &mut Rig| {
         rig.frame(Vec::new());
         let out = rig.frame(Vec::new());

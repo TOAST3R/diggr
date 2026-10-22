@@ -675,6 +675,10 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     b.sprite("wave_title", 275, 14, |c, x, y| {
         titlebar(c, x, y, 275, 14, "DIGGR WAVEFORM");
     });
+    // The CRATES panel's title bar, in the EQ's place.
+    b.sprite("crates_title", 275, 14, |c, x, y| {
+        titlebar(c, x, y, 275, 14, "DIGGR CRATES");
+    });
     // The playlist stretches sideways: its title and bottom bars are a left cap, a column
     // the app tiles to the width, and a right cap. The title bar names the shown crate: the
     // app draws it on `pl_title_fill`.
@@ -976,8 +980,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             pressed,
         );
     }
-    // The waveform, EQ and playlist toggles: icons, lit while their section shows.
-    const TOGGLE_ICONS: [(&str, [&str; 8]); 3] = [
+    // The waveform, EQ, crates and playlist toggles: icons, lit while their section shows.
+    const TOGGLE_ICONS: [(&str, [&str; 8]); 4] = [
         (
             "tog_wave",
             [
@@ -1002,6 +1006,19 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 ".#...#...#.",
                 ".#...#...#.",
                 ".#...#...#.",
+            ],
+        ),
+        (
+            "tog_cr",
+            [
+                "#.#.#.#.#.#",
+                "#.#.#.#.#.#",
+                "#.#.#.#.#.#",
+                "#.#.#.#.#.#",
+                "###########",
+                "#.........#",
+                "#.........#",
+                "###########",
             ],
         ),
         (
@@ -1121,11 +1138,11 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.fill(x + 14, y + 2, 1, 6, ACCENT);
         });
     }
-    b.sprite("volume_track", 68, 13, |c, x, y| {
-        c.inset(x, y + 3, 68, 7, GROOVE)
+    b.sprite("volume_track", 48, 13, |c, x, y| {
+        c.inset(x, y + 3, 48, 7, GROOVE)
     });
-    b.sprite("volume_fill", 68, 13, |c, x, y| {
-        c.grad_h(x + 1, y + 4, 66, 5, &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)]);
+    b.sprite("volume_fill", 48, 13, |c, x, y| {
+        c.grad_h(x + 1, y + 4, 46, 5, &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)]);
     });
     for name in ["volume_thumb"] {
         for pressed in [false, true] {
@@ -1329,9 +1346,10 @@ fn layout() -> BTreeMap<String, R> {
         ("title_text", R::new(112, 25, 152, 7)),
         ("kbps", R::new(111, 40, 17, 7)),
         ("khz", R::new(158, 40, 12, 7)),
-        ("volume", R::new(107, 57, 68, 13)),
-        ("wave_toggle", R::new(177, 58, 17, 12)),
-        ("eq_toggle", R::new(197, 58, 17, 12)),
+        ("volume", R::new(107, 57, 48, 13)),
+        ("wave_toggle", R::new(157, 58, 17, 12)),
+        ("eq_toggle", R::new(177, 58, 17, 12)),
+        ("cr_toggle", R::new(197, 58, 17, 12)),
         ("pl_toggle", R::new(217, 58, 17, 12)),
         ("sync", R::new(238, 58, 30, 12)),
         ("seek", R::new(16, 72, 248, 10)),

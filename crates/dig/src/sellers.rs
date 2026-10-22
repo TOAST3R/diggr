@@ -76,8 +76,6 @@ pub enum DoubleClick {
 pub struct SellerList {
     /// The first list was made from the purchases (it never is again).
     pub seeded: bool,
-    /// TOP SELLERS is folded in the sidebar.
-    pub folded: bool,
     /// In the sidebar's order.
     pub sellers: Vec<Seller>,
 }
@@ -145,7 +143,6 @@ mod tests {
         let d = crate::test_dir("sellers");
         let mut l = SellerList {
             seeded: true,
-            folded: true,
             ..SellerList::default()
         };
         let mut s = Seller::new("decks.de", 12, Source::Purchases);
@@ -165,6 +162,13 @@ mod tests {
         std::fs::create_dir_all(SellerList::path(d.path()).parent().unwrap()).unwrap();
         std::fs::write(SellerList::path(d.path()), "not ron").unwrap();
         assert!(!SellerList::load(d.path()).seeded);
+        // An older file still holds the sidebar fold, which now lives in the settings.
+        std::fs::write(
+            SellerList::path(d.path()),
+            "(seeded: true, folded: true, sellers: [])",
+        )
+        .unwrap();
+        assert!(SellerList::load(d.path()).seeded);
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::format;
 use crate::metadata::{MetaResult, MetaWorker};
 use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus, Facet};
 use crate::records::{self, ListRow};
-use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, Store, VisMode};
+use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, SideGroup, Store, VisMode};
 use crate::skin::LoadedSkin;
 use crate::spectrum::{Analyzer, BARS};
 use crate::sync::speed_label;
@@ -144,6 +144,18 @@ pub struct DiggrApp {
     bpm_drag: Option<u8>,
     /// The crate last clicked in the sidebar, until the list is clicked: Delete deletes it.
     side_crate: Option<CrateId>,
+    /// The sidebar lists' first rows: the crates (or the whole sidebar when it scrolls as one),
+    /// the open Discogs group, and the CRATES panel; with their trackpad remainders.
+    side_scroll: [usize; 3],
+    side_scroll_acc: [f32; 3],
+    /// The shown crate last followed (none before the first frame), and whether the sidebar
+    /// and the CRATES panel still have to scroll to it.
+    side_revealed: Option<CrateId>,
+    side_scroll_to: [bool; 2],
+    /// When a drag at a list's edge last stepped it.
+    side_edge_at: Option<Instant>,
+    /// The CRATES panel's crate under the pointer while entries are dragged.
+    panel_drop: Option<CrateId>,
     /// Where the footer's BPM slider was last drawn: its track's ends and whether the range
     /// text fit (skin pixels, footer coordinates), for tests.
     #[cfg(test)]
@@ -339,6 +351,12 @@ impl DiggrApp {
             pl_hint_links: Vec::new(),
             bpm_drag: None,
             side_crate: None,
+            side_scroll: [0; 3],
+            side_scroll_acc: [0.0; 3],
+            side_revealed: None,
+            side_scroll_to: [false; 2],
+            side_edge_at: None,
+            panel_drop: None,
             #[cfg(test)]
             bpm_slider: None,
             facet_cache: Default::default(),
@@ -1934,6 +1952,19 @@ impl DiggrApp {
             if widgets::toggle(
                 ui,
                 &sk,
+                "cr_tog",
+                "cr_toggle",
+                "tog_cr",
+                self.settings.show_crates,
+            )
+            .on_hover_text("Crates")
+            .clicked()
+            {
+                actions.push(Action::ToggleCrates);
+            }
+            if widgets::toggle(
+                ui,
+                &sk,
                 "pl_tog",
                 "pl_toggle",
                 "tog_pl",
@@ -2107,6 +2138,97 @@ impl DiggrApp {
         Self::titlebar_drag(ui, &sk, "wave_title", "wave_titlebar");
         if widgets::button(ui, &sk, "wave_close", "wave_close", "btn_close").clicked() {
             self.apply(Action::ToggleWaveform, ui.ctx());
+        }
+    }
+
+    /// The CRATES panel in the EQ's place: the user's own crates, then "+ New crate", in one
+    /// list that scrolls. Dropping entries on a crate sends them there, as in the sidebar.
+    fn crates_panel(&mut self, ui: &mut Ui, origin: Pos2) {
+        let mut actions = Vec::new();
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        let colors = sk.def.colors.clone();
+        let scale = sk.scale;
+        let (w, h) = (sk.def.eq_size.0 as f32, sk.def.eq_size.1 as f32);
+        sk.sprite("crates_title", 0.0, 0.0);
+        dim_title(&sk, "eq_titlebar", self.focus == Focus::Player);
+        Self::titlebar_drag(ui, &sk, "crates_title", "eq_titlebar");
+        if widgets::button(ui, &sk, "crates_close", "eq_close", "btn_close").clicked() {
+            actions.push(Action::ToggleCrates);
+        }
+        let top = sk.def.sprite("crates_title").h as f32;
+        sk.fill(
+            sk.rect(0.0, top, w, h - top),
+            lerp_color(colors.pl_bg, colors.pl_text, 0.06),
+        );
+        let row_h = sk.def.pl_row_h as f32;
+        let (x, y, list_w) = (3.0, top + 2.0, w - 6.0);
+        let rows = (((h - y - 2.0) / row_h).floor() as usize).max(1);
+        let seller_of: HashMap<CrateId, (bool, bool)> = self
+            .sidebar_sellers()
+            .into_iter()
+            .map(|(id, dug, busy)| (id, (dug, busy)))
+            .collect();
+        let friend_of: HashMap<CrateId, (bool, bool, bool)> = self
+            .sidebar_friends()
+            .into_iter()
+            .map(|(id, dug, private, busy)| (id, (dug, private, busy)))
+            .collect();
+        let (mine, _) = self.side_crates(&seller_of, &friend_of);
+        let len = mine.len() + 1;
+        let shown = self.crates.shown_id();
+        if std::mem::take(&mut self.side_scroll_to[1])
+            && let Some(i) = mine.iter().position(|c| c.id == shown)
+        {
+            self.side_scroll[2] = reveal_row(self.side_scroll[2], i, rows);
+        }
+        let pane = sk.rect(x, y, list_w, rows as f32 * row_h);
+        let first = self.pane_scroll(ui, pane, 2, len, rows, row_h * scale);
+        let painter = sk.painter.with_clip_rect(pane);
+        let font = egui::FontId::proportional(9.5 * scale);
+        let pad = if len > rows { SIDE_BAR_W + 1.0 } else { 0.0 };
+        let mut target = None;
+        for (r, i) in (first..len.min(first + rows)).enumerate() {
+            let rr = sk.rect(x, y + r as f32 * row_h, list_w, row_h);
+            match mine.get(i) {
+                Some(c) => {
+                    if self.crate_row(
+                        ui,
+                        &sk,
+                        &painter,
+                        "crates_panel",
+                        rr,
+                        c,
+                        None,
+                        None,
+                        pad,
+                        &font,
+                        &mut actions,
+                    ) {
+                        target = Some(c.id);
+                    }
+                }
+                None => {
+                    painter.text(
+                        pos2(rr.left() + 3.0 * scale, rr.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "+ New crate",
+                        font.clone(),
+                        lerp_color(colors.pl_text, colors.pl_bg, 0.3),
+                    );
+                    if ui
+                        .interact(rr, Id::new("crates_panel_new"), Sense::click())
+                        .clicked()
+                    {
+                        actions.push(Action::NewCrate);
+                    }
+                }
+            }
+        }
+        self.pane_bar(ui, &sk, pane, 2, len, rows, first);
+        self.panel_drop = target;
+        for a in actions {
+            self.apply(a, ui.ctx());
         }
     }
 
@@ -2484,38 +2606,31 @@ impl DiggrApp {
         self.settings.playlist_maximized || self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
     }
 
-    /// The seller crates for the sidebar (crate, dug, refreshing), in Top Sellers order, and
-    /// whether TOP SELLERS is folded.
-    fn sidebar_sellers(&self) -> (Vec<(CrateId, bool, bool)>, bool) {
+    /// The seller crates for the sidebar (crate, dug, refreshing), in Top Sellers order.
+    fn sidebar_sellers(&self) -> Vec<(CrateId, bool, bool)> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (rows, folded) = self.seller_rows();
-            (
-                rows.into_iter()
-                    .map(|r| (r.crate_id, r.dug, r.refreshing))
-                    .collect(),
-                folded,
-            )
+            self.seller_rows()
+                .into_iter()
+                .map(|r| (r.crate_id, r.dug, r.refreshing))
+                .collect()
         }
         #[cfg(target_arch = "wasm32")]
-        (Vec::new(), false)
+        Vec::new()
     }
 
     /// The friend crates for the sidebar (crate, dug, private, refreshing), in Discogs'
-    /// order, and whether FRIENDS is folded.
-    fn sidebar_friends(&self) -> (Vec<(CrateId, bool, bool, bool)>, bool) {
+    /// order.
+    fn sidebar_friends(&self) -> Vec<(CrateId, bool, bool, bool)> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (rows, folded) = self.friend_rows();
-            (
-                rows.into_iter()
-                    .map(|r| (r.crate_id, r.dug, r.private, r.busy))
-                    .collect(),
-                folded,
-            )
+            self.friend_rows()
+                .into_iter()
+                .map(|r| (r.crate_id, r.dug, r.private, r.busy))
+                .collect()
         }
         #[cfg(target_arch = "wasm32")]
-        (Vec::new(), false)
+        Vec::new()
     }
 
     /// The crate sidebar shows exactly when it fits.
@@ -2523,10 +2638,12 @@ impl DiggrApp {
         self.pl_sidebar_fits()
     }
 
-    /// The crate sidebar in `area` (skin pixels: x, y, w, h): the crates with their counts,
-    /// then "+ New crate", and the user's Discogs collection pinned at the bottom under
-    /// DISCOGS. Returns the crate under the pointer while entries are dragged (not the shown
-    /// one), which is highlighted.
+    /// The crate sidebar in `area` (skin pixels: x, y, w, h): CRATES with the user's crates
+    /// and "+ New crate" from the top, and the Discogs group anchored at the bottom: DISCOGS
+    /// with the wantlist and collection pinned, then LABELS, TOP SELLERS and FRIENDS, of which
+    /// at most one is open. The user's crates and the open group scroll when they don't fit
+    /// (see `layout::side_layout`). Returns the crate under the pointer while entries are
+    /// dragged (not the shown one), which is highlighted.
     fn crate_sidebar(
         &mut self,
         ui: &mut Ui,
@@ -2549,77 +2666,149 @@ impl DiggrApp {
         );
         let painter = sk.painter.with_clip_rect(sk.rect(x, y, w - 1.0, h));
         let rows = ((h / row_h).floor() as usize).max(1);
-        let (sellers, folded) = self.sidebar_sellers();
-        let (friends, friends_folded) = self.sidebar_friends();
+        let sellers = self.sidebar_sellers();
+        let friends = self.sidebar_friends();
         let friend_of: HashMap<CrateId, (bool, bool, bool)> = friends
             .iter()
             .map(|&(id, dug, private, busy)| (id, (dug, private, busy)))
             .collect();
-        let seller_ids: HashSet<CrateId> = sellers
+        let seller_of: HashMap<CrateId, (bool, bool)> = sellers
             .iter()
-            .map(|s| s.0)
-            .chain(friend_of.keys().copied())
+            .map(|&(id, dug, busy)| (id, (dug, busy)))
             .collect();
         let labels: Vec<_> = self.crates.labels().cloned().collect();
-        let (mine, collection): (Vec<_>, Vec<_>) = self
-            .crates
-            .list()
-            .iter()
-            .filter(|c| !seller_ids.contains(&c.id) && !c.is_label())
-            .cloned()
-            .partition(|c| !c.discogs());
-        // The Discogs group is anchored to the bottom: DISCOGS, the wantlist then the
-        // collection, then LABELS and the label crates, then TOP SELLERS and the seller crates
-        // (each unless folded). When it doesn't all fit, the crates at its end are left out
-        // first.
-        let mut collection = collection;
-        collection.sort_by_key(|c| !c.wantlist);
-        let mut bottom: Vec<SideRow> = Vec::new();
+        let (mine, collection) = self.side_crates(&seller_of, &friend_of);
+        let shown = self.crates.shown_id();
+        let reveal = std::mem::take(&mut self.side_scroll_to[0]);
+        let open = self.settings.side_open;
+        let crates_folded = self.settings.crates_folded;
+
+        // The rows: CRATES and its list (a), "+ New crate", then the Discogs group's headings
+        // and pinned crates around the open group's list (b).
+        let a: Vec<SideRow> = if crates_folded {
+            Vec::new()
+        } else {
+            mine.iter()
+                .map(|c| SideRow::Crate(c.clone(), None))
+                .collect()
+        };
+        let mut before: Vec<SideRow> = Vec::new();
+        let mut b: Vec<SideRow> = Vec::new();
+        let mut after: Vec<SideRow> = Vec::new();
         if !collection.is_empty()
             || !labels.is_empty()
             || !sellers.is_empty()
             || !friends.is_empty()
         {
-            bottom.push(SideRow::Discogs);
+            before.push(SideRow::Discogs);
         }
-        bottom.extend(collection.into_iter().map(|c| SideRow::Crate(c, None)));
-        if !labels.is_empty() {
-            let folded = self.settings.labels_folded;
-            bottom.push(SideRow::Labels(labels.len(), folded));
-            if !folded {
-                bottom.extend(labels.into_iter().map(|c| SideRow::Crate(c, None)));
+        before.extend(collection.into_iter().map(|c| SideRow::Crate(c, None)));
+        let groups = [
+            (
+                SideGroup::Labels,
+                labels.iter().map(|c| c.id).collect(),
+                false,
+            ),
+            (
+                SideGroup::Sellers,
+                sellers.iter().map(|s| s.0).collect::<Vec<_>>(),
+                sellers.iter().any(|s| s.2),
+            ),
+            (
+                SideGroup::Friends,
+                friends.iter().map(|f| f.0).collect(),
+                friends.iter().any(|f| f.3),
+            ),
+        ];
+        let mut past_open = false;
+        for (g, ids, busy) in groups {
+            if ids.is_empty() {
+                continue;
+            }
+            let heading = SideRow::Group(g, ids.len(), open == Some(g), busy);
+            if open == Some(g) {
+                before.push(heading);
+                b = ids
+                    .iter()
+                    .filter_map(|id| self.crates.info(*id))
+                    .map(|c| SideRow::Crate(c.clone(), seller_of.get(&c.id).copied()))
+                    .collect();
+                past_open = true;
+            } else if past_open {
+                after.push(heading);
+            } else {
+                before.push(heading);
             }
         }
-        if !sellers.is_empty() {
-            bottom.push(SideRow::Sellers(sellers.len(), folded));
-            if !folded {
-                for (id, dug, busy) in &sellers {
-                    if let Some(c) = self.crates.info(*id) {
-                        bottom.push(SideRow::Crate(c.clone(), Some((*dug, *busy))));
-                    }
+        let fixed = 2 + before.len() + after.len();
+        let lay = crate::layout::side_layout(rows, fixed, a.len(), b.len());
+        let crates_head = SideRow::Crates(mine.len(), crates_folded);
+
+        let row_px = row_h * scale;
+        let dragging = self.pl_drag_from.is_some();
+        if !dragging {
+            self.side_edge_at = None;
+        }
+        let pane = |first: usize, n: usize| {
+            sk.rect(x, y + first as f32 * row_h, w - 1.0, n as f32 * row_h)
+        };
+        // (row on screen, row, scrolled pane): the bar takes the count's room.
+        let mut placed: Vec<(usize, SideRow, bool)> = Vec::new();
+        // (pane rect, length, rows shown, offset, which).
+        let mut panes: Vec<(Rect, usize, usize, usize, usize)> = Vec::new();
+        if lay.single {
+            let mut all = vec![crates_head];
+            all.extend(a);
+            all.push(SideRow::New);
+            all.extend(before);
+            all.extend(b);
+            all.extend(after);
+            if reveal && let Some(i) = all.iter().position(|r| r.is(shown)) {
+                self.side_scroll[0] = reveal_row(self.side_scroll[0], i, rows);
+            }
+            let first = self.pane_scroll(ui, pane(0, rows), 0, all.len(), rows, row_px);
+            let scrolled = all.len() > rows;
+            panes.push((pane(0, rows), all.len(), rows, first, 0));
+            placed.extend(
+                all.into_iter()
+                    .skip(first)
+                    .take(rows)
+                    .enumerate()
+                    .map(|(i, r)| (i, r, scrolled)),
+            );
+        } else {
+            let (ar, br) = (lay.crates_rows, lay.group_rows);
+            if reveal {
+                if let Some(i) = a.iter().position(|r| r.is(shown)) {
+                    self.side_scroll[0] = reveal_row(self.side_scroll[0], i, ar);
+                } else if let Some(i) = b.iter().position(|r| r.is(shown)) {
+                    self.side_scroll[1] = reveal_row(self.side_scroll[1], i, br);
                 }
             }
+            let bottom = rows - (before.len() + br + after.len());
+            let b_top = bottom + before.len();
+            let (a_len, b_len) = (a.len(), b.len());
+            let fa = self.pane_scroll(ui, pane(1, ar), 0, a_len, ar, row_px);
+            let fb = self.pane_scroll(ui, pane(b_top, br), 1, b_len, br, row_px);
+            panes.push((pane(1, ar), a_len, ar, fa, 0));
+            panes.push((pane(b_top, br), b_len, br, fb, 1));
+            placed.push((0, crates_head, false));
+            placed.extend(
+                a.into_iter()
+                    .skip(fa)
+                    .take(ar)
+                    .enumerate()
+                    .map(|(i, r)| (1 + i, r, a_len > ar)),
+            );
+            placed.push((1 + ar, SideRow::New, false));
+            let rest = before
+                .into_iter()
+                .map(|r| (r, false))
+                .chain(b.into_iter().skip(fb).take(br).map(|r| (r, b_len > br)))
+                .chain(after.into_iter().map(|r| (r, false)));
+            placed.extend(rest.enumerate().map(|(i, (r, s))| (bottom + i, r, s)));
         }
-        if !friends.is_empty() {
-            bottom.push(SideRow::Friends(friends.len(), friends_folded));
-            if !friends_folded {
-                for (id, ..) in &friends {
-                    if let Some(c) = self.crates.info(*id) {
-                        bottom.push(SideRow::Crate(c.clone(), None));
-                    }
-                }
-            }
-        }
-        bottom.truncate(rows.saturating_sub(1));
-        let group = bottom.len();
-        let top_rows = rows - group;
-        let mut placed: Vec<Placed> = mine
-            .into_iter()
-            .take(top_rows.saturating_sub(1))
-            .enumerate()
-            .map(|(i, c)| (c, i, None))
-            .collect();
-        let new_row = placed.len();
+
         let heading = |row: usize, text: &str| {
             let dr = sk.rect(x, y + row as f32 * row_h, w - 1.0, row_h);
             let width = painter
@@ -2638,31 +2827,56 @@ impl DiggrApp {
             );
             dr
         };
-        for (i, row) in bottom.into_iter().enumerate() {
-            let r = top_rows + i;
+        let mark = |open: bool| if open { "⏷" } else { "⏵" };
+        let mut target = None;
+        for (r, row, scrolled) in placed {
             match row {
                 SideRow::Discogs => {
                     heading(r, "DISCOGS");
                 }
-                SideRow::Labels(n, folded) => {
-                    let mark = if folded { "⏵" } else { "⏷" };
-                    let dr = heading(r, &format!("{mark} LABELS ({n})"));
+                SideRow::Crates(n, folded) => {
+                    let dr = heading(r, &format!("{} CRATES ({n})", mark(!folded)));
                     if ui
-                        .interact(dr, Id::new("pl_side_labels"), Sense::click())
-                        .on_hover_text("The labels you follow: click to fold")
+                        .interact(dr, Id::new("pl_side_crates"), Sense::click())
+                        .on_hover_text("Your crates: click to fold")
                         .clicked()
                     {
-                        actions.push(Action::ToggleLabelsFold);
+                        actions.push(Action::ToggleSideGroup(None));
                     }
                 }
-                SideRow::Sellers(n, folded) => {
-                    let mark = if folded { "⏵" } else { "⏷" };
-                    let dr = heading(r, &format!("{mark} TOP SELLERS ({n})"));
-                    let resp = ui
-                        .interact(dr, Id::new("pl_side_sellers"), Sense::click())
-                        .on_hover_text("Your Top Sellers: click to fold, right-click to add one");
+                SideRow::Group(g, n, is_open, busy) => {
+                    let name = match g {
+                        SideGroup::Labels => "LABELS",
+                        SideGroup::Sellers => "TOP SELLERS",
+                        SideGroup::Friends => "FRIENDS",
+                    };
+                    // A dig or refresh inside a closed group still shows.
+                    let busy = busy && !is_open;
+                    let dots = if busy { " …" } else { "" };
+                    let dr = heading(r, &format!("{} {name} ({n}){dots}", mark(is_open)));
+                    let resp = ui.interact(dr, Id::new(("pl_side_group", name)), Sense::click());
+                    let mut tip = match g {
+                        SideGroup::Labels => {
+                            "The labels you follow: click to open or close".to_owned()
+                        }
+                        SideGroup::Sellers => {
+                            "Your Top Sellers: click to open or close, right-click to add one"
+                                .to_owned()
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        SideGroup::Friends => self.friends_tip(),
+                        #[cfg(target_arch = "wasm32")]
+                        SideGroup::Friends => String::new(),
+                    };
+                    if busy {
+                        tip += match g {
+                            SideGroup::Friends => "\nRefreshing…",
+                            _ => "\nDigging…",
+                        };
+                    }
+                    let resp = resp.on_hover_text(tip);
                     #[cfg(not(target_arch = "wasm32"))]
-                    {
+                    if g == SideGroup::Sellers {
                         use crate::app::sellers::SellerAction;
                         let menu_click = opens_context_menu(
                             resp.secondary_clicked(),
@@ -2670,7 +2884,7 @@ impl DiggrApp {
                             ui.input(|i| i.modifiers),
                         );
                         if resp.clicked() && !menu_click {
-                            actions.push(Action::Dig(DigAction::Seller(SellerAction::ToggleFold)));
+                            actions.push(Action::ToggleSideGroup(Some(g)));
                         }
                         let open = menu_click.then_some(egui::SetOpenCommand::Bool(true));
                         egui::Popup::context_menu(&resp)
@@ -2681,322 +2895,491 @@ impl DiggrApp {
                                     ui.close();
                                 }
                             });
+                        continue;
                     }
-                    #[cfg(target_arch = "wasm32")]
-                    let _ = resp;
+                    if resp.clicked() {
+                        actions.push(Action::ToggleSideGroup(Some(g)));
+                    }
                 }
-                SideRow::Friends(n, folded) => {
-                    let mark = if folded { "⏵" } else { "⏷" };
-                    let dr = heading(r, &format!("{mark} FRIENDS ({n})"));
-                    #[cfg(not(target_arch = "wasm32"))]
+                SideRow::New => {
+                    let nr = sk.rect(x, y + r as f32 * row_h, w - 1.0, row_h);
+                    painter.text(
+                        pos2(nr.left() + 3.0 * scale, nr.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "+ New crate",
+                        font.clone(),
+                        lerp_color(colors.pl_text, colors.pl_bg, 0.3),
+                    );
                     if ui
-                        .interact(dr, Id::new("pl_side_friends"), Sense::click())
-                        .on_hover_text(self.friends_tip())
+                        .interact(nr, Id::new("pl_side_new"), Sense::click())
                         .clicked()
                     {
-                        actions.push(Action::Dig(DigAction::Friend(
-                            crate::app::friends::FriendAction::ToggleFold,
-                        )));
+                        actions.push(Action::NewCrate);
                     }
-                    #[cfg(target_arch = "wasm32")]
-                    let _ = dr;
                 }
-                SideRow::Crate(c, seller) => placed.push((c, r, seller)),
+                SideRow::Crate(c, seller) => {
+                    let rr = sk.rect(x, y + r as f32 * row_h, w - 1.0, row_h);
+                    let friend = friend_of.get(&c.id).copied();
+                    let pad = if scrolled { SIDE_BAR_W + 1.0 } else { 0.0 };
+                    if self.crate_row(
+                        ui, sk, &painter, "pl_side", rr, &c, seller, friend, pad, font, actions,
+                    ) {
+                        target = Some(c.id);
+                    }
+                }
             }
         }
+        for (rect, len, shown_rows, first, which) in panes {
+            self.pane_bar(ui, sk, rect, which, len, shown_rows, first);
+        }
+        target
+    }
+
+    /// When the shown crate changes, by any means, its sidebar group opens (or CRATES unfolds),
+    /// and the sidebar and the CRATES panel scroll to it when next drawn. At launch it is
+    /// only scrolled to.
+    fn follow_shown(&mut self) {
+        let shown = self.crates.shown_id();
+        if self.side_revealed == Some(shown) {
+            return;
+        }
+        let launch = self.side_revealed.is_none();
+        self.side_revealed = Some(shown);
+        self.side_scroll_to = [true; 2];
+        if launch {
+            return;
+        }
+        let group = if self.crates.is_label(shown) {
+            Some(SideGroup::Labels)
+        } else if self.sidebar_sellers().iter().any(|s| s.0 == shown) {
+            Some(SideGroup::Sellers)
+        } else if self.sidebar_friends().iter().any(|f| f.0 == shown) {
+            Some(SideGroup::Friends)
+        } else {
+            None
+        };
+        match group {
+            Some(g) if self.settings.side_open != Some(g) => {
+                self.settings.side_open = Some(g);
+                self.side_scroll[1] = 0;
+                self.mark_settings();
+            }
+            None if self.settings.crates_folded
+                && self.crates.info(shown).is_some_and(|c| !c.discogs()) =>
+            {
+                self.settings.crates_folded = false;
+                self.mark_settings();
+            }
+            _ => {}
+        }
+    }
+
+    /// The crates the sidebar lists under CRATES (the user's own: no Discogs, label, seller or
+    /// friend crate) in creation order, and the user's Discogs crates, the wantlist first.
+    fn side_crates(
+        &self,
+        seller_of: &HashMap<CrateId, (bool, bool)>,
+        friend_of: &HashMap<CrateId, (bool, bool, bool)>,
+    ) -> (Vec<crate::crates::CrateInfo>, Vec<crate::crates::CrateInfo>) {
+        let (mine, mut collection): (Vec<_>, Vec<_>) = self
+            .crates
+            .list()
+            .iter()
+            .filter(|c| {
+                !seller_of.contains_key(&c.id) && !friend_of.contains_key(&c.id) && !c.is_label()
+            })
+            .cloned()
+            .partition(|c| !c.discogs());
+        collection.sort_by_key(|c| !c.wantlist);
+        (mine, collection)
+    }
+
+    /// A sidebar list's first row this frame (`which`: 0 the crates or the whole sidebar, 1 the
+    /// open group, 2 the CRATES panel): the wheel or trackpad over it, and while entries are
+    /// dragged, its first or last row steps it a row every `SIDE_EDGE_STEP`.
+    fn pane_scroll(
+        &mut self,
+        ui: &Ui,
+        rect: Rect,
+        which: usize,
+        len: usize,
+        rows: usize,
+        row_px: f32,
+    ) -> usize {
+        let max = len.saturating_sub(rows);
+        let first = self.side_scroll[which].min(max);
+        let acc = &mut self.side_scroll_acc[which];
+        let mut first = if ui.rect_contains_pointer(rect) {
+            let dy = ui.input(|i| i.smooth_scroll_delta.y);
+            scroll_rows(acc, first, max, dy, row_px)
+        } else {
+            *acc = 0.0;
+            first
+        };
+        if self.pl_drag_from.is_some()
+            && max > 0
+            && let Some(p) = ui.ctx().pointer_latest_pos()
+            && rect.contains(p)
+        {
+            let step: isize = if p.y < rect.top() + row_px {
+                -1
+            } else if p.y >= rect.bottom() - row_px {
+                1
+            } else {
+                0
+            };
+            let moved = first.saturating_add_signed(step).min(max);
+            if moved != first {
+                let now = Instant::now();
+                if self
+                    .side_edge_at
+                    .is_none_or(|t| now.duration_since(t) >= SIDE_EDGE_STEP)
+                {
+                    self.side_edge_at = Some(now);
+                    first = moved;
+                }
+                ui.ctx().request_repaint_after(SIDE_EDGE_STEP);
+            }
+        }
+        self.side_scroll[which] = first;
+        first
+    }
+
+    /// A sidebar list's thin scrollbar, when it holds more than it shows: click or drag it to
+    /// move.
+    #[allow(clippy::too_many_arguments)]
+    fn pane_bar(
+        &mut self,
+        ui: &Ui,
+        sk: &Skinned,
+        rect: Rect,
+        which: usize,
+        len: usize,
+        rows: usize,
+        first: usize,
+    ) {
+        if len <= rows || rows == 0 {
+            return;
+        }
+        let colors = &sk.def.colors;
+        let max = len - rows;
+        let bar = Rect::from_min_max(
+            pos2(rect.right() - SIDE_BAR_W * sk.scale, rect.top()),
+            rect.max,
+        );
+        sk.painter
+            .rect_filled(bar, 0.0, lerp_color(colors.pl_bg, colors.pl_text, 0.12));
+        let thumb_h = (bar.height() * rows as f32 / len as f32).max(bar.height() / rows as f32);
+        let travel = bar.height() - thumb_h;
+        let top = bar.top() + travel * first as f32 / max as f32;
+        sk.painter.rect_filled(
+            Rect::from_min_size(pos2(bar.left(), top), vec2(bar.width(), thumb_h)),
+            0.0,
+            color(colors.pl_owned),
+        );
+        let resp = ui.interact(
+            bar,
+            Id::new(("pl_side_bar", which)),
+            Sense::click_and_drag(),
+        );
+        if let Some(p) = resp.interact_pointer_pos()
+            && travel > 0.0
+        {
+            let f = ((p.y - bar.top() - thumb_h / 2.0) / travel).clamp(0.0, 1.0);
+            self.side_scroll[which] = (f * max as f32).round() as usize;
+        }
+    }
+
+    /// One crate in the sidebar or the CRATES panel (`place`, which keeps their widgets apart),
+    /// in `rr`: its marks, name and count (`pad` skin pixels in from the right, for a
+    /// scrollbar), its tooltip, click, menu and Delete key. Returns whether it is under the pointer while entries are dragged (not the shown
+    /// crate): the drop target.
+    #[allow(clippy::too_many_arguments)]
+    fn crate_row(
+        &mut self,
+        ui: &mut Ui,
+        sk: &Skinned,
+        painter: &egui::Painter,
+        place: &str,
+        rr: Rect,
+        c: &crate::crates::CrateInfo,
+        seller: Option<(bool, bool)>,
+        friend: Option<(bool, bool, bool)>,
+        pad: f32,
+        font: &egui::FontId,
+        actions: &mut Vec<Action>,
+    ) -> bool {
+        let colors = sk.def.colors.clone();
+        let scale = sk.scale;
         let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
         let state = self.position.state;
         let dragging = self.pl_drag_from.is_some();
-        let mut target = None;
-        for (c, row, seller) in &placed {
-            let rr = sk.rect(x, y + *row as f32 * row_h, w - 1.0, row_h);
-            let readable = !self.crates.is_unreadable(c.id);
-            let friend = friend_of.get(&c.id).copied();
-            // A seller crate never dug, or a friend's private collection, is dimmed and shows
-            // no count.
-            let undug = seller.is_some_and(|(dug, _)| !dug)
-                || friend.is_some_and(|(_, private, _)| private);
-            let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
-            // A Discogs crate isn't lit as a target: a drop there only says how to fill it.
-            if over {
-                target = Some(c.id);
-            }
-            if over && !self.crates.is_locked(c.id) && seller.is_none() {
-                painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
-            } else if c.id == shown {
-                painter.rect_filled(
-                    rr,
-                    0.0,
-                    lerp_color(colors.pl_selected_bg, colors.pl_bg, 0.5),
+        let readable = !self.crates.is_unreadable(c.id);
+        // A seller crate never dug, or a friend's private collection, is dimmed and shows
+        // no count.
+        let undug =
+            seller.is_some_and(|(dug, _)| !dug) || friend.is_some_and(|(_, private, _)| private);
+        let over = dragging && readable && c.id != shown && ui.rect_contains_pointer(rr);
+        // A Discogs crate isn't lit as a target: a drop there only says how to fill it.
+        if over && !self.crates.is_locked(c.id) && seller.is_none() {
+            painter.rect_filled(rr, 0.0, color(colors.pl_selected_bg));
+        } else if c.id == shown {
+            painter.rect_filled(
+                rr,
+                0.0,
+                lerp_color(colors.pl_selected_bg, colors.pl_bg, 0.5),
+            );
+        }
+        let base = if c.discogs() {
+            colors.pl_owned
+        } else if c.id == shown {
+            colors.pl_current
+        } else {
+            colors.pl_text
+        };
+        let col = if readable && !undug {
+            color(base)
+        } else {
+            lerp_color(base, colors.pl_bg, 0.55)
+        };
+        // The left slot: ▶ / ‖ while this crate plays or is paused, a record for the
+        // collection, a dot for the shown crate.
+        let live = (c.id == playing)
+            .then_some(state)
+            .filter(|s| *s != PlayState::Stopped);
+        let slot = pos2(rr.left() + 2.0 * scale, rr.center().y);
+        match live {
+            Some(s) => {
+                let name = if s == PlayState::Playing {
+                    "status_play"
+                } else {
+                    "status_pause"
+                };
+                let r = sk.def.sprite(name);
+                sk.sprite_in(
+                    name,
+                    Rect::from_min_size(
+                        slot - vec2(0.0, r.h as f32 * scale / 2.0),
+                        vec2(r.w as f32, r.h as f32) * scale,
+                    ),
                 );
             }
-            let base = if c.discogs() {
-                colors.pl_owned
-            } else if c.id == shown {
-                colors.pl_current
-            } else {
-                colors.pl_text
+            None if c.discogs() => {
+                let centre = slot + vec2(4.0 * scale, 0.0);
+                painter.circle_stroke(centre, 3.5 * scale, egui::Stroke::new(scale, col));
+                painter.circle_filled(centre, scale, col);
+            }
+            None if c.id == shown => {
+                painter.text(slot, egui::Align2::LEFT_CENTER, "•", font.clone(), col);
+            }
+            None => {}
+        }
+        // Every crate counts records, grouped or flat.
+        let shown_count = self.crates.record_count(c.id);
+        let count_text = if undug {
+            String::new()
+        } else {
+            shown_count.to_string()
+        };
+        let count = painter
+            .text(
+                pos2(rr.right() - (3.0 + pad) * scale, rr.center().y),
+                egui::Align2::RIGHT_CENTER,
+                count_text,
+                font.clone(),
+                col,
+            )
+            .width();
+        painter
+            .with_clip_rect(Rect::from_min_max(
+                rr.min,
+                pos2(rr.right() - count - 6.0 * scale, rr.max.y),
+            ))
+            .text(
+                pos2(rr.left() + 13.0 * scale, rr.center().y),
+                egui::Align2::LEFT_CENTER,
+                &c.name,
+                font.clone(),
+                col,
+            );
+        let mut resp = ui.interact(rr, Id::new((place, c.id)), Sense::click());
+        if resp.hovered() && !dragging {
+            let tracks = entries_label(self.crates.entry_count(c.id));
+            let records = match shown_count {
+                1 => "1 record".to_owned(),
+                n => format!("{n} records"),
             };
-            let col = if readable && !undug {
-                color(base)
-            } else {
-                lerp_color(base, colors.pl_bg, 0.55)
-            };
-            // The left slot: ▶ / ‖ while this crate plays or is paused, a record for the
-            // collection, a dot for the shown crate.
-            let live = (c.id == playing)
-                .then_some(state)
-                .filter(|s| *s != PlayState::Stopped);
-            let slot = pos2(rr.left() + 2.0 * scale, rr.center().y);
+            let mut tip = format!("{} ({records}, {tracks})", c.name);
+            if c.collection {
+                tip += "\nYour Discogs collection";
+            } else if c.wantlist {
+                tip += "\nYour Discogs wantlist";
+            } else if c.is_label() {
+                tip += "\nA label you follow: it fills from the label's page";
+            } else if friend.is_some_and(|(_, private, _)| private) {
+                tip += "\nPrivate collection";
+            } else if friend.is_some_and(|(dug, ..)| !dug) {
+                tip += "\nA Discogs friend: double-click to dig their collection";
+            } else if friend.is_some() {
+                tip += "\nA Discogs friend's collection: right-click to refresh it";
+            } else if undug {
+                tip += "\nTop Sellers: double-click to dig it";
+            } else if seller.is_some() {
+                tip += "\nTop Sellers: double-click to refresh it (once a day)";
+            }
             match live {
-                Some(s) => {
-                    let name = if s == PlayState::Playing {
-                        "status_play"
-                    } else {
-                        "status_pause"
-                    };
-                    let r = sk.def.sprite(name);
-                    sk.sprite_in(
-                        name,
-                        Rect::from_min_size(
-                            slot - vec2(0.0, r.h as f32 * scale / 2.0),
-                            vec2(r.w as f32, r.h as f32) * scale,
-                        ),
-                    );
-                }
-                None if c.discogs() => {
-                    let centre = slot + vec2(4.0 * scale, 0.0);
-                    painter.circle_stroke(centre, 3.5 * scale, egui::Stroke::new(scale, col));
-                    painter.circle_filled(centre, scale, col);
-                }
-                None if c.id == shown => {
-                    painter.text(slot, egui::Align2::LEFT_CENTER, "•", font.clone(), col);
-                }
+                Some(PlayState::Playing) => tip += "\nPlaying from this crate",
+                Some(_) => tip += "\nPaused in this crate",
                 None => {}
             }
-            // Every crate counts records, grouped or flat.
-            let shown_count = self.crates.record_count(c.id);
-            let count_text = if undug {
-                String::new()
-            } else {
-                shown_count.to_string()
-            };
-            let count = painter
-                .text(
-                    pos2(rr.right() - 3.0 * scale, rr.center().y),
-                    egui::Align2::RIGHT_CENTER,
-                    count_text,
-                    font.clone(),
-                    col,
-                )
-                .width();
-            painter
-                .with_clip_rect(Rect::from_min_max(
-                    rr.min,
-                    pos2(rr.right() - count - 6.0 * scale, rr.max.y),
-                ))
-                .text(
-                    pos2(rr.left() + 13.0 * scale, rr.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &c.name,
-                    font.clone(),
-                    col,
-                );
-            let mut resp = ui.interact(rr, Id::new(("pl_side", c.id)), Sense::click());
-            if resp.hovered() && !dragging {
-                let tracks = entries_label(self.crates.entry_count(c.id));
-                let records = match shown_count {
-                    1 => "1 record".to_owned(),
-                    n => format!("{n} records"),
-                };
-                let mut tip = format!("{} ({records}, {tracks})", c.name);
-                if c.collection {
-                    tip += "\nYour Discogs collection";
-                } else if c.wantlist {
-                    tip += "\nYour Discogs wantlist";
-                } else if c.is_label() {
-                    tip += "\nA label you follow: it fills from the label's page";
-                } else if friend.is_some_and(|(_, private, _)| private) {
-                    tip += "\nPrivate collection";
-                } else if friend.is_some_and(|(dug, ..)| !dug) {
-                    tip += "\nA Discogs friend: double-click to dig their collection";
-                } else if friend.is_some() {
-                    tip += "\nA Discogs friend's collection: right-click to refresh it";
-                } else if undug {
-                    tip += "\nTop Sellers: double-click to dig it";
-                } else if seller.is_some() {
-                    tip += "\nTop Sellers: double-click to refresh it (once a day)";
+            resp = resp.on_hover_text(tip);
+        }
+        // A right-click, or a Control-click on a Mac, opens the crate's menu.
+        let menu_click = opens_context_menu(
+            resp.secondary_clicked(),
+            resp.clicked(),
+            ui.input(|i| i.modifiers),
+        );
+        if resp.clicked() && !menu_click && readable {
+            actions.push(Action::ShowCrate(c.id));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if resp.double_clicked() && seller.is_some() && readable {
+            actions.push(Action::Dig(DigAction::Seller(
+                crate::app::sellers::SellerAction::Dig(c.id),
+            )));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if resp.double_clicked() && friend.is_some() && readable {
+            actions.push(Action::Dig(DigAction::Friend(
+                crate::app::friends::FriendAction::Dig(c.id),
+            )));
+        }
+        if resp.clicked() || menu_click {
+            self.side_crate = Some(c.id);
+        }
+        // Move to Labels needs the crate's entries: a right-click loads it.
+        if menu_click && readable {
+            self.crates.load(c.id);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let movable = self.label_to_move(c.id);
+        let open = if menu_click {
+            Some(egui::SetOpenCommand::Bool(true))
+        } else if resp.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        let entries = self.crates.entry_count(c.id);
+        egui::Popup::context_menu(&resp)
+            .open_memory(open)
+            .show(|ui| {
+                if c.id == PLAYLIST {
+                    // The scratch crate stays (command-line files fill it): it clears.
+                    if ui
+                        .add_enabled(entries > 0, egui::Button::new("Clear crate"))
+                        .clicked()
+                    {
+                        actions.push(Action::ClearCrate(c.id));
+                        ui.close();
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "Playlist can't be renamed or deleted:\ncommand-line files use it",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                    return;
                 }
-                match live {
-                    Some(PlayState::Playing) => tip += "\nPlaying from this crate",
-                    Some(_) => tip += "\nPaused in this crate",
-                    None => {}
+                if c.is_label() {
+                    self.label_menu(ui, c.id, actions);
+                    return;
                 }
-                resp = resp.on_hover_text(tip);
-            }
-            // A right-click, or a Control-click on a Mac, opens the crate's menu.
-            let menu_click = opens_context_menu(
-                resp.secondary_clicked(),
-                resp.clicked(),
-                ui.input(|i| i.modifiers),
-            );
-            if resp.clicked() && !menu_click && readable {
-                actions.push(Action::ShowCrate(c.id));
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if resp.double_clicked() && seller.is_some() && readable {
-                actions.push(Action::Dig(DigAction::Seller(
-                    crate::app::sellers::SellerAction::Dig(c.id),
-                )));
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if resp.double_clicked() && friend.is_some() && readable {
-                actions.push(Action::Dig(DigAction::Friend(
-                    crate::app::friends::FriendAction::Dig(c.id),
-                )));
-            }
-            if resp.clicked() || menu_click {
-                self.side_crate = Some(c.id);
-            }
-            // Move to Labels needs the crate's entries: a right-click loads it.
-            if menu_click && readable {
-                self.crates.load(c.id);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            let movable = self.label_to_move(c.id);
-            let open = if menu_click {
-                Some(egui::SetOpenCommand::Bool(true))
-            } else if resp.clicked() {
-                Some(egui::SetOpenCommand::Bool(false))
-            } else {
-                None
-            };
-            let entries = self.crates.entry_count(c.id);
-            egui::Popup::context_menu(&resp)
-                .open_memory(open)
-                .show(|ui| {
-                    if c.id == PLAYLIST {
-                        // The scratch crate stays (command-line files fill it): it clears.
-                        if ui
-                            .add_enabled(entries > 0, egui::Button::new("Clear crate"))
-                            .clicked()
-                        {
-                            actions.push(Action::ClearCrate(c.id));
-                            ui.close();
-                        }
-                        ui.label(
-                            egui::RichText::new(
-                                "Playlist can't be renamed or deleted:\ncommand-line files use it",
-                            )
-                            .weak()
-                            .small(),
-                        );
-                        return;
-                    }
-                    if c.is_label() {
-                        self.label_menu(ui, c.id, actions);
-                        return;
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if c.discogs() {
-                        self.dig_refresh_item(ui, c, actions);
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some((dug, busy)) = *seller {
-                        use crate::app::sellers::SellerAction;
-                        if dug {
-                            let label = if busy {
-                                "Refreshing…"
-                            } else {
-                                "Refresh seller"
-                            };
-                            if ui
-                                .add_enabled(!busy, egui::Button::new(label))
-                                .on_hover_text("Read this seller's copies for sale again")
-                                .clicked()
-                            {
-                                actions.push(Action::Dig(DigAction::Seller(
-                                    SellerAction::Refresh(c.id),
-                                )));
-                                ui.close();
-                            }
-                            if ui.button("Narrow down…").clicked() {
-                                actions.push(Action::Dig(DigAction::Seller(SellerAction::Narrow(
-                                    c.id,
-                                ))));
-                                ui.close();
-                            }
-                        }
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some((true, false, busy)) = friend {
+                #[cfg(not(target_arch = "wasm32"))]
+                if c.discogs() {
+                    self.dig_refresh_item(ui, c, actions);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some((dug, busy)) = seller {
+                    use crate::app::sellers::SellerAction;
+                    if dug {
                         let label = if busy {
                             "Refreshing…"
                         } else {
-                            "Refresh friend"
+                            "Refresh seller"
                         };
                         if ui
                             .add_enabled(!busy, egui::Button::new(label))
-                            .on_hover_text("Read this friend's collection again")
+                            .on_hover_text("Read this seller's copies for sale again")
                             .clicked()
                         {
-                            actions.push(Action::Dig(DigAction::Friend(
-                                crate::app::friends::FriendAction::Refresh(c.id),
-                            )));
+                            actions
+                                .push(Action::Dig(DigAction::Seller(SellerAction::Refresh(c.id))));
+                            ui.close();
+                        }
+                        if ui.button("Narrow down…").clicked() {
+                            actions
+                                .push(Action::Dig(DigAction::Seller(SellerAction::Narrow(c.id))));
                             ui.close();
                         }
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(label) = movable
-                        && ui
-                            .button("Move to Labels")
-                            .on_hover_text(
-                                "Follow this crate's label: it moves under LABELS and fills \
-                                 only from the label from then on",
-                            )
-                            .clicked()
-                    {
-                        actions.push(Action::MoveToLabels(c.id, label));
-                        ui.close();
-                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some((true, false, busy)) = friend {
+                    let label = if busy {
+                        "Refreshing…"
+                    } else {
+                        "Refresh friend"
+                    };
                     if ui
-                        .add_enabled(readable, egui::Button::new("Rename crate…"))
+                        .add_enabled(!busy, egui::Button::new(label))
+                        .on_hover_text("Read this friend's collection again")
                         .clicked()
                     {
-                        actions.push(Action::RenameCrate(c.id));
+                        actions.push(Action::Dig(DigAction::Friend(
+                            crate::app::friends::FriendAction::Refresh(c.id),
+                        )));
                         ui.close();
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if seller.is_some() {
-                        if ui.button("Remove seller…").clicked() {
-                            actions.push(Action::Dig(DigAction::Seller(
-                                crate::app::sellers::SellerAction::Remove(c.id),
-                            )));
-                            ui.close();
-                        }
-                        return;
-                    }
-                    if ui.button("Delete crate…").clicked() {
-                        actions.push(Action::DeleteCrate(c.id));
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(label) = movable
+                    && ui
+                        .button("Move to Labels")
+                        .on_hover_text(
+                            "Follow this crate's label: it moves under LABELS and fills \
+                             only from the label from then on",
+                        )
+                        .clicked()
+                {
+                    actions.push(Action::MoveToLabels(c.id, label));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(readable, egui::Button::new("Rename crate…"))
+                    .clicked()
+                {
+                    actions.push(Action::RenameCrate(c.id));
+                    ui.close();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if seller.is_some() {
+                    if ui.button("Remove seller…").clicked() {
+                        actions.push(Action::Dig(DigAction::Seller(
+                            crate::app::sellers::SellerAction::Remove(c.id),
+                        )));
                         ui.close();
                     }
-                });
-        }
-        let nr = sk.rect(x, y + new_row as f32 * row_h, w - 1.0, row_h);
-        painter.text(
-            pos2(nr.left() + 3.0 * scale, nr.center().y),
-            egui::Align2::LEFT_CENTER,
-            "+ New crate",
-            font.clone(),
-            lerp_color(colors.pl_text, colors.pl_bg, 0.3),
-        );
-        if ui
-            .interact(nr, Id::new("pl_side_new"), Sense::click())
-            .clicked()
-        {
-            actions.push(Action::NewCrate);
-        }
-        target
+                    return;
+                }
+                if ui.button("Delete crate…").clicked() {
+                    actions.push(Action::DeleteCrate(c.id));
+                    ui.close();
+                }
+            });
+        over
     }
 
     /// The filter bar's BPM control, from `x` to `x_end` (skin pixels, in the bar at `y`, `h`
@@ -5157,7 +5540,7 @@ impl DiggrApp {
                     }
                     (Some(to), None) => actions.push(Action::Move(from, to)),
                     (None, _) => {
-                        if let Some(c) = side_drop
+                        if let Some(c) = side_drop.or(self.panel_drop)
                             && let Some(e) = shown.entries().get(from)
                         {
                             actions.push(Action::DropOnCrate(e.id, c));
@@ -5423,36 +5806,88 @@ impl DiggrApp {
         let (shown, playing) = (self.crates.shown_id(), self.crates.playing_id());
         // ⏵ marks the crate only while its track plays or is paused.
         let live = self.position.state != PlayState::Stopped;
-        // The user's crates, then their Discogs collection under its own heading.
-        let (mine, collection): (Vec<_>, Vec<_>) =
-            self.crates.list().iter().partition(|c| !c.discogs());
-        let mut collection = collection;
-        collection.sort_by_key(|c| !c.wantlist);
+        // The user's crates, then their Discogs crates, the labels, the sellers and the
+        // friends, each under its heading, in the sidebar's order.
+        let seller_of: HashMap<CrateId, (bool, bool)> = self
+            .sidebar_sellers()
+            .into_iter()
+            .map(|(id, dug, busy)| (id, (dug, busy)))
+            .collect();
+        let friends = self.sidebar_friends();
+        let friend_of: HashMap<CrateId, (bool, bool, bool)> = friends
+            .iter()
+            .map(|&(id, dug, private, busy)| (id, (dug, private, busy)))
+            .collect();
+        let (mine, collection) = self.side_crates(&seller_of, &friend_of);
         let discogs = collection.clone();
-        for (i, group) in [mine, collection].into_iter().enumerate() {
-            if i == 1 && !group.is_empty() {
-                ui.separator();
-                ui.label(egui::RichText::new("Discogs").weak().small());
+        let infos = |ids: Vec<CrateId>| -> Vec<crate::crates::CrateInfo> {
+            ids.into_iter()
+                .filter_map(|id| self.crates.info(id).cloned())
+                .collect()
+        };
+        let groups = [
+            ("", mine),
+            ("Discogs", collection),
+            ("Labels", self.crates.labels().cloned().collect()),
+            (
+                "Top sellers",
+                infos(self.sidebar_sellers().into_iter().map(|s| s.0).collect()),
+            ),
+            ("Friends", infos(friends.iter().map(|f| f.0).collect())),
+        ];
+        // The shown crate is scrolled into view as the menu opens: over its first frames, as
+        // the first one only sizes the popup.
+        let (seen, since) = (Id::new("crate_menu_frame"), Id::new("crate_menu_opened"));
+        let frame = ui.ctx().cumulative_frame_nr();
+        let was_open = ui.ctx().data(|d| d.get_temp::<u64>(seen)) == Some(frame.wrapping_sub(1));
+        let opened = ui.ctx().data_mut(|d| {
+            d.insert_temp(seen, frame);
+            if !was_open {
+                d.insert_temp(since, frame);
             }
-            for c in group {
-                let unreadable = self.crates.is_unreadable(c.id);
-                let label =
-                    crate_menu_label(&c.name, c.id == shown, live && c.id == playing, unreadable);
-                if ui
-                    .add_enabled(!unreadable, egui::Button::selectable(c.id == shown, label))
-                    .clicked()
-                {
-                    actions.push(Action::ShowCrate(c.id));
+            d.get_temp::<u64>(since).unwrap_or(frame)
+        });
+        let opening = frame - opened < 3;
+        egui::ScrollArea::vertical()
+            .animated(false)
+            .max_height(ui.ctx().content_rect().height() * 2.0 / 3.0)
+            .show(ui, |ui| {
+                for (heading, group) in groups {
+                    if group.is_empty() {
+                        continue;
+                    }
+                    if !heading.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new(heading).weak().small());
+                    }
+                    for c in group {
+                        let unreadable = self.crates.is_unreadable(c.id);
+                        let label = crate_menu_label(
+                            &c.name,
+                            c.id == shown,
+                            live && c.id == playing,
+                            unreadable,
+                        );
+                        let resp = ui.add_enabled(
+                            !unreadable,
+                            egui::Button::selectable(c.id == shown, label),
+                        );
+                        if opening && c.id == shown {
+                            resp.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if resp.clicked() {
+                            actions.push(Action::ShowCrate(c.id));
+                        }
+                    }
                 }
-            }
-        }
+            });
         // Refresh wantlist / collection, for the Discogs crates (with a token).
         #[cfg(not(target_arch = "wasm32"))]
         if (self.dig.as_ref().is_some_and(|d| d.has_token()) || self.fan_imported())
             && !discogs.is_empty()
         {
             ui.separator();
-            for c in discogs {
+            for c in &discogs {
                 self.dig_refresh_item(ui, c, actions);
             }
         }
@@ -5462,7 +5897,6 @@ impl DiggrApp {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(r) = self
             .friend_rows()
-            .0
             .into_iter()
             .find(|r| r.crate_id == shown && r.dug && !r.private)
         {
@@ -5737,6 +6171,12 @@ impl DiggrApp {
             }
             Action::ToggleEq => {
                 self.settings.show_eq = !self.settings.show_eq;
+                self.settings.show_crates &= !self.settings.show_eq;
+                self.mark_settings();
+            }
+            Action::ToggleCrates => {
+                self.settings.show_crates = !self.settings.show_crates;
+                self.settings.show_eq &= !self.settings.show_crates;
                 self.mark_settings();
             }
             Action::TogglePlaylist => {
@@ -5948,8 +6388,14 @@ impl DiggrApp {
                 let name = name.strip_prefix("Label: ").unwrap_or(name).to_owned();
                 self.name_dialog = Some(NameDialog::new(NameFor::ExportLabel(from), name));
             }
-            Action::ToggleLabelsFold => {
-                self.settings.labels_folded = !self.settings.labels_folded;
+            Action::ToggleSideGroup(None) => {
+                self.settings.crates_folded = !self.settings.crates_folded;
+                self.mark_settings();
+            }
+            Action::ToggleSideGroup(Some(g)) => {
+                // An accordion: the open group closes, any other opens alone.
+                self.settings.side_open = (self.settings.side_open != Some(g)).then_some(g);
+                self.side_scroll[1] = 0;
                 self.mark_settings();
             }
             Action::MoveToLabels(id, label) => {
@@ -6035,21 +6481,40 @@ impl DiggrApp {
     }
 }
 
-/// A crate placed in the sidebar: its row, and for a seller crate whether it was dug and
-/// is being refreshed.
-type Placed = (crate::crates::CrateInfo, usize, Option<(bool, bool)>);
-
 /// A row of the sidebar's Discogs group.
 enum SideRow {
+    /// CRATES: how many of the user's crates, and whether folded.
+    Crates(usize, bool),
+    /// "+ New crate".
+    New,
     Discogs,
-    /// LABELS: how many, and whether folded.
-    Labels(usize, bool),
-    /// TOP SELLERS: how many, and whether folded.
-    Sellers(usize, bool),
-    /// FRIENDS: how many, and whether folded.
-    Friends(usize, bool),
+    /// LABELS, TOP SELLERS or FRIENDS: how many, whether open, and whether a crate in it is
+    /// being dug or refreshed.
+    Group(SideGroup, usize, bool, bool),
     /// A crate; for a seller crate, whether it was dug and is being refreshed.
     Crate(crate::crates::CrateInfo, Option<(bool, bool)>),
+}
+
+impl SideRow {
+    fn is(&self, id: CrateId) -> bool {
+        matches!(self, SideRow::Crate(c, _) if c.id == id)
+    }
+}
+
+/// The sidebar's scrollbars, in skin pixels.
+const SIDE_BAR_W: f32 = 3.0;
+/// While entries are dragged over a list's first or last row, it steps a row this often.
+const SIDE_EDGE_STEP: Duration = Duration::from_millis(120);
+
+/// The first row that shows `row` in `visible` rows, moving from `first` as little as possible.
+fn reveal_row(first: usize, row: usize, visible: usize) -> usize {
+    if row < first {
+        row
+    } else if row >= first + visible {
+        row + 1 - visible
+    } else {
+        first
+    }
 }
 
 enum Action {
@@ -6117,6 +6582,8 @@ enum Action {
     /// SYNC's target from the playing track.
     SyncTakeBpm,
     ToggleEq,
+    /// The CRATES panel in the EQ's place.
+    ToggleCrates,
     TogglePlaylist,
     ToggleRemaining,
     CycleVis,
@@ -6145,8 +6612,8 @@ enum Action {
     /// Rename or delete a crate (from the crate menu or the sidebar).
     RenameCrate(CrateId),
     DeleteCrate(CrateId),
-    /// Fold or unfold LABELS in the sidebar.
-    ToggleLabelsFold,
+    /// Fold or unfold CRATES (`None`) or open or close a Discogs group in the sidebar.
+    ToggleSideGroup(Option<SideGroup>),
     /// Delete label…: asks, then stops following the label and deletes its crate.
     DeleteLabel(CrateId),
     /// Export to crate: copy a label crate's entries into a crate, or (`None`) a new one.
@@ -7146,6 +7613,7 @@ impl DiggrApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_update();
+        self.follow_shown();
         // A grouped crate places what arrived (sends, digs, tags) with its record.
         for c in [self.crates.shown_id(), self.crates.playing_id()] {
             if self.crates.get_mut(c).is_some_and(|p| p.settle()) {
@@ -7357,6 +7825,11 @@ impl DiggrApp {
         if self.settings.show_eq {
             self.eq_section(ui, origin + vec2(0.0, y * scale));
             y += d.eq_size.1 as f32;
+        } else if self.settings.show_crates {
+            self.crates_panel(ui, origin + vec2(0.0, y * scale));
+            y += d.eq_size.1 as f32;
+        } else {
+            self.panel_drop = None;
         }
         if self.settings.show_playlist {
             // The playlist sits right of the player column; below a shorter player column,
@@ -9514,11 +9987,11 @@ mod headless_tests {
         assert_eq!(rig.app.crates.shown().cursor(), Some(ids[2]));
     }
 
-    /// Row `i` of the crate sidebar (a playlist at least 600 pixels wide).
+    /// Row `i` under the crate sidebar's CRATES heading (a playlist at least 600 pixels wide).
     fn side_row(i: usize) -> Pos2 {
         pos2(
             PL_LEFT + 12.0 + 40.0,
-            PL_TOP + LIST_TOP + i as f32 * 13.0 + 6.5,
+            PL_TOP + LIST_TOP + (i + 1) as f32 * 13.0 + 6.5,
         )
     }
 
@@ -9717,6 +10190,144 @@ mod headless_tests {
         rig.click_text("Clear crate");
         assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
         assert!(rig.app.crates.find("Playlist").is_some());
+    }
+
+    #[test]
+    fn the_crates_panel_takes_the_eqs_place_and_takes_drops() {
+        let mut rig = Rig::new("crates-panel", Vec::new(), |_| {});
+        let tracks = ["tone.flac", "tone.wav"].map(|f| TrackRef::new(fixture(f).to_string_lossy()));
+        rig.app.crates.shown_mut().add(tracks);
+        let ids = rig.ids(PLAYLIST);
+        let keepers = rig.app.crates.create("Keepers").unwrap();
+        let friday = rig.app.crates.create("Friday").unwrap();
+        let label = rig.app.crates.create("Label: Siesta Records").unwrap();
+        rig.app.crates.set_label(label, 77);
+        rig.app.settings.eq.preamp_db = 3.0;
+        rig.app.settings.show_eq = true;
+        rig.frame(Vec::new());
+        assert!(!rig.app.pl_sidebar(), "a narrow playlist: no sidebar");
+        let size = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
+
+        let b = rig.app.skin.def.at("cr_toggle");
+        rig.click(pos2(b.x as f32 + 5.0, b.y as f32 + 5.0));
+        assert!(rig.app.settings.show_crates && !rig.app.settings.show_eq);
+        assert_eq!(
+            DiggrApp::window_size(&rig.app.settings, &rig.app.skin),
+            size,
+            "same place, same size"
+        );
+        let out = rig.frame(Vec::new());
+        for t in ["Playlist", "Keepers", "Friday", "+ New crate"] {
+            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+        }
+        assert!(
+            !shows(&out, "Label: Siesta Records"),
+            "only the user's crates"
+        );
+
+        // A click shows a crate; an entry dragged onto another is sent there.
+        rig.click_text("Friday");
+        assert_eq!(rig.app.crates.shown_id(), friday);
+        rig.click_text("Playlist");
+        let from = rig.row(0);
+        let out = rig.frame(vec![Event::PointerMoved(from)]);
+        let to = texts(&out)
+            .into_iter()
+            .find(|t| t.text == "Keepers")
+            .unwrap()
+            .rect
+            .center();
+        rig.press(from, PointerButton::Primary, true);
+        for t in [0.3, 0.6, 1.0] {
+            rig.frame(vec![Event::PointerMoved(from + (to - from) * t)]);
+        }
+        rig.press(to, PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        assert_eq!(rig.ids(keepers), [ids[0]], "sent to Keepers");
+        assert_eq!(rig.ids(PLAYLIST), ids, "not reordered");
+
+        // Many crates scroll to the last one and + New crate.
+        for i in 3..20 {
+            rig.app.crates.create(&format!("Crate {i:02}")).unwrap();
+        }
+        let out = rig.frame(Vec::new());
+        assert!(!shows(&out, "Crate 19") && !shows(&out, "+ New crate"));
+        rig.frame(vec![
+            Event::PointerMoved(to),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -3000.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        for _ in 0..30 {
+            rig.frame(vec![Event::PointerMoved(to)]);
+        }
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Crate 19") && shows(&out, "+ New crate"));
+
+        // Back to the EQ, as it was.
+        let b = rig.app.skin.def.at("eq_toggle");
+        rig.click(pos2(b.x as f32 + 5.0, b.y as f32 + 5.0));
+        assert!(rig.app.settings.show_eq && !rig.app.settings.show_crates);
+        assert_eq!(rig.app.settings.eq.preamp_db, 3.0);
+        assert!(!shows(&rig.frame(Vec::new()), "+ New crate"));
+    }
+
+    #[test]
+    fn a_long_crate_list_scrolls_while_dragging_and_folds() {
+        let (mut rig, ids, _, _) = sidebar_rig("sidebar-long");
+        let last = (3..40)
+            .map(|i| rig.app.crates.create(&format!("Crate {i:02}")).unwrap())
+            .last()
+            .unwrap();
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "⏷ CRATES (40)") && shows(&out, "+ New crate"));
+        assert!(
+            !shows(&out, "Crate 39"),
+            "past the end: {:?}",
+            text_list(&out)
+        );
+
+        // Dragging an entry over the list's last row scrolls it, then it drops on Crate 39.
+        let edge = texts(&out)
+            .into_iter()
+            .filter(|t| t.text.starts_with("Crate "))
+            .map(|t| t.rect.center())
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .unwrap();
+        let from = side_list_row(0);
+        rig.click(from);
+        rig.frame(vec![Event::PointerMoved(from)]);
+        rig.press(from, PointerButton::Primary, true);
+        for t in [0.3, 0.6, 1.0] {
+            rig.frame(vec![Event::PointerMoved(from + (edge - from) * t)]);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !shows(&rig.frame(vec![Event::PointerMoved(edge)]), "Crate 39") {
+            assert!(Instant::now() < deadline, "the list never reached Crate 39");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = rig.frame(vec![Event::PointerMoved(edge)]);
+        let to = texts(&out)
+            .into_iter()
+            .find(|t| t.text == "Crate 39")
+            .unwrap()
+            .rect
+            .center();
+        rig.frame(vec![Event::PointerMoved(to)]);
+        rig.press(to, PointerButton::Primary, false);
+        rig.frame(Vec::new());
+        assert_eq!(rig.ids(last).len(), 1, "dropped on Crate 39");
+        assert_eq!(rig.ids(PLAYLIST), ids, "not reordered");
+
+        // CRATES folds on its own; + New crate stays.
+        rig.click_text("⏷ CRATES (40)");
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "⏵ CRATES (40)") && shows(&out, "+ New crate"));
+        assert!(!shows(&out, "Keepers"));
+        assert!(rig.app.settings.crates_folded);
     }
 
     #[test]
