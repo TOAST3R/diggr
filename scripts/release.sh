@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Publishes the disk image built by scripts/make-dmg.sh as GitHub Release v<version>, with its
-# SHA-256, after checking the tree is clean, the version isn't tagged yet and the image is signed.
+# Publishes the macOS disk image (scripts/make-dmg.sh) and the Linux tarball
+# (scripts/make-linux.sh) as GitHub Release v<version>, with one SHA256SUMS for both, after
+# checking the tree is clean, the version isn't tagged yet, both files exist and the image is signed.
 #
 # Usage: scripts/release.sh [--unsigned] [--notes-file FILE] [--dry-run]
-#   --unsigned    publish dist/Diggr-<version>-unsigned.dmg (the normal case), with the Open
-#                 Anyway steps appended to the notes
-#   --notes-file  release notes; without it gh asks for them
+#   --unsigned    publish dist/Diggr-<version>-unsigned.dmg (the normal case), with the macOS
+#                 Open Anyway steps appended to the notes
+#   --notes-file  release notes, followed by the install steps (without it, only those)
 #   --dry-run     run every check, then stop before tagging
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,20 +39,29 @@ else
     spctl --assess --type open --context context:primary-signature "$DMG" ||
         fail "$DMG is not signed and notarized; rebuild it with scripts/make-dmg.sh."
 fi
+TARBALL=dist/$NAME-$VERSION-x86_64-linux.tar.gz
+[[ -f $TARBALL ]] || fail "$TARBALL not found; run scripts/make-linux.sh."
 
-SUM=$DMG.sha256
-(cd dist && shasum -a 256 "$(basename "$DMG")") >"$SUM"
-echo "Ready: $TAG with $DMG ($(du -h "$DMG" | cut -f1)), sha256 $(cut -d' ' -f1 "$SUM")"
+SUMS=dist/$NAME-$VERSION-SHA256SUMS
+(cd dist && shasum -a 256 "$(basename "$DMG")" "$(basename "$TARBALL")") >"$SUMS"
+notes=dist/$NAME-$VERSION-notes.md
+{ [[ ${NOTES[1]:-} ]] && cat "${NOTES[1]}" && echo
+  if ((UNSIGNED)); then
+      echo "**macOS, first open:** this build isn't signed by Apple, so macOS refuses it once. Drag"
+      echo "Diggr to Applications, open it, then go to System Settings ▸ Privacy & Security and click"
+      echo "**Open Anyway** next to Diggr. It opens normally from then on."
+      echo
+  fi
+  echo "**Linux (x86_64):** extract the archive and run \`./install.sh\` in its folder to add Diggr to"
+  echo "your applications menu (or just run \`./diggr\`). It needs ALSA and a Vulkan or OpenGL"
+  echo "driver, which desktop distributions have."; } >"$notes"
+NOTES=(--notes-file "$notes")
+echo "Ready: $TAG with"
+for f in "$DMG" "$TARBALL"; do echo "  $f ($(du -h "$f" | cut -f1))"; done
+sed 's/^/  sha256 /' "$SUMS"
+echo "Notes: $notes"
 ((DRY)) && { echo "Dry run: stopping before tagging."; exit 0; }
 
 git tag -a "$TAG" -m "$NAME $VERSION"
 git push origin "$TAG"
-if ((UNSIGNED)); then
-    notes=dist/$NAME-$VERSION-notes.md
-    { [[ ${NOTES[1]:-} ]] && cat "${NOTES[1]}" && echo
-      echo "**First open:** this build isn't signed by Apple, so macOS refuses it once. Drag Diggr"
-      echo "to Applications, open it, then go to System Settings ▸ Privacy & Security and click"
-      echo "**Open Anyway** next to Diggr. It opens normally from then on."; } >"$notes"
-    NOTES=(--notes-file "$notes")
-fi
-gh release create "$TAG" "$DMG" "$SUM" --title "$NAME $VERSION" ${NOTES[@]+"${NOTES[@]}"}
+gh release create "$TAG" "$DMG" "$TARBALL" "$SUMS" --title "$NAME $VERSION" "${NOTES[@]}"

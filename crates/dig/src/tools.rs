@@ -1,5 +1,5 @@
-//! The app's own yt-dlp, for Macs without one (a Homebrew or configured yt-dlp always wins and
-//! is never touched).
+//! The app's own yt-dlp, for Macs and x86_64 Linux without one (a Homebrew, distribution or
+//! configured yt-dlp always wins and is never touched).
 //!
 //! It is downloaded only when the user says yes, only from yt-dlp's official GitHub releases
 //! over HTTPS, and installed only when its SHA-256 matches the one published with the release:
@@ -16,12 +16,22 @@ use sha2::{Digest, Sha256};
 
 use crate::discogs::transport::USER_AGENT;
 
-/// The release asset: yt-dlp's universal macOS build. Never taken from anything downloaded.
-pub const ASSET: &str = "yt-dlp_macos";
+/// Whether this system has an official yt-dlp build the app can manage.
+pub const MANAGED: bool = cfg!(any(
+    target_os = "macos",
+    all(target_os = "linux", target_arch = "x86_64")
+));
+/// The release asset: yt-dlp's universal macOS build, or its x86_64 Linux one. Never taken from
+/// anything downloaded.
+pub const ASSET: &str = if cfg!(target_os = "macos") {
+    "yt-dlp_macos"
+} else {
+    "yt-dlp_linux"
+};
 const RELEASES: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest";
 const SUMS: &str = "SHA2-256SUMS";
 /// Its size, as the question to download it says.
-pub const SIZE_MB: u32 = 37;
+pub const SIZE_MB: u32 = if cfg!(target_os = "macos") { 37 } else { 41 };
 /// The least time between two update checks.
 pub const UPDATE_EVERY: Duration = Duration::from_secs(24 * 3600);
 const MAX_BYTES: u64 = 200 << 20;
@@ -274,23 +284,33 @@ mod tests {
     const SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
 
     #[test]
-    fn the_sum_is_read_for_exactly_the_macos_asset() {
+    fn the_sum_is_read_for_exactly_this_systems_asset() {
         let a = "aa".repeat(32);
-        let b = "bb".repeat(32);
-        let sums = format!("{a}  yt-dlp_macos.zip\n{b}  yt-dlp_macos\n{a}  yt-dlp\n");
-        assert_eq!(expected_sum(&sums).unwrap(), [0xbb; 32]);
+        let sums = [
+            "yt-dlp_macos.zip",
+            "yt-dlp",
+            "yt-dlp_macos",
+            "yt-dlp_linux",
+            "yt-dlp_linux_aarch64",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| format!("{}  {name}\n", format!("{i:02x}").repeat(32)))
+        .collect::<String>();
+        let i = if cfg!(target_os = "macos") { 2 } else { 3 };
+        assert_eq!(expected_sum(&sums).unwrap(), [i; 32]);
         assert!(
             expected_sum(&format!("{a}  yt-dlp\n"))
                 .unwrap_err()
                 .contains("no entry")
         );
         assert!(
-            expected_sum(&format!("{}  yt-dlp_macos\n", "ab".repeat(31)))
+            expected_sum(&format!("{}  {ASSET}\n", "ab".repeat(31)))
                 .unwrap_err()
                 .contains("malformed")
         );
         assert!(
-            expected_sum(&format!("{}  yt-dlp_macos\n", "zz".repeat(32)))
+            expected_sum(&format!("{}  {ASSET}\n", "zz".repeat(32)))
                 .unwrap_err()
                 .contains("malformed")
         );
