@@ -6,6 +6,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+## 0.1.2 — 2026-10-22
+
 ### New
 
 - **Deleting frees the space.** Remove a track or a record, or delete a whole crate, and its
