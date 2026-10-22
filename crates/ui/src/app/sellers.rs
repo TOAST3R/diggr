@@ -285,8 +285,6 @@ pub fn seller_crate_name(username: &str) -> String {
 /// What the sidebar and the seller dialogs ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SellerAction {
-    /// Fold or unfold TOP SELLERS.
-    ToggleFold,
     /// Add seller… (the dialog).
     Add,
     /// A double-click on a seller crate: count and ask, refresh, or just show.
@@ -316,13 +314,12 @@ pub struct SellerRow {
 }
 
 impl DiggrApp {
-    /// The seller crates in Top Sellers order, and whether TOP SELLERS is folded.
-    pub(super) fn seller_rows(&self) -> (Vec<SellerRow>, bool) {
+    /// The seller crates in Top Sellers order.
+    pub(super) fn seller_rows(&self) -> Vec<SellerRow> {
         let Some(d) = &self.dig else {
-            return (Vec::new(), false);
+            return Vec::new();
         };
-        let rows = d
-            .sellers
+        d.sellers
             .sellers
             .iter()
             .filter(|s| self.crates.info(s.crate_id).is_some())
@@ -331,8 +328,7 @@ impl DiggrApp {
                 dug: s.last_dug.is_some(),
                 refreshing: self.seller_busy(s.crate_id),
             })
-            .collect();
-        (rows, d.sellers.folded)
+            .collect()
     }
 
     /// A dig or refresh of this seller's crate is running.
@@ -342,12 +338,6 @@ impl DiggrApp {
 
     pub(super) fn seller_act(&mut self, a: SellerAction) {
         match a {
-            SellerAction::ToggleFold => {
-                let Some(d) = &mut self.dig else { return };
-                d.sellers.folded = !d.sellers.folded;
-                let e = d.save_sellers();
-                self.dig_notify(e);
-            }
             SellerAction::Add => {
                 if !self.seller_needs_token() {
                     let Some(d) = &mut self.dig else { return };

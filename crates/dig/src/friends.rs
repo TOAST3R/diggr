@@ -38,8 +38,6 @@ pub struct FriendList {
     pub read_at: Option<u64>,
     /// When the last read failed, and why (cleared by a read that works).
     pub failed: Option<(u64, String)>,
-    /// FRIENDS is folded in the sidebar.
-    pub folded: bool,
     /// In Discogs' order.
     pub friends: Vec<Friend>,
 }
@@ -148,7 +146,6 @@ mod tests {
         let d = crate::test_dir("friends");
         let mut l = FriendList {
             read_at: Some(1_790_000_000),
-            folded: true,
             ..FriendList::default()
         };
         l.friends.push(friend("javimaxilo", 20));
@@ -160,6 +157,13 @@ mod tests {
         assert_eq!(FriendList::load(d.path()), l);
         std::fs::write(FriendList::path(d.path()), "not ron").unwrap();
         assert_eq!(FriendList::load(d.path()), FriendList::default());
+        // An older file still holds the sidebar fold, which now lives in the settings.
+        std::fs::write(
+            FriendList::path(d.path()),
+            "(read_at: Some(5), folded: true, friends: [])",
+        )
+        .unwrap();
+        assert_eq!(FriendList::load(d.path()).read_at, Some(5));
     }
 
     #[test]

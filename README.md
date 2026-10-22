@@ -129,7 +129,9 @@ and Home/End jump), and Enter plays the entry under it.
   that crate's name.
   - Below 600 pixels wide, click the title bar for the crate menu: switch crate (• marks the
     one shown, ⏵ the one playing), **New crate…**, **Rename crate…** and **Delete crate…**
-    (which asks first when the crate has entries). Wider, the crate sidebar does this instead
+    (which asks first when the crate has entries). Your crates come first, then Discogs,
+    Labels, Top sellers and Friends under their own headings; a long list scrolls and opens on
+    the crate shown. Wider, the crate sidebar does this instead
     and the title bar opens no menu. Dragging the title bar still moves the window.
   - Switching crates never interrupts playback: next, previous, shuffle and repeat follow the
     crate the playing track came from, until you start a track in another crate.
@@ -143,9 +145,15 @@ and Home/End jump), and Enter plays the entry under it.
     is listed on its left with its number of records (grouped or flat; its tooltip also
     counts the tracks): • marks the one shown, and the player's
     play (or pause) sign marks the one your track comes from while it plays (or is paused).
+    Your own crates sit under **CRATES** at the top (click the heading to fold them).
     Your Discogs collection crate is pinned at the bottom under **DISCOGS**, in amber with a
     record icon, even if you rename it, followed by the labels you follow (**LABELS**, see
-    [Labels](#labels)), **TOP SELLERS** and **FRIENDS** (see [Friends](#friends)). **Playlist**'s menu offers Clear crate (it can't be
+    [Labels](#labels)), **TOP SELLERS** and **FRIENDS** (see [Friends](#friends)). These three
+    open one at a time: clicking one closes the others, clicking the open one closes it, and
+    a closed TOP SELLERS or FRIENDS ends in " …" while a dig or refresh runs inside it. Every
+    heading stays in sight: a list longer than its room scrolls (wheel, trackpad or its thin
+    scrollbar), and while you drag tracks, holding them over a list's first or last row
+    scrolls it. Showing a crate from anywhere opens its group and scrolls to it. **Playlist**'s menu offers Clear crate (it can't be
     renamed or deleted: command-line files use it). Click one to
     show it, right-click it (Control-click on a Mac) for **Rename crate…** and **Delete crate…**, or
     click a crate and press Delete, or click **+ New crate**. Drag entries onto
@@ -319,8 +327,11 @@ and Home/End jump), and Enter plays the entry under it.
       started while SYNC is on reads "REC ?" until its BPM is known, then is fitted to the tempo;
     - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
       jumps, loops and analysis all stay in the track's own time;
-  - the **waveform**, **EQ** (sliders) and **playlist** (lines) icons show or hide the other
-    sections. There is no balance
+  - the **waveform**, **EQ** (sliders), **crates** (records in a box) and **playlist** (lines)
+    icons show or hide the other sections. The crates icon swaps the equalizer for the
+    **CRATES panel**, the same size: your own crates and **+ New crate** in a list that
+    scrolls, to click, right-click or drop tracks on as in the sidebar, even when the playlist
+    is too narrow for one. EQ brings the equalizer back. There is no balance
     control: playback is always centred.
 - **Equalizer:**
   - **ON** enables it;
@@ -511,7 +522,7 @@ ahead of what plays. Other pasted text is ignored.
 ### Labels
 
 Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›"),
-grouped by record. Click the heading to fold or unfold it.
+grouped by record. Click the heading to open it (closing TOP SELLERS or FRIENDS) or close it.
 
 - **Follow a label** from the browser: on a Discogs label page, or a link to one, the
   extension offers only **Diggr: Send label**. The label's crate is made and fills in the
@@ -770,7 +781,8 @@ pill.
 
 Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
 listening through a shop's stock and putting the copies you want in your Discogs cart. Click
-the heading to fold or unfold it; right-click it for **Add seller…**.
+the heading to open it (closing LABELS or FRIENDS) or close it; right-click it for **Add
+seller…**.
 
 - **The first list:** the first time a token is saved (or at the first launch with one), the
   sellers you bought from most in your last 100 purchases go in the list, 10 of them, ties
@@ -1255,7 +1267,7 @@ that the tree is clean and the version in `apps/native/Cargo.toml` isn't tagged 
 ## Tests
 
 ```sh
-cargo test --workspace            # 968 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 977 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1320,8 +1332,13 @@ What's covered:
     flash wording (and, headless, which verdicts flash);
   - records with no preview: fully tried only once nothing waits, the No preview found
     window told once a session, Retry, and "n/m previews" on a partly found record;
+  - the crate sidebar: how its rows are shared between the two lists; headless, the CRATES
+    fold, one Discogs group open at a time (the old folds ignored), long lists scrolling under
+    headings that stay, the scrollbar, scrolling while dragging onto a crate, a shown crate
+    opening its group, the busy mark, the CRATES panel in the EQ's place (taking drops, the
+    window keeping its size), and the grouped, scrolling crate menu;
   - label crates: the label field and `is_locked`, every refused edit while pass still works,
-    Move to Labels, the LABELS group and its fold, the label crate menu, Export to crate,
+    Move to Labels, the LABELS group, the label crate menu, Export to crate,
     Delete label, Refresh label's summary, a label sent from the browser (followed, then
     refreshed, nothing doubled), and Download all tracks (all downloaded behind what plays,
     its progress window and Stop, the cache-full question, the menu showing the window again,

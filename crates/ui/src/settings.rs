@@ -49,6 +49,14 @@ impl VisMode {
     }
 }
 
+/// A Discogs group in the crate sidebar: at most one is open at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SideGroup {
+    Labels,
+    Sellers,
+    Friends,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -56,6 +64,8 @@ pub struct Settings {
     pub scale: u8,
     pub window_pos: Option<(f32, f32)>,
     pub show_eq: bool,
+    /// The CRATES panel in the EQ's place (never with the EQ).
+    pub show_crates: bool,
     pub show_playlist: bool,
     /// The waveform section under the main window (`W`).
     pub show_waveform: bool,
@@ -78,8 +88,10 @@ pub struct Settings {
     pub av_offset_ms: i64,
     /// The spectrogram window's mode, channel, dB range and size.
     pub spectrogram: crate::spectrogram::SpectroSettings,
-    /// LABELS is folded in the crate sidebar.
-    pub labels_folded: bool,
+    /// The open Discogs group in the crate sidebar (LABELS, TOP SELLERS or FRIENDS), if any.
+    pub side_open: Option<SideGroup>,
+    /// CRATES (the user's own crates) is folded in the crate sidebar.
+    pub crates_folded: bool,
     /// SYNC: on, its target tempo and range.
     pub sync: crate::sync::SyncSettings,
 }
@@ -90,6 +102,7 @@ impl Default for Settings {
             scale: 2,
             window_pos: None,
             show_eq: true,
+            show_crates: false,
             show_playlist: true,
             show_waveform: true,
             waveform_bars: crate::waveform::DEFAULT_BARS,
@@ -105,7 +118,8 @@ impl Default for Settings {
             vis: VisMode::Spectrum,
             av_offset_ms: 0,
             spectrogram: Default::default(),
-            labels_folded: false,
+            side_open: None,
+            crates_folded: false,
             sync: Default::default(),
         }
     }
@@ -115,6 +129,8 @@ impl Settings {
     /// Clamps values that a hand-edited file could break.
     pub fn sanitized(mut self) -> Self {
         self.scale = self.scale.clamp(1, 3);
+        // The EQ and the CRATES panel share a place: the EQ wins.
+        self.show_crates &= !self.show_eq;
         self.playlist_rows = self.playlist_rows.clamp(4, 60);
         self.playlist_width = self
             .playlist_width
@@ -303,6 +319,32 @@ mod tests {
         .unwrap();
         let old = s.load_settings();
         assert_eq!((old.volume, old.playlist_rows), (0.5, 20));
+        // The old LABELS fold is ignored: every Discogs group starts closed.
+        std::fs::write(
+            s.dir().join(SETTINGS_FILE),
+            "(volume: 0.5, labels_folded: true)",
+        )
+        .unwrap();
+        let old = s.load_settings();
+        assert_eq!((old.volume, old.side_open), (0.5, None));
+    }
+
+    #[test]
+    fn the_eq_and_the_crates_panel_never_show_together() {
+        let both = Settings {
+            show_eq: true,
+            show_crates: true,
+            ..Default::default()
+        }
+        .sanitized();
+        assert!(both.show_eq && !both.show_crates, "the EQ wins");
+        let s = store("crates-panel");
+        std::fs::write(s.dir().join(SETTINGS_FILE), "(show_eq: true)").unwrap();
+        let old = s.load_settings();
+        assert!(
+            old.show_eq && !old.show_crates,
+            "an older file keeps its EQ"
+        );
     }
 
     #[test]

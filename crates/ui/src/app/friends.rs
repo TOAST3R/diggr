@@ -25,8 +25,6 @@ pub fn friend_crate_name(username: &str) -> String {
 /// What the sidebar asks of FRIENDS.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FriendAction {
-    /// Fold or unfold FRIENDS.
-    ToggleFold,
     /// A double-click on a friend's crate: dig it the first time.
     Dig(CrateId),
     /// Refresh friend: read their collection again.
@@ -43,14 +41,12 @@ pub struct FriendRow {
 }
 
 impl DiggrApp {
-    /// The friend crates in Discogs' order, and whether FRIENDS is folded (none without a
-    /// token).
-    pub(super) fn friend_rows(&self) -> (Vec<FriendRow>, bool) {
+    /// The friend crates in Discogs' order (none without a token).
+    pub(super) fn friend_rows(&self) -> Vec<FriendRow> {
         let Some(d) = self.dig.as_ref().filter(|d| d.has_token()) else {
-            return (Vec::new(), false);
+            return Vec::new();
         };
-        let rows = d
-            .friends
+        d.friends
             .friends
             .iter()
             .filter(|f| self.crates.info(f.crate_id).is_some())
@@ -60,8 +56,7 @@ impl DiggrApp {
                 private: f.private,
                 busy: self.friend_busy(f.crate_id),
             })
-            .collect();
-        (rows, d.friends.folded)
+            .collect()
     }
 
     /// What FRIENDS' heading says on hover: when the list was read, and why the last read
@@ -111,12 +106,6 @@ impl DiggrApp {
 
     pub(super) fn friend_act(&mut self, a: FriendAction) {
         match a {
-            FriendAction::ToggleFold => {
-                let Some(d) = &mut self.dig else { return };
-                d.friends.folded = !d.friends.folded;
-                let e = d.save_friends();
-                self.dig_notify(e);
-            }
             FriendAction::Dig(c) => self.friend_dig(c),
             FriendAction::Refresh(c) => self.friend_refresh(c),
         }

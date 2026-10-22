@@ -10,6 +10,19 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 - **Deleting frees the space.** Remove a track or a record, or delete a whole crate, and its
   downloaded previews leave the cache too, unless another crate still has them.
+- **Your crates beside the player.** The new crates button next to EQ swaps the equalizer for a
+  list of your own crates, the same size, so you can switch crates and drop tracks on them even
+  with a narrow playlist. Click EQ to get the equalizer back.
+
+### Improved
+
+- **A sidebar that never runs out of room.** Labels, Top Sellers and Friends now open one at a
+  time, your own crates fold under CRATES, and a long list scrolls instead of being cut off, so
+  every crate stays in reach. Show a crate from anywhere and the sidebar opens and scrolls to
+  it; hold dragged tracks at the edge of a list to scroll it. After updating, every group starts
+  closed once.
+- **A tidier crate menu.** In a narrow playlist, the title-bar menu now lists labels, sellers and
+  friends under their own headings and scrolls, starting at the crate you're on.
 
 ### Fixed
 

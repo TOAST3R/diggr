@@ -259,6 +259,7 @@ fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
         ::dig::sellers::Source::Purchases,
     ));
     rig.app.settings.playlist_width = 700;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
     rig.frame(Vec::new());
     (rig, decks, logon)
 }
@@ -269,6 +270,10 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     let (mut rig, _, _) = two_sellers("labels-sidebar", &fakes);
     let siesta = rig.app.crates.create("Label: Siesta Records").unwrap();
     rig.app.crates.set_label(siesta, 77);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏵ LABELS (1)"), "every group starts closed");
+    assert!(!shows(&out, "Label: Siesta Records"));
+    rig.click_text("⏵ LABELS (1)");
     let out = rig.frame(Vec::new());
     let y = |t: &str| {
         texts(&out)
@@ -281,7 +286,7 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     };
     assert!(y("DISCOGS") < y("⏷ LABELS (1)"));
     assert!(y("⏷ LABELS (1)") < y("Label: Siesta Records"));
-    assert!(y("Label: Siesta Records") < y("⏷ TOP SELLERS (2)"));
+    assert!(y("Label: Siesta Records") < y("⏵ TOP SELLERS (2)"));
     assert_eq!(
         texts(&out)
             .iter()
@@ -291,11 +296,17 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
         "not also in the top list"
     );
 
-    rig.click_text("⏷ LABELS (1)");
+    // An accordion: opening TOP SELLERS closes LABELS.
+    rig.click_text("⏵ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "⏵ LABELS (1)"));
-    assert!(!shows(&out, "Label: Siesta Records"), "folded");
-    assert!(rig.app.settings.labels_folded, "the fold is a setting");
+    assert!(shows(&out, "⏵ LABELS (1)") && shows(&out, "⏷ TOP SELLERS (2)"));
+    assert!(!shows(&out, "Label: Siesta Records"), "closed");
+    assert!(shows(&out, "Seller: decks.de"));
+    assert_eq!(
+        rig.app.settings.side_open,
+        Some(crate::settings::SideGroup::Sellers),
+        "the open group is a setting"
+    );
 }
 
 #[test]
@@ -328,14 +339,180 @@ fn top_sellers_sit_under_discogs_and_fold() {
     );
     assert!(y("+ New crate") < y("DISCOGS"));
 
+    // Clicking the open group closes it: every group closed.
     rig.click_text("⏷ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ TOP SELLERS (2)"));
-    assert!(!shows(&out, "Seller: decks.de"), "folded");
-    assert!(
-        SellerList::load(&rig.dir.join("config")).folded,
-        "the fold is remembered"
+    assert!(!shows(&out, "Seller: decks.de"), "closed");
+    assert_eq!(rig.app.settings.side_open, None);
+}
+
+/// A wide playlist with `n` sellers, shop00 to shop‹n-1›, and TOP SELLERS open.
+fn many_sellers(name: &str, fakes: &Fakes, n: usize) -> Rig {
+    let mut rig = rig(name, fakes, with_token);
+    for i in 0..n {
+        let user = format!("shop{i:02}");
+        let c = rig.app.seller_crate(&user).unwrap();
+        let s = ::dig::sellers::Seller::new(&user, c, ::dig::sellers::Source::Added);
+        rig.app.dig.as_mut().unwrap().sellers.sellers.push(s);
+    }
+    rig.app.settings.playlist_width = 700;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    rig.frame(Vec::new());
+    rig
+}
+
+/// Scrolls the wheel by `dy` points over `p`, and lets the smoothing play out.
+fn wheel(rig: &mut Rig, p: Pos2, dy: f32) -> egui::FullOutput {
+    rig.frame(vec![
+        Event::PointerMoved(p),
+        Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    for _ in 0..30 {
+        rig.frame(vec![Event::PointerMoved(p)]);
+    }
+    rig.frame(vec![Event::PointerMoved(p)])
+}
+
+#[test]
+fn a_long_group_scrolls_under_headings_that_stay() {
+    let fakes = Fakes::new();
+    let mut rig = many_sellers("sellers-many", &fakes, 31);
+    let out = rig.frame(Vec::new());
+    for t in [
+        "⏷ CRATES (1)",
+        "+ New crate",
+        "DISCOGS",
+        "⏷ TOP SELLERS (31)",
+        "Seller: shop00",
+    ] {
+        assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+    }
+    assert!(!shows(&out, "Seller: shop30"), "past the end");
+
+    let p = at(&mut rig, "Seller: shop00");
+    let out = wheel(&mut rig, p, -3000.0);
+    assert!(shows(&out, "Seller: shop30"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Seller: shop00"));
+    assert!(shows(&out, "⏷ TOP SELLERS (31)") && shows(&out, "⏷ CRATES (1)"));
+
+    // The scrollbar at the list's right edge: pressing its top goes back to the first.
+    let head = at(&mut rig, "⏷ TOP SELLERS (31)");
+    let bar = pos2(PL_LEFT + 12.0 + 110.0 - 2.5, head.y + 13.0);
+    rig.press(bar, PointerButton::Primary, true);
+    rig.press(bar, PointerButton::Primary, false);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Seller: shop00"), "{:?}", text_list(&out));
+}
+
+#[test]
+fn a_shown_crate_opens_its_group_and_is_scrolled_to() {
+    let fakes = Fakes::new();
+    let mut rig = many_sellers("sellers-reveal", &fakes, 31);
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏵ TOP SELLERS (31)") && !shows(&out, "Seller: shop00"));
+
+    // Shown by any means (here, as the browser bridge does): its group opens.
+    let c = rig.app.seller_crate("shop25").unwrap();
+    rig.app.crates.show(c);
+    rig.frame(Vec::new());
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏷ TOP SELLERS (31)"), "{:?}", text_list(&out));
+    assert!(shows(&out, "Seller: shop25"), "{:?}", text_list(&out));
+    assert_eq!(
+        rig.app.settings.side_open,
+        Some(crate::settings::SideGroup::Sellers)
     );
+
+    // The user's own scroll stays until another crate is shown.
+    let p = at(&mut rig, "Seller: shop25");
+    wheel(&mut rig, p, 3000.0);
+    for _ in 0..3 {
+        rig.frame(Vec::new());
+    }
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Seller: shop00") && !shows(&out, "Seller: shop25"));
+}
+
+#[test]
+fn a_closed_group_shows_a_dig_inside_it() {
+    let fakes = Fakes::new();
+    let (mut rig, decks, _) = two_sellers("sellers-busy", &fakes);
+    rig.app.settings.side_open = None;
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏵ TOP SELLERS (2)"), "{:?}", text_list(&out));
+    rig.app.dig.as_mut().unwrap().jobs.insert(
+        999,
+        super::super::digging::JobView {
+            name: "decks.de".into(),
+            target: decks,
+            done: 0,
+            total: 10,
+        },
+    );
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏵ TOP SELLERS (2) …"), "{:?}", text_list(&out));
+    // Open, the crates show it themselves: no mark on the heading.
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "⏷ TOP SELLERS (2)"), "{:?}", text_list(&out));
+}
+
+#[test]
+fn the_crate_menu_groups_the_crates_and_scrolls() {
+    let fakes = Fakes::new();
+    let mut rig = many_sellers("sellers-crate-menu", &fakes, 31);
+    rig.app.settings.playlist_width = crate::settings::MIN_PLAYLIST_WIDTH;
+    let label = rig.app.crates.create("Label: Siesta Records").unwrap();
+    rig.app.crates.set_label(label, 77);
+    let open_menu = |rig: &mut Rig| {
+        rig.click(rig.title_bar());
+        rig.frame(Vec::new());
+        rig.frame(Vec::new())
+    };
+    let out = open_menu(&mut rig);
+    let siesta = crate_menu_label("Label: Siesta Records", false, false, false);
+    let first = crate_menu_label("Seller: shop00", false, false, false);
+    let y = |out: &egui::FullOutput, t: &str| {
+        texts(out)
+            .into_iter()
+            .find(|x| x.text == t)
+            .unwrap_or_else(|| panic!("{t}: {:?}", text_list(out)))
+            .rect
+            .center()
+            .y
+    };
+    assert!(y(&out, "Labels") < y(&out, &siesta));
+    assert!(y(&out, &siesta) < y(&out, "Top sellers"));
+    assert!(y(&out, "Top sellers") < y(&out, &first));
+    let last = crate_menu_label("Seller: shop30", false, false, false);
+    assert!(
+        !shows(&out, &last),
+        "the list scrolls rather than run off the window"
+    );
+    rig.key(Key::Escape, Modifiers::NONE);
+    assert!(!rig.menu_open());
+
+    // Opened with a seller far down shown, the list is scrolled to it.
+    let shop = rig.app.seller_crate("shop25").unwrap();
+    rig.app.crates.show(shop);
+    let out = open_menu(&mut rig);
+    let shown = crate_menu_label("Seller: shop25", true, false, false);
+    let bottom = rig.ctx.content_rect().bottom();
+    for t in [
+        shown.as_str(),
+        "New crate…",
+        "Rename crate…",
+        "Delete crate…",
+    ] {
+        assert!(y(&out, t) < bottom, "{t} within the window");
+    }
 }
 
 #[test]

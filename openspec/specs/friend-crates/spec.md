@@ -4,7 +4,7 @@
 TBD - created by archiving change friend-crates. Update Purpose after archive.
 ## Requirements
 ### Requirement: Friends list from Discogs
-With a Discogs token set, the app SHALL read the user's friends from Discogs (`/users/‹username›/friends`, every page) and keep a crate per friend named "Friend: ‹username›". It SHALL read the list the first time a token is set (once the window is interactive), and then at most once every 7 days, at a moment with no send waiting. The list, when it was last read, which friends' collections are private, and whether FRIENDS is folded SHALL be saved in the config folder and survive restarts. There SHALL be no way to add or remove a friend in the app. A friend's crate SHALL still be recognised as that friend's after it is renamed. Without a token nothing SHALL be read and FRIENDS SHALL NOT be shown.
+With a Discogs token set, the app SHALL read the user's friends from Discogs (`/users/‹username›/friends`, every page) and keep a crate per friend named "Friend: ‹username›". It SHALL read the list the first time a token is set (once the window is interactive), and then at most once every 7 days, at a moment with no send waiting. The list, when it was last read, and which friends' collections are private SHALL be saved in the config folder and survive restarts; whether FRIENDS is open SHALL be saved with the sidebar's settings (see `crates` "Crate sidebar"), not with the list. There SHALL be no way to add or remove a friend in the app. A friend's crate SHALL still be recognised as that friend's after it is renamed. Without a token nothing SHALL be read and FRIENDS SHALL NOT be shown.
 
 #### Scenario: First read
 - **WHEN** a token for a user with 12 friends is saved
@@ -21,6 +21,10 @@ With a Discogs token set, the app SHALL read the user's friends from Discogs (`/
 #### Scenario: Renamed
 - **WHEN** the user renames "Friend: javier.camunas" to "Javier"
 - **THEN** it stays under FRIENDS, and double-clicking it digs javier.camunas's collection
+
+#### Scenario: An old friends file
+- **WHEN** the app starts with a friends file saved by an earlier version, holding `folded: true` and 12 friends
+- **THEN** the file loads with its 12 friends, and FRIENDS starts closed
 
 ### Requirement: The list fails soft
 If reading the friends list fails (offline, an error status, or an answer without a friends list), the last saved list SHALL stay as it is and FRIENDS SHALL keep showing it. Hovering the FRIENDS heading SHALL say when the list was last read and why the last read failed. The next attempt SHALL be at the next launch, or after a failed attempt at least a day later.
