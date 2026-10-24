@@ -147,6 +147,7 @@ pub fn listing(
             seller,
             criteria,
             fresh,
+            ..
         } => inventory_listing(client, seller, criteria, *fresh, n, now),
     }
 }
@@ -161,7 +162,7 @@ pub fn inventory_listing(
     now: u64,
 ) -> Result<ListingPage, ApiError> {
     use super::seller;
-    let path = seller::inventory_path(seller_name, &criteria.query, n, seller::PER_PAGE);
+    let path = seller::inventory_path(seller_name, &criteria.discogs_query(), n, seller::PER_PAGE);
     let v = if fresh {
         let r = client.call(super::transport::Method::Get, &path)?;
         let v =
@@ -172,8 +173,8 @@ pub fn inventory_listing(
         listing_json(client, &path, now)?
     };
     let mut p = seller::inventory_page(&v, criteria);
-    // "Newest N": the last page stops at the Nth copy listed, before the local criteria.
-    if let Some(newest) = criteria.newest {
+    // "Newest N" (or the crate's limit): the last page stops at the Nth copy listed.
+    if let Some(newest) = criteria.window() {
         let room = (newest as usize).saturating_sub(((n - 1) * seller::PER_PAGE) as usize);
         let first: std::collections::HashSet<u64> = v["listings"]
             .as_array()

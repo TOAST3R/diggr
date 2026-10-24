@@ -206,11 +206,19 @@ enum YtDlpState {
     },
 }
 
+#[derive(Default)]
 pub(super) struct JobView {
     pub(super) name: String,
     pub(super) target: CrateId,
     pub(super) done: usize,
     pub(super) total: usize,
+    /// Every page of its listing is read; records may still be expanding.
+    pub(super) listed: bool,
+    /// Records its listing added so far.
+    pub(super) records: usize,
+    /// Tracks its records brought, and the last record filled with how many.
+    pub(super) tracks: usize,
+    pub(super) last: Option<(String, usize)>,
 }
 
 /// Options ▸ Discogs…
@@ -295,7 +303,7 @@ pub(super) struct Dig {
     /// Analyze BPM: tracks asked for, in the order asked, until analyzed.
     pub(super) asked: Vec<TrackRef>,
     /// Per crate being expanded: the focus entry and how many records were still listed.
-    focus: HashMap<CrateId, (Option<EntryId>, usize)>,
+    pub(super) focus: HashMap<CrateId, (Option<EntryId>, usize)>,
     /// Crates whose unfinished sends were resumed this session.
     active: HashSet<CrateId>,
     /// Crates a send created: named after the page once Discogs gives its name, and deleted
@@ -797,17 +805,8 @@ impl Dig {
         let mut parts: Vec<String> = self
             .jobs
             .values()
-            .filter(|j| j.total > 0)
-            .map(|j| {
-                let (kind, name) = j.name.split_once(": ").unwrap_or(("", j.name.as_str()));
-                // A seller's job counts the records its copies are of; Bandcamp, albums.
-                let what = match kind {
-                    "Seller" => "records",
-                    "Bandcamp" => "albums",
-                    _ => "releases",
-                };
-                format!("{name}: {} of {} {what}", j.done, j.total)
-            })
+            .filter(|j| j.total > 0 || j.records > 0)
+            .map(job_line)
             .collect();
         // With nothing else going on, a paused source stays said after its message.
         if parts.is_empty() {
@@ -2301,15 +2300,6 @@ impl DiggrApp {
                 result,
             } => self.seller_counted(&seller, &query, result),
             Event::SellerLookup { name, result } => self.seller_looked_up(&name, result),
-            Event::Scanned {
-                seller,
-                copies,
-                read,
-                pages,
-                total,
-                done,
-            } => self.seller_scanned(&seller, copies, (read, pages, total, done)),
-            Event::ScanFailed { seller, error } => self.seller_scan_failed(&seller, &error),
             Event::CartAdded { listings, result } => self.cart_added(&listings, result),
             Event::CartRemoved { listing, result } => self.cart_removed(listing, result),
             Event::Started(j) => {
@@ -2319,8 +2309,7 @@ impl DiggrApp {
                     JobView {
                         name: j.name.clone(),
                         target: j.target,
-                        done: 0,
-                        total: 0,
+                        ..JobView::default()
                     },
                 );
                 if d.quiet.contains(&j.target) {
@@ -2345,6 +2334,9 @@ impl DiggrApp {
                 }
             }
             Event::Listed(j, mut items) => {
+                if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
+                    v.records += items.len();
+                }
                 if !self.crates.load(j.target) {
                     return;
                 }
@@ -2392,6 +2384,14 @@ impl DiggrApp {
                 self.mark_crate(j.target);
             }
             Event::Record(j, info, outcome) => self.dig_record(&j, &info, outcome),
+            Event::ListingRead(j) => {
+                if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
+                    v.listed = true;
+                }
+                // A seller's refresh needs only its copies: applied now, not after every
+                // record is expanded (a request each).
+                self.seller_job_ended(j.target, true);
+            }
             Event::Progress(j, done, total) => {
                 if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
                     (v.done, v.total) = (done, total);
@@ -2792,6 +2792,15 @@ impl DiggrApp {
         let ids = p.replace(placeholder, new);
         if let Some(d) = &mut self.dig {
             d.twin_leftovers.extend(leftovers);
+            if let Some(v) = d.jobs.get_mut(&j.id) {
+                v.tracks += ids.len();
+                let name = [info.artist.as_str(), info.title.as_str()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" – ");
+                v.last = Some((name, ids.len()));
+            }
         }
         let Some(p) = self.crates.get_mut(j.target) else {
             return;
@@ -3397,11 +3406,22 @@ impl DiggrApp {
             let Some(p) = self.crates.get(c) else {
                 continue;
             };
+            // What plays, else what is selected, else (in the shown crate) the first row in
+            // view: scrolling to records brings their tracks in first.
+            let in_view = || {
+                let rows = self.pl_list();
+                let i = rows.get(self.pl_scroll)?.first();
+                p.entries().get(i).map(|e| e.id)
+            };
             let focus =
                 if c == self.crates.playing_id() && self.position.state != PlayState::Stopped {
                     p.current()
+                } else if let Some(&s) = p.selected_ids().first() {
+                    Some(s)
+                } else if c == self.crates.shown_id() {
+                    in_view().or(p.current())
                 } else {
-                    p.selected_ids().first().copied().or(p.current())
+                    p.current()
                 };
             let listed = p
                 .entries()
@@ -5447,6 +5467,35 @@ impl DiggrApp {
     }
 }
 
+/// A send in the status line: while its listing is read, the records it added; then how many
+/// of them have their tracks, the tracks so far, and the record just filled
+/// ("www.hhv.de: tracks for 134 of 1,919 records · 1,204 tracks · +11 Impulse – Mono").
+fn job_line(j: &JobView) -> String {
+    let (kind, name) = j.name.split_once(": ").unwrap_or(("", j.name.as_str()));
+    // A seller's job counts the records its copies are of; Bandcamp, albums.
+    let what = match kind {
+        "Seller" => "records",
+        "Bandcamp" => "albums",
+        _ => "releases",
+    };
+    let n = crate::format::thousands;
+    if !j.listed && j.records > 0 {
+        return format!(
+            "{name}: reading the listing · {} {what} added",
+            n(j.records)
+        );
+    }
+    let of = if j.records > 0 { j.records } else { j.total };
+    let mut line = format!("{name}: tracks for {} of {} {what}", n(j.done), n(of));
+    if j.tracks > 0 {
+        line += &format!(" · {} tracks", n(j.tracks));
+    }
+    if let Some((record, k)) = &j.last {
+        line += &format!(" · +{k} {record}");
+    }
+    line
+}
+
 /// The clips of `p`'s entries that `keep` picks.
 pub(super) fn clips_of(p: &Playlist, keep: impl Fn(&Entry) -> bool) -> HashSet<String> {
     p.entries()
@@ -5460,6 +5509,38 @@ pub(super) fn clips_of(p: &Playlist, keep: impl Fn(&Entry) -> bool) -> HashSet<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_send_says_records_then_tracks_then_the_record_just_filled() {
+        let mut j = JobView {
+            name: "Seller: www.hhv.de".into(),
+            records: 380,
+            ..JobView::default()
+        };
+        assert_eq!(
+            job_line(&j),
+            "www.hhv.de: reading the listing · 380 records added"
+        );
+        (j.listed, j.records, j.done) = (true, 1919, 0);
+        assert_eq!(job_line(&j), "www.hhv.de: tracks for 0 of 1,919 records");
+        (j.done, j.tracks) = (134, 1204);
+        j.last = Some(("Impulse – One-Six-Four-One-Seven".into(), 11));
+        assert_eq!(
+            job_line(&j),
+            "www.hhv.de: tracks for 134 of 1,919 records · 1,204 tracks · \
+             +11 Impulse – One-Six-Four-One-Seven"
+        );
+        let label = JobView {
+            name: "Label: Siesta Records".into(),
+            total: 40,
+            done: 3,
+            ..JobView::default()
+        };
+        assert_eq!(
+            job_line(&label),
+            "Siesta Records: tracks for 3 of 40 releases"
+        );
+    }
 
     fn info(release: u64, artist: &str) -> RecordInfo {
         RecordInfo {

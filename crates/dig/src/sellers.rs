@@ -37,6 +37,9 @@ pub struct Seller {
     /// Copies for sale at the last count.
     #[serde(default)]
     pub total: usize,
+    /// Copies matching its criteria at the last count (what Add next can reach).
+    #[serde(default)]
+    pub matching: usize,
 }
 
 impl Seller {
@@ -48,6 +51,7 @@ impl Seller {
             criteria: Criteria::default(),
             last_dug: None,
             total: 0,
+            matching: 0,
         }
     }
 
@@ -169,6 +173,25 @@ mod tests {
         )
         .unwrap();
         assert!(SellerList::load(d.path()).seeded);
+    }
+
+    #[test]
+    fn a_list_saved_with_countries_still_loads() {
+        let d = crate::test_dir("sellers-countries");
+        let mut l = SellerList::default();
+        let mut s = Seller::new("decks.de", 12, Source::Purchases);
+        s.criteria.query = "techno".into();
+        l.sellers.push(s);
+        l.save(d.path()).unwrap();
+        // Ships from was a criterion until the style dropdown replaced it.
+        let path = SellerList::path(d.path());
+        let old = std::fs::read_to_string(&path).unwrap().replace(
+            "query: \"techno\",",
+            "query: \"techno\", ships_from: [\"Germany\"],",
+        );
+        assert!(old.contains("ships_from"));
+        std::fs::write(&path, old).unwrap();
+        assert_eq!(SellerList::load(d.path()), l);
     }
 
     #[test]

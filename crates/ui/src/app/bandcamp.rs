@@ -452,8 +452,7 @@ impl DiggrApp {
             JobView {
                 name: format!("Bandcamp: {name}"),
                 target,
-                done: 0,
-                total: 0,
+                ..JobView::default()
             },
         );
         d.preview(PreviewCommand::ReadBandcamp {
@@ -503,8 +502,8 @@ impl DiggrApp {
             JobView {
                 name: format!("Bandcamp: {name}"),
                 target,
-                done: 0,
                 total: pages.len(),
+                ..JobView::default()
             },
         );
         d.preview(PreviewCommand::ReadBandcampPages { job, pages });

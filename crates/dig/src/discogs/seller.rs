@@ -1,10 +1,10 @@
 //! A seller's stock: their inventory read as copies for sale, the criteria that narrow it,
 //! and the first Top Sellers list taken from the user's purchases.
 //!
-//! Discogs applies only the search text (`q`) and the order (`sort=listed`); it ignores genre,
-//! style and format, and serves at most 100 pages of another user's inventory (10,000
-//! copies). Everything else (format, price, condition, country) is filtered here, on the
-//! listings themselves. Parsing is lenient: a field Discogs leaves out is "unknown", never an
+//! Discogs applies the search text (`q`) and the order (`sort=listed`), and serves at most 100
+//! pages of another user's inventory (10,000 copies). Its search matches the whole release
+//! (genres, styles, format, year), so every criterion is a search word and a count is one
+//! request: nothing waits for pages of listings to be read. Parsing is lenient: a field Discogs leaves out is "unknown", never an
 //! error, because these answers are only partly documented.
 
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,11 @@ use serde_json::Value;
 use super::client::{ApiError, Client, path_segment};
 use super::model::{Format, Listed, RecordKey, Role, clean_artist, formats_from_listing, thumb};
 
-/// A crate is dug only when at most this many copies match.
+/// Copies a dig brings at a time: all of them up to this many, else the newest this many,
+/// then this many more on each Add next.
 pub const LIMIT: usize = 1000;
+/// A crate is dug only when at most this many copies match.
+pub const MAX_DIG: usize = 5000;
 /// Inventory pages Discogs serves for someone else's stock.
 pub const MAX_PAGES: u32 = 100;
 pub const PER_PAGE: u32 = 100;
@@ -84,49 +87,70 @@ pub fn grade_text(text: &str) -> String {
     }
 }
 
-/// What narrows a seller's stock. Search text and "newest N" are applied by Discogs; the
-/// rest here, on each listing. Prices are in cents of the seller's currency.
+/// What narrows a seller's stock, all applied by Discogs: a genre or a style, a format, a year
+/// and search text (see [`Criteria::discogs_query`]), and "newest N".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Criteria {
+    /// A Discogs genre ("Electronic"), searched for as a phrase.
+    pub genre: Option<String>,
+    /// A Discogs style ("Deep House"), searched for as a phrase.
+    pub style: Option<String>,
+    /// The user's own search text.
     pub query: String,
+    /// Vinyl, CD or Cassette (the formats Discogs' search tells apart), as a search word.
+    pub format: Option<Format>,
+    /// A release year, as a search word.
+    pub year: Option<u16>,
     /// Only the N most recently listed copies.
     pub newest: Option<u32>,
-    /// Format groups to keep (a copy matches when its release has any); empty keeps all.
-    pub formats: Vec<Format>,
-    pub min_cents: Option<u32>,
-    pub max_cents: Option<u32>,
-    /// The lowest media condition kept; a copy with an unknown grade is left out by it.
-    pub min_condition: Option<Condition>,
-    /// Countries to keep; empty keeps all.
-    pub ships_from: Vec<String>,
+    /// How many of the newest matching copies the crate holds, when not all of them: 1,000
+    /// at first, a thousand more with each Add next. Not a criterion: what a refresh re-reads.
+    pub limit: Option<u32>,
 }
 
+/// The formats Narrow down offers: Discogs' search finds them by name.
+pub const SEARCHED_FORMATS: [Format; 3] = [Format::Vinyl, Format::Cd, Format::Cassette];
+
 impl Criteria {
-    /// Criteria that need the listings read (not only a count from Discogs).
-    pub fn is_local(&self) -> bool {
-        !self.formats.is_empty()
-            || self.min_cents.is_some()
-            || self.max_cents.is_some()
-            || self.min_condition.is_some()
-            || !self.ships_from.is_empty()
+    /// The search Discogs runs: the genre and style as quoted phrases, then the format, the
+    /// year and the search text (`"Deep House" vinyl 2025 ostgut`). Discogs matches them
+    /// anywhere in the release (its styles, format and year included) and wants every part.
+    pub fn discogs_query(&self) -> String {
+        let quoted = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("\"{s}\""))
+        };
+        let format = self
+            .format
+            .filter(|f| SEARCHED_FORMATS.contains(f))
+            .map(|f| f.name().to_lowercase());
+        [
+            quoted(&self.genre),
+            quoted(&self.style),
+            format,
+            self.year.map(|y| y.to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(Some(self.query.trim().to_owned()).filter(|q| !q.is_empty()))
+        .collect::<Vec<_>>()
+        .join(" ")
     }
 
-    /// Whether a copy passes the criteria applied here.
-    pub fn matches(&self, c: &Copy) -> bool {
-        let cents = (c.price * 100.0).round() as u64;
-        (self.formats.is_empty() || c.formats.iter().any(|f| self.formats.contains(f)))
-            && self.min_cents.is_none_or(|m| cents >= u64::from(m))
-            && self.max_cents.is_none_or(|m| cents <= u64::from(m))
-            && self
-                .min_condition
-                .is_none_or(|m| c.condition.is_some_and(|g| g >= m))
-            && (self.ships_from.is_empty() || self.ships_from.contains(&c.ships_from))
+    /// The newest copies a dig reads: "newest N" or the crate's limit, whichever is less.
+    pub fn window(&self) -> Option<u32> {
+        match (self.newest, self.limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Pages to read for these criteria, given how many the seller has.
     pub fn pages(&self, total_pages: u32) -> u32 {
-        let wanted = self.newest.map_or(MAX_PAGES, |n| n.div_ceil(PER_PAGE));
+        let wanted = self.window().map_or(MAX_PAGES, |n| n.div_ceil(PER_PAGE));
         total_pages.min(MAX_PAGES).min(wanted)
     }
 }
@@ -245,7 +269,7 @@ pub struct InventoryPage {
     pub total: usize,
 }
 
-/// Parses one inventory answer, keeping the copies the criteria allow.
+/// Parses one inventory answer, keeping the copies for sale.
 pub fn inventory_page(v: &Value, criteria: &Criteria) -> InventoryPage {
     let mut copies = Vec::new();
     let mut listed = Vec::new();
@@ -253,9 +277,7 @@ pub fn inventory_page(v: &Value, criteria: &Criteria) -> InventoryPage {
         if item["status"].as_str().is_some_and(|s| s != "For Sale") {
             continue;
         }
-        if let Some((c, l)) = copy_from_listing(item)
-            && criteria.matches(&c)
-        {
+        if let Some((c, l)) = copy_from_listing(item) {
             copies.push(c);
             listed.push(l);
         }
@@ -439,39 +461,66 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn criteria_filter_copies() {
-        let copy = |price: f64, format: &str, media: &str| {
-            copy_from_listing(&listing_json(1, 2, price, format, media))
-                .unwrap()
-                .0
-        };
-        let vinyl = copy(9.0, "12\"", "Very Good Plus (VG+)");
-        let cd = copy(9.0, "CD, Album", "Mint (M)");
-        let dear = copy(30.0, "LP", "Near Mint (NM or M-)");
-        let worn = copy(5.0, "LP", "Good (G)");
+    fn format_and_year_are_search_words() {
         let c = Criteria {
-            formats: vec![Format::Vinyl],
-            max_cents: Some(1500),
-            min_condition: Some(Condition::VeryGood),
+            style: Some("Deep House".into()),
+            format: Some(Format::Vinyl),
+            year: Some(2025),
+            query: "ostgut".into(),
             ..Criteria::default()
         };
-        assert!(c.matches(&vinyl));
-        assert!(!c.matches(&cd), "format");
-        assert!(!c.matches(&dear), "price");
-        assert!(!c.matches(&worn), "condition");
-        assert!(Criteria::default().matches(&cd));
-        let spain = Criteria {
-            ships_from: vec!["Spain".into()],
+        assert_eq!(c.discogs_query(), "\"Deep House\" vinyl 2025 ostgut");
+        let cd = Criteria {
+            format: Some(Format::Cd),
             ..Criteria::default()
         };
-        assert!(!spain.matches(&vinyl));
-        assert!(c.is_local() && spain.is_local());
-        let newest = Criteria {
-            query: "techno".into(),
-            newest: Some(500),
+        assert_eq!(cd.discogs_query(), "cd");
+        let file = Criteria {
+            format: Some(Format::File),
             ..Criteria::default()
         };
-        assert!(!newest.is_local(), "Discogs applies both");
+        assert_eq!(
+            file.discogs_query(),
+            "",
+            "not a format Discogs' search tells apart"
+        );
+    }
+
+    #[test]
+    fn genre_and_style_are_searched_as_phrases_before_the_text() {
+        let c = |genre: Option<&str>, style: Option<&str>, query: &str| Criteria {
+            genre: genre.map(Into::into),
+            style: style.map(Into::into),
+            query: query.into(),
+            ..Criteria::default()
+        };
+        assert_eq!(
+            c(None, Some("Deep House"), "").discogs_query(),
+            "\"Deep House\""
+        );
+        assert_eq!(
+            c(Some("Electronic"), Some("Deep House"), " vinyl ").discogs_query(),
+            "\"Electronic\" \"Deep House\" vinyl"
+        );
+        assert_eq!(c(None, None, " techno ").discogs_query(), "techno");
+        assert_eq!(c(None, Some(" "), "").discogs_query(), "");
+        assert_eq!(Criteria::default().discogs_query(), "");
+        let folk = c(Some("Folk, World, & Country"), None, "").discogs_query();
+        assert!(
+            inventory_path("hhv", &folk, 1, 100)
+                .ends_with("&q=%22Folk%2C%20World%2C%20%26%20Country%22"),
+            "{}",
+            inventory_path("hhv", &folk, 1, 100)
+        );
+    }
+
+    #[test]
+    fn criteria_saved_with_old_filters_still_load() {
+        let saved = r#"(query: "techno", newest: Some(500), ships_from: ["Germany"], formats: [Vinyl], min_cents: None, max_cents: Some(1500), min_condition: Some(VeryGood))"#;
+        let c: Criteria = ron::from_str(saved).unwrap();
+        assert_eq!(c.query, "techno");
+        assert_eq!(c.newest, Some(500));
+        assert_eq!((c.style, c.format, c.year), (None, None, None));
     }
 
     #[test]
@@ -491,10 +540,22 @@ pub(crate) mod tests {
         assert_eq!(reachable(40_728, &all), 10_000);
         assert_eq!(reachable(40_728, &newest), 250);
         assert_eq!(reachable(475, &all), 475);
+        let held = Criteria {
+            limit: Some(2000),
+            ..Criteria::default()
+        };
+        assert_eq!(held.pages(408), 20, "a crate holding 2,000 reads 20 pages");
+        assert_eq!(reachable(3412, &held), 3412, "the limit isn't a criterion");
+        let both = Criteria {
+            newest: Some(500),
+            limit: Some(1000),
+            ..Criteria::default()
+        };
+        assert_eq!(both.window(), Some(500));
     }
 
     #[test]
-    fn a_page_keeps_what_the_criteria_allow() {
+    fn a_page_keeps_the_copies_for_sale() {
         let mut sold = listing_json(3, 30, 4.0, "LP", "Mint (M)");
         sold["status"] = "Sold".into();
         let v = page(
@@ -507,12 +568,12 @@ pub(crate) mod tests {
             1851,
             19,
         );
-        let vinyl = Criteria {
-            formats: vec![Format::Vinyl],
-            ..Criteria::default()
-        };
-        let p = inventory_page(&v, &vinyl);
-        assert_eq!(p.copies.iter().map(|c| c.listing).collect::<Vec<_>>(), [1]);
+        let p = inventory_page(&v, &Criteria::default());
+        assert_eq!(
+            p.copies.iter().map(|c| c.listing).collect::<Vec<_>>(),
+            [1, 2],
+            "not the sold one, nor the broken one"
+        );
         assert_eq!(p.listed[0].key, RecordKey::Release(10));
         assert_eq!((p.pages, p.total), (19, 1851));
     }

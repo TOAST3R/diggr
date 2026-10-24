@@ -28,6 +28,13 @@ pub enum ListRow {
         listing: u64,
         first: usize,
     },
+    /// The end of a seller crate dug 1,000 at a time: Add next brings `next` of the `left`
+    /// copies still to add. `first`: the crate index of the row above it.
+    More {
+        next: usize,
+        left: usize,
+        first: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +53,7 @@ impl ListRow {
     /// Height in list rows.
     pub fn units(&self) -> usize {
         match self {
-            ListRow::Entry { .. } | ListRow::Copy { .. } => 1,
+            ListRow::Entry { .. } | ListRow::Copy { .. } | ListRow::More { .. } => 1,
             ListRow::Record(_) => RECORD_UNITS,
         }
     }
@@ -56,7 +63,7 @@ impl ListRow {
         match self {
             ListRow::Entry { idx, .. } => *idx,
             ListRow::Record(r) => r.members[0],
-            ListRow::Copy { first, .. } => *first,
+            ListRow::Copy { first, .. } | ListRow::More { first, .. } => *first,
         }
     }
 
@@ -65,7 +72,7 @@ impl ListRow {
         match self {
             ListRow::Entry { idx, .. } => std::slice::from_ref(idx),
             ListRow::Record(r) => &r.members,
-            ListRow::Copy { .. } => &[],
+            ListRow::Copy { .. } | ListRow::More { .. } => &[],
         }
     }
 }
@@ -253,6 +260,7 @@ mod tests {
                 ListRow::Record(r) if r.single => format!("s{}", r.members[0]),
                 ListRow::Record(r) => format!("r{:?}/{}", r.members, r.total),
                 ListRow::Copy { listing, .. } => format!("  c{listing}"),
+                ListRow::More { left, .. } => format!("+{left}"),
             })
             .collect()
     }

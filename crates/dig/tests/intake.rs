@@ -881,6 +881,7 @@ fn send_inventory(i: &mut Intake, criteria: dig::discogs::seller::Criteria) {
             seller: "decks.de".into(),
             criteria,
             fresh: false,
+            from_page: 0,
         }),
         target: CRATE,
         filters: Filters::default(),
@@ -929,6 +930,43 @@ fn a_seller_brings_every_copy_and_each_record_once() {
         })
         .collect();
     assert_eq!(named, ["Seller: decks.de"]);
+}
+
+#[test]
+fn a_style_is_searched_on_discogs_side_as_a_phrase() {
+    use dig::discogs::seller::Criteria;
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let body = serde_json::json!({
+        "pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 1},
+        "listings": [inventory_listing(11, 1001, 9.0)],
+    });
+    let path = "/users/decks.de/inventory?status=For%20Sale&sort=listed&sort_order=desc&page=1&per_page=100&q=%22Deep%20House%22";
+    t.route(path, 200, body.to_string());
+    let mut i = intake(&t, true, None);
+    send_inventory(
+        &mut i,
+        Criteria {
+            style: Some("Deep House".into()),
+            ..Criteria::default()
+        },
+    );
+    let ev = run(&mut i, 100);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, Event::Copies(_, c) if c.len() == 1)),
+        "{:?}",
+        t.paths()
+    );
+    assert!(t.paths().iter().any(|p| p == path), "{:?}", t.paths());
+    let read = ev
+        .iter()
+        .position(|e| matches!(e, Event::ListingRead(_)))
+        .expect("the listing is read");
+    let finished = ev
+        .iter()
+        .position(|e| matches!(e, Event::Finished(_)))
+        .expect("finished");
+    assert!(read < finished, "said before the records are done");
 }
 
 #[test]
@@ -982,81 +1020,6 @@ fn newest_n_stops_reading_at_the_nth_copy() {
         .filter(|p| p.contains("/inventory"))
         .count();
     assert_eq!(inventory_reads, 2, "two pages for the newest 150, not 100");
-}
-
-#[test]
-fn a_scan_reads_page_by_page_ahead_of_sends_and_can_be_cancelled() {
-    use dig::discogs::seller::inventory_path;
-    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
-    for n in 1..=3u64 {
-        let listings: Vec<_> = (0..100)
-            .map(|k| inventory_listing(n * 1000 + k, 1001, 9.0))
-            .collect();
-        let body = serde_json::json!({
-            "pagination": {"page": n, "pages": 3, "per_page": 100, "items": 300},
-            "listings": listings,
-        });
-        t.route(
-            inventory_path("decks.de", "", n as u32, 100),
-            200,
-            body.to_string(),
-        );
-    }
-    let mut i = intake(&t, true, None);
-    send(&mut i, "https://www.discogs.com/label/12345");
-    i.take_events();
-    i.handle(Command::ScanInventory {
-        seller: "decks.de".into(),
-        query: String::new(),
-        newest: None,
-    });
-    i.step();
-    let ev = i.take_events();
-    assert!(
-        matches!(&ev[..], [Event::Scanned { read: 1, pages: 3, total: 300, done: false, copies, .. }] if copies.len() == 100),
-        "the scan goes before the send: {} events",
-        ev.len()
-    );
-    i.handle(Command::CancelScan);
-    i.step();
-    assert!(
-        !i.take_events()
-            .iter()
-            .any(|e| matches!(e, Event::Scanned { .. })),
-        "cancelled"
-    );
-}
-
-#[test]
-fn a_whole_scan_ends_done() {
-    use dig::discogs::seller::inventory_path;
-    let t = Arc::new(FakeTransport::new());
-    for n in 1..=2u64 {
-        let body = serde_json::json!({
-            "pagination": {"page": n, "pages": 2, "per_page": 100, "items": 2},
-            "listings": [inventory_listing(n, 1001, 9.0)],
-        });
-        t.route(
-            inventory_path("logon", "acid", n as u32, 100),
-            200,
-            body.to_string(),
-        );
-    }
-    let mut i = intake(&t, true, None);
-    i.handle(Command::ScanInventory {
-        seller: "logon".into(),
-        query: "acid".into(),
-        newest: None,
-    });
-    let ev = run(&mut i, 10);
-    let pages: Vec<(u32, bool)> = ev
-        .iter()
-        .filter_map(|e| match e {
-            Event::Scanned { read, done, .. } => Some((*read, *done)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(pages, [(1, false), (2, true)]);
 }
 
 #[test]

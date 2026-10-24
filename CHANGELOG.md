@@ -14,6 +14,31 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **Previews ready on Linux too.** Without yt-dlp installed, the first preview offers to download
   it for you, checks it and keeps it up to date, as it does on a Mac.
 
+### Improved
+
+- **Dig a giant shop by style.** Narrow down now lets you pick a genre, a style, a format and a year,
+  so a seller with 150,000 records becomes the 4,000 Deep House ones in a second, across
+  their whole stock, not just the newest. Every change answers at once, and the styles you
+  collect and want come first in a list you can search.
+
+- **Dig up to 5,000, a thousand at a time.** When up to 5,000 copies match, Dig brings the newest
+  1,000 at once, and the end of the list offers the next 1,000 whenever you want them.
+
+- **Tracks where you look.** A record still waiting for its tracklist blinks "tracks coming…",
+  and the records you scroll to get their tracks first.
+- **See a dig at work.** The status line says how many records a dig has added, then how many
+  have their tracks, how many tracks came in, and the record that just got them.
+- **A new search in the same shop.** Right-click a seller and choose New search… to clean
+  its crate, previews included, and dig the shop again for something else.
+- **Cleaner sidebar names.** Sellers, labels and friends are listed by their names alone under
+  TOP SELLERS, LABELS and FRIENDS, without "Seller:", "Label:" or "Friend:" in front.
+
+### Changed
+
+- **A quicker Narrow down.** Price, condition and ships-from are gone, so the dialog never waits
+  for pages of listings. Each copy still shows its price, condition and country; a seller you
+  narrowed by them keeps its other choices.
+
 ## 0.1.2 — 2026-10-22
 
 ### New

@@ -272,7 +272,7 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     rig.app.crates.set_label(siesta, 77);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ LABELS (1)"), "every group starts closed");
-    assert!(!shows(&out, "Label: Siesta Records"));
+    assert!(!shows(&out, "Siesta Records"));
     rig.click_text("⏵ LABELS (1)");
     let out = rig.frame(Vec::new());
     let y = |t: &str| {
@@ -285,12 +285,12 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
             .y
     };
     assert!(y("DISCOGS") < y("⏷ LABELS (1)"));
-    assert!(y("⏷ LABELS (1)") < y("Label: Siesta Records"));
-    assert!(y("Label: Siesta Records") < y("⏵ TOP SELLERS (2)"));
+    assert!(y("⏷ LABELS (1)") < y("Siesta Records"));
+    assert!(y("Siesta Records") < y("⏵ TOP SELLERS (2)"));
     assert_eq!(
         texts(&out)
             .iter()
-            .filter(|t| t.text == "Label: Siesta Records")
+            .filter(|t| t.text == "Siesta Records")
             .count(),
         1,
         "not also in the top list"
@@ -300,8 +300,8 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     rig.click_text("⏵ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ LABELS (1)") && shows(&out, "⏷ TOP SELLERS (2)"));
-    assert!(!shows(&out, "Label: Siesta Records"), "closed");
-    assert!(shows(&out, "Seller: decks.de"));
+    assert!(!shows(&out, "Siesta Records"), "closed");
+    assert!(shows(&out, "decks.de"));
     assert_eq!(
         rig.app.settings.side_open,
         Some(crate::settings::SideGroup::Sellers),
@@ -314,12 +314,7 @@ fn top_sellers_sit_under_discogs_and_fold() {
     let fakes = Fakes::new();
     let (mut rig, _, _) = two_sellers("sellers-sidebar", &fakes);
     let out = rig.frame(Vec::new());
-    for t in [
-        "DISCOGS",
-        "⏷ TOP SELLERS (2)",
-        "Seller: decks.de",
-        "Seller: logon",
-    ] {
+    for t in ["DISCOGS", "⏷ TOP SELLERS (2)", "decks.de", "logon"] {
         assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
     }
     let y = |t: &str| {
@@ -332,18 +327,15 @@ fn top_sellers_sit_under_discogs_and_fold() {
             .y
     };
     assert!(y("DISCOGS") < y("⏷ TOP SELLERS (2)"));
-    assert!(y("⏷ TOP SELLERS (2)") < y("Seller: decks.de"));
-    assert!(
-        y("Seller: decks.de") < y("Seller: logon"),
-        "in the list's order"
-    );
+    assert!(y("⏷ TOP SELLERS (2)") < y("decks.de"));
+    assert!(y("decks.de") < y("logon"), "in the list's order");
     assert!(y("+ New crate") < y("DISCOGS"));
 
     // Clicking the open group closes it: every group closed.
     rig.click_text("⏷ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ TOP SELLERS (2)"));
-    assert!(!shows(&out, "Seller: decks.de"), "closed");
+    assert!(!shows(&out, "decks.de"), "closed");
     assert_eq!(rig.app.settings.side_open, None);
 }
 
@@ -389,16 +381,16 @@ fn a_long_group_scrolls_under_headings_that_stay() {
         "+ New crate",
         "DISCOGS",
         "⏷ TOP SELLERS (31)",
-        "Seller: shop00",
+        "shop00",
     ] {
         assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
     }
-    assert!(!shows(&out, "Seller: shop30"), "past the end");
+    assert!(!shows(&out, "shop30"), "past the end");
 
-    let p = at(&mut rig, "Seller: shop00");
+    let p = at(&mut rig, "shop00");
     let out = wheel(&mut rig, p, -3000.0);
-    assert!(shows(&out, "Seller: shop30"), "{:?}", text_list(&out));
-    assert!(!shows(&out, "Seller: shop00"));
+    assert!(shows(&out, "shop30"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "shop00"));
     assert!(shows(&out, "⏷ TOP SELLERS (31)") && shows(&out, "⏷ CRATES (1)"));
 
     // The scrollbar at the list's right edge: pressing its top goes back to the first.
@@ -407,7 +399,7 @@ fn a_long_group_scrolls_under_headings_that_stay() {
     rig.press(bar, PointerButton::Primary, true);
     rig.press(bar, PointerButton::Primary, false);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Seller: shop00"), "{:?}", text_list(&out));
+    assert!(shows(&out, "shop00"), "{:?}", text_list(&out));
 }
 
 #[test]
@@ -416,7 +408,7 @@ fn a_shown_crate_opens_its_group_and_is_scrolled_to() {
     let mut rig = many_sellers("sellers-reveal", &fakes, 31);
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "⏵ TOP SELLERS (31)") && !shows(&out, "Seller: shop00"));
+    assert!(shows(&out, "⏵ TOP SELLERS (31)") && !shows(&out, "shop00"));
 
     // Shown by any means (here, as the browser bridge does): its group opens.
     let c = rig.app.seller_crate("shop25").unwrap();
@@ -424,20 +416,20 @@ fn a_shown_crate_opens_its_group_and_is_scrolled_to() {
     rig.frame(Vec::new());
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏷ TOP SELLERS (31)"), "{:?}", text_list(&out));
-    assert!(shows(&out, "Seller: shop25"), "{:?}", text_list(&out));
+    assert!(shows(&out, "shop25"), "{:?}", text_list(&out));
     assert_eq!(
         rig.app.settings.side_open,
         Some(crate::settings::SideGroup::Sellers)
     );
 
     // The user's own scroll stays until another crate is shown.
-    let p = at(&mut rig, "Seller: shop25");
+    let p = at(&mut rig, "shop25");
     wheel(&mut rig, p, 3000.0);
     for _ in 0..3 {
         rig.frame(Vec::new());
     }
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Seller: shop00") && !shows(&out, "Seller: shop25"));
+    assert!(shows(&out, "shop00") && !shows(&out, "shop25"));
 }
 
 #[test]
@@ -454,6 +446,8 @@ fn a_closed_group_shows_a_dig_inside_it() {
             target: decks,
             done: 0,
             total: 10,
+            listed: false,
+            ..Default::default()
         },
     );
     let out = rig.frame(Vec::new());
@@ -519,7 +513,7 @@ fn the_crate_menu_groups_the_crates_and_scrolls() {
 fn a_seller_menu_offers_refresh_narrow_and_remove() {
     let fakes = Fakes::new();
     let (mut rig, _, _) = two_sellers("sellers-menu", &fakes);
-    let pos = at(&mut rig, "Seller: decks.de");
+    let pos = at(&mut rig, "decks.de");
     rig.click_with(pos, PointerButton::Secondary);
     let out = rig.frame(Vec::new());
     for t in [
@@ -535,7 +529,7 @@ fn a_seller_menu_offers_refresh_narrow_and_remove() {
     rig.frame(Vec::new());
 
     // Never dug: nothing to refresh or narrow yet.
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click_with(pos, PointerButton::Secondary);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Remove seller…"));
@@ -578,7 +572,7 @@ fn a_click_shows_a_seller_crate_without_asking_discogs() {
         };
     }
     let before = fakes.transport.count();
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click(pos);
     for _ in 0..10 {
         rig.pump();
@@ -621,7 +615,7 @@ const SMALL: [(u64, u64, f64, &str); 4] = [
 ];
 
 fn double_click_seller(rig: &mut Rig, name: &str) {
-    let pos = at(rig, &format!("Seller: {name}"));
+    let pos = at(rig, name);
     rig.double_click(pos);
 }
 
@@ -756,58 +750,83 @@ fn a_big_seller_asks_to_narrow_down() {
         "searched",
     );
     assert!(
-        !dig_dialog(&rig).unwrap().can_dig(),
-        "1,200 is still too many"
+        dig_dialog(&rig).unwrap().can_dig(),
+        "1,200: the newest 1,000 first"
     );
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Dig the newest 1,000"), "{:?}", text_list(&out));
 
     // Newest 500: Discogs applies it, so Dig is offered at once.
     dig_dialog_mut(&mut rig).criteria.newest = Some(500);
     rig.frame(Vec::new());
-    assert_eq!(dig_dialog(&rig).unwrap().matching(), Some((500, true)));
+    assert_eq!(dig_dialog(&rig).unwrap().matching(), Some(500));
     assert!(dig_dialog(&rig).unwrap().can_dig());
 }
 
 #[test]
-fn criteria_applied_here_read_the_listings_first() {
+fn format_and_year_are_counted_by_discogs_without_reading_listings() {
+    use ::dig::discogs::model::Format;
     let fakes = Fakes::new();
-    let (mut rig, _, logon) = two_sellers("sellers-scan", &fakes);
-    // 1,500 copies: 600 on vinyl, 900 on CD.
-    let stock: Vec<(u64, u64, f64, &str)> = (0..1500)
-        .map(|n| {
-            (
-                100 + n,
-                1001 + n % 2,
-                9.0,
-                if n % 5 < 2 { "12\"" } else { "CD" },
-            )
-        })
-        .collect();
-    fakes.inventory("logon", "", &stock);
+    let (mut rig, _, logon) = two_sellers("sellers-format-year", &fakes);
+    fakes.count("logon", 159_648);
+    let copies = |n: u64| -> Vec<(u64, u64, f64, &str)> {
+        (0..n)
+            .map(|k| (100 + k, 1001 + k % 2, 9.0, "12\""))
+            .collect()
+    };
+    fakes.inventory("logon", "vinyl", &copies(1500));
+    fakes.inventory("logon", "vinyl 2025", &copies(300));
     double_click_seller(&mut rig, "logon");
     rig.until(
-        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(1500)),
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
         "counted",
     );
-    dig_dialog_mut(&mut rig).criteria.formats = vec![::dig::discogs::model::Format::Vinyl];
+    let out = rig.frame(Vec::new());
+    for gone in ["Price", "Condition", "Ships from", "Other"] {
+        assert!(!shows(&out, gone), "{gone}: {:?}", text_list(&out));
+    }
+
+    rig.click_text("Any format");
+    rig.click_text("Vinyl");
     rig.until(
-        |r| dig_dialog(r).is_some_and(|d| d.matching() == Some((600, true))),
-        "the listings are read and counted",
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(1500)),
+        "the format is counted",
+    );
+    assert_eq!(
+        dig_dialog(&rig).unwrap().criteria.format,
+        Some(Format::Vinyl)
+    );
+    let d = dig_dialog_mut(&mut rig);
+    d.year = "2025".into();
+    d.read_year();
+    d.picked();
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(300)),
+        "the year is counted",
     );
     assert!(dig_dialog(&rig).unwrap().can_dig());
+    let read = fakes
+        .transport
+        .paths()
+        .iter()
+        .filter(|p| p.starts_with("/users/logon/inventory") && p.contains("per_page=100"))
+        .count();
+    assert_eq!(read, 0, "only counts before Dig, never pages of listings");
+
     rig.click_text("Dig");
     rig.until(
         |r| {
             r.app
                 .crates
                 .get(logon)
-                .is_some_and(|p| p.copies().len() == 600)
+                .is_some_and(|p| p.copies().len() == 300)
         },
-        "only the vinyl copies come in",
+        "the vinyl copies of 2025 come in",
     );
+    let saved = seller(&rig, "logon").criteria;
     assert_eq!(
-        seller(&rig, "logon").criteria.formats,
-        [::dig::discogs::model::Format::Vinyl],
-        "the criteria are kept for refreshes"
+        (saved.format, saved.year),
+        (Some(Format::Vinyl), Some(2025))
     );
 }
 
@@ -830,7 +849,7 @@ fn dug_then(name: &str, fakes: &Fakes, now: &[(u64, u64, f64, &str)]) -> (Rig, C
 }
 
 fn refresh(rig: &mut Rig) {
-    let pos = at(rig, "Seller: decks.de");
+    let pos = at(rig, "decks.de");
     rig.click_with(pos, PointerButton::Secondary);
     rig.click_text("Refresh seller");
 }
@@ -987,7 +1006,7 @@ fn a_pasted_seller_page_adds_or_refreshes() {
 fn remove_seller_asks_then_deletes_its_crate() {
     let fakes = Fakes::new();
     let (mut rig, _, logon) = two_sellers("sellers-remove", &fakes);
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click_with(pos, PointerButton::Secondary);
     rig.click_text("Remove seller…");
     assert!(shows(
@@ -1733,4 +1752,440 @@ fn the_flat_view_keeps_the_cart_badge() {
     // 1001's tracks keep the CART badge; 1002's lone copy has its + CART.
     assert_eq!(pills(&out), 1, "{:?}", text_list(&out));
     assert!(shows(&out, "CART"), "{:?}", text_list(&out));
+}
+
+/// Adds records with these styles (one record each, Discogs' comma-separated text) to `id`.
+fn add_styled(rig: &mut Rig, id: CrateId, styles: &[&str]) {
+    use crate::playlist::Origin;
+    use platform::TrackRef;
+    assert!(rig.app.crates.load(id));
+    let p = rig.app.crates.get_mut(id).unwrap();
+    let start = p.entries().len();
+    p.add(
+        styles
+            .iter()
+            .enumerate()
+            .map(|(i, _)| TrackRef::new(format!("https://example.com/styled/{id}/{}", start + i))),
+    );
+    for (i, (e, s)) in p.entries_mut().skip(start).zip(styles).enumerate() {
+        e.origin = Some(Origin {
+            release: Some(90_000 + id * 100 + i as u64),
+            styles: (*s).into(),
+            ..Default::default()
+        });
+    }
+}
+
+fn inventory_counts(fakes: &Fakes, query: &str) -> usize {
+    let count = inventory_path("logon", query, 1, 1);
+    fakes
+        .transport
+        .paths()
+        .iter()
+        .filter(|p| **p == count)
+        .count()
+}
+
+#[test]
+fn a_style_narrows_the_whole_stock_with_one_count() {
+    let fakes = Fakes::new();
+    let (mut rig, _, _) = two_sellers("sellers-style", &fakes);
+    fakes.count("logon", 159_648);
+    let deep: Vec<(u64, u64, f64, &str)> = (0..1200)
+        .map(|n| (100 + n, 1001 + n % 2, 9.0, "12\""))
+        .collect();
+    fakes.inventory("logon", "\"Deep House\"", &deep);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
+        "counted",
+    );
+    let out = rig.frame(Vec::new());
+    let texts = text_list(&out);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Discogs only shows the first 10,000: a genre or style")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("10,000 match")),
+        "the cap isn't a match count: {texts:?}"
+    );
+    assert!(!shows(&out, "Ships from"));
+
+    // Opening and searching the dropdown asks Discogs nothing.
+    let sent = fakes.requests("/inventory");
+    rig.click_text("Any style");
+    rig.frame(vec![Event::Text("deep house".into())]);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Deep House"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Techno"), "the search narrows the list");
+    assert_eq!(fakes.requests("/inventory"), sent, "no request");
+
+    rig.click_text("Deep House");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(1200)),
+        "the style is counted",
+    );
+    let d = dig_dialog(&rig).unwrap();
+    assert_eq!(d.criteria.style.as_deref(), Some("Deep House"));
+    assert!(d.can_dig(), "1,200: the newest 1,000 first");
+    assert_eq!(inventory_counts(&fakes, "\"Deep House\""), 1);
+}
+
+#[test]
+fn genre_style_and_text_are_dug_and_refreshed_together() {
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-genre-style", &fakes);
+    fakes.count("logon", 40_728);
+    let query = "\"Electronic\" \"Deep House\" vinyl";
+    fakes.inventory("logon", query, &SMALL);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(40_728)),
+        "counted",
+    );
+    let d = dig_dialog_mut(&mut rig);
+    d.criteria.genre = Some("Electronic".into());
+    d.criteria.style = Some("Deep House".into());
+    d.criteria.query = "vinyl".into();
+    d.picked();
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.can_dig()),
+        "counted with the genre, style and text",
+    );
+    rig.click_text("Dig");
+    rig.until(
+        |r| {
+            r.app
+                .crates
+                .get(logon)
+                .is_some_and(|p| p.copies().len() == 4)
+        },
+        "dug",
+    );
+    let saved = seller(&rig, "logon").criteria;
+    assert_eq!(saved.genre.as_deref(), Some("Electronic"));
+    assert_eq!(saved.style.as_deref(), Some("Deep House"));
+    assert_eq!(saved.discogs_query(), query);
+
+    // A day later the refresh counts and reads with the same search.
+    rig.until(|r| !r.app.seller_busy(logon), "the records are in");
+    // Well after the first double-click, so this one isn't read as a triple click.
+    for _ in 0..60 {
+        rig.pump();
+    }
+    let before = inventory_counts(&fakes, query);
+    let d = rig.app.dig.as_mut().unwrap();
+    d.sellers.find_mut("logon").unwrap().last_dug = Some(::dig::now_secs() - 30 * 3600);
+    double_click_seller(&mut rig, "logon");
+    rig.until(|r| message(r) == "logon: up to date", "refreshed");
+    assert_eq!(inventory_counts(&fakes, query), before + 1);
+}
+
+#[test]
+fn the_style_dropdown_lists_this_crate_then_yours_then_all() {
+    let fakes = Fakes::new();
+    let (mut rig, decks, _) = two_sellers("sellers-style-list", &fakes);
+    fakes.count("decks.de", 40_728);
+    let collection = rig.app.crates.create("Collection").unwrap();
+    rig.app.crates.set_collection(collection);
+    // "Electronic" is a record's genre standing in for its styles: not a style.
+    add_styled(
+        &mut rig,
+        collection,
+        &["Deep House, Electro", "Electro", "Electronic"],
+    );
+    add_styled(&mut rig, decks, &["Minimal"]);
+    rig.frame(Vec::new());
+    let pos = at(&mut rig, "decks.de");
+    rig.click_with(pos, PointerButton::Secondary);
+    rig.click_text("Narrow down…");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(40_728)),
+        "counted",
+    );
+    let d = dig_dialog(&rig).unwrap();
+    assert_eq!(d.crate_styles, ["Minimal"]);
+    assert_eq!(
+        d.your_styles,
+        ["Electro", "Deep House"],
+        "most records first"
+    );
+
+    rig.click_text("Any style");
+    let out = rig.frame(Vec::new());
+    let texts = text_list(&out);
+    let y = |t: &str| {
+        texts
+            .iter()
+            .position(|x| x == t)
+            .unwrap_or_else(|| panic!("{t}: {texts:?}"))
+    };
+    assert!(y("in this crate") < y("Minimal") && y("Minimal") < y("yours"));
+    assert!(y("yours") < y("Electro") && y("Electro") < y("all"));
+
+    rig.frame(vec![Event::Text("deep".into())]);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Deep House") && shows(&out, "Deep Techno"));
+    assert!(!shows(&out, "in this crate") && !shows(&out, "Minimal"));
+
+    rig.click_text("Deep House");
+    assert_eq!(
+        dig_dialog(&rig).unwrap().criteria.style.as_deref(),
+        Some("Deep House")
+    );
+
+    // A genre keeps the style dropdown, holding that genre's styles only, in every section;
+    // a style of another genre goes.
+    rig.click_text("Any genre");
+    rig.click_text("Rock");
+    let d = dig_dialog(&rig).unwrap();
+    assert_eq!(d.criteria.genre.as_deref(), Some("Rock"));
+    assert_eq!(d.criteria.style, None, "Deep House isn't Rock");
+    rig.click_text("Any style");
+    rig.frame(vec![Event::Text("punk".into())]);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Punk"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Deep House") && !shows(&out, "yours"));
+    rig.click_text("Punk");
+    let d = dig_dialog(&rig).unwrap();
+    assert_eq!(
+        (d.criteria.genre.as_deref(), d.criteria.style.as_deref()),
+        (Some("Rock"), Some("Punk"))
+    );
+    assert_eq!(d.criteria.discogs_query(), "\"Rock\" \"Punk\"");
+}
+
+#[test]
+fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-more", &fakes);
+    fakes.count("logon", 159_648);
+    let stock: Vec<(u64, u64, f64, &str)> = (0..3412)
+        .map(|k| (100 + k, 1001 + k % 2, 9.0, "12\""))
+        .collect();
+    fakes.inventory("logon", "vinyl", &stock);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
+        "counted",
+    );
+    assert!(!dig_dialog(&rig).unwrap().can_dig(), "over 5,000");
+    let d = dig_dialog_mut(&mut rig);
+    d.criteria.format = Some(::dig::discogs::model::Format::Vinyl);
+    d.picked();
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(3412)),
+        "the format is counted",
+    );
+    assert!(dig_dialog(&rig).unwrap().can_dig(), "3,412 can be dug");
+    rig.click_text("Dig the newest 1,000");
+    let copies = |r: &Rig| r.app.crates.get(logon).map_or(0, |p| p.copies().len());
+    rig.until(
+        |r| copies(r) == 1000 && !r.app.seller_busy(logon),
+        "the newest 1,000",
+    );
+    let saved = seller(&rig, "logon");
+    assert_eq!((saved.criteria.limit, saved.matching), (Some(1000), 3412));
+    let page = |n: u32| inventory_path("logon", "vinyl", n, 100);
+    let reads = |n: u32| {
+        fakes
+            .transport
+            .paths()
+            .iter()
+            .filter(|p| **p == page(n))
+            .count()
+    };
+    assert_eq!(
+        (reads(10), reads(11)),
+        (1, 0),
+        "nothing past the first 1,000 is read"
+    );
+
+    // Records take a request each, so a dig of a big seller runs long after its listing is
+    // read: the row shows as soon as the listing is in, and only then.
+    let more = "+ ADD NEXT 1,000 · 2,412 MORE";
+    let job = |listed| super::super::digging::JobView {
+        name: "Seller: www.hhv.de".into(),
+        target: logon,
+        done: 10,
+        total: 961,
+        listed,
+        ..Default::default()
+    };
+    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(false));
+    let out = rig.frame(Vec::new());
+    assert!(!shows(&out, more), "the listing is still being read");
+    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(true));
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, more),
+        "records still expanding: {:?}",
+        text_list(&out)
+    );
+    rig.app.dig.as_mut().unwrap().jobs.remove(&999);
+
+    // Nothing more comes until the last row is clicked.
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert_eq!(copies(&rig), 1000);
+    rig.click_text("+ ADD NEXT 1,000 · 2,412 MORE");
+    rig.until(
+        |r| copies(r) == 2000 && !r.app.seller_busy(logon),
+        "the next 1,000",
+    );
+    assert_eq!(
+        (reads(1), reads(11), reads(20), reads(21)),
+        (1, 1, 1, 0),
+        "pages 11 to 20 only"
+    );
+    rig.click_text("+ ADD NEXT 1,000 · 1,412 MORE");
+    rig.until(|r| copies(r) == 3000 && !r.app.seller_busy(logon), "3,000");
+    rig.click_text("+ ADD THE LAST 412");
+    rig.until(
+        |r| copies(r) == 3412 && !r.app.seller_busy(logon),
+        "all of them",
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        !text_list(&out).iter().any(|t| t.starts_with("+ ADD")),
+        "nothing left to add"
+    );
+    assert_eq!(seller(&rig, "logon").criteria.limit, Some(4000));
+}
+
+#[test]
+fn new_search_asks_then_cleans_the_crate_and_its_previews_and_digs_afresh() {
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-new-search", &fakes);
+    fakes.inventory("logon", "", &SMALL);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(4)),
+        "counted",
+    );
+    rig.click_text("Dig");
+    let clips = |r: &Rig| -> Vec<String> {
+        r.app.crates.get(logon).map_or(Vec::new(), |p| {
+            p.entries()
+                .iter()
+                .filter_map(|e| e.origin.as_ref()?.clip.clone())
+                .collect()
+        })
+    };
+    let file = |r: &Rig, c: &str| r.dir.join(format!("cache/previews/{c}.m4a"));
+    rig.until(
+        |r| !r.app.seller_busy(logon) && clips(r).iter().any(|c| file(r, c).exists()),
+        "dug, with a preview downloaded",
+    );
+    let downloaded: Vec<String> = clips(&rig)
+        .into_iter()
+        .filter(|c| file(&rig, c).exists())
+        .collect();
+    let d = rig.app.dig.as_mut().unwrap();
+    d.sellers.find_mut("logon").unwrap().criteria.style = Some("Acid".into());
+
+    // Asked first: Cancel keeps everything.
+    for _ in 0..60 {
+        rig.pump();
+    }
+    let pos = at(&mut rig, "logon");
+    rig.click_with(pos, PointerButton::Secondary);
+    rig.click_text("New search…");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "New search for logon?"),
+        "{:?}",
+        text_list(&out)
+    );
+    rig.click_text("Cancel");
+    assert_eq!(rig.app.crates.get(logon).unwrap().copies().len(), 4);
+
+    let pos = at(&mut rig, "logon");
+    rig.click_with(pos, PointerButton::Secondary);
+    rig.click_text("New search…");
+    fakes.count("logon", 4);
+    rig.click_text("Clean and search");
+    let p = rig.app.crates.get(logon).unwrap();
+    assert!(
+        p.is_empty() && p.copies().is_empty(),
+        "the crate is cleaned"
+    );
+    let s = seller(&rig, "logon");
+    assert_eq!(
+        (s.criteria.style, s.last_dug),
+        (None, None),
+        "the search is forgotten"
+    );
+    rig.until(
+        |r| downloaded.iter().all(|c| !file(r, c).exists()),
+        "its previews are deleted",
+    );
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(4)),
+        "Dig opens afresh",
+    );
+}
+
+#[test]
+fn the_records_in_view_get_their_tracks_first() {
+    use crate::playlist::{Origin, WaitKind};
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-focus", &fakes);
+    rig.app.show_crate(logon);
+    let p = rig.app.crates.get_mut(logon).unwrap();
+    let ids: Vec<EntryId> = (0..200u64)
+        .map(|i| {
+            p.add_waiting(
+                "Artist",
+                format!("Record {i}"),
+                None,
+                Some(Origin {
+                    release: Some(50_000 + i),
+                    ..Default::default()
+                }),
+                WaitKind::Listed,
+            )
+        })
+        .collect();
+    // A dig into the crate is still expanding its records.
+    rig.app.dig.as_mut().unwrap().jobs.insert(
+        999,
+        super::super::digging::JobView {
+            name: "Seller: logon".into(),
+            target: logon,
+            done: 0,
+            total: 200,
+            listed: true,
+            ..Default::default()
+        },
+    );
+    let focus = |r: &Rig| {
+        r.app
+            .dig
+            .as_ref()
+            .unwrap()
+            .focus
+            .get(&logon)
+            .and_then(|f| f.0)
+    };
+    rig.frame(Vec::new());
+    assert_eq!(focus(&rig), Some(ids[0]), "the top of the crate");
+    rig.app.pl_scroll = 120;
+    rig.frame(Vec::new());
+    assert_eq!(
+        focus(&rig),
+        Some(ids[120]),
+        "scrolled: the first record in view"
+    );
+    rig.app
+        .crates
+        .get_mut(logon)
+        .unwrap()
+        .select_only(&[ids[7]], ids[7]);
+    rig.frame(Vec::new());
+    assert_eq!(focus(&rig), Some(ids[7]), "a selection leads");
 }

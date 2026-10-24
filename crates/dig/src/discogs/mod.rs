@@ -10,5 +10,6 @@ pub mod model;
 pub mod ratelimit;
 pub mod search;
 pub mod seller;
+pub mod styles;
 pub mod transport;
 pub mod url;

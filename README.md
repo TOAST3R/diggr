@@ -532,8 +532,8 @@ ahead of what plays. Other pasted text is ignored.
 
 ### Labels
 
-Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›"),
-grouped by record. Click the heading to open it (closing TOP SELLERS or FRIENDS) or close it.
+Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›",
+listed under the heading by the label's name alone), grouped by record. Click the heading to open it (closing TOP SELLERS or FRIENDS) or close it.
 
 - **Follow a label** from the browser: on a Discogs label page, or a link to one, the
   extension offers only **Diggr: Send label**. The label's crate is made and fills in the
@@ -790,7 +790,8 @@ pill.
 
 ### Top Sellers
 
-Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
+Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›", listed
+under the heading by the seller's name alone), for
 listening through a shop's stock and putting the copies you want in your Discogs cart. Click
 the heading to open it (closing LABELS or FRIENDS) or close it; right-click it for **Add
 seller…**.
@@ -805,12 +806,18 @@ seller…**.
   on a seller's page, does the same (or refreshes a seller already in the list).
 - **A click shows, a double-click digs:** clicking a seller crate only shows what it holds,
   with no request to Discogs. A double-click on one never dug counts its copies (one request)
-  and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes
-  search text and "only the newest N" (Discogs applies both, so the count is instant), and
-  format, price, minimum condition and ships-from (read from the listings: a progress line
-  shows them coming). Dig is offered once 1 to 1,000 copies match. Discogs only lets anyone
-  read the first 10,000 copies of another user's stock, and the dialog says so. The criteria
-  are kept for refreshes. A double-click on a crate dug more than a day ago refreshes it;
+  and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes a
+  **genre** and a **style**, a **format** (Vinyl, CD or Cassette), a **year**, search text and
+  "only the newest N". Discogs applies them all, across the seller's whole stock, so each change
+  is one count and answers at once. The style list has a search field and puts first the styles
+  of this seller's crate (once dug), then those of your wantlist and collection, then every
+  Discogs style; with a genre picked, only that genre's. Discogs searches for the genre and style
+  as words, so a title or label that contains them matches too; the crate's style filter tidies
+  that up after the dig. Dig is offered once 1 to 5,000 copies match: up to 1,000 come in at once;
+  beyond that, **Dig the newest 1,000** brings those, and the crate's list ends with **+ ADD NEXT
+  1,000 · N MORE**, which reads the next thousand only when you click it. Discogs only lets anyone
+  read the first 10,000 copies of another user's stock, and the dialog says so. The criteria are
+  kept for refreshes. A double-click on a crate dug more than a day ago refreshes it;
   within a day it just shows it.
 - **One row per copy:** a seller crate is grouped by record. A record's second line gives its
   copies and their price range ("3 copies €9.00–€18.00"); open it (⏵) to see each copy, cheapest
@@ -823,6 +830,13 @@ seller…**.
   whose copies all sold is dimmed and still plays), and prices follow. The main window says
   what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
   1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
+  While a dig runs, the status line says what it's doing: "www.hhv.de: reading the listing · 380
+  records added", then "tracks for 134 of 1,919 records · 1,204 tracks · +11 Impulse – …" (the
+  record that just got its tracks). A record still waiting for its tracklist says "tracks
+  coming…"; the records in view (or the one selected) get theirs first.
+  **New search…** asks first, then cleans the crate (its records, copies and their downloaded
+  previews, unless another crate holds them), forgets the seller's search and opens Dig /
+  Narrow down afresh: the way to look for something else in the same shop.
   **Remove seller…** takes it out of the list and deletes its crate.
 - **Your cart:** in a seller crate, each copy row has a cart button. Click **+ CART** to put
   that copy in your real Discogs cart; it then reads **IN CART**, which turns into a red
@@ -848,7 +862,7 @@ itself uses, checked in October 2026). If Discogs changes them, the first list s
 ### Friends
 
 With a token, **FRIENDS** under TOP SELLERS holds a crate per Discogs friend ("Friend:
-‹name›"), filled from their collection. The list comes from Discogs (your friends there),
+‹name›", listed under the heading by their name alone), filled from their collection. The list comes from Discogs (your friends there),
 read the first time and then once a week; there's no adding or removing friends here. That
 endpoint isn't in Discogs' developer docs, so if a read fails the last list stays, and
 hovering **FRIENDS** says when it was read and why it couldn't be read again.
@@ -1290,7 +1304,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 977 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 989 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1500,8 +1514,10 @@ What's covered:
   runs by hand: `cargo test -p dig real_fan -- --ignored`.
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
-  click versus double-click (no request on a click), Dig and Narrow down (search text, newest N,
-  criteria read from the listings), refreshes (new, sold, cheaper, past the limit, failed),
+  click versus double-click (no request on a click), Dig and Narrow down (genre and style, the style
+  dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap, up
+  to 5,000 a thousand at a time from the list's last row, New search cleaning the crate and
+  its previews), refreshes (new, sold, cheaper, past the limit, failed),
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real

@@ -117,9 +117,15 @@ pub fn origin_details(o: &crate::playlist::Origin) -> String {
 }
 
 /// A record row's second line: catalog number, year, tracks ("3 tracks", or "2 of 4 tracks"
-/// under a filter) and the for-sale summary, e.g. `LT-012 · 1994 · 3 tracks · 6 for sale from
-/// €9.00`. Parts that aren't known are left out.
-pub fn record_line(o: Option<&crate::playlist::Origin>, shown: usize, total: usize) -> String {
+/// under a filter; "tracks coming…" while the record is only listed, its tracklist not read
+/// yet) and the for-sale summary, e.g. `LT-012 · 1994 · 3 tracks · 6 for sale from €9.00`.
+/// Parts that aren't known are left out.
+pub fn record_line(
+    o: Option<&crate::playlist::Origin>,
+    shown: usize,
+    total: usize,
+    listed: bool,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(o) = o {
         if !o.catno.trim().is_empty() {
@@ -130,7 +136,9 @@ pub fn record_line(o: Option<&crate::playlist::Origin>, shown: usize, total: usi
         }
     }
     let tracks = if total == 1 { "track" } else { "tracks" };
-    parts.push(if shown < total {
+    parts.push(if listed {
+        "tracks coming…".to_owned()
+    } else if shown < total {
         format!("{shown} of {total} {tracks}")
     } else {
         format!("{total} {tracks}")
@@ -150,8 +158,7 @@ pub fn record_line(o: Option<&crate::playlist::Origin>, shown: usize, total: usi
 /// their price range ("3 copies €9.00–€18.00"), or "sold" when none is left.
 pub fn seller_record_line(
     o: Option<&crate::playlist::Origin>,
-    shown: usize,
-    total: usize,
+    (shown, total, listed): (usize, usize, bool),
     copies: &[&crate::playlist::SaleCopy],
 ) -> String {
     let mut line = record_line(
@@ -162,6 +169,7 @@ pub fn seller_record_line(
         .as_ref(),
         shown,
         total,
+        listed,
     );
     let unsold: Vec<&&crate::playlist::SaleCopy> = copies.iter().filter(|c| !c.sold).collect();
     let part = match unsold.as_slice() {
@@ -439,6 +447,19 @@ fn crate_key_name(code: &str) -> Option<&'static str> {
     }
 }
 
+/// "40,728".
+pub fn thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,15 +488,15 @@ mod tests {
         };
         let (a, b, x) = (c(900, false), c(1800, false), c(1200, true));
         assert_eq!(
-            seller_record_line(Some(&o), 3, 3, &[&a, &b, &x]),
+            seller_record_line(Some(&o), (3, 3, false), &[&a, &b, &x]),
             "LT-012 · 1994 · 3 tracks · 2 copies €9.00–€18.00"
         );
         assert_eq!(
-            seller_record_line(Some(&o), 3, 3, &[&a]),
+            seller_record_line(Some(&o), (3, 3, false), &[&a]),
             "LT-012 · 1994 · 3 tracks · 1 copy €9.00"
         );
         assert_eq!(
-            seller_record_line(Some(&o), 3, 3, &[&x]),
+            seller_record_line(Some(&o), (3, 3, false), &[&x]),
             "LT-012 · 1994 · 3 tracks · sold"
         );
         assert_eq!(copy_line(&a), "€9.00 · VG+ / VG · Germany");
@@ -805,13 +826,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            record_line(Some(&o), 3, 3),
+            record_line(Some(&o), 3, 3, false),
             "LT-012 · 1994 · 3 tracks · 6 for sale from €9.00"
         );
         assert_eq!(
-            record_line(Some(&o), 2, 4).split(" · ").nth(2),
+            record_line(Some(&o), 2, 4, false).split(" · ").nth(2),
             Some("2 of 4 tracks")
         );
-        assert_eq!(record_line(None, 2, 2), "2 tracks");
+        assert_eq!(record_line(None, 2, 2, false), "2 tracks");
+        assert_eq!(
+            record_line(None, 1, 1, true),
+            "tracks coming…",
+            "a record only listed doesn't claim one track"
+        );
     }
 }

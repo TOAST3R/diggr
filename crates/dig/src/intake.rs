@@ -21,7 +21,7 @@ use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
 use crate::discogs::matching::{self, RecordPlan};
 use crate::discogs::model::{ForSale, Format, Listed, Record, RecordKey, Role};
-use crate::discogs::seller::{self, Copy, Criteria, Ranked};
+use crate::discogs::seller::{self, Ranked};
 use crate::discogs::transport::Method;
 use crate::discogs::url::{Page, PageKind};
 use crate::friends;
@@ -46,10 +46,7 @@ pub enum Command {
     CrateDeleted(u64),
     /// Where the user is in crate `target`: the listed records from the focus on, wrapping
     /// around. Their details are fetched in that order.
-    Focus {
-        target: u64,
-        order: Vec<RecordKey>,
-    },
+    Focus { target: u64, order: Vec<RecordKey> },
     /// Fresh marketplace numbers for a release (its track started and they are a day old).
     Refresh(u64),
     /// A saved token (or none) to use from now on.
@@ -63,18 +60,13 @@ pub enum Command {
     /// Add one copy of a release to the user's collection (folder 1, Uncategorized). With
     /// `check`, first ask whether it is there already (a retry after an add that may have
     /// gone through), and add nothing if it is: a collection add is never repeated blindly.
-    Collect {
-        release: u64,
-        check: bool,
-    },
+    Collect { release: u64, check: bool },
     /// Take one copy of a release out of the user's collection: the one added last. Asks
     /// Discogs for the copies first (which folder it is in), so a release with no copy left
     /// counts as done and a retry never removes a second copy.
     Discard(u64),
     /// The releases on the user's wantlist (read once a session; `fresh` reads it again).
-    ReadWants {
-        fresh: bool,
-    },
+    ReadWants { fresh: bool },
     /// Learn whose token it is (answered with an identity event), when nothing else has.
     Identify,
     /// Bring the user's collection up to date from this cached one (or from nothing). Runs
@@ -93,10 +85,7 @@ pub enum Command {
     CancelFind,
     /// Read `user`'s whole collection, a page per step, for crate `target` (Refresh friend).
     /// Answered with [`Event::FriendProgress`] and then [`Event::FriendCollection`].
-    ReadFriendCollection {
-        target: u64,
-        user: String,
-    },
+    ReadFriendCollection { target: u64, user: String },
     /// End every send into crate `target` now (each answered with `Finished`); what arrived
     /// stays.
     StopJobs(u64),
@@ -105,33 +94,18 @@ pub enum Command {
     ResolveShopItem(u64),
     /// Details of crate `target`'s records saved before entries carried them (the album and
     /// cover), from the disk cache only: never a request.
-    Backfill {
-        target: u64,
-        keys: Vec<RecordKey>,
-    },
+    Backfill { target: u64, keys: Vec<RecordKey> },
     /// Fill Top Sellers the first time: the sellers of the user's recent purchases, at a
     /// moment with no send.
     FirstSellers,
-    /// How many copies a seller has for sale (matching the search text).
-    CountSeller {
-        seller: String,
-        query: String,
-    },
+    /// How many copies a seller has for sale matching `query`, the search Discogs runs
+    /// (`Criteria::discogs_query`: genre, style and search text).
+    CountSeller { seller: String, query: String },
     /// Whether a seller exists (Add seller…), by name: their username and copies for sale.
     LookupSeller(String),
-    /// Read a seller's listings page by page for Narrow down (ahead of any send); a new scan
-    /// replaces the running one.
-    ScanInventory {
-        seller: String,
-        query: String,
-        newest: Option<u32>,
-    },
-    CancelScan,
     /// Read the user's cart; `soon` puts it ahead of sends (after a cart action or a dig),
     /// otherwise it waits for a moment with no send (at launch).
-    ReadCart {
-        soon: bool,
-    },
+    ReadCart { soon: bool },
     /// Add copies to the cart in one request, then read the cart.
     CartAdd(Vec<u64>),
     /// Take one copy out of the cart, then read the cart.
@@ -237,6 +211,8 @@ pub enum Event {
     Record(JobRef, RecordInfo, Outcome),
     /// Records finished of the listing's total.
     Progress(JobRef, usize, usize),
+    /// Every page of the listing is read (its records may still be expanding).
+    ListingRead(JobRef),
     Finished(JobRef),
     /// The send stopped (page not found, private, token needed); nothing more comes.
     Failed(JobRef, ApiError),
@@ -310,21 +286,6 @@ pub enum Event {
         name: String,
         result: Result<(String, usize), ApiError>,
     },
-    /// A page of a Narrow down scan: every copy on it (the criteria applied here are the
-    /// UI's), and how far the scan is.
-    Scanned {
-        seller: String,
-        copies: Vec<Copy>,
-        read: u32,
-        pages: u32,
-        /// Copies a dig could reach at most.
-        total: usize,
-        done: bool,
-    },
-    ScanFailed {
-        seller: String,
-        error: ApiError,
-    },
     Cart(Result<CartSnapshot, ApiError>),
     CartAdded {
         listings: Vec<u64>,
@@ -334,15 +295,6 @@ pub enum Event {
         listing: u64,
         result: Result<(), ApiError>,
     },
-}
-
-/// A Narrow down scan in progress.
-#[derive(Debug, Clone, PartialEq)]
-struct Scan {
-    seller: String,
-    criteria: Criteria,
-    next: u32,
-    pages: Option<u32>,
 }
 
 /// What a collection removal did.
@@ -382,7 +334,6 @@ pub struct Intake {
     first_sellers: bool,
     /// The cart is to be read at a moment with no send (`false`), or ahead of sends (`true`).
     cart_read: Option<bool>,
-    scan: Option<Scan>,
     /// Bandcamp items to look up on Discogs, in order.
     finds: std::collections::VecDeque<(String, crate::discogs::search::Wanted)>,
     /// The next step is a lookup's turn (they alternate with the sends).
@@ -413,7 +364,6 @@ impl Intake {
             shop_items: Vec::new(),
             first_sellers: false,
             cart_read: None,
-            scan: None,
             finds: std::collections::VecDeque::new(),
             find_turn: true,
         }
@@ -455,7 +405,10 @@ impl Intake {
                 filters,
             } => {
                 let id = self.jobs.alloc_id();
-                let job = Job::new(id, page, target, filters);
+                let mut job = Job::new(id, page, target, filters);
+                if let PageKind::Inventory { from_page, .. } = job.page.kind {
+                    job.next_page = from_page.max(1);
+                }
                 self.events.push(Event::Started(Self::job_ref(&job)));
                 self.jobs.jobs.push(job);
                 self.active.insert(id);
@@ -611,23 +564,6 @@ impl Intake {
                 self.track(&result);
                 self.events.push(Event::SellerLookup { name, result });
             }
-            Command::ScanInventory {
-                seller,
-                query,
-                newest,
-            } => {
-                self.scan = Some(Scan {
-                    seller,
-                    criteria: Criteria {
-                        query,
-                        newest,
-                        ..Criteria::default()
-                    },
-                    next: 1,
-                    pages: None,
-                });
-            }
-            Command::CancelScan => self.scan = None,
             Command::ReadCart { soon } => {
                 self.cart_read = Some(soon || self.cart_read == Some(true));
             }
@@ -677,52 +613,6 @@ impl Intake {
         let username = v["username"].as_str().unwrap_or(name).to_owned();
         let n = seller::count(&mut self.client, &username, "")?;
         Ok((username, n))
-    }
-
-    /// One page of the running Narrow down scan.
-    fn scan_step(&mut self) {
-        let Some(scan) = self.scan.clone() else {
-            return;
-        };
-        let now = (self.now)();
-        let result = expand::inventory_listing(
-            &mut self.client,
-            &scan.seller,
-            &scan.criteria,
-            true,
-            scan.next,
-            now,
-        );
-        match result {
-            Ok(lp) => {
-                self.online();
-                let done = scan.next >= lp.pages;
-                self.events.push(Event::Scanned {
-                    seller: scan.seller.clone(),
-                    copies: lp.copies,
-                    read: scan.next,
-                    pages: lp.pages,
-                    total: lp.total,
-                    done,
-                });
-                self.scan = (!done).then(|| Scan {
-                    next: scan.next + 1,
-                    pages: Some(lp.pages),
-                    ..scan
-                });
-            }
-            Err(ApiError::Offline) => {
-                self.went_offline();
-                self.client.sleep(OFFLINE_RETRY);
-            }
-            Err(error) => {
-                self.scan = None;
-                self.events.push(Event::ScanFailed {
-                    seller: scan.seller,
-                    error,
-                });
-            }
-        }
     }
 
     fn read_cart(&mut self) {
@@ -862,11 +752,7 @@ impl Intake {
 
     /// One request's worth of work. False when there is nothing to do.
     pub fn step(&mut self) -> bool {
-        // What the user waits for in a dialog, and the cart after an action, go first.
-        if self.scan.is_some() {
-            self.scan_step();
-            return true;
-        }
+        // The cart after an action goes first.
         if self.cart_read == Some(true) {
             self.read_cart();
             return true;
@@ -993,14 +879,17 @@ impl Intake {
         job.pending.extend(keep.iter().cloned());
         vinyl_first(&mut job.pending);
         let r = Self::job_ref(job);
-        let (done, total) = (job.done, job.total);
+        let (done, total, read) = (job.done, job.total, job.listing_done());
         if !lp.copies.is_empty() {
             self.events.push(Event::Copies(r.clone(), lp.copies));
         }
         if !keep.is_empty() {
             self.events.push(Event::Listed(r.clone(), keep));
         }
-        self.events.push(Event::Progress(r, done, total));
+        self.events.push(Event::Progress(r.clone(), done, total));
+        if read {
+            self.events.push(Event::ListingRead(r));
+        }
         self.save();
         Ok(())
     }

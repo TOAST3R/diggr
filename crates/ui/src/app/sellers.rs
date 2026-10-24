@@ -10,13 +10,16 @@ use std::time::{Duration, Instant};
 
 use dig::discogs::cart::{AddResult, CartItem, CartSnapshot};
 use dig::discogs::client::ApiError;
-use dig::discogs::seller::{Copy, Criteria, LIMIT, Ranked, reachable};
+use dig::discogs::seller::{Copy, Criteria, LIMIT, MAX_DIG, PER_PAGE, Ranked, reachable};
+use dig::discogs::styles;
 use dig::discogs::url::{Page, PageKind};
 use dig::intake::Command;
 use dig::sellers::{DoubleClick, Seller, Source};
 
 use super::DiggrApp;
 use crate::crates::{CrateId, MAX_NAME};
+pub use crate::format::thousands;
+use crate::playlist::Facet;
 use crate::playlist::SaleCopy;
 
 /// The user's cart on discogs.com.
@@ -48,6 +51,11 @@ pub(super) enum SellerDialog {
         crate_id: CrateId,
         seller: String,
     },
+    /// New search…, asking: the crate is emptied first.
+    NewSearch {
+        crate_id: CrateId,
+        seller: String,
+    },
 }
 
 /// The Dig / Narrow down dialog.
@@ -55,109 +63,71 @@ pub(super) struct DigDialog {
     pub(super) crate_id: CrateId,
     pub(super) seller: String,
     pub(super) criteria: Criteria,
-    /// The count Discogs gave for `criteria.query` (the search text it was asked for).
+    /// The count Discogs gave for a search (`Criteria::discogs_query`, as it was asked).
     pub(super) counted: Option<(String, Result<usize, String>)>,
-    /// The search text was changed at this moment and isn't counted yet.
+    /// The search text or year was changed at this moment and isn't counted yet.
     pub(super) typed: Option<Instant>,
-    /// The listings read for the criteria applied here.
-    pub(super) scan: Option<ScanState>,
-    pub(super) min_price: String,
-    pub(super) max_price: String,
-    pub(super) country: String,
+    /// The year field, as typed.
+    pub(super) year: String,
+    /// The style dropdown's first sections: the styles of this seller's crate, and of the
+    /// wantlist and collection, most records first.
+    pub(super) crate_styles: Vec<String>,
+    pub(super) your_styles: Vec<String>,
+    /// The style dropdown's search text.
+    pub(super) style_search: String,
     /// Opened by a refresh that would bring in too many copies.
     pub(super) from_refresh: bool,
 }
 
-pub(super) struct ScanState {
-    /// The search text and "newest N" it reads for.
-    pub(super) query: String,
-    pub(super) newest: Option<u32>,
-    pub(super) copies: Vec<Copy>,
-    pub(super) read: u32,
-    pub(super) pages: u32,
-    pub(super) done: bool,
-    pub(super) error: Option<String>,
-}
-
 impl DigDialog {
     fn new(crate_id: CrateId, seller: &str, criteria: Criteria) -> Self {
-        let price = |c: Option<u32>| {
-            c.map(|c| format!("{:.2}", c as f64 / 100.0))
-                .unwrap_or_default()
-        };
         Self {
             crate_id,
             seller: seller.to_owned(),
-            min_price: price(criteria.min_cents),
-            max_price: price(criteria.max_cents),
-            country: criteria.ships_from.join(", "),
+            year: criteria.year.map(|y| y.to_string()).unwrap_or_default(),
             criteria,
             counted: None,
             typed: None,
-            scan: None,
+            crate_styles: Vec::new(),
+            your_styles: Vec::new(),
+            style_search: String::new(),
             from_refresh: false,
         }
+    }
+
+    /// A genre, style or format was picked: counted on the next frame, with no typing pause.
+    pub(super) fn picked(&mut self) {
+        let now = Instant::now();
+        self.typed = Some(now.checked_sub(TYPING_PAUSE).unwrap_or(now));
     }
 
     /// Copies for sale matching the search text, as Discogs counted them.
     pub(super) fn total(&self) -> Option<usize> {
         match &self.counted {
-            Some((q, Ok(n))) if *q == self.criteria.query && self.typed.is_none() => Some(*n),
+            Some((q, Ok(n))) if *q == self.criteria.discogs_query() && self.typed.is_none() => {
+                Some(*n)
+            }
             _ => None,
         }
     }
 
-    /// The scan fits the current search text and "newest N".
-    fn scan_fits(&self) -> bool {
-        self.scan.as_ref().is_some_and(|s| {
-            s.query == self.criteria.query && s.newest == self.criteria.newest && s.error.is_none()
-        })
+    /// Copies a dig would bring in: Discogs' count, capped by "newest N" and its 10,000.
+    pub(super) fn matching(&self) -> Option<usize> {
+        Some(reachable(self.total()?, &self.criteria))
     }
 
-    /// Copies a dig would bring in, and whether that is the final number (not "so far").
-    pub(super) fn matching(&self) -> Option<(usize, bool)> {
-        let total = self.total()?;
-        if !self.criteria.is_local() {
-            return Some((reachable(total, &self.criteria), true));
-        }
-        let scan = self.scan.as_ref().filter(|_| self.scan_fits())?;
-        let n = scan
-            .copies
-            .iter()
-            .filter(|c| self.criteria.matches(c))
-            .count();
-        Some((n, scan.done))
-    }
-
-    /// Dig is offered: the number is final and within the limit.
+    /// Dig is offered: 1 to 5,000 copies match (beyond 1,000, the newest 1,000 come first).
     pub(super) fn can_dig(&self) -> bool {
-        self.matching()
-            .is_some_and(|(n, exact)| exact && (1..=LIMIT).contains(&n))
+        self.matching().is_some_and(|n| (1..=MAX_DIG).contains(&n))
     }
 
-    /// The criteria applied here need the listings, and none fit them yet.
-    pub(super) fn needs_scan(&self) -> bool {
-        self.criteria.is_local() && self.total().is_some() && !self.scan_fits()
-    }
-
-    /// Reads the price and country fields into the criteria.
-    pub(super) fn read_fields(&mut self) {
-        let cents = |t: &str| {
-            let t = t.trim().replace(',', ".");
-            (!t.is_empty())
-                .then(|| t.parse::<f64>().ok())
-                .flatten()
-                .filter(|v| *v >= 0.0)
-                .map(|v| (v * 100.0).round() as u32)
-        };
-        self.criteria.min_cents = cents(&self.min_price);
-        self.criteria.max_cents = cents(&self.max_price);
-        self.criteria.ships_from = self
-            .country
-            .split(',')
-            .map(|c| c.trim().to_owned())
-            .filter(|c| !c.is_empty())
-            .collect();
+    /// Reads the year field into the criteria: four digits, or no year.
+    pub(super) fn read_year(&mut self) {
+        let t = self.year.trim();
+        self.criteria.year = (t.len() == 4)
+            .then(|| t.parse::<u16>().ok())
+            .flatten()
+            .filter(|y| (1900..=2100).contains(y));
     }
 }
 
@@ -293,6 +263,10 @@ pub enum SellerAction {
     Refresh(CrateId),
     /// Narrow down… with the saved criteria.
     Narrow(CrateId),
+    /// Add next: the next 1,000 matching copies.
+    More(CrateId),
+    /// New search…: asks, then empties the crate and digs the seller afresh.
+    NewSearch(CrateId),
     /// Remove seller… (asks first).
     Remove(CrateId),
     /// A copy's listing on discogs.com.
@@ -331,6 +305,45 @@ impl DiggrApp {
             .collect()
     }
 
+    /// Copies Add next can still bring into seller crate `id` (5,000 in all at most), when its
+    /// dig stopped at a limit and its listings are read. Records may still be expanding: that
+    /// takes a request each, so waiting for it would hide the row for many minutes.
+    pub(super) fn seller_more_left(&self, id: CrateId) -> Option<usize> {
+        let d = self.dig.as_ref()?;
+        let s = d.sellers.by_crate(id)?;
+        let held = s.criteria.limit? as usize;
+        let left = s.matching.min(MAX_DIG).saturating_sub(held);
+        let reading = d.seller_ui.refreshes.contains_key(&id)
+            || d.jobs.values().any(|j| j.target == id && !j.listed);
+        (left > 0 && !reading).then_some(left)
+    }
+
+    /// Add next: the crate's limit grows by 1,000, and only the pages after the ones it holds
+    /// are read, straight into the crate.
+    fn seller_more(&mut self, id: CrateId) {
+        if self.seller_more_left(id).is_none() || !self.crates.load(id) {
+            return;
+        }
+        let Some(d) = &mut self.dig else { return };
+        let Some(s) = d.sellers.by_crate_mut(id) else {
+            return;
+        };
+        let held = s.criteria.limit.unwrap_or(0);
+        s.criteria.limit = Some(held + LIMIT as u32);
+        let (seller, criteria) = (s.username.clone(), s.criteria.clone());
+        let e = d.save_sellers();
+        self.dig_notify(e);
+        self.dig_send_to(
+            Page::new(PageKind::Inventory {
+                seller,
+                criteria,
+                fresh: false,
+                from_page: held / PER_PAGE + 1,
+            }),
+            id,
+        );
+    }
+
     /// A dig or refresh of this seller's crate is running.
     pub(super) fn seller_busy(&self, crate_id: CrateId) -> bool {
         self.dig.as_ref().is_some_and(|d| d.has_job_for(crate_id))
@@ -346,6 +359,19 @@ impl DiggrApp {
             }
             SellerAction::Dig(id) => self.seller_double_click(id),
             SellerAction::Refresh(id) => self.seller_refresh(id),
+            SellerAction::More(id) => self.seller_more(id),
+            SellerAction::NewSearch(id) => {
+                let Some(seller) = self.seller_of_crate(id) else {
+                    return;
+                };
+                if !self.seller_needs_token() {
+                    let Some(d) = &mut self.dig else { return };
+                    d.seller_ui.dialog = Some(SellerDialog::NewSearch {
+                        crate_id: id,
+                        seller: seller.username,
+                    });
+                }
+            }
             SellerAction::Narrow(id) => {
                 let Some(seller) = self.seller_of_crate(id) else {
                     return;
@@ -416,6 +442,37 @@ impl DiggrApp {
         }
     }
 
+    /// The Dig / Narrow down dialog, with the styles of the crates in memory: this seller's,
+    /// then the wantlist's and collection's.
+    fn new_dig_dialog(&self, id: CrateId, seller: &str, criteria: Criteria) -> DigDialog {
+        let mut dialog = DigDialog::new(id, seller, criteria);
+        dialog.crate_styles = self.crate_styles([id]);
+        dialog.your_styles = self.crate_styles(
+            self.crates
+                .list()
+                .iter()
+                .map(|c| c.id)
+                .filter(|&c| self.crates.is_wantlist(c) || self.crates.is_collection(c)),
+        );
+        dialog
+    }
+
+    /// The styles of these crates' records, most records first, then by name. A record with
+    /// no style counts its genres instead, which aren't styles, so they're left out.
+    fn crate_styles(&self, ids: impl IntoIterator<Item = CrateId>) -> Vec<String> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for p in ids.into_iter().filter_map(|id| self.crates.get(id)) {
+            for (style, n) in p.counts(Facet::Style) {
+                if styles::genres().all(|g| g != style) {
+                    *counts.entry(style).or_default() += n;
+                }
+            }
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out.into_iter().map(|(s, _)| s).collect()
+    }
+
     /// Opens Dig / Narrow down with `criteria`, and asks for the count.
     fn seller_open_dig(
         &mut self,
@@ -425,13 +482,13 @@ impl DiggrApp {
         from_refresh: bool,
     ) {
         let Some(d) = &mut self.dig else { return };
-        d.send_cmd(Command::CancelScan);
         d.send_cmd(Command::CountSeller {
             seller: seller.to_owned(),
-            query: criteria.query.clone(),
+            query: criteria.discogs_query(),
         });
-        let mut dialog = DigDialog::new(id, seller, criteria);
+        let mut dialog = self.new_dig_dialog(id, seller, criteria);
         dialog.from_refresh = from_refresh;
+        let Some(d) = &mut self.dig else { return };
         d.seller_ui.dialog = Some(SellerDialog::Dig(Box::new(dialog)));
     }
 
@@ -450,10 +507,10 @@ impl DiggrApp {
         }
         d.seller_ui
             .counting_refresh
-            .insert(id, seller.criteria.query.clone());
+            .insert(id, seller.criteria.discogs_query());
         d.send_cmd(Command::CountSeller {
             seller: seller.username,
-            query: seller.criteria.query,
+            query: seller.criteria.discogs_query(),
         });
     }
 
@@ -482,83 +539,48 @@ impl DiggrApp {
             let Some(s) = d.sellers.by_crate(id).cloned() else {
                 return;
             };
+            // A crate dug 1,000 at a time takes up to 5,000; one dug whole, up to 1,000.
+            let most = if s.criteria.limit.is_some() {
+                MAX_DIG
+            } else {
+                LIMIT
+            };
             match result {
-                Ok(total) if !s.criteria.is_local() && reachable(total, &s.criteria) > LIMIT => {
+                Ok(total) if reachable(total, &s.criteria) > most => {
                     self.seller_open_dig(id, &s.username, s.criteria.clone(), true);
                 }
-                Ok(_) => self.seller_start(id, s.criteria.clone(), true),
+                Ok(total) => {
+                    if let Some(s) = d.sellers.by_crate_mut(id) {
+                        s.matching = reachable(total, &s.criteria);
+                    }
+                    self.seller_start(id, s.criteria.clone(), true);
+                }
                 Err(e) => self.notify(format!("{seller}: the refresh failed: {}", e.message())),
             }
             return;
         }
         if let Some(SellerDialog::Dig(dialog)) = &mut d.seller_ui.dialog
             && dialog.seller.eq_ignore_ascii_case(seller)
-            && dialog.criteria.query == query
+            && dialog.criteria.discogs_query() == query
         {
             dialog.counted = Some((query.to_owned(), result.map_err(|e| e.message())));
         }
     }
 
-    pub(super) fn seller_scanned(
-        &mut self,
-        seller: &str,
-        copies: Vec<Copy>,
-        (read, pages, _total, done): (u32, u32, usize, bool),
-    ) {
-        let Some(d) = &mut self.dig else { return };
-        let Some(SellerDialog::Dig(dialog)) = &mut d.seller_ui.dialog else {
-            return;
-        };
-        if !dialog.seller.eq_ignore_ascii_case(seller) {
-            return;
-        }
-        if let Some(scan) = &mut dialog.scan {
-            scan.copies.extend(copies);
-            (scan.read, scan.pages, scan.done) = (read, pages, done);
-        }
-    }
-
-    pub(super) fn seller_scan_failed(&mut self, seller: &str, error: &ApiError) {
-        let Some(d) = &mut self.dig else { return };
-        if let Some(SellerDialog::Dig(dialog)) = &mut d.seller_ui.dialog
-            && dialog.seller.eq_ignore_ascii_case(seller)
-            && let Some(scan) = &mut dialog.scan
-        {
-            scan.error = Some(error.message());
-        }
-    }
-
-    /// Each frame with the Dig dialog open: the search text is counted once typing pauses,
-    /// and the listings are read when the criteria need them.
+    /// Each frame with the Dig dialog open: the criteria are counted once typing pauses.
     pub(super) fn seller_dialog_tick(&mut self) {
         let Some(d) = &mut self.dig else { return };
         let Some(SellerDialog::Dig(dialog)) = &mut d.seller_ui.dialog else {
             return;
         };
-        let cmd = if dialog.typed.is_some_and(|t| t.elapsed() >= TYPING_PAUSE) {
-            dialog.typed = None;
-            dialog.counted = None;
-            Command::CountSeller {
-                seller: dialog.seller.clone(),
-                query: dialog.criteria.query.clone(),
-            }
-        } else if dialog.needs_scan() && dialog.typed.is_none() {
-            dialog.scan = Some(ScanState {
-                query: dialog.criteria.query.clone(),
-                newest: dialog.criteria.newest,
-                copies: Vec::new(),
-                read: 0,
-                pages: 0,
-                done: false,
-                error: None,
-            });
-            Command::ScanInventory {
-                seller: dialog.seller.clone(),
-                query: dialog.criteria.query.clone(),
-                newest: dialog.criteria.newest,
-            }
-        } else {
+        if !dialog.typed.is_some_and(|t| t.elapsed() >= TYPING_PAUSE) {
             return;
+        }
+        dialog.typed = None;
+        dialog.counted = None;
+        let cmd = Command::CountSeller {
+            seller: dialog.seller.clone(),
+            query: dialog.criteria.discogs_query(),
         };
         d.send_cmd(cmd);
     }
@@ -569,25 +591,28 @@ impl DiggrApp {
         let Some(SellerDialog::Dig(dialog)) = d.seller_ui.dialog.take() else {
             return;
         };
-        d.send_cmd(Command::CancelScan);
         let fresh = dialog.from_refresh
             || d.sellers
                 .by_crate(dialog.crate_id)
                 .is_some_and(|s| s.last_dug.is_some());
         let total = dialog.total();
-        if let (Some(s), Some(n)) = (d.sellers.by_crate_mut(dialog.crate_id), total)
-            && dialog.criteria.query.is_empty()
-        {
-            s.total = n;
+        let matching = dialog.matching().unwrap_or(0);
+        if let Some(s) = d.sellers.by_crate_mut(dialog.crate_id) {
+            if let Some(n) = total
+                && dialog.criteria.discogs_query().is_empty()
+            {
+                s.total = n;
+            }
+            s.matching = matching;
         }
-        self.seller_start(dialog.crate_id, dialog.criteria, fresh);
+        // Beyond 1,000, the newest 1,000 come in; Add next brings the rest.
+        let mut criteria = dialog.criteria;
+        criteria.limit = (matching > LIMIT).then_some(LIMIT as u32);
+        self.seller_start(dialog.crate_id, criteria, fresh);
     }
 
     pub(super) fn seller_dialog_closed(&mut self) {
         let Some(d) = &mut self.dig else { return };
-        if matches!(d.seller_ui.dialog, Some(SellerDialog::Dig(_))) {
-            d.send_cmd(Command::CancelScan);
-        }
         d.seller_ui.dialog = None;
     }
 
@@ -615,6 +640,7 @@ impl DiggrApp {
                 seller,
                 criteria,
                 fresh,
+                from_page: 0,
             }),
             id,
         );
@@ -652,7 +678,7 @@ impl DiggrApp {
         if !ok {
             return;
         }
-        if fresh.len() > LIMIT {
+        if seller.criteria.limit.is_none() && fresh.len() > LIMIT {
             self.notify(format!(
                 "{}: more than {LIMIT} copies match now; narrow it down",
                 seller.username
@@ -667,6 +693,41 @@ impl DiggrApp {
         p.set_copies(copies);
         self.crates.touch(target);
         self.notify(summary_text(&seller.username, sum));
+    }
+
+    /// New search…, confirmed: what runs for the crate stops, its records, tracks and copies go
+    /// (with their downloaded previews, unless another crate holds them), the seller forgets
+    /// its search, and Dig / Narrow down opens as for a seller never dug.
+    pub(super) fn seller_new_search_confirmed(&mut self, id: CrateId) {
+        let Some(d) = &mut self.dig else { return };
+        d.seller_ui.dialog = None;
+        d.send_cmd(Command::CrateDeleted(id));
+        d.jobs.retain(|_, j| j.target != id);
+        d.seller_ui.refreshes.remove(&id);
+        d.seller_ui.counting_refresh.remove(&id);
+        let Some(s) = d.sellers.by_crate_mut(id) else {
+            return;
+        };
+        s.criteria = Criteria::default();
+        s.last_dug = None;
+        s.matching = 0;
+        let seller = s.username.clone();
+        let e = d.save_sellers();
+        self.dig_notify(e);
+        if id == self.crates.playing_id() {
+            self.with_engine(|e| e.stop());
+            self.queue_dirty = true;
+        }
+        if self.crates.load(id)
+            && let Some(p) = self.crates.get_mut(id)
+        {
+            let clips = super::digging::clips_of(p, |_| true);
+            p.clear();
+            p.set_copies(Vec::new());
+            self.mark_crate(id);
+            self.dig_forget_clips(clips);
+        }
+        self.seller_open_dig(id, &seller, Criteria::default(), false);
     }
 
     /// Remove seller…, confirmed: out of the list, and its crate deleted.
@@ -904,20 +965,26 @@ impl DiggrApp {
             self.settings.show_playlist = true;
             self.mark_settings();
         }
+        let mut dialog = self.new_dig_dialog(id, &username, Criteria::default());
         let Some(d) = &mut self.dig else { return };
-        let mut dialog = DigDialog::new(id, &username, Criteria::default());
         dialog.counted = Some((String::new(), Ok(total)));
         d.seller_ui.dialog = Some(SellerDialog::Dig(Box::new(dialog)));
     }
 
-    /// Dig / Narrow down, Add seller… and Remove seller…, while one is open.
+    /// Dig / Narrow down, Add seller…, Remove seller… and New search…, while one is open.
     pub(super) fn seller_dialogs_ui(&mut self, ctx: &egui::Context) {
         enum Choice {
             Dig,
             Add,
             Remove(CrateId),
+            NewSearch(CrateId),
             Close,
         }
+        // What New search… would empty.
+        let records = match self.dig.as_ref().and_then(|d| d.seller_ui.dialog.as_ref()) {
+            Some(SellerDialog::NewSearch { crate_id, .. }) => self.crates.record_count(*crate_id),
+            _ => 0,
+        };
         let Some(d) = &mut self.dig else { return };
         let Some(dialog) = &mut d.seller_ui.dialog else {
             return;
@@ -999,6 +1066,30 @@ impl DiggrApp {
                     });
                 })
             }
+            SellerDialog::NewSearch { crate_id, seller } => {
+                let id = *crate_id;
+                egui::Modal::new(egui::Id::new("seller-new-search")).show(ctx, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.strong(format!("New search for {seller}?"));
+                    ui.label(format!(
+                        "The crate is cleaned first: its {} and their downloaded previews are \
+                         removed. Nothing changes on Discogs.",
+                        if records == 1 {
+                            "record".to_owned()
+                        } else {
+                            format!("{} records", thousands(records))
+                        }
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Clean and search").clicked() {
+                            choice = Some(Choice::NewSearch(id));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            choice = Some(Choice::Close);
+                        }
+                    });
+                })
+            }
         };
         if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             choice = Some(Choice::Close);
@@ -1007,6 +1098,7 @@ impl DiggrApp {
             Some(Choice::Dig) => self.seller_dig_confirmed(),
             Some(Choice::Add) => self.seller_add_confirmed(),
             Some(Choice::Remove(id)) => self.seller_remove_confirmed(id),
+            Some(Choice::NewSearch(id)) => self.seller_new_search_confirmed(id),
             Some(Choice::Close) => self.seller_dialog_closed(),
             None => {}
         }
@@ -1092,19 +1184,6 @@ impl DiggrApp {
     }
 }
 
-/// "40,728".
-pub fn thousands(n: usize) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 /// The Dig / Narrow down dialog's contents.
 fn dig_dialog_body<C>(
     ui: &mut egui::Ui,
@@ -1113,8 +1192,7 @@ fn dig_dialog_body<C>(
     dig: impl Fn() -> C,
     close: impl Fn() -> C,
 ) {
-    use dig::discogs::model::Format;
-    use dig::discogs::seller::{Condition, MAX_PAGES, PER_PAGE};
+    use dig::discogs::seller::{MAX_PAGES, PER_PAGE, SEARCHED_FORMATS};
     let total = dlg.total();
     let narrow =
         dlg.from_refresh || dlg.criteria != Criteria::default() || total.is_some_and(|n| n > LIMIT);
@@ -1146,7 +1224,8 @@ fn dig_dialog_body<C>(
             if n > cap {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Discogs only shows the first {}: search text or newest N narrow it on its side.",
+                        "Discogs only shows the first {}: a genre or style, a format, a year, \
+                         search text or newest N narrow it on its side.",
                         thousands(cap)
                     ))
                     .weak(),
@@ -1156,6 +1235,70 @@ fn dig_dialog_body<C>(
         egui::Grid::new("seller-criteria")
             .num_columns(2)
             .show(ui, |ui| {
+                ui.label("Genre");
+                let genre = dlg.criteria.genre.clone();
+                egui::ComboBox::from_id_salt("seller-genre")
+                    .selected_text(genre.as_deref().unwrap_or("Any genre"))
+                    .width(220.0)
+                    // All 16 at once, no scrolling.
+                    .height(480.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut dlg.criteria.genre, None, "Any genre");
+                        for g in styles::genres() {
+                            ui.selectable_value(&mut dlg.criteria.genre, Some(g.to_owned()), g);
+                        }
+                    });
+                if dlg.criteria.genre != genre {
+                    // A style of another genre would match nothing: it goes.
+                    if let (Some(g), Some(s)) = (&dlg.criteria.genre, &dlg.criteria.style)
+                        && !styles::genre_has(g, s)
+                    {
+                        dlg.criteria.style = None;
+                    }
+                    dlg.picked();
+                }
+                ui.end_row();
+                ui.label("Style");
+                let style = dlg.criteria.style.clone();
+                egui::ComboBox::from_id_salt("seller-style")
+                    .selected_text(style.as_deref().unwrap_or("Any style"))
+                    .width(220.0)
+                    .height(320.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show_ui(ui, |ui| style_list(ui, dlg));
+                if dlg.criteria.style != style {
+                    dlg.picked();
+                }
+                ui.end_row();
+                ui.label("Format");
+                let format = dlg.criteria.format;
+                egui::ComboBox::from_id_salt("seller-format")
+                    .selected_text(format.map_or("Any format", |f| f.name()))
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut dlg.criteria.format, None, "Any format");
+                        for f in SEARCHED_FORMATS {
+                            ui.selectable_value(&mut dlg.criteria.format, Some(f), f.name());
+                        }
+                    });
+                if dlg.criteria.format != format {
+                    dlg.picked();
+                }
+                ui.end_row();
+                ui.label("Year");
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut dlg.year)
+                            .hint_text("2025")
+                            .char_limit(4)
+                            .desired_width(60.0),
+                    )
+                    .changed()
+                {
+                    dlg.read_year();
+                    dlg.typed = Some(Instant::now());
+                }
+                ui.end_row();
                 ui.label("Search");
                 if ui
                     .add(egui::TextEdit::singleline(&mut dlg.criteria.query).desired_width(220.0))
@@ -1175,106 +1318,48 @@ fn dig_dialog_body<C>(
                     }
                 });
                 ui.end_row();
-                ui.label("Format");
-                ui.horizontal_wrapped(|ui| {
-                    for f in Format::ALL {
-                        let mut on = dlg.criteria.formats.contains(&f);
-                        if ui.checkbox(&mut on, f.name()).changed() {
-                            dlg.criteria.formats.retain(|x| *x != f);
-                            if on {
-                                dlg.criteria.formats.push(f);
-                                dlg.criteria.formats.sort();
-                            }
-                        }
-                    }
-                });
-                ui.end_row();
-                ui.label("Price");
-                ui.horizontal(|ui| {
-                    let a = ui.add(
-                        egui::TextEdit::singleline(&mut dlg.min_price)
-                            .hint_text("from")
-                            .desired_width(60.0),
-                    );
-                    ui.label("–");
-                    let b = ui.add(
-                        egui::TextEdit::singleline(&mut dlg.max_price)
-                            .hint_text("to")
-                            .desired_width(60.0),
-                    );
-                    if a.changed() || b.changed() {
-                        dlg.read_fields();
-                    }
-                });
-                ui.end_row();
-                ui.label("Condition");
-                let shown = dlg
-                    .criteria
-                    .min_condition
-                    .map_or("Any".to_owned(), |c| format!("{} or better", c.abbr()));
-                egui::ComboBox::from_id_salt("seller-condition")
-                    .selected_text(shown)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut dlg.criteria.min_condition, None, "Any");
-                        for c in Condition::ALL.into_iter().rev() {
-                            ui.selectable_value(
-                                &mut dlg.criteria.min_condition,
-                                Some(c),
-                                format!("{} or better", c.abbr()),
-                            );
-                        }
-                    });
-                ui.end_row();
-                ui.label("Ships from");
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut dlg.country)
-                            .hint_text("Germany, Spain")
-                            .desired_width(220.0),
-                    )
-                    .changed()
-                {
-                    dlg.read_fields();
-                }
-                ui.end_row();
             });
-        if let Some(scan) = dlg.scan.as_ref().filter(|s| !s.done) {
-            match &scan.error {
-                Some(e) => ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e),
-                None => ui.label(format!(
-                    "Reading listings: {} of {} pages…",
-                    scan.read,
-                    scan.pages.max(1)
-                )),
-            };
-        }
+        // Beyond Discogs' 10,000 the number is its cap, not a match: the note above says so.
+        let capped = dlg.criteria.newest.is_none()
+            && total.is_some_and(|n| n > (MAX_PAGES * PER_PAGE) as usize);
         match dlg.matching() {
-            Some((n, true)) if n > LIMIT => {
+            _ if capped => {}
+            Some(n) if n > MAX_DIG => {
                 ui.label(format!(
                     "{} match: narrow it down to {} or fewer",
                     thousands(n),
+                    thousands(MAX_DIG)
+                ));
+            }
+            Some(n) if n > LIMIT => {
+                ui.label(format!(
+                    "{} match: Dig brings the newest {}, then {} more each time you ask",
+                    thousands(n),
+                    thousands(LIMIT),
                     thousands(LIMIT)
                 ));
             }
-            Some((0, true)) => {
+            Some(0) => {
                 ui.label("No copies match");
             }
-            Some((n, true)) => {
+            Some(n) => {
                 ui.label(format!(
                     "{} {} match",
                     thousands(n),
                     if n == 1 { "copy" } else { "copies" }
                 ));
             }
-            Some((n, false)) => {
-                ui.label(format!("{} match so far…", thousands(n)));
-            }
             None => {}
         }
     }
     ui.horizontal(|ui| {
+        let label = if dlg.matching().is_some_and(|n| n > LIMIT) {
+            format!("Dig the newest {}", thousands(LIMIT))
+        } else {
+            "Dig".to_owned()
+        };
         if ui
-            .add_enabled(dlg.can_dig(), egui::Button::new("Dig"))
+            .add_enabled(dlg.can_dig(), egui::Button::new(label))
             .clicked()
         {
             *choice = Some(dig());
@@ -1283,6 +1368,65 @@ fn dig_dialog_body<C>(
             *choice = Some(close());
         }
     });
+}
+
+/// The style dropdown: a search field, Any style, then the styles of this seller's crate, the
+/// user's, and every Discogs style; with a genre picked, only that genre's.
+fn style_list(ui: &mut egui::Ui, dlg: &mut DigDialog) {
+    ui.add(
+        egui::TextEdit::singleline(&mut dlg.style_search)
+            .hint_text("Search styles")
+            .desired_width(f32::INFINITY),
+    )
+    .request_focus();
+    let needle = dlg.style_search.trim().to_lowercase();
+    // With a genre, every section holds that genre's styles only.
+    let genre = dlg.criteria.genre.as_deref();
+    let fits = |s: &str| {
+        genre.is_none_or(|g| styles::genre_has(g, s))
+            && (needle.is_empty() || s.to_lowercase().contains(&needle))
+    };
+    let sections = [
+        (
+            "in this crate",
+            dlg.crate_styles.iter().map(String::as_str).collect(),
+        ),
+        (
+            "yours",
+            dlg.your_styles.iter().map(String::as_str).collect(),
+        ),
+        (
+            "all",
+            genre.map_or_else(styles::all_styles, |g| styles::styles_of(g).to_vec()),
+        ),
+    ];
+    let mut pick = None;
+    if ui
+        .selectable_label(dlg.criteria.style.is_none(), "Any style")
+        .clicked()
+    {
+        pick = Some(None);
+    }
+    for (head, list) in sections {
+        let shown: Vec<&str> = list.into_iter().filter(|s| fits(s)).collect();
+        if shown.is_empty() {
+            continue;
+        }
+        ui.label(egui::RichText::new(head).weak());
+        for s in shown {
+            if ui
+                .selectable_label(dlg.criteria.style.as_deref() == Some(s), s)
+                .clicked()
+            {
+                pick = Some(Some(s.to_owned()));
+            }
+        }
+    }
+    if let Some(style) = pick {
+        dlg.criteria.style = style;
+        dlg.style_search.clear();
+        ui.close();
+    }
 }
 
 #[cfg(test)]
