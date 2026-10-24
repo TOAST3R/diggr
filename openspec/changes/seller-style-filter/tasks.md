@@ -79,3 +79,9 @@
 - [x] 12.1 A record only listed (its tracklist not read yet) says "tracks coming…" on its row instead of "1 track"
 - [x] 12.2 With nothing playing or selected in the shown crate, the first record in view leads the expansion order (scrolling brings those records' tracks in first)
 - [x] 12.3 Tests: the wording; the focus follows the scroll and a selection leads
+
+## 13. Saying what a dig is doing
+
+- [x] 13.1 Per send, records listed so far, tracks added and the last record filled (`JobView`)
+- [x] 13.2 Status line: "reading the listing · N records added", then "tracks for D of N records · T tracks · +k Artist – Title"
+- [x] 13.3 Test of the three phases; spec "Dig progress"; README and CHANGELOG

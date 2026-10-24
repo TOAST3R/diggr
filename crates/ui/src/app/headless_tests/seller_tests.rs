@@ -447,6 +447,7 @@ fn a_closed_group_shows_a_dig_inside_it() {
             done: 0,
             total: 10,
             listed: false,
+            ..Default::default()
         },
     );
     let out = rig.frame(Vec::new());
@@ -2012,6 +2013,7 @@ fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
         done: 10,
         total: 961,
         listed,
+        ..Default::default()
     };
     rig.app.dig.as_mut().unwrap().jobs.insert(999, job(false));
     let out = rig.frame(Vec::new());
@@ -2158,6 +2160,7 @@ fn the_records_in_view_get_their_tracks_first() {
             done: 0,
             total: 200,
             listed: true,
+            ..Default::default()
         },
     );
     let focus = |r: &Rig| {

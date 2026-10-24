@@ -830,6 +830,10 @@ seller…**.
   whose copies all sold is dimmed and still plays), and prices follow. The main window says
   what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
   1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
+  While a dig runs, the status line says what it's doing: "www.hhv.de: reading the listing · 380
+  records added", then "tracks for 134 of 1,919 records · 1,204 tracks · +11 Impulse – …" (the
+  record that just got its tracks). A record still waiting for its tracklist says "tracks
+  coming…"; the records in view (or the one selected) get theirs first.
   **New search…** asks first, then cleans the crate (its records, copies and their downloaded
   previews, unless another crate holds them), forgets the seller's search and opens Dig /
   Narrow down afresh: the way to look for something else in the same shop.
@@ -1300,7 +1304,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 988 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 989 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

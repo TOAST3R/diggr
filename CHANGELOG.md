@@ -26,6 +26,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 - **Tracks where you look.** A record still waiting for its tracklist says "tracks coming…",
   and the records you scroll to get their tracks first.
+- **See a dig at work.** The status line says how many records a dig has added, then how many
+  have their tracks, how many tracks came in, and the record that just got them.
 - **A new search in the same shop.** Right-click a seller and choose New search… to clean
   its crate, previews included, and dig the shop again for something else.
 - **Cleaner sidebar names.** Sellers, labels and friends are listed by their names alone under

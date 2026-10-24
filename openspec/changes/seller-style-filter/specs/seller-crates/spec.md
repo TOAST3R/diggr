@@ -149,3 +149,18 @@ Right-clicking a dug seller crate SHALL offer New search…. It SHALL ask first,
 - **WHEN** a track of the seller crate was also sent to "Keepers", and the user confirms New search…
 - **THEN** that track's preview stays in the cache
 
+### Requirement: Dig progress
+While a dig, Add next or refresh runs, the main window's status line SHALL say, per send: while its listing is read, the records it added so far ("www.hhv.de: reading the listing · 380 records added"); then how many of those records have their tracks, the tracks added so far, and the last record filled with its number of tracks ("www.hhv.de: tracks for 134 of 1,919 records · 1,204 tracks · +11 Impulse – One-Six-Four-One-Seven"). A record row whose tracklist isn't read yet SHALL say "tracks coming…" instead of a track count, and its count once its tracks arrive. When nothing is playing or selected in the shown crate, the first record in view SHALL have its tracks read first.
+
+#### Scenario: Reading the listing
+- **WHEN** a dig of www.hhv.de has read 4 pages adding 380 records
+- **THEN** the status line says "www.hhv.de: reading the listing · 380 records added"
+
+#### Scenario: Filling tracks
+- **WHEN** 134 of 1,919 records have their tracks, 1,204 in all, and the last one filled was Impulse – One-Six-Four-One-Seven with 11
+- **THEN** the status line says "www.hhv.de: tracks for 134 of 1,919 records · 1,204 tracks · +11 Impulse – One-Six-Four-One-Seven"
+
+#### Scenario: A record not filled yet
+- **WHEN** a record's tracklist hasn't been read
+- **THEN** its row says "tracks coming…", and "11 tracks" once its 11 tracks arrive
+
