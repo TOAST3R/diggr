@@ -161,7 +161,7 @@ pub fn inventory_listing(
     now: u64,
 ) -> Result<ListingPage, ApiError> {
     use super::seller;
-    let path = seller::inventory_path(seller_name, &criteria.query, n, seller::PER_PAGE);
+    let path = seller::inventory_path(seller_name, &criteria.discogs_query(), n, seller::PER_PAGE);
     let v = if fresh {
         let r = client.call(super::transport::Method::Get, &path)?;
         let v =

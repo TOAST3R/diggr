@@ -932,6 +932,34 @@ fn a_seller_brings_every_copy_and_each_record_once() {
 }
 
 #[test]
+fn a_style_is_searched_on_discogs_side_as_a_phrase() {
+    use dig::discogs::seller::Criteria;
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let body = serde_json::json!({
+        "pagination": {"page": 1, "pages": 1, "per_page": 100, "items": 1},
+        "listings": [inventory_listing(11, 1001, 9.0)],
+    });
+    let path = "/users/decks.de/inventory?status=For%20Sale&sort=listed&sort_order=desc&page=1&per_page=100&q=%22Deep%20House%22";
+    t.route(path, 200, body.to_string());
+    let mut i = intake(&t, true, None);
+    send_inventory(
+        &mut i,
+        Criteria {
+            style: Some("Deep House".into()),
+            ..Criteria::default()
+        },
+    );
+    let ev = run(&mut i, 100);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, Event::Copies(_, c) if c.len() == 1)),
+        "{:?}",
+        t.paths()
+    );
+    assert!(t.paths().iter().any(|p| p == path), "{:?}", t.paths());
+}
+
+#[test]
 fn newest_n_stops_reading_at_the_nth_copy() {
     use dig::discogs::seller::{Criteria, inventory_path};
     let t = Arc::new(FakeTransport::with_fixtures(fixtures()));

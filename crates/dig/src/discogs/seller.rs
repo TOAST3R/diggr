@@ -84,11 +84,16 @@ pub fn grade_text(text: &str) -> String {
     }
 }
 
-/// What narrows a seller's stock. Search text and "newest N" are applied by Discogs; the
-/// rest here, on each listing. Prices are in cents of the seller's currency.
+/// What narrows a seller's stock. The genre, style, search text and "newest N" are applied by
+/// Discogs; the rest here, on each listing. Prices are in cents of the seller's currency.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Criteria {
+    /// A Discogs genre ("Electronic"), searched for as a phrase.
+    pub genre: Option<String>,
+    /// A Discogs style ("Deep House"), searched for as a phrase.
+    pub style: Option<String>,
+    /// The user's own search text.
     pub query: String,
     /// Only the N most recently listed copies.
     pub newest: Option<u32>,
@@ -98,8 +103,6 @@ pub struct Criteria {
     pub max_cents: Option<u32>,
     /// The lowest media condition kept; a copy with an unknown grade is left out by it.
     pub min_condition: Option<Condition>,
-    /// Countries to keep; empty keeps all.
-    pub ships_from: Vec<String>,
 }
 
 impl Criteria {
@@ -109,7 +112,6 @@ impl Criteria {
             || self.min_cents.is_some()
             || self.max_cents.is_some()
             || self.min_condition.is_some()
-            || !self.ships_from.is_empty()
     }
 
     /// Whether a copy passes the criteria applied here.
@@ -121,7 +123,24 @@ impl Criteria {
             && self
                 .min_condition
                 .is_none_or(|m| c.condition.is_some_and(|g| g >= m))
-            && (self.ships_from.is_empty() || self.ships_from.contains(&c.ships_from))
+    }
+
+    /// The search Discogs runs: the genre and style as quoted phrases, then the search text
+    /// (`"Electronic" "Deep House" ostgut`). Discogs matches them anywhere in the release,
+    /// its styles included, and wants every part.
+    pub fn discogs_query(&self) -> String {
+        let quoted = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("\"{s}\""))
+        };
+        [quoted(&self.genre), quoted(&self.style)]
+            .into_iter()
+            .flatten()
+            .chain(Some(self.query.trim().to_owned()).filter(|q| !q.is_empty()))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Pages to read for these criteria, given how many the seller has.
@@ -460,18 +479,53 @@ pub(crate) mod tests {
         assert!(!c.matches(&dear), "price");
         assert!(!c.matches(&worn), "condition");
         assert!(Criteria::default().matches(&cd));
-        let spain = Criteria {
-            ships_from: vec!["Spain".into()],
-            ..Criteria::default()
-        };
-        assert!(!spain.matches(&vinyl));
-        assert!(c.is_local() && spain.is_local());
+        assert!(c.is_local());
         let newest = Criteria {
+            genre: Some("Electronic".into()),
+            style: Some("Techno".into()),
             query: "techno".into(),
             newest: Some(500),
             ..Criteria::default()
         };
-        assert!(!newest.is_local(), "Discogs applies both");
+        assert!(!newest.is_local(), "Discogs applies them all");
+    }
+
+    #[test]
+    fn genre_and_style_are_searched_as_phrases_before_the_text() {
+        let c = |genre: Option<&str>, style: Option<&str>, query: &str| Criteria {
+            genre: genre.map(Into::into),
+            style: style.map(Into::into),
+            query: query.into(),
+            ..Criteria::default()
+        };
+        assert_eq!(
+            c(None, Some("Deep House"), "").discogs_query(),
+            "\"Deep House\""
+        );
+        assert_eq!(
+            c(Some("Electronic"), Some("Deep House"), " vinyl ").discogs_query(),
+            "\"Electronic\" \"Deep House\" vinyl"
+        );
+        assert_eq!(c(None, None, " techno ").discogs_query(), "techno");
+        assert_eq!(c(None, Some(" "), "").discogs_query(), "");
+        assert_eq!(Criteria::default().discogs_query(), "");
+        let folk = c(Some("Folk, World, & Country"), None, "").discogs_query();
+        assert!(
+            inventory_path("hhv", &folk, 1, 100)
+                .ends_with("&q=%22Folk%2C%20World%2C%20%26%20Country%22"),
+            "{}",
+            inventory_path("hhv", &folk, 1, 100)
+        );
+    }
+
+    #[test]
+    fn criteria_saved_with_countries_still_load() {
+        let saved = r#"(query: "techno", newest: Some(500), ships_from: ["Germany"], max_cents: Some(1500))"#;
+        let c: Criteria = ron::from_str(saved).unwrap();
+        assert_eq!(c.query, "techno");
+        assert_eq!(c.newest, Some(500));
+        assert_eq!(c.max_cents, Some(1500));
+        assert_eq!(c.style, None);
     }
 
     #[test]

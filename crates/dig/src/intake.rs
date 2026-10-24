@@ -112,7 +112,8 @@ pub enum Command {
     /// Fill Top Sellers the first time: the sellers of the user's recent purchases, at a
     /// moment with no send.
     FirstSellers,
-    /// How many copies a seller has for sale (matching the search text).
+    /// How many copies a seller has for sale matching `query`, the search Discogs runs
+    /// (`Criteria::discogs_query`: genre, style and search text).
     CountSeller {
         seller: String,
         query: String,
@@ -120,7 +121,7 @@ pub enum Command {
     /// Whether a seller exists (Add seller…), by name: their username and copies for sale.
     LookupSeller(String),
     /// Read a seller's listings page by page for Narrow down (ahead of any send); a new scan
-    /// replaces the running one.
+    /// replaces the running one. `query` is the search Discogs runs, as for `CountSeller`.
     ScanInventory {
         seller: String,
         query: String,
