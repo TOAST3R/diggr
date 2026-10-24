@@ -2054,3 +2054,76 @@ fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
     );
     assert_eq!(seller(&rig, "logon").criteria.limit, Some(4000));
 }
+
+#[test]
+fn new_search_asks_then_cleans_the_crate_and_its_previews_and_digs_afresh() {
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-new-search", &fakes);
+    fakes.inventory("logon", "", &SMALL);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(4)),
+        "counted",
+    );
+    rig.click_text("Dig");
+    let clips = |r: &Rig| -> Vec<String> {
+        r.app.crates.get(logon).map_or(Vec::new(), |p| {
+            p.entries()
+                .iter()
+                .filter_map(|e| e.origin.as_ref()?.clip.clone())
+                .collect()
+        })
+    };
+    let file = |r: &Rig, c: &str| r.dir.join(format!("cache/previews/{c}.m4a"));
+    rig.until(
+        |r| !r.app.seller_busy(logon) && clips(r).iter().any(|c| file(r, c).exists()),
+        "dug, with a preview downloaded",
+    );
+    let downloaded: Vec<String> = clips(&rig)
+        .into_iter()
+        .filter(|c| file(&rig, c).exists())
+        .collect();
+    let d = rig.app.dig.as_mut().unwrap();
+    d.sellers.find_mut("logon").unwrap().criteria.style = Some("Acid".into());
+
+    // Asked first: Cancel keeps everything.
+    for _ in 0..60 {
+        rig.pump();
+    }
+    let pos = at(&mut rig, "logon");
+    rig.click_with(pos, PointerButton::Secondary);
+    rig.click_text("New search…");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "New search for logon?"),
+        "{:?}",
+        text_list(&out)
+    );
+    rig.click_text("Cancel");
+    assert_eq!(rig.app.crates.get(logon).unwrap().copies().len(), 4);
+
+    let pos = at(&mut rig, "logon");
+    rig.click_with(pos, PointerButton::Secondary);
+    rig.click_text("New search…");
+    fakes.count("logon", 4);
+    rig.click_text("Clean and search");
+    let p = rig.app.crates.get(logon).unwrap();
+    assert!(
+        p.is_empty() && p.copies().is_empty(),
+        "the crate is cleaned"
+    );
+    let s = seller(&rig, "logon");
+    assert_eq!(
+        (s.criteria.style, s.last_dug),
+        (None, None),
+        "the search is forgotten"
+    );
+    rig.until(
+        |r| downloaded.iter().all(|c| !file(r, c).exists()),
+        "its previews are deleted",
+    );
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(4)),
+        "Dig opens afresh",
+    );
+}

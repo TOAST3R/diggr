@@ -24,6 +24,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **Dig up to 5,000, a thousand at a time.** When up to 5,000 copies match, Dig brings the newest
   1,000 at once, and the end of the list offers the next 1,000 whenever you want them.
 
+- **A new search in the same shop.** Right-click a seller and choose New search… to clean
+  its crate, previews included, and dig the shop again for something else.
 - **Cleaner sidebar names.** Sellers, labels and friends are listed by their names alone under
   TOP SELLERS, LABELS and FRIENDS, without "Seller:", "Label:" or "Friend:" in front.
 

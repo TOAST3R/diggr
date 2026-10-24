@@ -51,6 +51,11 @@ pub(super) enum SellerDialog {
         crate_id: CrateId,
         seller: String,
     },
+    /// New search…, asking: the crate is emptied first.
+    NewSearch {
+        crate_id: CrateId,
+        seller: String,
+    },
 }
 
 /// The Dig / Narrow down dialog.
@@ -260,6 +265,8 @@ pub enum SellerAction {
     Narrow(CrateId),
     /// Add next: the next 1,000 matching copies.
     More(CrateId),
+    /// New search…: asks, then empties the crate and digs the seller afresh.
+    NewSearch(CrateId),
     /// Remove seller… (asks first).
     Remove(CrateId),
     /// A copy's listing on discogs.com.
@@ -353,6 +360,18 @@ impl DiggrApp {
             SellerAction::Dig(id) => self.seller_double_click(id),
             SellerAction::Refresh(id) => self.seller_refresh(id),
             SellerAction::More(id) => self.seller_more(id),
+            SellerAction::NewSearch(id) => {
+                let Some(seller) = self.seller_of_crate(id) else {
+                    return;
+                };
+                if !self.seller_needs_token() {
+                    let Some(d) = &mut self.dig else { return };
+                    d.seller_ui.dialog = Some(SellerDialog::NewSearch {
+                        crate_id: id,
+                        seller: seller.username,
+                    });
+                }
+            }
             SellerAction::Narrow(id) => {
                 let Some(seller) = self.seller_of_crate(id) else {
                     return;
@@ -676,6 +695,41 @@ impl DiggrApp {
         self.notify(summary_text(&seller.username, sum));
     }
 
+    /// New search…, confirmed: what runs for the crate stops, its records, tracks and copies go
+    /// (with their downloaded previews, unless another crate holds them), the seller forgets
+    /// its search, and Dig / Narrow down opens as for a seller never dug.
+    pub(super) fn seller_new_search_confirmed(&mut self, id: CrateId) {
+        let Some(d) = &mut self.dig else { return };
+        d.seller_ui.dialog = None;
+        d.send_cmd(Command::CrateDeleted(id));
+        d.jobs.retain(|_, j| j.target != id);
+        d.seller_ui.refreshes.remove(&id);
+        d.seller_ui.counting_refresh.remove(&id);
+        let Some(s) = d.sellers.by_crate_mut(id) else {
+            return;
+        };
+        s.criteria = Criteria::default();
+        s.last_dug = None;
+        s.matching = 0;
+        let seller = s.username.clone();
+        let e = d.save_sellers();
+        self.dig_notify(e);
+        if id == self.crates.playing_id() {
+            self.with_engine(|e| e.stop());
+            self.queue_dirty = true;
+        }
+        if self.crates.load(id)
+            && let Some(p) = self.crates.get_mut(id)
+        {
+            let clips = super::digging::clips_of(p, |_| true);
+            p.clear();
+            p.set_copies(Vec::new());
+            self.mark_crate(id);
+            self.dig_forget_clips(clips);
+        }
+        self.seller_open_dig(id, &seller, Criteria::default(), false);
+    }
+
     /// Remove seller…, confirmed: out of the list, and its crate deleted.
     pub(super) fn seller_remove_confirmed(&mut self, id: CrateId) {
         let Some(d) = &mut self.dig else { return };
@@ -917,14 +971,20 @@ impl DiggrApp {
         d.seller_ui.dialog = Some(SellerDialog::Dig(Box::new(dialog)));
     }
 
-    /// Dig / Narrow down, Add seller… and Remove seller…, while one is open.
+    /// Dig / Narrow down, Add seller…, Remove seller… and New search…, while one is open.
     pub(super) fn seller_dialogs_ui(&mut self, ctx: &egui::Context) {
         enum Choice {
             Dig,
             Add,
             Remove(CrateId),
+            NewSearch(CrateId),
             Close,
         }
+        // What New search… would empty.
+        let records = match self.dig.as_ref().and_then(|d| d.seller_ui.dialog.as_ref()) {
+            Some(SellerDialog::NewSearch { crate_id, .. }) => self.crates.record_count(*crate_id),
+            _ => 0,
+        };
         let Some(d) = &mut self.dig else { return };
         let Some(dialog) = &mut d.seller_ui.dialog else {
             return;
@@ -1006,6 +1066,30 @@ impl DiggrApp {
                     });
                 })
             }
+            SellerDialog::NewSearch { crate_id, seller } => {
+                let id = *crate_id;
+                egui::Modal::new(egui::Id::new("seller-new-search")).show(ctx, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.strong(format!("New search for {seller}?"));
+                    ui.label(format!(
+                        "The crate is cleaned first: its {} and their downloaded previews are \
+                         removed. Nothing changes on Discogs.",
+                        if records == 1 {
+                            "record".to_owned()
+                        } else {
+                            format!("{} records", thousands(records))
+                        }
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Clean and search").clicked() {
+                            choice = Some(Choice::NewSearch(id));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            choice = Some(Choice::Close);
+                        }
+                    });
+                })
+            }
         };
         if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             choice = Some(Choice::Close);
@@ -1014,6 +1098,7 @@ impl DiggrApp {
             Some(Choice::Dig) => self.seller_dig_confirmed(),
             Some(Choice::Add) => self.seller_add_confirmed(),
             Some(Choice::Remove(id)) => self.seller_remove_confirmed(id),
+            Some(Choice::NewSearch(id)) => self.seller_new_search_confirmed(id),
             Some(Choice::Close) => self.seller_dialog_closed(),
             None => {}
         }

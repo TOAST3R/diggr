@@ -134,3 +134,18 @@ A seller crate dug with more than 1,000 matching copies SHALL end its list with 
 - **WHEN** a crate holds 3,000 of 3,412 matching copies and the user clicks "+ ADD THE LAST 412"
 - **THEN** the crate holds 3,412 copies and the row is gone
 
+### Requirement: New search
+Right-clicking a dug seller crate SHALL offer New search…. It SHALL ask first, saying the crate is cleaned (its records and their downloaded previews removed) and that nothing changes on Discogs, with "Clean and search" and Cancel. Cancel SHALL change nothing. Confirmed, it SHALL stop any dig, Add next or refresh running for the crate, remove every entry and copy from the crate, delete the downloaded previews of its entries unless another crate holds them, forget the seller's saved criteria, limit and last dig, and then count the seller's copies and open Dig / Narrow down as for a seller never dug.
+
+#### Scenario: Cancel
+- **WHEN** the user chooses New search… on "logon" and clicks Cancel
+- **THEN** the crate, its copies and the seller's saved search are unchanged
+
+#### Scenario: Clean and search
+- **WHEN** the user chooses New search… on "logon", dug with the style Acid, and clicks "Clean and search"
+- **THEN** the crate is empty, its previews are deleted from the cache, the seller has no saved search, and Dig / Narrow down opens with the seller's count
+
+#### Scenario: A preview another crate holds
+- **WHEN** a track of the seller crate was also sent to "Keepers", and the user confirms New search…
+- **THEN** that track's preview stays in the cache
+

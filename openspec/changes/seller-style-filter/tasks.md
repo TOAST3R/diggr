@@ -66,3 +66,10 @@
 - [x] 10.5 Tests: window and pages; 3,412 copies dug 1,000 at a time with only the next pages read and nothing before a click; 1,200 now diggable
 - [x] 10.6 Spec, design, proposal, README and CHANGELOG
 - [x] 10.7 Fix: the row showed only once every record was expanded (15+ minutes for hhv). The intake sends `ListingRead`, the row shows from then, and a refresh applies then; tests for both
+
+## 11. New search
+
+- [x] 11.1 "New search…" in a dug seller crate's right-click menu; a modal asks ("Clean and search" / Cancel)
+- [x] 11.2 Confirmed: stop its sends and refresh, clear entries and copies, forget previews no other crate holds, reset the seller's criteria, limit and last dig, then count and open Dig / Narrow down
+- [x] 11.3 Headless test: Cancel keeps all; confirming cleans the crate, its previews and the saved search, and Dig opens afresh
+- [x] 11.4 Spec, README and CHANGELOG

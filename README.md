@@ -830,6 +830,9 @@ seller…**.
   whose copies all sold is dimmed and still plays), and prices follow. The main window says
   what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
   1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
+  **New search…** asks first, then cleans the crate (its records, copies and their downloaded
+  previews, unless another crate holds them), forgets the seller's search and opens Dig /
+  Narrow down afresh: the way to look for something else in the same shop.
   **Remove seller…** takes it out of the list and deletes its crate.
 - **Your cart:** in a seller crate, each copy row has a cart button. Click **+ CART** to put
   that copy in your real Discogs cart; it then reads **IN CART**, which turns into a red
@@ -1297,7 +1300,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 986 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 987 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1509,7 +1512,8 @@ What's covered:
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (genre and style, the style
   dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap, up
-  to 5,000 a thousand at a time from the list's last row), refreshes (new, sold, cheaper, past the limit, failed),
+  to 5,000 a thousand at a time from the list's last row, New search cleaning the crate and
+  its previews), refreshes (new, sold, cheaper, past the limit, failed),
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real

@@ -3345,6 +3345,16 @@ impl DiggrApp {
                                 .push(Action::Dig(DigAction::Seller(SellerAction::Narrow(c.id))));
                             ui.close();
                         }
+                        if ui
+                            .button("New search…")
+                            .on_hover_text("Empty this crate and dig the seller with a new search")
+                            .clicked()
+                        {
+                            actions.push(Action::Dig(DigAction::Seller(SellerAction::NewSearch(
+                                c.id,
+                            ))));
+                            ui.close();
+                        }
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
