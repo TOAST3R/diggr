@@ -4778,12 +4778,26 @@ impl DiggrApp {
                 line
             }
         };
+        // "tracks coming…" blinks, twice a second, while its record waits for its tracklist.
+        let second_col = if listed && playing_here.is_none() {
+            let now = ui.input(|i| i.time);
+            let till = BLINK - now.rem_euclid(BLINK);
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(till));
+            if ((now / BLINK) as u64).is_multiple_of(2) {
+                dim
+            } else {
+                dim.gamma_multiply(0.3)
+            }
+        } else {
+            dim
+        };
         text_clip.text(
             pos2(x0, line2),
             egui::Align2::LEFT_CENTER,
             second,
             egui::FontId::proportional(font.size * 0.9),
-            dim,
+            second_col,
         );
         let menu_click = opens_context_menu(
             resp.secondary_clicked(),
@@ -7521,6 +7535,9 @@ fn empty_crate_hint(modifier: &str) -> [String; 4] {
         "PRESS H FOR HELP".into(),
     ]
 }
+
+/// "tracks coming…" is shown, then faint, for this long each (seconds).
+const BLINK: f64 = 0.5;
 
 /// The BPM slider is this wide, whatever the playlist's width (skin pixels).
 const BPM_SLIDER_W: f32 = 40.0;

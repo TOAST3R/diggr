@@ -85,3 +85,4 @@
 - [x] 13.1 Per send, records listed so far, tracks added and the last record filled (`JobView`)
 - [x] 13.2 Status line: "reading the listing · N records added", then "tracks for D of N records · T tracks · +k Artist – Title"
 - [x] 13.3 Test of the three phases; spec "Dig progress"; README and CHANGELOG
+- [x] 13.4 "tracks coming…" blinks (half a second shown, half faint); the app repaints for it only while such a row is in view. Tested by hand, as asked

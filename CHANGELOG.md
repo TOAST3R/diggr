@@ -24,7 +24,7 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **Dig up to 5,000, a thousand at a time.** When up to 5,000 copies match, Dig brings the newest
   1,000 at once, and the end of the list offers the next 1,000 whenever you want them.
 
-- **Tracks where you look.** A record still waiting for its tracklist says "tracks coming…",
+- **Tracks where you look.** A record still waiting for its tracklist blinks "tracks coming…",
   and the records you scroll to get their tracks first.
 - **See a dig at work.** The status line says how many records a dig has added, then how many
   have their tracks, how many tracks came in, and the record that just got them.
