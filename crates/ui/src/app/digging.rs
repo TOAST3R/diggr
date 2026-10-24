@@ -297,7 +297,7 @@ pub(super) struct Dig {
     /// Analyze BPM: tracks asked for, in the order asked, until analyzed.
     pub(super) asked: Vec<TrackRef>,
     /// Per crate being expanded: the focus entry and how many records were still listed.
-    focus: HashMap<CrateId, (Option<EntryId>, usize)>,
+    pub(super) focus: HashMap<CrateId, (Option<EntryId>, usize)>,
     /// Crates whose unfinished sends were resumed this session.
     active: HashSet<CrateId>,
     /// Crates a send created: named after the page once Discogs gives its name, and deleted
@@ -3399,11 +3399,22 @@ impl DiggrApp {
             let Some(p) = self.crates.get(c) else {
                 continue;
             };
+            // What plays, else what is selected, else (in the shown crate) the first row in
+            // view: scrolling to records brings their tracks in first.
+            let in_view = || {
+                let rows = self.pl_list();
+                let i = rows.get(self.pl_scroll)?.first();
+                p.entries().get(i).map(|e| e.id)
+            };
             let focus =
                 if c == self.crates.playing_id() && self.position.state != PlayState::Stopped {
                     p.current()
+                } else if let Some(&s) = p.selected_ids().first() {
+                    Some(s)
+                } else if c == self.crates.shown_id() {
+                    in_view().or(p.current())
                 } else {
-                    p.selected_ids().first().copied().or(p.current())
+                    p.current()
                 };
             let listed = p
                 .entries()

@@ -73,3 +73,9 @@
 - [x] 11.2 Confirmed: stop its sends and refresh, clear entries and copies, forget previews no other crate holds, reset the seller's criteria, limit and last dig, then count and open Dig / Narrow down
 - [x] 11.3 Headless test: Cancel keeps all; confirming cleans the crate, its previews and the saved search, and Dig opens afresh
 - [x] 11.4 Spec, README and CHANGELOG
+
+## 12. Records waiting for their tracks
+
+- [x] 12.1 A record only listed (its tracklist not read yet) says "tracks coming…" on its row instead of "1 track"
+- [x] 12.2 With nothing playing or selected in the shown crate, the first record in view leads the expansion order (scrolling brings those records' tracks in first)
+- [x] 12.3 Tests: the wording; the focus follows the scroll and a selection leads

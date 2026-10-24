@@ -2127,3 +2127,62 @@ fn new_search_asks_then_cleans_the_crate_and_its_previews_and_digs_afresh() {
         "Dig opens afresh",
     );
 }
+
+#[test]
+fn the_records_in_view_get_their_tracks_first() {
+    use crate::playlist::{Origin, WaitKind};
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-focus", &fakes);
+    rig.app.show_crate(logon);
+    let p = rig.app.crates.get_mut(logon).unwrap();
+    let ids: Vec<EntryId> = (0..200u64)
+        .map(|i| {
+            p.add_waiting(
+                "Artist",
+                format!("Record {i}"),
+                None,
+                Some(Origin {
+                    release: Some(50_000 + i),
+                    ..Default::default()
+                }),
+                WaitKind::Listed,
+            )
+        })
+        .collect();
+    // A dig into the crate is still expanding its records.
+    rig.app.dig.as_mut().unwrap().jobs.insert(
+        999,
+        super::super::digging::JobView {
+            name: "Seller: logon".into(),
+            target: logon,
+            done: 0,
+            total: 200,
+            listed: true,
+        },
+    );
+    let focus = |r: &Rig| {
+        r.app
+            .dig
+            .as_ref()
+            .unwrap()
+            .focus
+            .get(&logon)
+            .and_then(|f| f.0)
+    };
+    rig.frame(Vec::new());
+    assert_eq!(focus(&rig), Some(ids[0]), "the top of the crate");
+    rig.app.pl_scroll = 120;
+    rig.frame(Vec::new());
+    assert_eq!(
+        focus(&rig),
+        Some(ids[120]),
+        "scrolled: the first record in view"
+    );
+    rig.app
+        .crates
+        .get_mut(logon)
+        .unwrap()
+        .select_only(&[ids[7]], ids[7]);
+    rig.frame(Vec::new());
+    assert_eq!(focus(&rig), Some(ids[7]), "a selection leads");
+}

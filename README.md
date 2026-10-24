@@ -1300,7 +1300,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 987 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 988 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

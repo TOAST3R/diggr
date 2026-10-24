@@ -4740,6 +4740,9 @@ impl DiggrApp {
         ));
         let hl = color(colors.pl_current);
         text_marked(&name_clip, at, name, font, col, hl, shown.search());
+        // Only listed (one waiting line): its tracklist isn't read yet.
+        let listed = rec.total == 1
+            && first.status == EntryStatus::Waiting(crate::playlist::WaitKind::Listed);
         let second = match playing_here {
             Some(p) => {
                 let sign = if self.position.state == PlayState::Paused {
@@ -4756,12 +4759,16 @@ impl DiggrApp {
             }
             None if !copies.is_empty() => format::seller_record_line(
                 first.origin.as_ref(),
-                rec.members.len(),
-                rec.total,
+                (rec.members.len(), rec.total, listed),
                 &copies,
             ),
             None => {
-                let line = format::record_line(first.origin.as_ref(), rec.members.len(), rec.total);
+                let line = format::record_line(
+                    first.origin.as_ref(),
+                    rec.members.len(),
+                    rec.total,
+                    listed,
+                );
                 // Fully tried with some tracks left without a preview.
                 #[cfg(not(target_arch = "wasm32"))]
                 let line = match self.record_tried(self.crates.shown_id(), &rec.key) {
