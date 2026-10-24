@@ -50,3 +50,9 @@
 - [x] 8.3 Narrow down: Format dropdown and Year field (counted at once / after the typing pause); Price and Condition rows gone; the cap note names the new criteria
 - [x] 8.4 Tests: format and year words; old saved filters load; a headless test that format and year are counted with no listings read and dug; scan tests removed
 - [x] 8.5 Spec, design, proposal, README and CHANGELOG
+
+## 9. Genre and style together
+
+- [x] 9.1 Both dropdowns always show; with a genre, every style section holds that genre's styles; changing the genre clears a style it doesn't have; `styles_of` and `genre_has` back; the Genre dropdown shows all 16 without scrolling
+- [x] 9.2 Tests: Rock keeps the style dropdown with Rock styles only, Deep House cleared, Rock + Punk searched together; genre + style + text dug and refreshed
+- [x] 9.3 Spec, design, proposal, README and CHANGELOG

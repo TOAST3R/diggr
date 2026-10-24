@@ -16,8 +16,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Improved
 
-- **Dig a giant shop by style.** Narrow down now lets you pick a genre or a style, a format and a
-  year, so a seller with 150,000 records becomes the 4,000 Deep House ones in a second, across
+- **Dig a giant shop by style.** Narrow down now lets you pick a genre, a style, a format and a year,
+  so a seller with 150,000 records becomes the 4,000 Deep House ones in a second, across
   their whole stock, not just the newest. Every change answers at once, and the styles you
   collect and want come first in a list you can search.
 
