@@ -24,6 +24,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **Dig up to 5,000, a thousand at a time.** When up to 5,000 copies match, Dig brings the newest
   1,000 at once, and the end of the list offers the next 1,000 whenever you want them.
 
+- **Cleaner sidebar names.** Sellers, labels and friends are listed by their names alone under
+  TOP SELLERS, LABELS and FRIENDS, without "Seller:", "Label:" or "Friend:" in front.
+
 ### Changed
 
 - **A quicker Narrow down.** Price, condition and ships-from are gone, so the dialog never waits

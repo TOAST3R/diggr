@@ -195,7 +195,7 @@ fn friends_come_from_discogs_once_a_week_and_leavers_keep_their_crate() {
     );
     // Under FRIENDS in the sidebar, after the Discogs heading.
     assert!(at(&mut rig, "⏷ FRIENDS (2)").y > at(&mut rig, "DISCOGS").y);
-    at(&mut rig, "Friend: javimaxilo");
+    at(&mut rig, "javimaxilo");
 
     // A week later someone left and someone came: the leaver's crate stays, as an
     // ordinary crate.
@@ -255,7 +255,7 @@ fn a_double_click_digs_a_friend_and_a_private_one_says_so() {
     let mut rig = two_friends("friends-dig", &fakes);
     let javi = crate_of(&rig, "javimaxilo");
     // A click shows it and asks nothing.
-    let pos = at(&mut rig, "Friend: javimaxilo");
+    let pos = at(&mut rig, "javimaxilo");
     rig.click(pos);
     assert_eq!(rig.app.crates.shown_id(), javi);
     assert_eq!(
@@ -286,7 +286,7 @@ fn a_double_click_digs_a_friend_and_a_private_one_says_so() {
     // Private: dimmed from then on, and never asked again.
     // Past egui's double-click time, so the next clicks start a new pair.
     apart(&mut rig);
-    let pos = at(&mut rig, "Friend: Waxport");
+    let pos = at(&mut rig, "Waxport");
     rig.double_click(pos);
     rig.until(
         |r| friends(r).find("Waxport").unwrap().private,

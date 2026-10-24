@@ -2090,7 +2090,7 @@ fn a_label_crates_menu_is_delete_export_refresh() {
         let out = rig.frame(Vec::new());
         texts(&out)
             .into_iter()
-            .find(|t| t.text == "Label: Lowtide Tapes")
+            .find(|t| t.text == "Lowtide Tapes")
             .unwrap()
             .rect
             .center()
@@ -2313,7 +2313,7 @@ fn a_label_crates_menu_offers_download_then_stop() {
         let out = rig.frame(Vec::new());
         let at = texts(&out)
             .into_iter()
-            .find(|t| t.text == "Label: Lowtide Tapes")
+            .find(|t| t.text == "Lowtide Tapes")
             .unwrap()
             .rect
             .center();

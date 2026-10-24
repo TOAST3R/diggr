@@ -272,7 +272,7 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     rig.app.crates.set_label(siesta, 77);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ LABELS (1)"), "every group starts closed");
-    assert!(!shows(&out, "Label: Siesta Records"));
+    assert!(!shows(&out, "Siesta Records"));
     rig.click_text("⏵ LABELS (1)");
     let out = rig.frame(Vec::new());
     let y = |t: &str| {
@@ -285,12 +285,12 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
             .y
     };
     assert!(y("DISCOGS") < y("⏷ LABELS (1)"));
-    assert!(y("⏷ LABELS (1)") < y("Label: Siesta Records"));
-    assert!(y("Label: Siesta Records") < y("⏵ TOP SELLERS (2)"));
+    assert!(y("⏷ LABELS (1)") < y("Siesta Records"));
+    assert!(y("Siesta Records") < y("⏵ TOP SELLERS (2)"));
     assert_eq!(
         texts(&out)
             .iter()
-            .filter(|t| t.text == "Label: Siesta Records")
+            .filter(|t| t.text == "Siesta Records")
             .count(),
         1,
         "not also in the top list"
@@ -300,8 +300,8 @@ fn labels_sit_between_the_collection_and_top_sellers_and_fold() {
     rig.click_text("⏵ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ LABELS (1)") && shows(&out, "⏷ TOP SELLERS (2)"));
-    assert!(!shows(&out, "Label: Siesta Records"), "closed");
-    assert!(shows(&out, "Seller: decks.de"));
+    assert!(!shows(&out, "Siesta Records"), "closed");
+    assert!(shows(&out, "decks.de"));
     assert_eq!(
         rig.app.settings.side_open,
         Some(crate::settings::SideGroup::Sellers),
@@ -314,12 +314,7 @@ fn top_sellers_sit_under_discogs_and_fold() {
     let fakes = Fakes::new();
     let (mut rig, _, _) = two_sellers("sellers-sidebar", &fakes);
     let out = rig.frame(Vec::new());
-    for t in [
-        "DISCOGS",
-        "⏷ TOP SELLERS (2)",
-        "Seller: decks.de",
-        "Seller: logon",
-    ] {
+    for t in ["DISCOGS", "⏷ TOP SELLERS (2)", "decks.de", "logon"] {
         assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
     }
     let y = |t: &str| {
@@ -332,18 +327,15 @@ fn top_sellers_sit_under_discogs_and_fold() {
             .y
     };
     assert!(y("DISCOGS") < y("⏷ TOP SELLERS (2)"));
-    assert!(y("⏷ TOP SELLERS (2)") < y("Seller: decks.de"));
-    assert!(
-        y("Seller: decks.de") < y("Seller: logon"),
-        "in the list's order"
-    );
+    assert!(y("⏷ TOP SELLERS (2)") < y("decks.de"));
+    assert!(y("decks.de") < y("logon"), "in the list's order");
     assert!(y("+ New crate") < y("DISCOGS"));
 
     // Clicking the open group closes it: every group closed.
     rig.click_text("⏷ TOP SELLERS (2)");
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ TOP SELLERS (2)"));
-    assert!(!shows(&out, "Seller: decks.de"), "closed");
+    assert!(!shows(&out, "decks.de"), "closed");
     assert_eq!(rig.app.settings.side_open, None);
 }
 
@@ -389,16 +381,16 @@ fn a_long_group_scrolls_under_headings_that_stay() {
         "+ New crate",
         "DISCOGS",
         "⏷ TOP SELLERS (31)",
-        "Seller: shop00",
+        "shop00",
     ] {
         assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
     }
-    assert!(!shows(&out, "Seller: shop30"), "past the end");
+    assert!(!shows(&out, "shop30"), "past the end");
 
-    let p = at(&mut rig, "Seller: shop00");
+    let p = at(&mut rig, "shop00");
     let out = wheel(&mut rig, p, -3000.0);
-    assert!(shows(&out, "Seller: shop30"), "{:?}", text_list(&out));
-    assert!(!shows(&out, "Seller: shop00"));
+    assert!(shows(&out, "shop30"), "{:?}", text_list(&out));
+    assert!(!shows(&out, "shop00"));
     assert!(shows(&out, "⏷ TOP SELLERS (31)") && shows(&out, "⏷ CRATES (1)"));
 
     // The scrollbar at the list's right edge: pressing its top goes back to the first.
@@ -407,7 +399,7 @@ fn a_long_group_scrolls_under_headings_that_stay() {
     rig.press(bar, PointerButton::Primary, true);
     rig.press(bar, PointerButton::Primary, false);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Seller: shop00"), "{:?}", text_list(&out));
+    assert!(shows(&out, "shop00"), "{:?}", text_list(&out));
 }
 
 #[test]
@@ -416,7 +408,7 @@ fn a_shown_crate_opens_its_group_and_is_scrolled_to() {
     let mut rig = many_sellers("sellers-reveal", &fakes, 31);
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "⏵ TOP SELLERS (31)") && !shows(&out, "Seller: shop00"));
+    assert!(shows(&out, "⏵ TOP SELLERS (31)") && !shows(&out, "shop00"));
 
     // Shown by any means (here, as the browser bridge does): its group opens.
     let c = rig.app.seller_crate("shop25").unwrap();
@@ -424,20 +416,20 @@ fn a_shown_crate_opens_its_group_and_is_scrolled_to() {
     rig.frame(Vec::new());
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏷ TOP SELLERS (31)"), "{:?}", text_list(&out));
-    assert!(shows(&out, "Seller: shop25"), "{:?}", text_list(&out));
+    assert!(shows(&out, "shop25"), "{:?}", text_list(&out));
     assert_eq!(
         rig.app.settings.side_open,
         Some(crate::settings::SideGroup::Sellers)
     );
 
     // The user's own scroll stays until another crate is shown.
-    let p = at(&mut rig, "Seller: shop25");
+    let p = at(&mut rig, "shop25");
     wheel(&mut rig, p, 3000.0);
     for _ in 0..3 {
         rig.frame(Vec::new());
     }
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Seller: shop00") && !shows(&out, "Seller: shop25"));
+    assert!(shows(&out, "shop00") && !shows(&out, "shop25"));
 }
 
 #[test]
@@ -520,7 +512,7 @@ fn the_crate_menu_groups_the_crates_and_scrolls() {
 fn a_seller_menu_offers_refresh_narrow_and_remove() {
     let fakes = Fakes::new();
     let (mut rig, _, _) = two_sellers("sellers-menu", &fakes);
-    let pos = at(&mut rig, "Seller: decks.de");
+    let pos = at(&mut rig, "decks.de");
     rig.click_with(pos, PointerButton::Secondary);
     let out = rig.frame(Vec::new());
     for t in [
@@ -536,7 +528,7 @@ fn a_seller_menu_offers_refresh_narrow_and_remove() {
     rig.frame(Vec::new());
 
     // Never dug: nothing to refresh or narrow yet.
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click_with(pos, PointerButton::Secondary);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Remove seller…"));
@@ -579,7 +571,7 @@ fn a_click_shows_a_seller_crate_without_asking_discogs() {
         };
     }
     let before = fakes.transport.count();
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click(pos);
     for _ in 0..10 {
         rig.pump();
@@ -622,7 +614,7 @@ const SMALL: [(u64, u64, f64, &str); 4] = [
 ];
 
 fn double_click_seller(rig: &mut Rig, name: &str) {
-    let pos = at(rig, &format!("Seller: {name}"));
+    let pos = at(rig, name);
     rig.double_click(pos);
 }
 
@@ -856,7 +848,7 @@ fn dug_then(name: &str, fakes: &Fakes, now: &[(u64, u64, f64, &str)]) -> (Rig, C
 }
 
 fn refresh(rig: &mut Rig) {
-    let pos = at(rig, "Seller: decks.de");
+    let pos = at(rig, "decks.de");
     rig.click_with(pos, PointerButton::Secondary);
     rig.click_text("Refresh seller");
 }
@@ -1013,7 +1005,7 @@ fn a_pasted_seller_page_adds_or_refreshes() {
 fn remove_seller_asks_then_deletes_its_crate() {
     let fakes = Fakes::new();
     let (mut rig, _, logon) = two_sellers("sellers-remove", &fakes);
-    let pos = at(&mut rig, "Seller: logon");
+    let pos = at(&mut rig, "logon");
     rig.click_with(pos, PointerButton::Secondary);
     rig.click_text("Remove seller…");
     assert!(shows(
@@ -1906,7 +1898,7 @@ fn the_style_dropdown_lists_this_crate_then_yours_then_all() {
     );
     add_styled(&mut rig, decks, &["Minimal"]);
     rig.frame(Vec::new());
-    let pos = at(&mut rig, "Seller: decks.de");
+    let pos = at(&mut rig, "decks.de");
     rig.click_with(pos, PointerButton::Secondary);
     rig.click_text("Narrow down…");
     rig.until(

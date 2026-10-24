@@ -3219,7 +3219,7 @@ impl DiggrApp {
             .text(
                 pos2(rr.left() + 13.0 * scale, rr.center().y),
                 egui::Align2::LEFT_CENTER,
-                &c.name,
+                side_name(c, seller.is_some() || friend.is_some()),
                 font.clone(),
                 col,
             );
@@ -7431,6 +7431,18 @@ const EXTENSION_STORES: [HintLink; 4] = [
         to: Some("https://www.traxsource.com"),
     },
 ];
+
+/// A crate's name in the sidebar: under TOP SELLERS, LABELS and FRIENDS, without the
+/// "Seller: ", "Label: " or "Friend: " its name starts with (the heading says it).
+fn side_name(c: &crate::crates::CrateInfo, grouped: bool) -> &str {
+    if !(grouped || c.is_label()) {
+        return &c.name;
+    }
+    ["Seller: ", "Label: ", "Friend: "]
+        .iter()
+        .find_map(|p| c.name.strip_prefix(p))
+        .unwrap_or(&c.name)
+}
 
 /// The empty crate's hint where the list is tall enough: where to dig, by paste or through
 /// the browser extension.

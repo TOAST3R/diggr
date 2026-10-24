@@ -532,8 +532,8 @@ ahead of what plays. Other pasted text is ignored.
 
 ### Labels
 
-Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›"),
-grouped by record. Click the heading to open it (closing TOP SELLERS or FRIENDS) or close it.
+Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›",
+listed under the heading by the label's name alone), grouped by record. Click the heading to open it (closing TOP SELLERS or FRIENDS) or close it.
 
 - **Follow a label** from the browser: on a Discogs label page, or a link to one, the
   extension offers only **Diggr: Send label**. The label's crate is made and fills in the
@@ -790,7 +790,8 @@ pill.
 
 ### Top Sellers
 
-Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›"), for
+Under DISCOGS in the sidebar, **TOP SELLERS** holds a crate per seller ("Seller: ‹name›", listed
+under the heading by the seller's name alone), for
 listening through a shop's stock and putting the copies you want in your Discogs cart. Click
 the heading to open it (closing LABELS or FRIENDS) or close it; right-click it for **Add
 seller…**.
@@ -854,7 +855,7 @@ itself uses, checked in October 2026). If Discogs changes them, the first list s
 ### Friends
 
 With a token, **FRIENDS** under TOP SELLERS holds a crate per Discogs friend ("Friend:
-‹name›"), filled from their collection. The list comes from Discogs (your friends there),
+‹name›", listed under the heading by their name alone), filled from their collection. The list comes from Discogs (your friends there),
 read the first time and then once a week; there's no adding or removing friends here. That
 endpoint isn't in Discogs' developer docs, so if a read fails the last list stays, and
 hovering **FRIENDS** says when it was read and why it couldn't be read again.
