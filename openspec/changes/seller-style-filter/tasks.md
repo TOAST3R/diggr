@@ -65,3 +65,4 @@
 - [x] 10.4 `ListRow::More` at the end of the list ("+ ADD NEXT 1,000 · N MORE" / "+ ADD THE LAST N"), skipped by the cursor; a click reads the next ten pages into the crate
 - [x] 10.5 Tests: window and pages; 3,412 copies dug 1,000 at a time with only the next pages read and nothing before a click; 1,200 now diggable
 - [x] 10.6 Spec, design, proposal, README and CHANGELOG
+- [x] 10.7 Fix: the row showed only once every record was expanded (15+ minutes for hhv). The intake sends `ListingRead`, the row shows from then, and a refresh applies then; tests for both

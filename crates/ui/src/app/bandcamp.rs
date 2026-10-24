@@ -454,6 +454,7 @@ impl DiggrApp {
                 target,
                 done: 0,
                 total: 0,
+                listed: false,
             },
         );
         d.preview(PreviewCommand::ReadBandcamp {
@@ -505,6 +506,7 @@ impl DiggrApp {
                 target,
                 done: 0,
                 total: pages.len(),
+                listed: false,
             },
         );
         d.preview(PreviewCommand::ReadBandcampPages { job, pages });

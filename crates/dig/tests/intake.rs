@@ -958,6 +958,15 @@ fn a_style_is_searched_on_discogs_side_as_a_phrase() {
         t.paths()
     );
     assert!(t.paths().iter().any(|p| p == path), "{:?}", t.paths());
+    let read = ev
+        .iter()
+        .position(|e| matches!(e, Event::ListingRead(_)))
+        .expect("the listing is read");
+    let finished = ev
+        .iter()
+        .position(|e| matches!(e, Event::Finished(_)))
+        .expect("finished");
+    assert!(read < finished, "said before the records are done");
 }
 
 #[test]

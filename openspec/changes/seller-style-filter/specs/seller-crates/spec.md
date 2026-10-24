@@ -116,11 +116,15 @@ The first two sections SHALL list styles by the number of records that have them
 - **THEN** the style dropdown's first section, "in this crate", lists Minimal and Dub Techno
 
 ### Requirement: Add next 1,000
-A seller crate dug with more than 1,000 matching copies SHALL end its list with a row "+ ADD NEXT 1,000 · ‹N› MORE" (N: the matching copies not in the crate yet, counting up to 5,000 in all), or "+ ADD THE LAST ‹N›" when 1,000 or fewer are left, while no dig or refresh runs for it. Nothing more SHALL be read until the user clicks the row. A click SHALL read only the next pages of listings after the ones the crate holds and bring their copies and records into the crate as they arrive, as a dig does; the crate's limit SHALL grow by 1,000, saved with the seller, and refreshes SHALL keep it. The row SHALL hold no audio: play order, the arrows and the previews SHALL skip it. When nothing is left, the row SHALL go.
+A seller crate dug with more than 1,000 matching copies SHALL end its list with a row "+ ADD NEXT 1,000 · ‹N› MORE" (N: the matching copies not in the crate yet, counting up to 5,000 in all), or "+ ADD THE LAST ‹N›" when 1,000 or fewer are left, as soon as the crate's listings are read: its records MAY still be expanding (a request each, many minutes for 1,000), and the row SHALL NOT wait for them. It SHALL be hidden only while a dig, an Add next or a refresh is still reading listing pages for the crate. A refresh SHALL be applied once its listing pages are read, not after its records are expanded. Nothing more SHALL be read until the user clicks the row. A click SHALL read only the next pages of listings after the ones the crate holds and bring their copies and records into the crate as they arrive, as a dig does; the crate's limit SHALL grow by 1,000, saved with the seller, and refreshes SHALL keep it. The row SHALL hold no audio: play order, the arrows and the previews SHALL skip it. When nothing is left, the row SHALL go.
 
 #### Scenario: The next 1,000
 - **WHEN** a crate holds the newest 1,000 of 3,412 matching copies and the user clicks "+ ADD NEXT 1,000 · 2,412 MORE"
 - **THEN** pages 11 to 20 are read (and no earlier page), the crate holds 2,000 copies, and the row reads "+ ADD NEXT 1,000 · 1,412 MORE"
+
+#### Scenario: Records still expanding
+- **WHEN** the newest 1,000 of 3,412 copies are in, and 10 of their 961 records are expanded
+- **THEN** the row "+ ADD NEXT 1,000 · 2,412 MORE" is shown
 
 #### Scenario: Only on a click
 - **WHEN** a dig brought the newest 1,000 of 3,412 copies and the user does nothing

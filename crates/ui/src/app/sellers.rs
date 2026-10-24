@@ -299,12 +299,16 @@ impl DiggrApp {
     }
 
     /// Copies Add next can still bring into seller crate `id` (5,000 in all at most), when its
-    /// dig stopped at a limit and nothing runs for it.
+    /// dig stopped at a limit and its listings are read. Records may still be expanding: that
+    /// takes a request each, so waiting for it would hide the row for many minutes.
     pub(super) fn seller_more_left(&self, id: CrateId) -> Option<usize> {
-        let s = self.dig.as_ref()?.sellers.by_crate(id)?;
+        let d = self.dig.as_ref()?;
+        let s = d.sellers.by_crate(id)?;
         let held = s.criteria.limit? as usize;
         let left = s.matching.min(MAX_DIG).saturating_sub(held);
-        (left > 0 && !self.seller_busy(id)).then_some(left)
+        let reading = d.seller_ui.refreshes.contains_key(&id)
+            || d.jobs.values().any(|j| j.target == id && !j.listed);
+        (left > 0 && !reading).then_some(left)
     }
 
     /// Add next: the crate's limit grows by 1,000, and only the pages after the ones it holds

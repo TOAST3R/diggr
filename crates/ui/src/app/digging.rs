@@ -211,6 +211,8 @@ pub(super) struct JobView {
     pub(super) target: CrateId,
     pub(super) done: usize,
     pub(super) total: usize,
+    /// Every page of its listing is read; records may still be expanding.
+    pub(super) listed: bool,
 }
 
 /// Options ▸ Discogs…
@@ -2312,6 +2314,7 @@ impl DiggrApp {
                         target: j.target,
                         done: 0,
                         total: 0,
+                        listed: false,
                     },
                 );
                 if d.quiet.contains(&j.target) {
@@ -2383,6 +2386,14 @@ impl DiggrApp {
                 self.mark_crate(j.target);
             }
             Event::Record(j, info, outcome) => self.dig_record(&j, &info, outcome),
+            Event::ListingRead(j) => {
+                if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
+                    v.listed = true;
+                }
+                // A seller's refresh needs only its copies: applied now, not after every
+                // record is expanded (a request each).
+                self.seller_job_ended(j.target, true);
+            }
             Event::Progress(j, done, total) => {
                 if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
                     (v.done, v.total) = (done, total);

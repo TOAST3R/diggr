@@ -454,6 +454,7 @@ fn a_closed_group_shows_a_dig_inside_it() {
             target: decks,
             done: 0,
             total: 10,
+            listed: false,
         },
     );
     let out = rig.frame(Vec::new());
@@ -2009,6 +2010,28 @@ fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
         (1, 0),
         "nothing past the first 1,000 is read"
     );
+
+    // Records take a request each, so a dig of a big seller runs long after its listing is
+    // read: the row shows as soon as the listing is in, and only then.
+    let more = "+ ADD NEXT 1,000 · 2,412 MORE";
+    let job = |listed| super::super::digging::JobView {
+        name: "Seller: www.hhv.de".into(),
+        target: logon,
+        done: 10,
+        total: 961,
+        listed,
+    };
+    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(false));
+    let out = rig.frame(Vec::new());
+    assert!(!shows(&out, more), "the listing is still being read");
+    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(true));
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, more),
+        "records still expanding: {:?}",
+        text_list(&out)
+    );
+    rig.app.dig.as_mut().unwrap().jobs.remove(&999);
 
     // Nothing more comes until the last row is clicked.
     for _ in 0..20 {

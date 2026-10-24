@@ -211,6 +211,8 @@ pub enum Event {
     Record(JobRef, RecordInfo, Outcome),
     /// Records finished of the listing's total.
     Progress(JobRef, usize, usize),
+    /// Every page of the listing is read (its records may still be expanding).
+    ListingRead(JobRef),
     Finished(JobRef),
     /// The send stopped (page not found, private, token needed); nothing more comes.
     Failed(JobRef, ApiError),
@@ -877,14 +879,17 @@ impl Intake {
         job.pending.extend(keep.iter().cloned());
         vinyl_first(&mut job.pending);
         let r = Self::job_ref(job);
-        let (done, total) = (job.done, job.total);
+        let (done, total, read) = (job.done, job.total, job.listing_done());
         if !lp.copies.is_empty() {
             self.events.push(Event::Copies(r.clone(), lp.copies));
         }
         if !keep.is_empty() {
             self.events.push(Event::Listed(r.clone(), keep));
         }
-        self.events.push(Event::Progress(r, done, total));
+        self.events.push(Event::Progress(r.clone(), done, total));
+        if read {
+            self.events.push(Event::ListingRead(r));
+        }
         self.save();
         Ok(())
     }
