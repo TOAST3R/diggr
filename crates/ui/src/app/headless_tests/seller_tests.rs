@@ -1816,11 +1816,11 @@ fn a_style_narrows_the_whole_stock_with_one_count() {
 }
 
 #[test]
-fn genre_style_and_text_are_dug_and_refreshed_together() {
+fn a_style_and_text_are_dug_and_refreshed_together() {
     let fakes = Fakes::new();
-    let (mut rig, _, logon) = two_sellers("sellers-genre-style", &fakes);
+    let (mut rig, _, logon) = two_sellers("sellers-style-text", &fakes);
     fakes.count("logon", 40_728);
-    let query = "\"Electronic\" \"Deep House\" vinyl";
+    let query = "\"Deep House\" vinyl";
     fakes.inventory("logon", query, &SMALL);
     double_click_seller(&mut rig, "logon");
     rig.until(
@@ -1828,13 +1828,12 @@ fn genre_style_and_text_are_dug_and_refreshed_together() {
         "counted",
     );
     let d = dig_dialog_mut(&mut rig);
-    d.criteria.genre = Some("Electronic".into());
     d.criteria.style = Some("Deep House".into());
     d.criteria.query = "vinyl".into();
     d.picked();
     rig.until(
         |r| dig_dialog(r).is_some_and(|d| d.can_dig()),
-        "counted with the genre, style and text",
+        "counted with the style and text",
     );
     rig.click_text("Dig");
     rig.until(
@@ -1847,7 +1846,7 @@ fn genre_style_and_text_are_dug_and_refreshed_together() {
         "dug",
     );
     let saved = seller(&rig, "logon").criteria;
-    assert_eq!(saved.genre.as_deref(), Some("Electronic"));
+    assert_eq!(saved.genre, None);
     assert_eq!(saved.style.as_deref(), Some("Deep House"));
     assert_eq!(saved.discogs_query(), query);
 
@@ -1912,16 +1911,29 @@ fn the_style_dropdown_lists_this_crate_then_yours_then_all() {
     assert!(shows(&out, "Deep House") && shows(&out, "Deep Techno"));
     assert!(!shows(&out, "in this crate") && !shows(&out, "Minimal"));
 
-    // Jazz: "all" holds Jazz styles only, and a style from elsewhere drops the genre.
-    let d = dig_dialog_mut(&mut rig);
-    d.criteria.genre = Some("Jazz".into());
-    d.style_search.clear();
-    rig.frame(vec![Event::Text("house".into())]);
-    let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Deep House"), "from yours");
-    assert!(!shows(&out, "Acid House"), "not a Jazz style");
+    // A genre or a style: picking one hides the other's dropdown, "Any" brings it back.
     rig.click_text("Deep House");
-    let d = dig_dialog(&rig).unwrap();
-    assert_eq!(d.criteria.style.as_deref(), Some("Deep House"));
-    assert_eq!(d.criteria.genre, None);
+    let out = rig.frame(Vec::new());
+    assert_eq!(
+        dig_dialog(&rig).unwrap().criteria.style.as_deref(),
+        Some("Deep House")
+    );
+    assert!(!shows(&out, "Any genre"), "no genre beside a style");
+    rig.click_text("Deep House");
+    rig.click_text("Any style");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(40_728)),
+        "counted again",
+    );
+    let out = rig.frame(Vec::new());
+    assert_eq!(dig_dialog(&rig).unwrap().criteria.style, None);
+    rig.click_text("Any genre");
+    rig.click_text("Jazz");
+    let out2 = rig.frame(Vec::new());
+    assert!(shows(&out, "Any genre"), "the genre is back");
+    assert_eq!(
+        dig_dialog(&rig).unwrap().criteria.genre.as_deref(),
+        Some("Jazz")
+    );
+    assert!(!shows(&out2, "Any style"), "no style beside a genre");
 }

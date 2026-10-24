@@ -806,13 +806,14 @@ seller…**.
 - **A click shows, a double-click digs:** clicking a seller crate only shows what it holds,
   with no request to Discogs. A double-click on one never dug counts its copies (one request)
   and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes a
-  **genre**, a **style**, search text and "only the newest N" (Discogs applies them, across the
+  **genre** or a **style**, search text and "only the newest N" (Discogs applies them, across the
   seller's whole stock, so the count is instant), and format, price and minimum condition (read
-  from the listings: a progress line shows them coming). The style list has a search field and
-  puts first the styles of this seller's crate (once dug), then those of your wantlist and
-  collection, then every Discogs style (the picked genre's only). Discogs searches for the genre
-  and style as words, so a title or label that contains them matches too; the crate's style
-  filter tidies that up after the dig. Dig is offered once 1 to 1,000 copies match. Discogs only
+  from the listings: a progress line shows them coming). A genre or a style, not both: picking
+  one hides the other until you pick "Any" again. The style list has a search field and puts
+  first the styles of this seller's crate (once dug), then those of your wantlist and
+  collection, then every Discogs style. Discogs searches for the genre or style as words, so a
+  title or label that contains them matches too; the crate's style filter tidies that up after
+  the dig. Dig is offered once 1 to 1,000 copies match. Discogs only
   lets anyone read the first 10,000 copies of another user's stock, and the dialog says so. The
   criteria are kept for refreshes. A double-click on a crate dug more than a day ago refreshes it;
   within a day it just shows it.
@@ -1504,7 +1505,7 @@ What's covered:
   runs by hand: `cargo test -p dig real_fan -- --ignored`.
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
-  click versus double-click (no request on a click), Dig and Narrow down (genre, style and its
+  click versus double-click (no request on a click), Dig and Narrow down (genre or style, the style
   dropdown's sections, search text, newest N, criteria read from the listings, the 10,000 cap), refreshes (new, sold, cheaper, past the limit, failed),
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from

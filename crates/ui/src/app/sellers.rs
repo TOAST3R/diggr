@@ -87,7 +87,11 @@ pub(super) struct ScanState {
 }
 
 impl DigDialog {
-    fn new(crate_id: CrateId, seller: &str, criteria: Criteria) -> Self {
+    fn new(crate_id: CrateId, seller: &str, mut criteria: Criteria) -> Self {
+        // A genre or a style: with both, the style wins, so one dropdown always shows.
+        if criteria.style.is_some() {
+            criteria.genre = None;
+        }
         let price = |c: Option<u32>| {
             c.map(|c| format!("{:.2}", c as f64 / 100.0))
                 .unwrap_or_default()
@@ -1202,43 +1206,38 @@ fn dig_dialog_body<C>(
         egui::Grid::new("seller-criteria")
             .num_columns(2)
             .show(ui, |ui| {
-                ui.label("Genre");
-                let genre = dlg.criteria.genre.clone();
-                egui::ComboBox::from_id_salt("seller-genre")
-                    .selected_text(genre.as_deref().unwrap_or("Any genre"))
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut dlg.criteria.genre, None, "Any genre");
-                        for g in styles::genres() {
-                            ui.selectable_value(&mut dlg.criteria.genre, Some(g.to_owned()), g);
-                        }
-                    });
-                if dlg.criteria.genre != genre {
-                    if let (Some(g), Some(s)) = (&dlg.criteria.genre, &dlg.criteria.style)
-                        && !styles::genre_has(g, s)
-                    {
-                        dlg.criteria.style = None;
+                // A genre or a style, not both: picking one hides the other.
+                if dlg.criteria.style.is_none() {
+                    ui.label("Genre");
+                    let genre = dlg.criteria.genre.clone();
+                    egui::ComboBox::from_id_salt("seller-genre")
+                        .selected_text(genre.as_deref().unwrap_or("Any genre"))
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut dlg.criteria.genre, None, "Any genre");
+                            for g in styles::genres() {
+                                ui.selectable_value(&mut dlg.criteria.genre, Some(g.to_owned()), g);
+                            }
+                        });
+                    if dlg.criteria.genre != genre {
+                        dlg.picked();
                     }
-                    dlg.picked();
+                    ui.end_row();
                 }
-                ui.end_row();
-                ui.label("Style");
-                let style = dlg.criteria.style.clone();
-                egui::ComboBox::from_id_salt("seller-style")
-                    .selected_text(style.as_deref().unwrap_or("Any style"))
-                    .width(220.0)
-                    .height(320.0)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show_ui(ui, |ui| style_list(ui, dlg));
-                if dlg.criteria.style != style {
-                    if let (Some(g), Some(s)) = (&dlg.criteria.genre, &dlg.criteria.style)
-                        && !styles::genre_has(g, s)
-                    {
-                        dlg.criteria.genre = None;
+                if dlg.criteria.genre.is_none() {
+                    ui.label("Style");
+                    let style = dlg.criteria.style.clone();
+                    egui::ComboBox::from_id_salt("seller-style")
+                        .selected_text(style.as_deref().unwrap_or("Any style"))
+                        .width(220.0)
+                        .height(320.0)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| style_list(ui, dlg));
+                    if dlg.criteria.style != style {
+                        dlg.picked();
                     }
-                    dlg.picked();
+                    ui.end_row();
                 }
-                ui.end_row();
                 ui.label("Search");
                 if ui
                     .add(egui::TextEdit::singleline(&mut dlg.criteria.query).desired_width(220.0))
@@ -1362,7 +1361,7 @@ fn dig_dialog_body<C>(
 }
 
 /// The style dropdown: a search field, Any style, then the styles of this seller's crate, the
-/// user's, and Discogs' (the picked genre's only).
+/// user's, and every Discogs style.
 fn style_list(ui: &mut egui::Ui, dlg: &mut DigDialog) {
     ui.add(
         egui::TextEdit::singleline(&mut dlg.style_search)
@@ -1371,10 +1370,6 @@ fn style_list(ui: &mut egui::Ui, dlg: &mut DigDialog) {
     )
     .request_focus();
     let needle = dlg.style_search.trim().to_lowercase();
-    let all = match &dlg.criteria.genre {
-        Some(g) => styles::styles_of(g).to_vec(),
-        None => styles::all_styles(),
-    };
     let sections = [
         (
             "in this crate",
@@ -1384,7 +1379,7 @@ fn style_list(ui: &mut egui::Ui, dlg: &mut DigDialog) {
             "yours",
             dlg.your_styles.iter().map(String::as_str).collect(),
         ),
-        ("all", all),
+        ("all", styles::all_styles()),
     ];
     let mut pick = None;
     if ui

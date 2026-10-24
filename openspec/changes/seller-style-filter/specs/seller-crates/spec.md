@@ -2,17 +2,16 @@
 
 ### Requirement: Narrow down
 When a seller has more than 1,000 copies for sale, the Narrow down modal SHALL offer these criteria:
-- a genre, chosen from a dropdown of Discogs' genres with "Any genre" first;
-- a style, chosen from a dropdown (see "Style dropdown");
+- a genre, chosen from a dropdown of Discogs' genres with "Any genre" first, or a style, chosen from a dropdown (see "Style dropdown"), never both;
 - search text;
 - "newest N" (N from 50 to 1,000);
 - format group (Vinyl, File, CD, Cassette, Other);
 - a price range;
 - a minimum media condition.
 
-Discogs SHALL apply the genre, the style and the search text: they SHALL be sent in the inventory search as the genre in double quotes, then the style in double quotes, then the search text, each part left out when empty (`"Electronic" "Deep House" ostgut`). Every count and every inventory read for the seller SHALL use that same search. The dropdowns SHALL send no request of their own and SHALL show no per-genre or per-style totals.
+A genre and a style SHALL NOT be searched together: while a genre is picked, the style dropdown SHALL be hidden, and while a style is picked, the genre dropdown SHALL be hidden; picking "Any genre" or "Any style" SHALL show the other again. Discogs SHALL apply the genre or style and the search text: they SHALL be sent in the inventory search as the genre or style in double quotes, then the search text, each part left out when empty (`"Deep House" ostgut`). Every count and every inventory read for the seller SHALL use that same search. The dropdowns SHALL send no request of their own and SHALL show no per-genre or per-style totals.
 
-It SHALL show the number of copies matching the current criteria, updated within one frame of each change once the listings it needs are read. While listings are read, it SHALL show progress and offer Cancel. Dig SHALL be enabled only when 1 to 1,000 copies match. When more than 10,000 copies match the genre, style and search text, the modal SHALL say that Discogs only shows the first 10,000 and suggest a genre, a style, search text or newest N, and SHALL NOT present those 10,000 as the number that match. The criteria SHALL be saved with the seller and reused by every refresh. Right-clicking a dug seller crate SHALL offer Narrow down… to change them. A seller saved with criteria this modal no longer offers (countries the copies ship from) SHALL load, with those criteria ignored.
+It SHALL show the number of copies matching the current criteria, updated within one frame of each change once the listings it needs are read. While listings are read, it SHALL show progress and offer Cancel. Dig SHALL be enabled only when 1 to 1,000 copies match. When more than 10,000 copies match the genre or style and the search text, the modal SHALL say that Discogs only shows the first 10,000 and suggest a genre, a style, search text or newest N, and SHALL NOT present those 10,000 as the number that match. The criteria SHALL be saved with the seller and reused by every refresh. Right-clicking a dug seller crate SHALL offer Narrow down… to change them. A seller saved with criteria this modal no longer offers (countries the copies ship from) SHALL load, with those criteria ignored.
 
 #### Scenario: Search narrows
 - **WHEN** decks.de has 40,728 copies and the user types "techno"
@@ -22,9 +21,13 @@ It SHALL show the number of copies matching the current criteria, updated within
 - **WHEN** www.hhv.de has 159,648 copies and the user picks the style Deep House
 - **THEN** one count is requested with the search `"Deep House"`, the count shows its answer (4,429), and Dig stays disabled
 
-#### Scenario: Genre, style and text together
-- **WHEN** the user picks the genre Electronic, the style Deep House and types "vinyl"
-- **THEN** the count and the dig use the search `"Electronic" "Deep House" vinyl`
+#### Scenario: Style and text together
+- **WHEN** the user picks the style Deep House and types "vinyl"
+- **THEN** the count and the dig use the search `"Deep House" vinyl`
+
+#### Scenario: A genre or a style
+- **WHEN** the user picks the style Deep House
+- **THEN** the genre dropdown is hidden; when they pick "Any style", it shows again, and when they then pick the genre Jazz, the style dropdown is hidden
 
 #### Scenario: Newest
 - **WHEN** the user picks newest 500 for decks.de
@@ -52,9 +55,9 @@ It SHALL show the number of copies matching the current criteria, updated within
 The style dropdown SHALL hold "Any style" and a search field, then up to three sections, in this order, each listing styles by name:
 - **in this crate**: the styles of the records already in this seller's crate, shown only when it holds any;
 - **yours**: the styles of the records in the user's wantlist and collection crates, shown only when they hold any;
-- **all**: every Discogs style, from a fixed list shipped with the app; when a genre is picked, only that genre's styles.
+- **all**: every Discogs style, from a fixed list shipped with the app.
 
-The first two sections SHALL list styles by the number of records that have them, most first, then by name. Typing in the search field SHALL narrow every section to styles containing the text, ignoring case, within one frame. Picking a style SHALL select it and close the dropdown. Picking a style that isn't in the picked genre's list SHALL set the genre to "Any genre". "Any style" SHALL clear the style. Changing the genre SHALL clear a style that isn't in the new genre's list. Opening the dropdown and searching it SHALL send no request to Discogs.
+The first two sections SHALL list styles by the number of records that have them, most first, then by name. Typing in the search field SHALL narrow every section to styles containing the text, ignoring case, within one frame. Picking a style SHALL select it and close the dropdown. "Any style" SHALL clear the style. Opening the dropdown and searching it SHALL send no request to Discogs.
 
 #### Scenario: First dig of a big seller
 - **WHEN** the user opens the style dropdown for www.hhv.de, never dug, and their collection has Deep House and Electro records
@@ -63,14 +66,6 @@ The first two sections SHALL list styles by the number of records that have them
 #### Scenario: Search the styles
 - **WHEN** the user types "deep" in the style dropdown's search field
 - **THEN** only styles containing "deep" are listed in each section, such as "Deep House" and "Deep Techno"
-
-#### Scenario: Genre narrows the list
-- **WHEN** the genre is Jazz and the user opens the style dropdown
-- **THEN** the "all" section lists only Jazz styles
-
-#### Scenario: Style from another genre
-- **WHEN** the genre is Jazz and the user picks Deep House from the "yours" section
-- **THEN** the style is Deep House and the genre becomes "Any genre"
 
 #### Scenario: Re-narrowing a dug seller
 - **WHEN** the user chooses Narrow down… on "Seller: logon", whose crate holds records in Minimal and Dub Techno

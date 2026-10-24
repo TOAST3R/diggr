@@ -36,3 +36,9 @@
 - [x] 6.1 README: Top Sellers (Genre, Style, the three sections, text-match caveat, Ships from gone) and the Tests section (new cases, updated test count)
 - [x] 6.2 CHANGELOG `## Unreleased` entry, following the `changelog` skill
 - [x] 6.3 `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo check -p audio -p platform --target wasm32-unknown-unknown` all clean
+
+## 7. A genre or a style, not both
+
+- [x] 7.1 Hide the Style row while a genre is picked and the Genre row while a style is picked; the "all" section lists every style; a saved pair opens with the style kept; drop `styles_of` and `genre_has`
+- [x] 7.2 Headless tests: picking a style hides the genre, "Any style" brings it back, picking a genre hides the style; the dig and refresh test uses a style and text
+- [x] 7.3 Spec, design, README and CHANGELOG say one at a time

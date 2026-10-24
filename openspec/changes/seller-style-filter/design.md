@@ -19,7 +19,7 @@ Probes against the public API (October 2026, www.hhv.de) showed:
 
 **Non-Goals:**
 - Per-genre or per-style totals, or hiding styles the seller doesn't stock (each would cost a request per style).
-- Several styles at once (Discogs ANDs the search; "either" would need a count and a read per style, merged).
+- Several styles at once, or a genre with a style (Discogs ANDs the search; "either" would need a count and a read per style, merged). The user asked for a genre *or* a style: picking one hides the other's dropdown.
 - Exact style matching: the quoted phrase also matches titles and labels.
 - Year range, exclude words, "wanted by ≥ N", "listed in the last N days", reading in price order. These are candidates for a follow-up.
 - Reading the website's facets through the browser extension.
@@ -27,14 +27,14 @@ Probes against the public API (October 2026, www.hhv.de) showed:
 ## Decisions
 
 **1. Genre and style are their own fields, combined into the search sent to Discogs.**
-`Criteria` gains `genre: Option<String>` and `style: Option<String>`. `query` stays the user's own text. `Criteria::discogs_query(&self) -> String` returns `"‹genre›" "‹style›" ‹query›`, leaving out the empty parts and trimming. Every place that sends or compares the search uses it: `inventory_path` callers (`expand::inventory_listing`), `CountSeller` (the dialog, refresh counting), the `counted` / `ScanState.query` keys and `seller_counted`'s matching, and the "is this the seller's whole stock" check (`query.is_empty()` → `discogs_query().is_empty()`).
+`Criteria` gains `genre: Option<String>` and `style: Option<String>`. `query` stays the user's own text. `Criteria::discogs_query(&self) -> String` returns `"‹genre›" "‹style›" ‹query›`, leaving out the empty parts and trimming. The dialog only ever sets one of the two (decision 8), and a saved pair opens with the style kept. Every place that sends or compares the search uses it: `inventory_path` callers (`expand::inventory_listing`), `CountSeller` (the dialog, refresh counting), the `counted` / `ScanState.query` keys and `seller_counted`'s matching, and the "is this the seller's whole stock" check (`query.is_empty()` → `discogs_query().is_empty()`).
 *Alternative:* write `"Deep House"` into the search text box. Rejected: the dropdown couldn't show what's selected, the user could break the quoting, and the saved criteria would lose the distinction.
 
 **2. Quoted phrases, genre first.**
 Quoting cuts the over-match (4,999 → 4,429, against an exact 4,316). Discogs ANDs everything in the search, so the order of the parts doesn't change the answer, but a fixed order keeps the query string stable. That matters because the count and the scan are keyed by it. `path_segment` already encodes `"`, `/`, `,` and `&`.
 
 **3. The genre and style list ships as Rust data in `dig`.**
-`crates/dig/src/discogs/styles.rs`: `pub const GENRES: &[(&str, &[&str])]`, Discogs' 15 genres, each with its styles. Discogs' guidelines page answers 403 to scripts, so the list comes from Essentia's `genre_discogs519` taxonomy (519 genre/style pairs taken from Discogs), plus Amapiano, Balearic, Ballroom, Gqom and Jersey Club under Electronic. Helpers: `genres()`, `styles_of(genre)`, `all_styles()` (deduplicated and sorted; a few styles sit under two genres), `genre_has(genre, style)`.
+`crates/dig/src/discogs/styles.rs`: `pub const GENRES: &[(&str, &[&str])]`, Discogs' 15 genres, each with its styles. Discogs' guidelines page answers 403 to scripts, so the list comes from Essentia's `genre_discogs519` taxonomy (519 genre/style pairs taken from Discogs), plus Amapiano, Balearic, Ballroom, Gqom and Jersey Club under Electronic. Helpers: `genres()` and `all_styles()` (deduplicated and sorted; a few styles sit under two genres).
 *Alternative:* a RON data file. Rejected: the list is compile-time constant and never user-edited, and a const can't fail to load. It's updated by hand when Discogs adds styles, which is rare.
 
 **4. The style sections are computed when the dialog opens, from crates already in memory.**
@@ -50,6 +50,10 @@ A ~600-style `ComboBox` can't be searched. Use a button showing the selection (o
 
 **7. The 10,000 cap wording.**
 When `total > MAX_PAGES * PER_PAGE` and the criteria aren't local, `matching()` returns the cap (via `reachable`), and the body currently prints "10,000 match: narrow it down". The body tells that case apart and prints only the "Discogs only shows the first 10,000: a genre, a style, search text or newest N narrow it on its side" line, never "10,000 match".
+
+**8. A genre or a style, never both.**
+While a genre is picked, the Style row is hidden; while a style is picked, the Genre row is hidden; "Any genre" / "Any style" brings the other back. So the "all" section always lists every style (no genre narrowing), and nothing has to reconcile a genre with a style from another genre.
+*Alternative (first version):* both together, the style list narrowed by the genre and a style from another genre resetting it. Dropped at the user's request: a style already implies its genre, so both together only added rules.
 
 ## Risks / Trade-offs
 

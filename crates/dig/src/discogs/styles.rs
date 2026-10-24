@@ -596,25 +596,12 @@ pub fn genres() -> impl Iterator<Item = &'static str> {
     GENRES.iter().map(|(g, _)| *g)
 }
 
-/// A genre's styles; none for an unknown genre.
-pub fn styles_of(genre: &str) -> &'static [&'static str] {
-    GENRES
-        .iter()
-        .find(|(g, _)| *g == genre)
-        .map_or(&[], |(_, s)| s)
-}
-
 /// Every style once, by name (a few sit under two genres).
 pub fn all_styles() -> Vec<&'static str> {
     let mut all: Vec<&str> = GENRES.iter().flat_map(|(_, s)| s.iter().copied()).collect();
     all.sort_by_key(|s| s.to_lowercase());
     all.dedup();
     all
-}
-
-/// Whether `style` is one of `genre`'s styles.
-pub fn genre_has(genre: &str, style: &str) -> bool {
-    styles_of(genre).contains(&style)
 }
 
 #[cfg(test)]
@@ -626,14 +613,6 @@ mod tests {
         assert_eq!(genres().count(), 15);
         assert!(GENRES.iter().all(|(_, s)| !s.is_empty()));
         assert_eq!(genres().next(), Some("Blues"));
-    }
-
-    #[test]
-    fn styles_belong_to_their_genres() {
-        assert!(genre_has("Electronic", "Deep House"));
-        assert!(!genre_has("Jazz", "Deep House"));
-        assert!(genre_has("Funk / Soul", "Disco") && genre_has("Electronic", "Disco"));
-        assert!(styles_of("Polka").is_empty());
     }
 
     #[test]
