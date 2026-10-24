@@ -2301,15 +2301,6 @@ impl DiggrApp {
                 result,
             } => self.seller_counted(&seller, &query, result),
             Event::SellerLookup { name, result } => self.seller_looked_up(&name, result),
-            Event::Scanned {
-                seller,
-                copies,
-                read,
-                pages,
-                total,
-                done,
-            } => self.seller_scanned(&seller, copies, (read, pages, total, done)),
-            Event::ScanFailed { seller, error } => self.seller_scan_failed(&seller, &error),
             Event::CartAdded { listings, result } => self.cart_added(&listings, result),
             Event::CartRemoved { listing, result } => self.cart_removed(listing, result),
             Event::Started(j) => {

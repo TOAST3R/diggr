@@ -42,3 +42,11 @@
 - [x] 7.1 Hide the Style row while a genre is picked and the Genre row while a style is picked; the "all" section lists every style; a saved pair opens with the style kept; drop `styles_of` and `genre_has`
 - [x] 7.2 Headless tests: picking a style hides the genre, "Any style" brings it back, picking a genre hides the style; the dig and refresh test uses a style and text
 - [x] 7.3 Spec, design, README and CHANGELOG say one at a time
+
+## 8. Nothing waits for listings
+
+- [x] 8.1 `Criteria`: `format` (Vinyl, CD, Cassette) and `year` as search words in `discogs_query()`; drop `formats`, prices, condition, `is_local`, `matches`; `inventory_page` keeps every copy for sale
+- [x] 8.2 Remove the Narrow down scan: `ScanInventory`, `CancelScan`, `Scanned`, `ScanFailed` and the intake's scan step; the dialog's scan state, progress and price fields
+- [x] 8.3 Narrow down: Format dropdown and Year field (counted at once / after the typing pause); Price and Condition rows gone; the cap note names the new criteria
+- [x] 8.4 Tests: format and year words; old saved filters load; a headless test that format and year are counted with no listings read and dug; scan tests removed
+- [x] 8.5 Spec, design, proposal, README and CHANGELOG

@@ -9,6 +9,8 @@ A big seller is hard to dig. www.hhv.de has 159,648 copies for sale, and Discogs
 - **A genre or a style, not both:** picking one hides the other's dropdown; "Any genre" / "Any style" brings it back.
 - The genre or style picked is sent to Discogs as quoted phrases in the inventory search, with the search text, so they narrow the whole stock with one count. Like the other criteria, they're saved with the seller and reused by every refresh.
 - No per-style or per-genre totals: the dropdowns cost no requests. The modal's count is still the only one.
+- **Format** becomes a dropdown (Any, Vinyl, CD, Cassette) and a **Year** field is added, both searched for by Discogs, so every change costs one count and nothing waits for pages of listings.
+- **BREAKING (saved data, fail soft):** Price and Condition are removed: Discogs can't search on them, and reading 100 pages of listings to filter them took minutes. File and Other leave the format choice (Discogs' search can't tell them apart).
 - **BREAKING (saved data, fail soft):** the "Ships from" filter is removed from the modal and the criteria. Copies still carry and show their country. A seller saved with countries loads normally, and its next refresh no longer filters by country.
 - The count line no longer reads "10,000 match" when the number is Discogs' 10,000 cap: it says that only the first 10,000 can be read.
 

@@ -16,14 +16,16 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Improved
 
-- **Dig a giant shop by style.** Narrow down now lets you pick a genre or a style, so a seller
-  with 150,000 records becomes the 4,000 Deep House ones in a second, across their whole stock,
-  not just the newest. The styles you collect and want come first, and the list has a search.
+- **Dig a giant shop by style.** Narrow down now lets you pick a genre or a style, a format and a
+  year, so a seller with 150,000 records becomes the 4,000 Deep House ones in a second, across
+  their whole stock, not just the newest. Every change answers at once, and the styles you
+  collect and want come first in a list you can search.
 
 ### Changed
 
-- **No more "ships from" in Narrow down.** Each copy still shows the country it ships from; a
-  seller you narrowed by country keeps its other criteria.
+- **A quicker Narrow down.** Price, condition and ships-from are gone, so the dialog never waits
+  for pages of listings. Each copy still shows its price, condition and country; a seller you
+  narrowed by them keeps its other choices.
 
 ## 0.1.2 — 2026-10-22
 

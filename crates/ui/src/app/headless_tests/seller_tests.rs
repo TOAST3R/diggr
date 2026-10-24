@@ -763,51 +763,74 @@ fn a_big_seller_asks_to_narrow_down() {
     // Newest 500: Discogs applies it, so Dig is offered at once.
     dig_dialog_mut(&mut rig).criteria.newest = Some(500);
     rig.frame(Vec::new());
-    assert_eq!(dig_dialog(&rig).unwrap().matching(), Some((500, true)));
+    assert_eq!(dig_dialog(&rig).unwrap().matching(), Some(500));
     assert!(dig_dialog(&rig).unwrap().can_dig());
 }
 
 #[test]
-fn criteria_applied_here_read_the_listings_first() {
+fn format_and_year_are_counted_by_discogs_without_reading_listings() {
+    use ::dig::discogs::model::Format;
     let fakes = Fakes::new();
-    let (mut rig, _, logon) = two_sellers("sellers-scan", &fakes);
-    // 1,500 copies: 600 on vinyl, 900 on CD.
-    let stock: Vec<(u64, u64, f64, &str)> = (0..1500)
-        .map(|n| {
-            (
-                100 + n,
-                1001 + n % 2,
-                9.0,
-                if n % 5 < 2 { "12\"" } else { "CD" },
-            )
-        })
-        .collect();
-    fakes.inventory("logon", "", &stock);
+    let (mut rig, _, logon) = two_sellers("sellers-format-year", &fakes);
+    fakes.count("logon", 159_648);
+    let copies = |n: u64| -> Vec<(u64, u64, f64, &str)> {
+        (0..n)
+            .map(|k| (100 + k, 1001 + k % 2, 9.0, "12\""))
+            .collect()
+    };
+    fakes.inventory("logon", "vinyl", &copies(1500));
+    fakes.inventory("logon", "vinyl 2025", &copies(300));
     double_click_seller(&mut rig, "logon");
     rig.until(
-        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(1500)),
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
         "counted",
     );
-    dig_dialog_mut(&mut rig).criteria.formats = vec![::dig::discogs::model::Format::Vinyl];
+    let out = rig.frame(Vec::new());
+    for gone in ["Price", "Condition", "Ships from", "Other"] {
+        assert!(!shows(&out, gone), "{gone}: {:?}", text_list(&out));
+    }
+
+    rig.click_text("Any format");
+    rig.click_text("Vinyl");
     rig.until(
-        |r| dig_dialog(r).is_some_and(|d| d.matching() == Some((600, true))),
-        "the listings are read and counted",
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(1500)),
+        "the format is counted",
+    );
+    assert_eq!(
+        dig_dialog(&rig).unwrap().criteria.format,
+        Some(Format::Vinyl)
+    );
+    let d = dig_dialog_mut(&mut rig);
+    d.year = "2025".into();
+    d.read_year();
+    d.picked();
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(300)),
+        "the year is counted",
     );
     assert!(dig_dialog(&rig).unwrap().can_dig());
+    let read = fakes
+        .transport
+        .paths()
+        .iter()
+        .filter(|p| p.starts_with("/users/logon/inventory") && p.contains("per_page=100"))
+        .count();
+    assert_eq!(read, 0, "only counts before Dig, never pages of listings");
+
     rig.click_text("Dig");
     rig.until(
         |r| {
             r.app
                 .crates
                 .get(logon)
-                .is_some_and(|p| p.copies().len() == 600)
+                .is_some_and(|p| p.copies().len() == 300)
         },
-        "only the vinyl copies come in",
+        "the vinyl copies of 2025 come in",
     );
+    let saved = seller(&rig, "logon").criteria;
     assert_eq!(
-        seller(&rig, "logon").criteria.formats,
-        [::dig::discogs::model::Format::Vinyl],
-        "the criteria are kept for refreshes"
+        (saved.format, saved.year),
+        (Some(Format::Vinyl), Some(2025))
     );
 }
 
@@ -1786,7 +1809,7 @@ fn a_style_narrows_the_whole_stock_with_one_count() {
     assert!(
         texts
             .iter()
-            .any(|t| t.starts_with("Discogs only shows the first 10,000: a genre, a style")),
+            .any(|t| t.starts_with("Discogs only shows the first 10,000: a genre or style")),
         "{texts:?}"
     );
     assert!(

@@ -806,9 +806,9 @@ seller…**.
 - **A click shows, a double-click digs:** clicking a seller crate only shows what it holds,
   with no request to Discogs. A double-click on one never dug counts its copies (one request)
   and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes a
-  **genre** or a **style**, search text and "only the newest N" (Discogs applies them, across the
-  seller's whole stock, so the count is instant), and format, price and minimum condition (read
-  from the listings: a progress line shows them coming). A genre or a style, not both: picking
+  **genre** or a **style**, a **format** (Vinyl, CD or Cassette), a **year**, search text and
+  "only the newest N". Discogs applies them all, across the seller's whole stock, so each change
+  is one count and answers at once. A genre or a style, not both: picking
   one hides the other until you pick "Any" again. The style list has a search field and puts
   first the styles of this seller's crate (once dug), then those of your wantlist and
   collection, then every Discogs style. Discogs searches for the genre or style as words, so a
@@ -1295,7 +1295,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 987 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 984 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1506,7 +1506,7 @@ What's covered:
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (genre or style, the style
-  dropdown's sections, search text, newest N, criteria read from the listings, the 10,000 cap), refreshes (new, sold, cheaper, past the limit, failed),
+  dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap), refreshes (new, sold, cheaper, past the limit, failed),
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real

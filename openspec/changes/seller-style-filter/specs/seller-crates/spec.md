@@ -3,15 +3,16 @@
 ### Requirement: Narrow down
 When a seller has more than 1,000 copies for sale, the Narrow down modal SHALL offer these criteria:
 - a genre, chosen from a dropdown of Discogs' genres with "Any genre" first, or a style, chosen from a dropdown (see "Style dropdown"), never both;
+- a format, chosen from a dropdown: Any format, Vinyl, CD or Cassette;
+- a year, typed as four digits;
 - search text;
-- "newest N" (N from 50 to 1,000);
-- format group (Vinyl, File, CD, Cassette, Other);
-- a price range;
-- a minimum media condition.
+- "newest N" (N from 50 to 1,000).
 
-A genre and a style SHALL NOT be searched together: while a genre is picked, the style dropdown SHALL be hidden, and while a style is picked, the genre dropdown SHALL be hidden; picking "Any genre" or "Any style" SHALL show the other again. Discogs SHALL apply the genre or style and the search text: they SHALL be sent in the inventory search as the genre or style in double quotes, then the search text, each part left out when empty (`"Deep House" ostgut`). Every count and every inventory read for the seller SHALL use that same search. The dropdowns SHALL send no request of their own and SHALL show no per-genre or per-style totals.
+Discogs SHALL apply every criterion, so the modal SHALL never read pages of listings before Dig: each change SHALL cost at most one count request, sent at once for a dropdown and once typing pauses for the year or the search text.
 
-It SHALL show the number of copies matching the current criteria, updated within one frame of each change once the listings it needs are read. While listings are read, it SHALL show progress and offer Cancel. Dig SHALL be enabled only when 1 to 1,000 copies match. When more than 10,000 copies match the genre or style and the search text, the modal SHALL say that Discogs only shows the first 10,000 and suggest a genre, a style, search text or newest N, and SHALL NOT present those 10,000 as the number that match. The criteria SHALL be saved with the seller and reused by every refresh. Right-clicking a dug seller crate SHALL offer Narrow down… to change them. A seller saved with criteria this modal no longer offers (countries the copies ship from) SHALL load, with those criteria ignored.
+A genre and a style SHALL NOT be searched together: while a genre is picked, the style dropdown SHALL be hidden, and while a style is picked, the genre dropdown SHALL be hidden; picking "Any genre" or "Any style" SHALL show the other again. They SHALL be sent in the inventory search as the genre or style in double quotes, then the format's name in lower case, then the year, then the search text, each part left out when empty (`"Deep House" vinyl 2025 ostgut`). Every count and every inventory read for the seller SHALL use that same search. The dropdowns SHALL send no request of their own and SHALL show no per-genre or per-style totals.
+
+It SHALL show the number of copies matching the current criteria, as Discogs counts them. Dig SHALL be enabled only when 1 to 1,000 copies match. When more than 10,000 copies match, the modal SHALL say that Discogs only shows the first 10,000 and suggest a genre or style, a format, a year, search text or newest N, and SHALL NOT present those 10,000 as the number that match. The criteria SHALL be saved with the seller and reused by every refresh. Right-clicking a dug seller crate SHALL offer Narrow down… to change them. A seller saved with criteria this modal no longer offers (format groups, a price range, a minimum condition, countries the copies ship from) SHALL load, with those criteria ignored.
 
 #### Scenario: Search narrows
 - **WHEN** decks.de has 40,728 copies and the user types "techno"
@@ -33,9 +34,13 @@ It SHALL show the number of copies matching the current criteria, updated within
 - **WHEN** the user picks newest 500 for decks.de
 - **THEN** the count shows 500 and Dig is enabled
 
-#### Scenario: Local criteria
-- **WHEN** Wavelength_Records has 1,851 copies, the listings are read, and the user ticks Vinyl and sets a price of at most €15
-- **THEN** the count shows the number of vinyl copies at €15 or less within one frame, and Dig is enabled once it is 1,000 or fewer
+#### Scenario: Format and year
+- **WHEN** www.hhv.de has 159,648 copies and the user picks the genre Electronic, the format Vinyl and types the year 2025
+- **THEN** the count uses the search `"Electronic" vinyl 2025` and shows its answer (6,555), and no page of listings is read
+
+#### Scenario: Nothing waits for listings
+- **WHEN** the user changes any criterion in Narrow down
+- **THEN** at most one count request is sent, and no "Reading listings" progress is shown
 
 #### Scenario: Beyond 10,000
 - **WHEN** the user double-clicks "Seller: www.hhv.de", which has 159,183 copies for sale
@@ -47,7 +52,7 @@ It SHALL show the number of copies matching the current criteria, updated within
 
 #### Scenario: Old saved countries
 - **WHEN** a seller was saved with criteria that include ships-from countries
-- **THEN** the seller list loads, the seller keeps its other criteria, and its next refresh does not filter by country
+- **THEN** the seller list loads, the seller keeps its other criteria, and its next refresh does not filter by country, format group, price or condition
 
 ## ADDED Requirements
 
