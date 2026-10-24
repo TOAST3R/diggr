@@ -1568,13 +1568,14 @@ impl DiggrApp {
                 }
             }
         };
-        // Copy rows hold no audio: the cursor steps over them the way it was going.
+        // Copy rows (and Add next) hold no audio: the cursor steps over them the way it was
+        // going.
         let down = matches!(
             mv,
             CursorMove::Down | CursorMove::PageDown | CursorMove::End
         );
         let mut to = to;
-        while matches!(rows[to], ListRow::Copy { .. }) {
+        while matches!(rows[to], ListRow::Copy { .. } | ListRow::More { .. }) {
             match (down, to) {
                 (true, t) if t < last => to += 1,
                 (_, t) if t > 0 => to -= 1,
@@ -1621,16 +1622,36 @@ impl DiggrApp {
     fn pl_list(&self) -> Rc<Vec<ListRow>> {
         let id = self.crates.shown_id();
         let p = self.crates.shown();
-        let key = (id, p.rev(), p.is_grouped(), self.pl_open_rev);
+        let more = self.more_to_add(id);
+        let key = (id, p.rev(), p.is_grouped(), self.pl_open_rev, more);
         if let Some((k, rows)) = &*self.pl_rows_cache.borrow()
             && *k == key
         {
             return rows.clone();
         }
         let empty = HashSet::new();
-        let rows = Rc::new(records::build(p, self.pl_open.get(&id).unwrap_or(&empty)));
+        let mut rows = records::build(p, self.pl_open.get(&id).unwrap_or(&empty));
+        if let (Some((next, left)), Some(last)) = (more, rows.last()) {
+            let first = last.first();
+            rows.push(ListRow::More { next, left, first });
+        }
+        let rows = Rc::new(rows);
         *self.pl_rows_cache.borrow_mut() = Some((key, rows.clone()));
         rows
+    }
+
+    /// What Add next would bring into crate `id`, a seller crate dug 1,000 at a time: the next
+    /// copies and all those left.
+    fn more_to_add(&self, id: CrateId) -> Option<(usize, usize)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self
+            .seller_more_left(id)
+            .map(|left| (left.min(dig::discogs::seller::LIMIT), left));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = id;
+            None
+        }
     }
 
     /// Scrolls the playlist by the least amount that shows entry `index` (a crate index): its
@@ -4328,6 +4349,49 @@ impl DiggrApp {
         }
     }
 
+    /// The last row of a seller crate dug 1,000 at a time: a click adds the next 1,000.
+    #[allow(clippy::too_many_arguments)]
+    fn more_row(
+        &self,
+        ui: &mut Ui,
+        clip: &egui::Painter,
+        rr: Rect,
+        (next, left): (usize, usize),
+        font: &egui::FontId,
+        colors: &crate::skin::Colors,
+        actions: &mut Vec<Action>,
+    ) {
+        let resp = ui
+            .interact(rr, Id::new("pl_more"), Sense::click())
+            .on_hover_text("Read the next copies from Discogs into this crate");
+        let col = if resp.hovered() {
+            colors.pl_current
+        } else {
+            colors.pl_text
+        };
+        let n = |v: usize| format::thousands(v);
+        let text = if left > next {
+            format!("+ ADD NEXT {} · {} MORE", n(next), n(left))
+        } else {
+            format!("+ ADD THE LAST {}", n(left))
+        };
+        clip.with_clip_rect(rr).text(
+            pos2(rr.left() + rr.height() / 2.0, rr.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            font.clone(),
+            color(col),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if resp.clicked() {
+            use crate::app::sellers::SellerAction;
+            let id = self.crates.shown_id();
+            actions.push(Action::Dig(DigAction::Seller(SellerAction::More(id))));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (resp, actions);
+    }
+
     /// A store entry's cart pill.
     fn store_pill(&self, e: &crate::playlist::Entry) -> Option<StorePill> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -5086,7 +5150,7 @@ impl DiggrApp {
                 .take(records::fit(&list_rows, self.pl_scroll, visible))
                 .filter_map(|r| match r {
                     ListRow::Entry { idx, .. } => Some(*idx),
-                    ListRow::Record(_) | ListRow::Copy { .. } => None,
+                    ListRow::Record(_) | ListRow::Copy { .. } | ListRow::More { .. } => None,
                 })
                 .find(|&idx| egui::Popup::is_id_open(ui.ctx(), row_menu_id(idx)))
                 .map(|idx| {
@@ -5108,6 +5172,24 @@ impl DiggrApp {
                 y += row.units();
                 let (idx, track) = match row {
                     ListRow::Entry { idx, track } => (*idx, *track),
+                    ListRow::More { next, left, .. } => {
+                        let rr = sk.rect(
+                            l.x as f32,
+                            rows_top + at_y as f32 * row_h,
+                            l.w as f32,
+                            row_h,
+                        );
+                        self.more_row(
+                            ui,
+                            &clip,
+                            rr,
+                            (*next, *left),
+                            &font,
+                            &d.colors,
+                            &mut actions,
+                        );
+                        continue;
+                    }
                     ListRow::Copy { listing, .. } => {
                         let indent = if columns {
                             0.0
@@ -6734,7 +6816,7 @@ fn unix_now() -> u64 {
 
 /// What the playlist's rows were built from: the crate, its revision, whether it's grouped,
 /// and the open records' revision.
-type RowsKey = (CrateId, u64, bool, u64);
+type RowsKey = (CrateId, u64, bool, u64, Option<(usize, usize)>);
 
 /// How record rows are drawn this frame.
 struct RecordLook<'a> {

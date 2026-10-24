@@ -812,7 +812,9 @@ seller…**.
   of this seller's crate (once dug), then those of your wantlist and collection, then every
   Discogs style; with a genre picked, only that genre's. Discogs searches for the genre and style
   as words, so a title or label that contains them matches too; the crate's style filter tidies
-  that up after the dig. Dig is offered once 1 to 1,000 copies match. Discogs only lets anyone
+  that up after the dig. Dig is offered once 1 to 5,000 copies match: up to 1,000 come in at once;
+  beyond that, **Dig the newest 1,000** brings those, and the crate's list ends with **+ ADD NEXT
+  1,000 · N MORE**, which reads the next thousand only when you click it. Discogs only lets anyone
   read the first 10,000 copies of another user's stock, and the dialog says so. The criteria are
   kept for refreshes. A double-click on a crate dug more than a day ago refreshes it;
   within a day it just shows it.
@@ -1294,7 +1296,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 985 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 986 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1505,7 +1507,8 @@ What's covered:
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
   the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (genre and style, the style
-  dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap), refreshes (new, sold, cheaper, past the limit, failed),
+  dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap, up
+  to 5,000 a thousand at a time from the list's last row), refreshes (new, sold, cheaper, past the limit, failed),
   Add seller, a pasted or browser-sent seller page, Remove seller, copy rows and the cursor
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real

@@ -56,3 +56,12 @@
 - [x] 9.1 Both dropdowns always show; with a genre, every style section holds that genre's styles; changing the genre clears a style it doesn't have; `styles_of` and `genre_has` back; the Genre dropdown shows all 16 without scrolling
 - [x] 9.2 Tests: Rock keeps the style dropdown with Rock styles only, Deep House cleared, Rock + Punk searched together; genre + style + text dug and refreshed
 - [x] 9.3 Spec, design, proposal, README and CHANGELOG
+
+## 10. Up to 5,000, a thousand at a time
+
+- [x] 10.1 `Criteria.limit` and `window()` (pages and the newest cut use it), `MAX_DIG`, `Seller.matching`, `PageKind::Inventory.from_page` (the job starts there)
+- [x] 10.2 Narrow down: Dig enabled up to 5,000, "Dig the newest 1,000" beyond 1,000, the count line says the rest come when asked; Dig saves the limit and the match count
+- [x] 10.3 Refresh: up to 5,000 for a crate with a limit; keeps the limit and records the count
+- [x] 10.4 `ListRow::More` at the end of the list ("+ ADD NEXT 1,000 · N MORE" / "+ ADD THE LAST N"), skipped by the cursor; a click reads the next ten pages into the crate
+- [x] 10.5 Tests: window and pages; 3,412 copies dug 1,000 at a time with only the next pages read and nothing before a click; 1,200 now diggable
+- [x] 10.6 Spec, design, proposal, README and CHANGELOG

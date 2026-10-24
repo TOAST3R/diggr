@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use dig::discogs::cart::{AddResult, CartItem, CartSnapshot};
 use dig::discogs::client::ApiError;
-use dig::discogs::seller::{Copy, Criteria, LIMIT, Ranked, reachable};
+use dig::discogs::seller::{Copy, Criteria, LIMIT, MAX_DIG, PER_PAGE, Ranked, reachable};
 use dig::discogs::styles;
 use dig::discogs::url::{Page, PageKind};
 use dig::intake::Command;
@@ -18,6 +18,7 @@ use dig::sellers::{DoubleClick, Seller, Source};
 
 use super::DiggrApp;
 use crate::crates::{CrateId, MAX_NAME};
+pub use crate::format::thousands;
 use crate::playlist::Facet;
 use crate::playlist::SaleCopy;
 
@@ -110,9 +111,9 @@ impl DigDialog {
         Some(reachable(self.total()?, &self.criteria))
     }
 
-    /// Dig is offered: 1 to 1,000 copies match.
+    /// Dig is offered: 1 to 5,000 copies match (beyond 1,000, the newest 1,000 come first).
     pub(super) fn can_dig(&self) -> bool {
-        self.matching().is_some_and(|n| (1..=LIMIT).contains(&n))
+        self.matching().is_some_and(|n| (1..=MAX_DIG).contains(&n))
     }
 
     /// Reads the year field into the criteria: four digits, or no year.
@@ -257,6 +258,8 @@ pub enum SellerAction {
     Refresh(CrateId),
     /// Narrow down… with the saved criteria.
     Narrow(CrateId),
+    /// Add next: the next 1,000 matching copies.
+    More(CrateId),
     /// Remove seller… (asks first).
     Remove(CrateId),
     /// A copy's listing on discogs.com.
@@ -295,6 +298,41 @@ impl DiggrApp {
             .collect()
     }
 
+    /// Copies Add next can still bring into seller crate `id` (5,000 in all at most), when its
+    /// dig stopped at a limit and nothing runs for it.
+    pub(super) fn seller_more_left(&self, id: CrateId) -> Option<usize> {
+        let s = self.dig.as_ref()?.sellers.by_crate(id)?;
+        let held = s.criteria.limit? as usize;
+        let left = s.matching.min(MAX_DIG).saturating_sub(held);
+        (left > 0 && !self.seller_busy(id)).then_some(left)
+    }
+
+    /// Add next: the crate's limit grows by 1,000, and only the pages after the ones it holds
+    /// are read, straight into the crate.
+    fn seller_more(&mut self, id: CrateId) {
+        if self.seller_more_left(id).is_none() || !self.crates.load(id) {
+            return;
+        }
+        let Some(d) = &mut self.dig else { return };
+        let Some(s) = d.sellers.by_crate_mut(id) else {
+            return;
+        };
+        let held = s.criteria.limit.unwrap_or(0);
+        s.criteria.limit = Some(held + LIMIT as u32);
+        let (seller, criteria) = (s.username.clone(), s.criteria.clone());
+        let e = d.save_sellers();
+        self.dig_notify(e);
+        self.dig_send_to(
+            Page::new(PageKind::Inventory {
+                seller,
+                criteria,
+                fresh: false,
+                from_page: held / PER_PAGE + 1,
+            }),
+            id,
+        );
+    }
+
     /// A dig or refresh of this seller's crate is running.
     pub(super) fn seller_busy(&self, crate_id: CrateId) -> bool {
         self.dig.as_ref().is_some_and(|d| d.has_job_for(crate_id))
@@ -310,6 +348,7 @@ impl DiggrApp {
             }
             SellerAction::Dig(id) => self.seller_double_click(id),
             SellerAction::Refresh(id) => self.seller_refresh(id),
+            SellerAction::More(id) => self.seller_more(id),
             SellerAction::Narrow(id) => {
                 let Some(seller) = self.seller_of_crate(id) else {
                     return;
@@ -477,11 +516,22 @@ impl DiggrApp {
             let Some(s) = d.sellers.by_crate(id).cloned() else {
                 return;
             };
+            // A crate dug 1,000 at a time takes up to 5,000; one dug whole, up to 1,000.
+            let most = if s.criteria.limit.is_some() {
+                MAX_DIG
+            } else {
+                LIMIT
+            };
             match result {
-                Ok(total) if reachable(total, &s.criteria) > LIMIT => {
+                Ok(total) if reachable(total, &s.criteria) > most => {
                     self.seller_open_dig(id, &s.username, s.criteria.clone(), true);
                 }
-                Ok(_) => self.seller_start(id, s.criteria.clone(), true),
+                Ok(total) => {
+                    if let Some(s) = d.sellers.by_crate_mut(id) {
+                        s.matching = reachable(total, &s.criteria);
+                    }
+                    self.seller_start(id, s.criteria.clone(), true);
+                }
                 Err(e) => self.notify(format!("{seller}: the refresh failed: {}", e.message())),
             }
             return;
@@ -523,12 +573,19 @@ impl DiggrApp {
                 .by_crate(dialog.crate_id)
                 .is_some_and(|s| s.last_dug.is_some());
         let total = dialog.total();
-        if let (Some(s), Some(n)) = (d.sellers.by_crate_mut(dialog.crate_id), total)
-            && dialog.criteria.discogs_query().is_empty()
-        {
-            s.total = n;
+        let matching = dialog.matching().unwrap_or(0);
+        if let Some(s) = d.sellers.by_crate_mut(dialog.crate_id) {
+            if let Some(n) = total
+                && dialog.criteria.discogs_query().is_empty()
+            {
+                s.total = n;
+            }
+            s.matching = matching;
         }
-        self.seller_start(dialog.crate_id, dialog.criteria, fresh);
+        // Beyond 1,000, the newest 1,000 come in; Add next brings the rest.
+        let mut criteria = dialog.criteria;
+        criteria.limit = (matching > LIMIT).then_some(LIMIT as u32);
+        self.seller_start(dialog.crate_id, criteria, fresh);
     }
 
     pub(super) fn seller_dialog_closed(&mut self) {
@@ -560,6 +617,7 @@ impl DiggrApp {
                 seller,
                 criteria,
                 fresh,
+                from_page: 0,
             }),
             id,
         );
@@ -597,7 +655,7 @@ impl DiggrApp {
         if !ok {
             return;
         }
-        if fresh.len() > LIMIT {
+        if seller.criteria.limit.is_none() && fresh.len() > LIMIT {
             self.notify(format!(
                 "{}: more than {LIMIT} copies match now; narrow it down",
                 seller.username
@@ -1037,19 +1095,6 @@ impl DiggrApp {
     }
 }
 
-/// "40,728".
-pub fn thousands(n: usize) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 /// The Dig / Narrow down dialog's contents.
 fn dig_dialog_body<C>(
     ui: &mut egui::Ui,
@@ -1190,10 +1235,18 @@ fn dig_dialog_body<C>(
             && total.is_some_and(|n| n > (MAX_PAGES * PER_PAGE) as usize);
         match dlg.matching() {
             _ if capped => {}
-            Some(n) if n > LIMIT => {
+            Some(n) if n > MAX_DIG => {
                 ui.label(format!(
                     "{} match: narrow it down to {} or fewer",
                     thousands(n),
+                    thousands(MAX_DIG)
+                ));
+            }
+            Some(n) if n > LIMIT => {
+                ui.label(format!(
+                    "{} match: Dig brings the newest {}, then {} more each time you ask",
+                    thousands(n),
+                    thousands(LIMIT),
                     thousands(LIMIT)
                 ));
             }
@@ -1211,8 +1264,13 @@ fn dig_dialog_body<C>(
         }
     }
     ui.horizontal(|ui| {
+        let label = if dlg.matching().is_some_and(|n| n > LIMIT) {
+            format!("Dig the newest {}", thousands(LIMIT))
+        } else {
+            "Dig".to_owned()
+        };
         if ui
-            .add_enabled(dlg.can_dig(), egui::Button::new("Dig"))
+            .add_enabled(dlg.can_dig(), egui::Button::new(label))
             .clicked()
         {
             *choice = Some(dig());

@@ -37,6 +37,9 @@ pub struct Seller {
     /// Copies for sale at the last count.
     #[serde(default)]
     pub total: usize,
+    /// Copies matching its criteria at the last count (what Add next can reach).
+    #[serde(default)]
+    pub matching: usize,
 }
 
 impl Seller {
@@ -48,6 +51,7 @@ impl Seller {
             criteria: Criteria::default(),
             last_dug: None,
             total: 0,
+            matching: 0,
         }
     }
 

@@ -29,12 +29,15 @@ pub enum PageKind {
     Seller(String),
     /// A seller's stock as a send: their copies for sale that pass the criteria, newest
     /// first. With `fresh`, listing pages are read again rather than taken from the cache (a
-    /// refresh). Made by the app, never parsed from an address.
+    /// refresh). From page `from_page` (Add next: the pages the crate holds are skipped; 0 or
+    /// 1 reads them all). Made by the app, never parsed from an address.
     Inventory {
         seller: String,
         criteria: Criteria,
         #[serde(default)]
         fresh: bool,
+        #[serde(default)]
+        from_page: u32,
     },
 }
 

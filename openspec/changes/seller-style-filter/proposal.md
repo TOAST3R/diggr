@@ -12,6 +12,7 @@ A big seller is hard to dig. www.hhv.de has 159,648 copies for sale, and Discogs
 - **Format** becomes a dropdown (Any, Vinyl, CD, Cassette) and a **Year** field is added, both searched for by Discogs, so every change costs one count and nothing waits for pages of listings.
 - **BREAKING (saved data, fail soft):** Price and Condition are removed: Discogs can't search on them, and reading 100 pages of listings to filter them took minutes. File and Other leave the format choice (Discogs' search can't tell them apart).
 - **BREAKING (saved data, fail soft):** the "Ships from" filter is removed from the modal and the criteria. Copies still carry and show their country. A seller saved with countries loads normally, and its next refresh no longer filters by country.
+- **Dig up to 5,000, 1,000 at a time:** with 1,001 to 5,000 matching, Dig brings the newest 1,000, and the crate's list ends with "+ ADD NEXT 1,000 · ‹N› MORE"; each click reads only the next ten pages. Nothing more is read until the user clicks.
 - The count line no longer reads "10,000 match" when the number is Discogs' 10,000 cap: it says that only the first 10,000 can be read.
 
 ## Capabilities

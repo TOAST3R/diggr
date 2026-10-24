@@ -756,9 +756,11 @@ fn a_big_seller_asks_to_narrow_down() {
         "searched",
     );
     assert!(
-        !dig_dialog(&rig).unwrap().can_dig(),
-        "1,200 is still too many"
+        dig_dialog(&rig).unwrap().can_dig(),
+        "1,200: the newest 1,000 first"
     );
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Dig the newest 1,000"), "{:?}", text_list(&out));
 
     // Newest 500: Discogs applies it, so Dig is offered at once.
     dig_dialog_mut(&mut rig).criteria.newest = Some(500);
@@ -1834,7 +1836,7 @@ fn a_style_narrows_the_whole_stock_with_one_count() {
     );
     let d = dig_dialog(&rig).unwrap();
     assert_eq!(d.criteria.style.as_deref(), Some("Deep House"));
-    assert!(!d.can_dig(), "1,200 is still too many");
+    assert!(d.can_dig(), "1,200: the newest 1,000 first");
     assert_eq!(inventory_counts(&fakes, "\"Deep House\""), 1);
 }
 
@@ -1960,4 +1962,80 @@ fn the_style_dropdown_lists_this_crate_then_yours_then_all() {
         (Some("Rock"), Some("Punk"))
     );
     assert_eq!(d.criteria.discogs_query(), "\"Rock\" \"Punk\"");
+}
+
+#[test]
+fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
+    let fakes = Fakes::new();
+    let (mut rig, _, logon) = two_sellers("sellers-more", &fakes);
+    fakes.count("logon", 159_648);
+    let stock: Vec<(u64, u64, f64, &str)> = (0..3412)
+        .map(|k| (100 + k, 1001 + k % 2, 9.0, "12\""))
+        .collect();
+    fakes.inventory("logon", "vinyl", &stock);
+    double_click_seller(&mut rig, "logon");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
+        "counted",
+    );
+    assert!(!dig_dialog(&rig).unwrap().can_dig(), "over 5,000");
+    let d = dig_dialog_mut(&mut rig);
+    d.criteria.format = Some(::dig::discogs::model::Format::Vinyl);
+    d.picked();
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(3412)),
+        "the format is counted",
+    );
+    assert!(dig_dialog(&rig).unwrap().can_dig(), "3,412 can be dug");
+    rig.click_text("Dig the newest 1,000");
+    let copies = |r: &Rig| r.app.crates.get(logon).map_or(0, |p| p.copies().len());
+    rig.until(
+        |r| copies(r) == 1000 && !r.app.seller_busy(logon),
+        "the newest 1,000",
+    );
+    let saved = seller(&rig, "logon");
+    assert_eq!((saved.criteria.limit, saved.matching), (Some(1000), 3412));
+    let page = |n: u32| inventory_path("logon", "vinyl", n, 100);
+    let reads = |n: u32| {
+        fakes
+            .transport
+            .paths()
+            .iter()
+            .filter(|p| **p == page(n))
+            .count()
+    };
+    assert_eq!(
+        (reads(10), reads(11)),
+        (1, 0),
+        "nothing past the first 1,000 is read"
+    );
+
+    // Nothing more comes until the last row is clicked.
+    for _ in 0..20 {
+        rig.pump();
+    }
+    assert_eq!(copies(&rig), 1000);
+    rig.click_text("+ ADD NEXT 1,000 · 2,412 MORE");
+    rig.until(
+        |r| copies(r) == 2000 && !r.app.seller_busy(logon),
+        "the next 1,000",
+    );
+    assert_eq!(
+        (reads(1), reads(11), reads(20), reads(21)),
+        (1, 1, 1, 0),
+        "pages 11 to 20 only"
+    );
+    rig.click_text("+ ADD NEXT 1,000 · 1,412 MORE");
+    rig.until(|r| copies(r) == 3000 && !r.app.seller_busy(logon), "3,000");
+    rig.click_text("+ ADD THE LAST 412");
+    rig.until(
+        |r| copies(r) == 3412 && !r.app.seller_busy(logon),
+        "all of them",
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        !text_list(&out).iter().any(|t| t.starts_with("+ ADD")),
+        "nothing left to add"
+    );
+    assert_eq!(seller(&rig, "logon").criteria.limit, Some(4000));
 }

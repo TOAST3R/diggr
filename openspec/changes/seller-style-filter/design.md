@@ -60,6 +60,11 @@ Both dropdowns always show. With a genre picked, every section of the style list
 Probes at hhv: `vinyl` 151,307, `cd` 9,643, `cassette` 2,460, `2025` 20,665, `"Electronic" vinyl 2025` 6,555, so format and year narrow the whole stock with the same single count. Format is one choice (Vinyl, CD, Cassette: the search ANDs words, and `file` matched noise); year is one year (a range would need a count per year). With nothing left to filter locally, the scan (the intake's `ScanInventory`, `Scanned`, `ScanFailed`, the dialog's progress line and Cancel-on-scan) is removed, and `Criteria` loses `formats`, `min_cents`, `max_cents`, `min_condition`, `is_local` and `matches`.
 *Alternative:* keep price and condition and apply them while the dig reads its pages (no count first). Not chosen: the user picked a smaller dialog that answers at once.
 
+**10. Up to 5,000, a thousand at a time, read only on a click.**
+`Criteria.limit` (not a criterion: never in the search) says how many of the newest matching copies the crate holds; `window()` (the lesser of "newest N" and the limit) bounds the pages any read takes, so a refresh re-reads exactly what the crate holds. `Seller.matching` keeps the last count, so the list can say what's left. Add next raises the limit by 1,000 and sends the seller's dig with `PageKind::Inventory.from_page` set past the pages the crate holds (`limit / 100 + 1`), not fresh, so the copies stream straight into the crate. The button is a last list row (`ListRow::More`), like copy rows a row without audio that the cursor steps over; `pl_list`'s cache key carries what it shows, so it appears and goes as digs start and end.
+*Why not a refresh with a bigger window:* a refresh re-reads every page and applies at the end, so the user would wait for 20 or 30 pages before seeing anything. *Why `from_page` and not re-reading:* records would be listed again; harmless (tracks are deduplicated) but slower.
+*Risk:* new listings since the last read shift the pages, so the next 1,000 can repeat a few copies (deduplicated by listing) and skip as many (the next refresh brings them).
+
 ## Risks / Trade-offs
 
 - **Text match, not a facet** → a style catches titles and labels (Deep House: 4,429 vs 4,316). Diggers can tidy up after the dig with the crate's footer style filter, whose styles come from the record details. The README says so.

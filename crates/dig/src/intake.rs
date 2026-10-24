@@ -403,7 +403,10 @@ impl Intake {
                 filters,
             } => {
                 let id = self.jobs.alloc_id();
-                let job = Job::new(id, page, target, filters);
+                let mut job = Job::new(id, page, target, filters);
+                if let PageKind::Inventory { from_page, .. } = job.page.kind {
+                    job.next_page = from_page.max(1);
+                }
                 self.events.push(Event::Started(Self::job_ref(&job)));
                 self.jobs.jobs.push(job);
                 self.active.insert(id);

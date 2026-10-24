@@ -881,6 +881,7 @@ fn send_inventory(i: &mut Intake, criteria: dig::discogs::seller::Criteria) {
             seller: "decks.de".into(),
             criteria,
             fresh: false,
+            from_page: 0,
         }),
         target: CRATE,
         filters: Filters::default(),

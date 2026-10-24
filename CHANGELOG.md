@@ -21,6 +21,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
   their whole stock, not just the newest. Every change answers at once, and the styles you
   collect and want come first in a list you can search.
 
+- **Dig up to 5,000, a thousand at a time.** When up to 5,000 copies match, Dig brings the newest
+  1,000 at once, and the end of the list offers the next 1,000 whenever you want them.
+
 ### Changed
 
 - **A quicker Narrow down.** Price, condition and ships-from are gone, so the dialog never waits

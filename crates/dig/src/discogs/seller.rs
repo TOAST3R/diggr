@@ -13,8 +13,11 @@ use serde_json::Value;
 use super::client::{ApiError, Client, path_segment};
 use super::model::{Format, Listed, RecordKey, Role, clean_artist, formats_from_listing, thumb};
 
-/// A crate is dug only when at most this many copies match.
+/// Copies a dig brings at a time: all of them up to this many, else the newest this many,
+/// then this many more on each Add next.
 pub const LIMIT: usize = 1000;
+/// A crate is dug only when at most this many copies match.
+pub const MAX_DIG: usize = 5000;
 /// Inventory pages Discogs serves for someone else's stock.
 pub const MAX_PAGES: u32 = 100;
 pub const PER_PAGE: u32 = 100;
@@ -101,6 +104,9 @@ pub struct Criteria {
     pub year: Option<u16>,
     /// Only the N most recently listed copies.
     pub newest: Option<u32>,
+    /// How many of the newest matching copies the crate holds, when not all of them: 1,000
+    /// at first, a thousand more with each Add next. Not a criterion: what a refresh re-reads.
+    pub limit: Option<u32>,
 }
 
 /// The formats Narrow down offers: Discogs' search finds them by name.
@@ -134,9 +140,17 @@ impl Criteria {
         .join(" ")
     }
 
+    /// The newest copies a dig reads: "newest N" or the crate's limit, whichever is less.
+    pub fn window(&self) -> Option<u32> {
+        match (self.newest, self.limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// Pages to read for these criteria, given how many the seller has.
     pub fn pages(&self, total_pages: u32) -> u32 {
-        let wanted = self.newest.map_or(MAX_PAGES, |n| n.div_ceil(PER_PAGE));
+        let wanted = self.window().map_or(MAX_PAGES, |n| n.div_ceil(PER_PAGE));
         total_pages.min(MAX_PAGES).min(wanted)
     }
 }
@@ -526,6 +540,18 @@ pub(crate) mod tests {
         assert_eq!(reachable(40_728, &all), 10_000);
         assert_eq!(reachable(40_728, &newest), 250);
         assert_eq!(reachable(475, &all), 475);
+        let held = Criteria {
+            limit: Some(2000),
+            ..Criteria::default()
+        };
+        assert_eq!(held.pages(408), 20, "a crate holding 2,000 reads 20 pages");
+        assert_eq!(reachable(3412, &held), 3412, "the limit isn't a criterion");
+        let both = Criteria {
+            newest: Some(500),
+            limit: Some(1000),
+            ..Criteria::default()
+        };
+        assert_eq!(both.window(), Some(500));
     }
 
     #[test]
