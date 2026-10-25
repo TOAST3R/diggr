@@ -8,6 +8,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### New
 
+- **Insights into your collection.** Right-click your collection and choose Open Insights:
+  your vinyl by year, style and decade, your top labels and artists, what it's worth and your
+  favourite tempos. Click any bar to see those records, and follow a label in one click.
 - **Diggr on Linux.** A download for x86_64 Linux sits next to the Mac one: extract it and run
   the player, or run `install.sh` to add it to your applications menu. No root, and it works on
   any distribution from Debian 11 and Ubuntu 20.04 on.
@@ -16,6 +19,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Improved
 
+- **Your wantlist and collection stay put.** Their menus no longer offer Rename crate or
+  Delete crate, and Delete in the sidebar leaves them alone: they mirror your Discogs account.
 - **Dig a giant shop by style.** Narrow down now lets you pick a genre, a style, a format and a year,
   so a seller with 150,000 records becomes the 4,000 Deep House ones in a second, across
   their whole stock, not just the newest. Every change answers at once, and the styles you

@@ -103,6 +103,10 @@ pub enum Command {
     CountSeller { seller: String, query: String },
     /// Whether a seller exists (Add seller…), by name: their username and copies for sale.
     LookupSeller(String),
+    /// Insights: each label's id and number of releases, found through one of its releases
+    /// (label name, release id); answered one `LabelTotal` at a time, ahead of sends. A new
+    /// ask replaces the labels not looked up yet.
+    LabelTotals(Vec<(String, u64)>),
     /// Read the user's cart; `soon` puts it ahead of sends (after a cart action or a dig),
     /// otherwise it waits for a moment with no send (at launch).
     ReadCart { soon: bool },
@@ -286,6 +290,12 @@ pub enum Event {
         name: String,
         result: Result<(String, usize), ApiError>,
     },
+    /// A label's id and number of releases on Discogs (Insights).
+    LabelTotal {
+        name: String,
+        id: u64,
+        total: usize,
+    },
     Cart(Result<CartSnapshot, ApiError>),
     CartAdded {
         listings: Vec<u64>,
@@ -334,6 +344,8 @@ pub struct Intake {
     first_sellers: bool,
     /// The cart is to be read at a moment with no send (`false`), or ahead of sends (`true`).
     cart_read: Option<bool>,
+    /// Labels whose totals Insights asked for, not looked up yet.
+    label_totals: std::collections::VecDeque<(String, u64)>,
     /// Bandcamp items to look up on Discogs, in order.
     finds: std::collections::VecDeque<(String, crate::discogs::search::Wanted)>,
     /// The next step is a lookup's turn (they alternate with the sends).
@@ -364,6 +376,7 @@ impl Intake {
             shop_items: Vec::new(),
             first_sellers: false,
             cart_read: None,
+            label_totals: std::collections::VecDeque::new(),
             finds: std::collections::VecDeque::new(),
             find_turn: true,
         }
@@ -564,6 +577,7 @@ impl Intake {
                 self.track(&result);
                 self.events.push(Event::SellerLookup { name, result });
             }
+            Command::LabelTotals(labels) => self.label_totals = labels.into(),
             Command::ReadCart { soon } => {
                 self.cart_read = Some(soon || self.cart_read == Some(true));
             }
@@ -752,9 +766,23 @@ impl Intake {
 
     /// One request's worth of work. False when there is nothing to do.
     pub fn step(&mut self) -> bool {
-        // The cart after an action goes first.
+        // The cart after an action goes first, then what an open Insights window waits for.
         if self.cart_read == Some(true) {
             self.read_cart();
+            return true;
+        }
+        if let Some((name, release)) = self.label_totals.pop_front() {
+            let result = expand::label_total(&mut self.client, &name, release, (self.now)());
+            self.track(&result);
+            match result {
+                Ok(Some((id, total))) => self.events.push(Event::LabelTotal { name, id, total }),
+                // Offline: asked again once Discogs answers.
+                Err(ApiError::Offline) => {
+                    self.label_totals.push_front((name, release));
+                    self.client.sleep(OFFLINE_RETRY);
+                }
+                Ok(None) | Err(_) => {}
+            }
             return true;
         }
         let next = self.next_job();

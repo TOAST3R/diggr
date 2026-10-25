@@ -1253,3 +1253,62 @@ fn bandcamp_items_are_looked_up_between_the_sends() {
     );
     assert!(!t.paths().iter().any(|p| p.starts_with("/database")));
 }
+
+fn label_totals(ev: &[Event]) -> Vec<(String, u64, usize)> {
+    ev.iter()
+        .filter_map(|e| match e {
+            Event::LabelTotal { name, id, total } => Some((name.clone(), *id, *total)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_labels_total_costs_one_request_and_is_kept_a_week() {
+    let dir = temp("label-totals");
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    let total = "/labels/12345/releases?page=1&per_page=1";
+    t.route(
+        total,
+        200,
+        serde_json::json!({"pagination": {"page": 1, "pages": 61, "per_page": 1, "items": 61}})
+            .to_string(),
+    );
+    let new_intake = |now: fn() -> u64| {
+        let client = Client::new(
+            t.clone(),
+            Arc::new(FakeClock::default()),
+            Some("tok".to_owned()),
+            DiskCache::new(Some(dir.path())),
+        );
+        Intake::new(client, None).with_now(now)
+    };
+    let mut i = new_intake(|| 1_790_000_000);
+    i.handle(Command::LabelTotals(vec![
+        ("Lowtide Tapes".into(), 1001),
+        // Release 1001 names no such label: nothing comes for it.
+        ("Somebody Else".into(), 1001),
+    ]));
+    let ev = run(&mut i, 10);
+    assert_eq!(label_totals(&ev), [("Lowtide Tapes".to_owned(), 12345, 61)]);
+    let asked = |p: &str| t.paths().iter().filter(|x| x.starts_with(p)).count();
+    assert_eq!(
+        asked("/releases/1001"),
+        1,
+        "the release once, then from the cache"
+    );
+    assert_eq!(asked(total), 1, "one request for the total");
+
+    // Within a week: no request at all.
+    let mut i = new_intake(|| 1_790_000_000 + 6 * 24 * 3600);
+    i.handle(Command::LabelTotals(vec![("Lowtide Tapes".into(), 1001)]));
+    let before = t.count();
+    assert_eq!(label_totals(&run(&mut i, 10)).len(), 1);
+    assert_eq!(t.count(), before, "the cache answers");
+
+    // A week later the total is asked again.
+    let mut i = new_intake(|| 1_790_000_000 + 8 * 24 * 3600);
+    i.handle(Command::LabelTotals(vec![("Lowtide Tapes".into(), 1001)]));
+    run(&mut i, 10);
+    assert_eq!(asked(total), 2);
+}

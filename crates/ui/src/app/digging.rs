@@ -304,6 +304,10 @@ pub(super) struct Dig {
     pub(super) asked: Vec<TrackRef>,
     /// Per crate being expanded: the focus entry and how many records were still listed.
     pub(super) focus: HashMap<CrateId, (Option<EntryId>, usize)>,
+    /// Insights: top labels' ids and numbers of releases on Discogs, by label name, and the
+    /// labels last asked for.
+    pub(super) label_totals: HashMap<String, (u64, usize)>,
+    pub(super) labels_asked: Vec<String>,
     /// Crates whose unfinished sends were resumed this session.
     active: HashSet<CrateId>,
     /// Crates a send created: named after the page once Discogs gives its name, and deleted
@@ -482,6 +486,8 @@ impl Dig {
             analyzed: HashSet::new(),
             asked: Vec::new(),
             focus: HashMap::new(),
+            label_totals: HashMap::new(),
+            labels_asked: Vec::new(),
             active: HashSet::new(),
             created: HashSet::new(),
             refreshed: HashSet::new(),
@@ -2384,6 +2390,11 @@ impl DiggrApp {
                 self.mark_crate(j.target);
             }
             Event::Record(j, info, outcome) => self.dig_record(&j, &info, outcome),
+            Event::LabelTotal { name, id, total } => {
+                if let Some(d) = &mut self.dig {
+                    d.label_totals.insert(name, (id, total));
+                }
+            }
             Event::ListingRead(j) => {
                 if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
                     v.listed = true;
@@ -5435,6 +5446,31 @@ impl DiggrApp {
         }
         for a in actions {
             self.dig_bridge_act(a);
+        }
+    }
+
+    /// Insights' top labels changed: their totals are asked for (with a token), those known
+    /// already left out.
+    pub(super) fn insights_ask_totals(&mut self) {
+        let Some((_, _, stats)) = &self.insights else {
+            return;
+        };
+        let Some(d) = self.dig.as_mut().filter(|d| d.has_token()) else {
+            return;
+        };
+        let names: Vec<String> = stats.labels.iter().map(|l| l.name.clone()).collect();
+        if names == d.labels_asked {
+            return;
+        }
+        let ask: Vec<(String, u64)> = stats
+            .labels
+            .iter()
+            .filter(|l| l.release > 0 && !d.label_totals.contains_key(&l.name))
+            .map(|l| (l.name.clone(), l.release))
+            .collect();
+        d.labels_asked = names;
+        if !ask.is_empty() {
+            d.send(Command::LabelTotals(ask));
         }
     }
 
