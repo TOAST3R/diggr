@@ -530,6 +530,24 @@ ahead of what plays. Other pasted text is ignored.
   overviews at once, unless another crate still holds them (nothing is deleted while a crate
   can't be read).
 
+### Insights
+
+Right-click the collection crate (in the sidebar or the playlist's crate menu) and choose
+**Open Insights** for a window of what your collection says about you, counting **vinyl
+records only** (a release with no vinyl among its formats is left out):
+
+- **Years:** records per release year, with decade bands.
+- **Styles**, and **Style × decade**, a heatmap of how your taste moved.
+- **Top labels** and **top artists.** A label reads "35 of 61 releases" (its total on Discogs,
+  one request per label, kept a week; needs a token) with **Follow** to make its label crate.
+- **Value:** the sum and median of the lowest prices on Discogs at the last look, the five
+  dearest records, and how many have one copy for sale or none.
+- **Tempo:** a histogram of your analysed tracks' BPM.
+
+Every bar is a filter: clicking a year, a decade, a style, a heatmap cell, a label or an artist
+shows the collection crate filtered to it; clicking one of the dearest records shows it. The
+window follows the collection as it changes.
+
 ### Labels
 
 Under DISCOGS in the sidebar, **LABELS** holds a crate per label you follow ("Label: ‹name›",
@@ -1304,7 +1322,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 989 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 999 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1522,6 +1540,11 @@ What's covered:
   stepping over them, SOLD, the CART badge from a cached and a fresh cart, Add and Remove from
   cart with their outcomes, and the CART switch. `crates/dig/tests/seller_api.rs` runs the real
   inventory, purchases and cart reads by hand (`--ignored`, with `DIGGR_DISCOGS_TOKEN`).
+- **Insights** (`crates/ui`, `insights.rs` and headless `insights_tests.rs`; `crates/dig`
+  intake): vinyl only, a record counted once, years, styles, the heatmap, labels and artists,
+  value in the main currency with its median and rare records, BPM buckets, the count of a
+  5,000-record collection within a frame; Open Insights on the collection only, bars that
+  filter, a dear record shown, label totals (one request, a week in the cache) and Follow.
 - **`crates/ui/tests/dig_playback.rs`**: an 800-release label is expanded, and previews are
   downloaded and prepared, while the engine plays in real time. Zero underruns, and a prepared
   preview starts as fast as a local file.

@@ -212,6 +212,12 @@ pub struct DiggrApp {
     /// The spectrogram window (`S`) and whether it is open.
     spectro: crate::spectrogram::SpectrogramWindow,
     spectro_open: bool,
+    /// The Insights window, and the collection's numbers it shows: for this crate at this
+    /// revision.
+    insights_open: bool,
+    insights: Option<(CrateId, u64, Rc<crate::insights::Stats>)>,
+    /// When the Insights window opened (egui time): its bars grow in from then.
+    insights_opened: Option<f64>,
     /// `DIGGR_FRAME_STATS=1`: per-second frame phase timings on stderr and in
     /// `$TMPDIR/diggr_frame_stats.log`.
     profile: Option<FrameProfile>,
@@ -402,6 +408,9 @@ impl DiggrApp {
             nav: Nav::default(),
             spectro,
             spectro_open: false,
+            insights_open: false,
+            insights: None,
+            insights_opened: None,
             #[cfg(not(target_arch = "wasm32"))]
             dig,
         }
@@ -3322,6 +3331,10 @@ impl DiggrApp {
                 if c.discogs() {
                     self.dig_refresh_item(ui, c, actions);
                 }
+                if c.collection && ui.button("Open Insights").clicked() {
+                    actions.push(Action::OpenInsights);
+                    ui.close();
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some((dug, busy)) = seller {
                     use crate::app::sellers::SellerAction;
@@ -3387,6 +3400,11 @@ impl DiggrApp {
                 {
                     actions.push(Action::MoveToLabels(c.id, label));
                     ui.close();
+                }
+                // The wantlist and collection crates are the account's: never renamed or
+                // deleted here.
+                if c.discogs() {
+                    return;
                 }
                 if ui
                     .add_enabled(readable, egui::Button::new("Rename crate…"))
@@ -6004,6 +6022,10 @@ impl DiggrApp {
                 self.dig_refresh_item(ui, c, actions);
             }
         }
+        if discogs.iter().any(|c| c.collection) && ui.button("Open Insights").clicked() {
+            actions.push(Action::OpenInsights);
+            ui.close();
+        }
         #[cfg(target_arch = "wasm32")]
         let _ = discogs;
         // Refresh friend, for a dug friend's crate on screen.
@@ -6033,6 +6055,9 @@ impl DiggrApp {
         if self.crates.is_label(shown) {
             ui.separator();
             self.label_menu(ui, shown, actions);
+            return;
+        }
+        if self.crates.is_discogs(shown) {
             return;
         }
         let editable = shown != PLAYLIST;
@@ -6312,6 +6337,7 @@ impl DiggrApp {
                 self.mark_settings();
             }
             Action::ToggleSpectrogram => self.spectro_open = !self.spectro_open,
+            Action::OpenInsights => self.insights_open = true,
             Action::ToggleScale => {
                 self.settings.scale = if self.settings.scale >= 2 { 1 } else { 2 };
                 self.mark_settings();
@@ -6521,9 +6547,13 @@ impl DiggrApp {
                 }
             }
             Action::NewCrate => self.name_dialog = Some(NameDialog::new(NameFor::NewCrate, "")),
+            Action::RenameCrate(id) if self.crates.is_discogs(id) => {}
             Action::RenameCrate(id) => {
                 let name = self.crates.name(id).to_owned();
                 self.name_dialog = Some(NameDialog::new(NameFor::RenameCrate(id), name));
+            }
+            Action::DeleteCrate(id) if self.crates.is_discogs(id) => {
+                self.notify("Your Discogs wantlist and collection can't be deleted")
             }
             Action::DeleteCrate(id) => {
                 if self.crates.entry_count(id) > 0 {
@@ -6702,6 +6732,8 @@ enum Action {
     CycleVis,
     ToggleScale,
     ToggleSpectrogram,
+    /// Open Insights, on the collection crate.
+    OpenInsights,
     /// Rows and skin pixels to add to the playlist.
     ResizePlaylist {
         rows: i32,
@@ -7907,6 +7939,7 @@ impl DiggrApp {
             crate::help::show(&ctx, &mut self.help);
         }
         self.spectrogram_window(&ctx);
+        self.insights_window(&ctx);
         if !self.first_frame_done {
             self.first_frame_done = true;
             let ms = self.startup.process_start.elapsed().as_secs_f64() * 1e3;
@@ -8124,6 +8157,127 @@ impl DiggrApp {
         }
         for a in actions {
             self.apply(a, ui.ctx());
+        }
+    }
+
+    /// The Insights window while it is open: the collection's numbers, recomputed when the
+    /// crate changed, and what its clicks ask.
+    fn insights_window(&mut self, ctx: &egui::Context) {
+        use crate::insights::{self, Action as Ia, LabelInfo};
+        if !self.insights_open {
+            self.insights_opened = None;
+            return;
+        }
+        let Some(c) = self
+            .crates
+            .list()
+            .iter()
+            .find(|c| c.collection)
+            .map(|c| c.id)
+        else {
+            self.insights_open = false;
+            return;
+        };
+        if !self.crates.load(c) {
+            return;
+        }
+        let rev = self.crates.get(c).map_or(0, |p| p.rev());
+        if self
+            .insights
+            .as_ref()
+            .is_none_or(|(id, r, _)| (*id, *r) != (c, rev))
+            && let Some(p) = self.crates.get(c)
+        {
+            self.insights = Some((c, rev, Rc::new(insights::Stats::of(p))));
+            #[cfg(not(target_arch = "wasm32"))]
+            self.insights_ask_totals();
+        }
+        let Some((_, _, stats)) = self.insights.clone() else {
+            return;
+        };
+        // The bars grow in over GROW_SECS, easing out.
+        const GROW_SECS: f64 = 0.7;
+        let now = ctx.input(|i| i.time);
+        let x = ((now - *self.insights_opened.get_or_insert(now)) / GROW_SECS).clamp(0.0, 1.0);
+        if x < 1.0 {
+            ctx.request_repaint();
+        }
+        let colors = &self.skin.def.colors;
+        let look = insights::Look {
+            bg: color(colors.pl_bg),
+            text: color(colors.pl_text),
+            bars: color(colors.lcd),
+            title: color(colors.pl_title),
+            grow: 1.0 - (1.0 - x as f32).powi(3),
+        };
+        let label = |name: &str| -> LabelInfo {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(d) = self.dig.as_ref().filter(|d| d.has_token()) {
+                return match d.label_totals.get(name) {
+                    Some(&(id, total)) => LabelInfo::Total {
+                        total,
+                        following: self.crates.find_label(id).is_some(),
+                    },
+                    None => LabelInfo::Asking,
+                };
+            }
+            let _ = name;
+            LabelInfo::Unknown
+        };
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Insights")
+            .with_inner_size([780.0, 640.0])
+            .with_min_inner_size([380.0, 300.0]);
+        let actions = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("insights"),
+            builder,
+            |ui, _| {
+                let mut a = insights::ui(ui, &stats, &label, &look);
+                if ui.input(|i| i.viewport().close_requested()) {
+                    a.push(Ia::Close);
+                }
+                a
+            },
+        );
+        for a in actions {
+            match a {
+                Ia::Close => self.insights_open = false,
+                Ia::Filter(picks) => {
+                    self.show_crate(c);
+                    let p = self.crates.shown_mut();
+                    p.clear_picks(None);
+                    for (f, v) in &picks {
+                        p.set_pick(*f, v, true);
+                    }
+                    self.filter_changed();
+                }
+                Ia::ShowRecord(id) => {
+                    self.show_crate(c);
+                    let p = self.crates.shown_mut();
+                    p.clear_picks(None);
+                    p.select_only(&[id], id);
+                    self.filter_changed();
+                    if let Some(i) = self.crates.shown().index_of(id) {
+                        self.scroll_into_view(i);
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                Ia::Follow(name) => {
+                    let id = self
+                        .dig
+                        .as_ref()
+                        .and_then(|d| d.label_totals.get(&name))
+                        .map(|t| t.0);
+                    if let Some(id) = id {
+                        let page = ::dig::discogs::url::Page::new(
+                            ::dig::discogs::url::PageKind::Label(id),
+                        );
+                        self.dig_follow_label(page, id);
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                Ia::Follow(_) => {}
+            }
         }
     }
 
@@ -8850,6 +9004,8 @@ mod headless_tests {
     mod store_cart_tests;
     // Top Sellers and the cart, with a fake Discogs.
     mod seller_tests;
+    // The collection's Insights window, with a fake Discogs.
+    mod insights_tests;
 
     fn texts(out: &egui::FullOutput) -> Vec<Text> {
         fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {

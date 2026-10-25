@@ -8,6 +8,7 @@ pub mod eqcurve;
 pub mod files;
 pub mod format;
 pub mod help;
+pub mod insights;
 pub mod layout;
 pub mod metadata;
 pub mod navigation;

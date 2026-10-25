@@ -13,14 +13,14 @@ use ::dig::preview::scheduler::Finder;
 use ::dig::sellers::SellerList;
 
 #[derive(Clone)]
-struct Fakes {
+pub(super) struct Fakes {
     transport: Arc<FakeTransport>,
     fetcher: Arc<FakeFetcher>,
     browser: Arc<FakeBrowser>,
 }
 
 impl Fakes {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             transport: Arc::new(FakeTransport::with_fixtures(format!(
                 "{}/../dig/tests/fixtures/discogs",
@@ -133,12 +133,12 @@ fn listing(id: u64, release: u64, price: f64, format: &str) -> serde_json::Value
     })
 }
 
-fn rig(name: &str, fakes: &Fakes, prepare: impl FnOnce(&Store)) -> Rig {
+pub(super) fn rig(name: &str, fakes: &Fakes, prepare: impl FnOnce(&Store)) -> Rig {
     let f = fakes.clone();
     Rig::with_dig(name, Vec::new(), prepare, move |dir| Some(f.setup(dir)))
 }
 
-fn with_token(store: &Store) {
+pub(super) fn with_token(store: &Store) {
     ::dig::config::save_token(store.dir(), Some("tok")).unwrap();
 }
 

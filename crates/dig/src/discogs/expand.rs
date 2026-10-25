@@ -152,6 +152,51 @@ pub fn listing(
     }
 }
 
+/// A label's number of releases is kept this long (Insights).
+pub const LABEL_TOTAL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// The id and number of releases on Discogs of the label named `name` (as a record's label
+/// reads), found through `release`, one of its releases: the release's details (the cache's,
+/// else read) name its labels with their ids, and the total is one request, kept for
+/// [`LABEL_TOTAL_SECS`]. `None` when the release names no such label.
+pub fn label_total(
+    client: &mut Client,
+    name: &str,
+    release: u64,
+    now: u64,
+) -> Result<Option<(u64, usize)>, ApiError> {
+    let key = release.to_string();
+    if client.cache.get(Kind::Release, &key).is_none() {
+        record(client, RecordKey::Release(release), false, now)?;
+    }
+    let body = client
+        .cache
+        .get(Kind::Release, &key)
+        .map(|c| c.body)
+        .unwrap_or_default();
+    let v: Value = serde_json::from_str(&body).unwrap_or_default();
+    let id = v["labels"].as_array().into_iter().flatten().find_map(|l| {
+        let n = super::model::clean_artist(l["name"].as_str()?);
+        (n == name || name.starts_with(&format!("{n}, ")))
+            .then(|| l["id"].as_u64())
+            .flatten()
+    });
+    let Some(id) = id else { return Ok(None) };
+    let path = format!("/labels/{id}/releases?page=1&per_page=1");
+    let body = match client.cache.get(Kind::Listing, &path) {
+        Some(c) if now.saturating_sub(c.fetched_at) < LABEL_TOTAL_SECS => c.body,
+        _ => {
+            let r = client.call(super::transport::Method::Get, &path)?;
+            client.cache.put(Kind::Listing, &path, &r.body, now);
+            r.body
+        }
+    };
+    let v: Value =
+        serde_json::from_str(&body).map_err(|e| ApiError::Other(format!("{path}: {e}")))?;
+    let total = v["pagination"]["items"].as_u64().unwrap_or(0) as usize;
+    Ok(Some((id, total)))
+}
+
 /// Page `n` of a seller's stock: the copies passing the criteria, and their records.
 pub fn inventory_listing(
     client: &mut Client,
