@@ -1206,6 +1206,8 @@ fn a_cached_cart_marks_entries_in_every_crate_at_once() {
     let out = rig.frame(Vec::new());
     let carts = texts(&out).iter().filter(|t| t.text == "CART").count();
     assert_eq!(carts, 1, "only release 1001's entry: {:?}", text_list(&out));
+    let checkouts = texts(&out).iter().filter(|t| t.text == "PAY »").count();
+    assert_eq!(checkouts, 1, "CART then PAY »: {:?}", text_list(&out));
     let e = rig.app.crates.shown().entries()[0].clone();
     assert_eq!(
         rig.app.dig_marks(&e).cart.as_deref(),
@@ -1596,6 +1598,93 @@ fn remove_from_cart_takes_one_copy_out() {
     assert_eq!(deletes, ["/cart/item/11"]);
 }
 
+/// The user's collection holds `release`, as a sync would leave it.
+fn owns(rig: &mut Rig, release: u64) {
+    let cache = rig.dir.join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join(::dig::collection::FILE),
+        format!(
+            r#"(username: "digger", fetched_at: 0, count: 1, instances: [1],
+                releases: {{{release}: (master: None, catno: "LT-001", year: Some(1994))}})"#
+        ),
+    )
+    .unwrap();
+    rig.app.dig.as_mut().unwrap().collection =
+        ::dig::collection::Collection::load(&cache).map(Arc::new);
+}
+
+#[test]
+fn an_owned_record_offers_no_copy_but_keeps_the_one_in_the_cart() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-owned", &fakes);
+    fakes.empty_cart();
+    open_record(&mut rig, 1001);
+    let out = rig.frame(Vec::new());
+    assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "+ CART");
+    owns(&mut rig, 1001);
+    let out = rig.frame(Vec::new());
+    for row in ["€9.00 · VG+ / VG · Germany", "€12.00 · VG+ / VG · Germany"] {
+        assert_eq!(pill_of(&out, row), "", "{row}: no pill on an owned record");
+    }
+    assert!(shows(&out, "OWNED"), "{:?}", text_list(&out));
+
+    // A copy already in the cart can still be taken out.
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    let out = rig.frame(Vec::new());
+    assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "IN CART");
+    assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "");
+    let pill = pill_at(&mut rig, "€9.00 · VG+ / VG · Germany");
+    rig.click(pill);
+    assert!(!rig.app.dig.as_ref().unwrap().cart.has_listing(11));
+}
+
+/// The PAY » on `row`'s line, if any.
+fn checkout_of(out: &egui::FullOutput, row: &str) -> Option<Pos2> {
+    let all = texts(out);
+    let y = all.iter().find(|t| t.text == row)?.rect.center().y;
+    all.into_iter()
+        .find(|t| t.text == "PAY »" && (t.rect.center().y - y).abs() < 3.0)
+        .map(|t| t.rect.center())
+}
+
+#[test]
+fn a_copy_in_the_cart_leads_to_checkout() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-to-checkout", &fakes);
+    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    fakes.empty_cart();
+    open_record(&mut rig, 1001);
+    let out = rig.frame(Vec::new());
+    assert_eq!(
+        checkout_of(&out, "€12.00 · VG+ / VG · Germany"),
+        None,
+        "+ CART: no PAY »"
+    );
+    let checkout = checkout_of(&out, "€9.00 · VG+ / VG · Germany").expect("IN CART then PAY »");
+    let pay = texts(&out).into_iter().find(|t| t.text == "PAY »").unwrap();
+    assert_eq!(
+        pay.color,
+        Some(Color32::from_rgb(64, 196, 232)),
+        "cyan, not hovered"
+    );
+    let selected = rig.app.crates.shown().selected_ids();
+    rig.click(checkout);
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://www.discogs.com/sell/cart"]
+    );
+    assert_eq!(
+        rig.app.crates.shown().selected_ids(),
+        selected,
+        "no selection"
+    );
+    assert!(
+        rig.app.dig.as_ref().unwrap().cart.has_listing(11),
+        "nothing removed"
+    );
+}
+
 #[test]
 fn without_a_token_the_cart_asks_to_connect() {
     let fakes = Fakes::new();
@@ -1614,6 +1703,31 @@ fn without_a_token_the_cart_asks_to_connect() {
             .log()
             .iter()
             .all(|(r, _)| r.method == Method::Get)
+    );
+}
+
+#[test]
+fn any_crate_opens_a_cart_that_holds_something() {
+    let fakes = Fakes::new();
+    let mut rig = rig("cart-menu-anywhere", &fakes, with_token);
+    rig.click_with(below_rows(&rig), PointerButton::Secondary);
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Select all"), "the menu is open");
+    assert!(
+        !shows(&out, "Open cart on discogs.com"),
+        "every cart is empty"
+    );
+    rig.app.dig.as_mut().unwrap().cart =
+        cart_with(&[(11, 1001, "logon", "€9.00"), (12, 1002, "logon", "€5.00")]);
+    let out = rig.frame(Vec::new());
+    assert!(
+        !shows(&out, "Open cart on juno.co.uk"),
+        "the Juno basket is empty"
+    );
+    rig.click_text("Open cart on discogs.com");
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://www.discogs.com/sell/cart"]
     );
 }
 
@@ -1726,11 +1840,16 @@ fn a_pill_is_as_wide_whatever_it_reads() {
                 pill: Some(Pill { in_cart, pointer }),
                 ..Default::default()
             };
-            let (w, rect) =
+            let (w, hits) =
                 entry_badges(painter, pos2(10.0, 10.0), marks, None, &font, &colors, 1.0);
-            assert!(rect.is_some());
+            assert!(hits.pill.is_some());
             w
         };
+        let small = egui::FontId::proportional(11.0 * 0.78);
+        assert!(
+            ui.fonts_mut(|f| f.has_glyph(&small, '»')),
+            "the » glyph is in the font"
+        );
         let over = Some(pos2(14.0, 10.0));
         let plus = width(false, None);
         assert_eq!(width(true, None), plus, "IN CART");

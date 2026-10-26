@@ -341,6 +341,58 @@ fn beatport_opens_the_page_at_once() {
         message(&rig),
         "Beatport's cart can't be reached from Diggr: opened the page instead"
     );
+    assert!(
+        !shows(&rig.frame(Vec::new()), "PAY »"),
+        "never in a cart: no PAY »"
+    );
+}
+
+#[test]
+fn the_checkout_pill_opens_the_juno_basket() {
+    let (mut rig, fakes) = rig("cart-juno-checkout");
+    send(&mut rig, juno());
+    assert!(
+        !shows(&rig.frame(Vec::new()), "PAY »"),
+        "not in the basket yet"
+    );
+    click_pill(&mut rig, None);
+    let a = next_action(&rig).unwrap();
+    answer(&mut rig, &a, Outcome::Added, None);
+    let out = rig.frame(Vec::new());
+    let checkout = texts(&out)
+        .into_iter()
+        .find(|t| t.text == "PAY »")
+        .unwrap_or_else(|| panic!("IN CART then »: {:?}", text_list(&out)))
+        .rect
+        .center();
+    let selected = rig.app.crates.shown().selected_ids();
+    rig.click(checkout);
+    assert_eq!(
+        *fakes.browser.opened.lock().unwrap(),
+        ["https://www.juno.co.uk/cart/"]
+    );
+    assert_eq!(
+        rig.app.crates.shown().selected_ids(),
+        selected,
+        "no selection"
+    );
+    assert!(pill(&rig).in_cart, "still in the basket");
+}
+
+#[test]
+fn an_owned_juno_record_offers_nothing_to_buy() {
+    let (mut rig, _) = rig("cart-owned-juno");
+    send(&mut rig, juno());
+    assert!(shows(&rig.frame(Vec::new()), "+ CART"));
+    // Seen from the collection crate's point of view, it is owned.
+    let c = rig.app.crates.create("Collection: digger").unwrap();
+    let e = first(&rig);
+    let p = rig.app.crates.get_mut(c).unwrap();
+    p.add_waiting(&e.artist, &e.title, None, e.origin.clone(), "listed");
+    rig.app.crates.set_collection(c);
+    rig.app.crates.show(c);
+    let out = rig.frame(Vec::new());
+    assert!(!shows(&out, "+ CART"), "{:?}", text_list(&out));
 }
 
 #[test]

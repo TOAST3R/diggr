@@ -725,6 +725,7 @@ impl DiggrApp {
             choose: Vec::new(),
             tip,
             buy: true,
+            cart_page: None,
         })
     }
 
@@ -764,6 +765,7 @@ impl DiggrApp {
             },
             tip,
             buy: false,
+            cart_page: dig::carts::cart_page(store),
         })
     }
 

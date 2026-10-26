@@ -192,6 +192,15 @@ pub fn seller_record_line(
     line
 }
 
+/// The warning before an owned record's in-cart tooltip, from which pressing is owned
+/// ("this pressing", "another pressing (AF001R, 2019)", "" when unknown).
+pub fn owned_warning(pressing: &str) -> String {
+    match pressing {
+        "" => "You already own this. ".to_owned(),
+        p => format!("You already own {p}. "),
+    }
+}
+
 /// A copy row: "€9.00 · VG+ / VG · Germany".
 pub fn copy_line(c: &crate::playlist::SaleCopy) -> String {
     [
@@ -463,6 +472,15 @@ pub fn thousands(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_warning_names_the_pressing() {
+        assert_eq!(owned_warning(""), "You already own this. ");
+        assert_eq!(
+            owned_warning("another pressing (AF001R, 2019)"),
+            "You already own another pressing (AF001R, 2019). "
+        );
+    }
 
     #[test]
     fn seller_records_show_their_copies() {

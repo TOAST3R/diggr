@@ -174,7 +174,9 @@ and Home/End jump), and Enter plays the entry under it.
     gear ⚙ opens **Options** (size, spectrogram, Discogs…, Browser…). The "selected/total" time sits on the right, beside the grip.
     **The list menu** is a right-click below the last row (or **Crate ▸** at the end of a
     row's right-click): select all / none / invert, remove selected, clear the crate, **Sort
-    ▸**, Group by record, and Open cart on discogs.com in a seller crate;
+    ▸**, Group by record, and Open cart on discogs.com (in a seller crate, or anywhere while
+    your Discogs cart holds a copy) or on juno.co.uk or bleep.com while that basket holds
+    something;
   - **The filter bar**, under the title bar, holds everything that narrows the crate on
     screen: the search field, the BPM filter, the record filters and the CART switch. It is
     part of the frame, so it takes no row of the list. **×** at its end clears the search and
@@ -781,13 +783,21 @@ part of the product), on Bleep the record in a format, chosen from a small menu 
 which turns into a red **REMOVE** under the pointer and takes it out again. The tooltip says
 the store and the price.
 
-Every other dig entry has the pill too. When its record is known on one store only, the pill
+Every other dig entry has the pill too, once per record: in the list, a record's tracks share
+one, centred beside them, between thin lines that set each record apart. When its record is known on one store only, the pill
 acts there at once: the Discogs marketplace for a release (no copy picked), the Bandcamp page,
 or the store's basket for a record a Juno or Bleep send linked to its release. Known on
 several stores, or on none, it opens **Buy**: a button per store it is known on (with the price
 or how many are for sale), and a link to search each other store (Discogs, Bandcamp, Juno,
 Bleep, Beatport, Traxsource) for its artist and title. Esc closes it. Local files have no
 pill.
+
+A record you own has nothing to buy: no pill, in any crate, whether you own this pressing or
+another of the same record, and none at all in your collection crate. One already in a cart
+keeps its **IN CART** pill, so you can take it out; its tooltip says you own it first.
+
+A row in a Juno or Bleep basket has a **PAY »** button after IN CART: it opens that store's basket,
+where you check out.
 
 - **Through the browser:** Diggr has no login to these stores, so the paired browser extension
   does each add, remove or read in your browser's session, with the store's own basket requests.
@@ -862,7 +872,9 @@ seller…**.
   copy for sale has the button on its own row, so you don't need to open it; on a record with
   several, the button opens the record (reading **IN CART** when one of them is in), and its
   copy rows have the buttons. Any entry of that release in any other crate, your wantlist and collection
-  included, shows the **CART** badge (the tooltip says from whom and for how much). If the
+  included, shows the **CART** badge (the tooltip says from whom and for how much). Every
+  IN CART and CART is followed by **PAY »**, which opens your cart on discogs.com to check out. A
+  record you own shows no button (see Buying from the stores). If the
   copy sold meanwhile it gets SOLD; if the cart can't be reached, the listing opens on
   discogs.com instead. The cart is read at launch,
   after each dig and cart change, and kept in the cache, so badges show at once and follow
@@ -1322,7 +1334,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 999 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1019 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

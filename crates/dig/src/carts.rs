@@ -32,6 +32,16 @@ pub fn reachable(store: Store) -> bool {
     matches!(store, Store::Juno | Store::Bleep)
 }
 
+/// The store's basket page, where the user checks out: only for the baskets the app can
+/// reach (the others never show an item in the cart).
+pub fn cart_page(store: Store) -> Option<&'static str> {
+    match store {
+        Store::Juno => Some("https://www.juno.co.uk/cart/"),
+        Store::Bleep => Some("https://bleep.com/cart"),
+        Store::Beatport | Store::Traxsource => None,
+    }
+}
+
 /// A basket item's id: a Juno product (`1170462-01`), a Bleep format's product id (`277377`).
 pub fn valid_item(store: Store, item: &str) -> bool {
     match store {
@@ -290,6 +300,14 @@ impl StoreCarts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_reachable_basket_has_a_page() {
+        for store in Store::ALL {
+            assert_eq!(cart_page(store).is_some(), reachable(store), "{store:?}");
+        }
+        assert_eq!(cart_page(Store::Juno), Some("https://www.juno.co.uk/cart/"));
+    }
 
     fn body(id: u64, outcome: Outcome, basket: Option<Vec<BasketItem>>) -> ResultBody {
         ResultBody {

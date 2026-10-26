@@ -360,17 +360,50 @@ fn y_adds_the_record_to_the_wantlist_and_y_again_removes_it() {
         message(&rig)
     );
     let out = rig.frame(Vec::new());
-    // Each row: its number, its cart pill, then the starred name.
-    let starred = texts(&out)
-        .iter()
-        .filter(|t| t.text.starts_with("★ "))
-        .count();
+    // Each row's name is starred (the record's first row has the cart pill before it).
+    let starred = texts(&out).iter().filter(|t| t.text.contains("★ ")).count();
     assert_eq!(
         starred,
         3,
         "every entry of the record: {:?}",
         text_list(&out)
     );
+    let all = texts(&out);
+    let pills: Vec<_> = all.iter().filter(|t| t.text == "+ CART").collect();
+    assert_eq!(
+        pills.len(),
+        1,
+        "one cart pill per record: {:?}",
+        text_list(&out)
+    );
+    // Centred on the record's three rows, whose names all start at the same x.
+    let names: Vec<_> = all.iter().filter(|t| t.text.starts_with("★ ")).collect();
+    assert_eq!(names.len(), 3, "{:?}", text_list(&out));
+    let mid = (names[0].rect.center().y + names[2].rect.center().y) / 2.0;
+    assert!(
+        (pills[0].rect.center().y - mid).abs() < 1.0,
+        "the pill is centred"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|n| (n.rect.left() - names[0].rect.left()).abs() < 0.5),
+        "the names line up"
+    );
+    // Its click buys (here: the release's marketplace page) and selects no row under it.
+    let selected = rig.app.crates.shown().selected_ids();
+    rig.click(pills[0].rect.center());
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some("https://www.discogs.com/sell/release/1001")
+    );
+    assert_eq!(rig.app.crates.shown().selected_ids(), selected);
     let put = (Method::Put, "/users/digger/wants/1001".to_owned());
     rig.until(
         |r| !r.app.dig.as_ref().unwrap().memory.is_want_pending(1001),
@@ -1134,6 +1167,11 @@ fn owned_records_are_marked_and_cannot_be_wanted() {
     assert_eq!(collection_requests(&fakes), 1);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "OWNED"), "{:?}", text_list(&out));
+    assert!(
+        !shows(&out, "+ CART"),
+        "nothing to buy: {:?}",
+        text_list(&out)
+    );
     let ctx = rig.ctx.clone();
     rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
     rig.until(
@@ -1208,6 +1246,8 @@ fn saving_a_token_makes_the_collection_a_crate_on_screen_once() {
         |r| r.app.crates.get(c).is_some_and(|p| p.len() >= 2),
         "its records",
     );
+    // Every record is owned: none offers to buy it, even before the collection is read.
+    assert!(!shows(&rig.frame(Vec::new()), "+ CART"));
     // No OWNED badge inside it, though every record is owned.
     let cache = rig.dir.join("cache");
     // The folder may not exist yet: nothing has had to write to the cache so far.
@@ -1255,7 +1295,13 @@ fn no_collection_is_asked_for_without_a_token_or_a_crate_from_discogs() {
         "says what's missing: {}",
         message(&rig)
     );
-    assert!(!shows(&rig.frame(Vec::new()), "OWNED"));
+    let out = rig.frame(Vec::new());
+    assert!(!shows(&out, "OWNED"));
+    assert!(
+        shows(&out, "+ CART"),
+        "owned isn't known: {:?}",
+        text_list(&out)
+    );
 
     // A token, but only local files on screen: nothing to mark, nothing asked.
     let fakes = Fakes::new();
