@@ -8,6 +8,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### New
 
+- **Play any track from a Discogs release page.** A ▶ now sits before each track of a
+  release's tracklist: click it and Diggr plays that track, not the first one, adding the record
+  to the crate on screen. The playing track shows ■, and clicking it stops the player.
 - **Insights into your collection.** Right-click your collection and choose Open Insights:
   your vinyl by year, style and decade, your top labels and artists, what it's worth and your
   favourite tempos. Click any bar to see those records, and follow a label in one click.

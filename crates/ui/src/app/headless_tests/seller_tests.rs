@@ -1803,6 +1803,7 @@ fn a_seller_sent_from_the_browser_is_added_and_the_app_comes_forward() {
                 .unwrap(),
             mode: ::dig::bridge::Mode::Enqueue,
             filters: ::dig::jobs::Filters::default(),
+            position: None,
         });
     let out = rig.frame(Vec::new());
     let commands: Vec<&ViewportCommand> = out

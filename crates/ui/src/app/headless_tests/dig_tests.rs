@@ -1038,6 +1038,93 @@ fn a_browser_send_is_answered_at_once_and_the_crate_fills_in_afterwards() {
 }
 
 #[test]
+fn a_track_played_from_its_release_page_plays_says_so_and_stops() {
+    let fakes = Fakes::new();
+    let mut rig = bridge_rig("dig-bridge-track", &fakes, BridgeSetup::Port(0));
+    let key = pair(&rig);
+    rig.frame(Vec::new());
+    let port = bridge_port(&rig);
+    let play = |side: &str| {
+        let body = format!(
+            r#"{{"url":"{RELEASE}","mode":"play","skip_passed":false,"position":"{side}"}}"#
+        );
+        let (status, answer) = http(port, "POST", "/v1/send", Some(&key), &body);
+        assert_eq!(status, 202, "{answer}");
+    };
+    let status = || http(port, "GET", "/v1/status", Some(&key), "").1;
+
+    // B1, not the release's first track.
+    play("B1");
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing
+                && playing_clip(r).as_deref() == Some(CLIPS[1])
+        },
+        "B1 plays",
+    );
+    rig.until(
+        |_| status().contains(r#""release":1001"#) && status().contains(r#""position":"B1""#),
+        "the status names the release and side",
+    );
+    rig.until(
+        |r| clips(r, PLAYLIST).len() == CLIPS.len(),
+        "the record's tracks",
+    );
+    rig.until(|_| status().contains(r#""sends":[]"#), "the send is done");
+
+    // Already in the crate: nothing added, that track plays (the side's case doesn't matter).
+    play("b2");
+    rig.until(|r| playing_clip(r).as_deref() == Some(CLIPS[2]), "B2 plays");
+    rig.until(
+        |_| status().contains(r#""sends":[]"#),
+        "the second send is done",
+    );
+    assert_eq!(
+        rig.app.crates.get(PLAYLIST).unwrap().len(),
+        CLIPS.len(),
+        "nothing doubled"
+    );
+
+    let (code, _) = http(
+        port,
+        "POST",
+        "/v1/control",
+        Some(&key),
+        r#"{"action":"stop"}"#,
+    );
+    assert_eq!(code, 202);
+    rig.until(
+        |r| r.app.position.state == PlayState::Stopped,
+        "playback stops",
+    );
+    rig.until(
+        |_| status().contains(r#""playing":null"#),
+        "nothing plays any more",
+    );
+}
+
+#[test]
+fn a_side_the_release_lacks_plays_nothing() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-track-missing", &fakes, |_| {});
+    rig.app.dig_send(
+        url::parse(RELEASE).unwrap(),
+        SendMode::PlayTrack("E9".into()),
+        None,
+    );
+    rig.until(
+        |r| all_playable(r, PLAYLIST, CLIPS.len()),
+        "the record's previews",
+    );
+    rig.until(
+        |r| r.app.dig.as_ref().unwrap().play_when_ready.is_none(),
+        "the send ends",
+    );
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.position.state, PlayState::Stopped, "nothing plays");
+}
+
+#[test]
 fn opt_browser_shows_a_code_that_pairs_once_and_forget_browsers_revokes() {
     let fakes = Fakes::new();
     let mut rig = bridge_rig("dig-bridge-dialog", &fakes, BridgeSetup::Port(0));

@@ -931,9 +931,12 @@ that the player starts once its window is up.
   1 MiB: at most 500 records (Juno and Bleep, with 5,000 tracks) or 500 tracks, each field checked, and every
   address rebuilt by the player from the ids. A bad record or track is refused alone, and the
   answer counts it.
+  A Play send of a Discogs release page may name one track's side (`"position": "B2"`, 1 to 8
+  characters): that track plays instead of the first, at once if the crate already holds it.
   Anything else, including file paths and other addresses, is refused and changes nothing. A send is exactly a paste: it is answered at
   once, and the crate fills in afterwards. The extension can also read the crate names, what's
-  playing, and the progress of sends.
+  playing (with its Discogs release and side), and the progress of sends, and stop playback
+  with `POST /v1/control` and `{"action":"stop"}` (no other action).
 - **Store baskets:** the extension waits on `GET /v1/cart/next`, which the player holds open up
   to 25 s and answers at once with a cart action (an id, `juno` or `bleep`, add, remove or read,
   and the item's id; never an address). It reports each one on `POST /v1/cart/result` with its
@@ -1000,6 +1003,11 @@ that the player starts once its window is up.
    and search), Traxsource (each track, search too), Beatport (each track on charts, releases,
    labels and artists; not search results, whose page data carries no preview) and Bleep
    (lists and search).
+   On a Discogs release page, a **▶** before each track of the tracklist plays that track in
+   Diggr (the release added to the crate on screen, as Play in Diggr). It shows ⧗ until the
+   track plays (at most 30 s) and ■ while it plays; ■ stops the player. While a track of the
+   page waits or plays, the page asks the player what's playing once a second, so the marks
+   follow the player when the track ends or another plays; otherwise it asks nothing.
 4. On any site, right-click a Discogs or Bandcamp link for Play in Diggr (a
    label link offers only Diggr: Send label); the toolbar
    button shows ✓ or ! for 3 s. Clicking the toolbar button shows whether the player is running
@@ -1049,6 +1057,11 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       show the button with the record count, and a ▶ after each record's title; ▶ adds that
       record alone as one entry, and with a Discogs token its tracks replace it when one
       release fits. The basket shows no button.
+- [ ] On a Discogs release page (`/release/5077187`), each track has a ▶ before its side and
+      headings have none. ▶ on B2 shows ⧗, adds the release to the crate on screen and plays
+      B2, then shows ■; ▶ on B3 of the same release plays B3 at once, adding nothing; ■ stops
+      the player and shows ▶. Next in the player moves the ■ within a second. A track with no
+      preview goes back to ▶ after 30 s. With the player closed, ▶ says it isn't running.
 - [ ] On Beatport, Traxsource and Bleep, the DevTools Network panel shows no request from the
       extension but the one to `127.0.0.1` (and, on Juno and Bleep, the basket requests of a
       + CART you clicked).
@@ -1334,7 +1347,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 1019 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1023 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

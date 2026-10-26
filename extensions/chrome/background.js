@@ -57,10 +57,12 @@ async function hello() {
   return r;
 }
 
-async function send(url, mode, crate, title) {
+async function send(url, mode, crate, title, position) {
   const s = await settings();
   const body = { url, mode, skip_passed: s.skipPassed };
   if (mode === "crate") body.crate = crate;
+  // One track of a release page (mode play only).
+  if (position) body.position = position;
   // Only a Bandcamp page's title, to name its label.
   if (title && WR.isBandcamp(WR.pageKind(url))) body.title = [...title].slice(0, 200).join("");
   return bridge("send", { method: "POST", body });
@@ -102,7 +104,12 @@ async function handle(msg) {
       return bridge("status");
     }
     case "send": {
-      const r = await send(msg.url, msg.mode, msg.crate, msg.title);
+      const r = await send(msg.url, msg.mode, msg.crate, msg.title, msg.position);
+      if (r.error === "not-paired") chrome.runtime.openOptionsPage();
+      return r;
+    }
+    case "control": {
+      const r = await bridge("control", { method: "POST", body: { action: msg.action } });
       if (r.error === "not-paired") chrome.runtime.openOptionsPage();
       return r;
     }
