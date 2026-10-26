@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Diggr bridge",
   "short_name": "Diggr",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Bridge music release details from supported online record stores and platforms directly into the Diggr app",
   "permissions": [
     "storage",

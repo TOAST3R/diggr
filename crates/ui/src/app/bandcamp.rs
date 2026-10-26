@@ -348,9 +348,9 @@ impl DiggrApp {
     pub(super) fn send_target(&mut self, mode: &SendMode) -> Option<CrateId> {
         match mode {
             SendMode::Enqueue => Some(self.enqueue_target()),
-            SendMode::Play => {
+            SendMode::Play | SendMode::PlayTrack(_) => {
                 let c = self.enqueue_target();
-                self.play_new_in(c);
+                self.play_new_in(c, None);
                 Some(c)
             }
             SendMode::Crate(crate_name) => {

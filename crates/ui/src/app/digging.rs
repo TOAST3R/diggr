@@ -112,6 +112,9 @@ impl DigSetup {
     }
 }
 
+/// A Discogs release and one of its sides ("B2").
+type Track = (u64, String);
+
 /// How a page's tracks go into crates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendMode {
@@ -119,6 +122,8 @@ pub enum SendMode {
     Enqueue,
     /// Into a new crate named after the page, shown, playing its first track when ready.
     Play,
+    /// As Play, a release page's track at this side playing instead (from the browser).
+    PlayTrack(String),
     /// Into the named crate, created if needed.
     Crate(String),
 }
@@ -353,7 +358,8 @@ pub(super) struct Dig {
     fail_streak: u32,
     /// A Play send's crate and the entries it held before: the first new one is armed as soon
     /// as there is one.
-    pub(super) play_when_ready: Option<(CrateId, HashSet<EntryId>)>,
+    /// Into this crate, the first entry not among these, or the entry of this release and side.
+    pub(super) play_when_ready: Option<(CrateId, HashSet<EntryId>, Option<Track>)>,
     /// Bandcamp sends, memory and questions.
     pub(super) bandcamp: super::bandcamp::BandcampState,
     pub(super) stores: super::stores::StoreState,
@@ -1340,7 +1346,7 @@ impl DiggrApp {
         let target = match &mode {
             SendMode::Enqueue => None,
             SendMode::Crate(name) => self.crates.find(name),
-            SendMode::Play => None,
+            SendMode::Play | SendMode::PlayTrack(_) => None,
         };
         if target.is_some_and(|c| self.refuse_discogs_insert(c)) {
             return;
@@ -1983,8 +1989,8 @@ impl DiggrApp {
             skip_passed: d.settings.skip_passed,
         });
         let (target, created, play) = match &mode {
-            SendMode::Enqueue | SendMode::Play => {
-                (self.enqueue_target(), false, mode == SendMode::Play)
+            SendMode::Enqueue | SendMode::Play | SendMode::PlayTrack(_) => {
+                (self.enqueue_target(), false, mode != SendMode::Enqueue)
             }
             SendMode::Crate(name) => {
                 let name: String = name.trim().chars().take(MAX_NAME).collect();
@@ -2011,7 +2017,13 @@ impl DiggrApp {
             }
         };
         if play {
-            self.play_new_in(target);
+            let track = match (&mode, &page.kind) {
+                (SendMode::PlayTrack(side), url::PageKind::Release(id)) => {
+                    Some((*id, side.clone()))
+                }
+                _ => None,
+            };
+            self.play_new_in(target, track);
         }
         let Some(d) = &mut self.dig else { return };
         if created {
@@ -2139,11 +2151,13 @@ impl DiggrApp {
                 page,
                 mode,
                 filters,
+                position,
             } => {
-                let mode = match mode {
-                    Mode::Play => SendMode::Play,
-                    Mode::Enqueue => SendMode::Enqueue,
-                    Mode::Crate(name) => SendMode::Crate(name),
+                let mode = match (mode, position) {
+                    (Mode::Play, Some(side)) => SendMode::PlayTrack(side),
+                    (Mode::Play, None) => SendMode::Play,
+                    (Mode::Enqueue, _) => SendMode::Enqueue,
+                    (Mode::Crate(name), _) => SendMode::Crate(name),
                 };
                 // A label from the browser follows the label (or refreshes it), in the background.
                 if let url::PageKind::Label(id) = page.kind {
@@ -2205,6 +2219,7 @@ impl DiggrApp {
                 }
             }
             BridgeCommand::CartResult(r) => self.store_cart_result(r),
+            BridgeCommand::Stop => self.with_engine(|e| e.stop()),
             BridgeCommand::Paired => {
                 if let Some(dialog) = self.dig.as_mut().and_then(|d| d.bridge_dialog.as_mut()) {
                     dialog.paired = true;
@@ -2246,10 +2261,13 @@ impl DiggrApp {
                 } else {
                     e.title.clone()
                 };
+                let origin = e.origin.as_ref();
                 Some(bridge::Playing {
                     artist: e.artist.clone(),
                     title,
                     crate_name: self.crates.name(playing_id).to_owned(),
+                    release: origin.and_then(|o| o.release),
+                    position: origin.map(|o| o.position.clone()).unwrap_or_default(),
                 })
             })
             .flatten();
@@ -2440,7 +2458,7 @@ impl DiggrApp {
                 let Some(d) = &mut self.dig else { return };
                 if d.play_when_ready
                     .as_ref()
-                    .is_some_and(|(c, _)| *c == j.target)
+                    .is_some_and(|(c, ..)| *c == j.target)
                 {
                     d.play_when_ready = None;
                 }
@@ -3174,15 +3192,15 @@ impl DiggrApp {
     }
 
     /// Play (from the browser): the first entry the send adds to `c` plays as soon as there is
-    /// one.
-    pub(super) fn play_new_in(&mut self, c: CrateId) {
+    /// one, or, with `track` (a release and side), that track's entry, new or already there.
+    pub(super) fn play_new_in(&mut self, c: CrateId, track: Option<Track>) {
         let before = self
             .crates
             .get(c)
             .map(|p| p.entries().iter().map(|e| e.id).collect())
             .unwrap_or_default();
         if let Some(d) = &mut self.dig {
-            d.play_when_ready = Some((c, before));
+            d.play_when_ready = Some((c, before, track));
         }
     }
 
@@ -3190,22 +3208,30 @@ impl DiggrApp {
     pub(super) fn play_send_ended(&mut self, c: CrateId) {
         self.dig_play_when_ready();
         if let Some(d) = &mut self.dig
-            && d.play_when_ready.as_ref().is_some_and(|(p, _)| *p == c)
+            && d.play_when_ready.as_ref().is_some_and(|(p, ..)| *p == c)
         {
             d.play_when_ready = None;
         }
     }
 
     fn dig_play_when_ready(&mut self) {
-        let Some((c, before)) = self.dig.as_ref().and_then(|d| d.play_when_ready.as_ref()) else {
+        let Some((c, before, track)) = self.dig.as_ref().and_then(|d| d.play_when_ready.as_ref())
+        else {
             return;
         };
         let c = *c;
-        let Some(first) = self.crates.get(c).and_then(|p| {
-            p.play_order(false, None, 0)
+        let first = self.crates.get(c).and_then(|p| match track {
+            Some((release, side)) => p.entries().iter().find_map(|e| {
+                let o = e.origin.as_ref()?;
+                (o.release == Some(*release) && o.position.trim().eq_ignore_ascii_case(side))
+                    .then_some(e.id)
+            }),
+            None => p
+                .play_order(false, None, 0)
                 .into_iter()
-                .find(|id| !before.contains(id))
-        }) else {
+                .find(|id| !before.contains(id)),
+        });
+        let Some(first) = first else {
             return;
         };
         if let Some(d) = &mut self.dig {

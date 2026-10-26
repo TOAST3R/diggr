@@ -6,7 +6,7 @@
 // read from the page; everything goes to the player through the service worker. On Juno,
 // Beatport, Traxsource and Bleep, the records or tracks the page shows are read too (juno.js,
 // beatport.js, traxsource.js, bleep.js), and only when the menu opens or a record's ▶ is
-// clicked.
+// clicked. On a Discogs release page, each tracklist row's side is read to put a ▶ / ■ before it.
 
 (() => {
   const STYLE = `
@@ -529,15 +529,99 @@
     }
   }
 
+  // A release page's tracklist: ▶ before each track plays that track in the app, ⧗ while it
+  // comes, ■ on the one playing stops it. The app's status is read once a second only while a
+  // track here waits or plays; only each row's side is read from the page.
+  const TRACK_WAIT_MS = 30_000;
+  let trackWait = null; // { side, until }: clicked, not playing yet
+  let trackPlaying = null; // the side playing, when it is this release's
+  let trackPoll = null;
+  const sameSide = (a, b) => a != null && b != null && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+  function releaseId() {
+    if (!/(^|\.)discogs\.com$/.test(location.hostname) || WR.pageKind(location.href) !== "Release") return null;
+    return location.pathname.match(RECORD)?.[2] ?? null;
+  }
+
+  function trackMark(side) {
+    if (sameSide(trackPlaying, side)) return "■";
+    return sameSide(trackWait?.side, side) ? "⧗" : "▶";
+  }
+
+  function trackButtons() {
+    if (!releaseId()) return;
+    for (const row of document.querySelectorAll("#release-tracklist tr[data-track-position]")) {
+      const side = row.dataset.trackPosition.trim();
+      const cell = row.firstElementChild;
+      if (!side || !cell) continue;
+      let span = cell.querySelector(":scope > .wr-track-play");
+      if (!span) {
+        span = el("span", { className: "wr-track-play" });
+        const shadow = span.attachShadow({ mode: "closed" });
+        span.wrButton = el("button");
+        span.wrButton.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          trackClick(side);
+        });
+        shadow.append(el("style", { textContent: TRACK_STYLE }), span.wrButton);
+        cell.prepend(span);
+        cell.style.whiteSpace = "nowrap"; // the side stays beside its button
+      }
+      const mark = trackMark(side);
+      if (span.wrButton.textContent !== mark) {
+        span.wrButton.textContent = mark;
+        span.wrButton.title = mark === "■" ? `Stop ${appName}` : `Play in ${appName}`;
+      }
+    }
+  }
+
+  async function trackClick(side) {
+    if (sameSide(trackPlaying, side)) {
+      const r = await ask({ type: "control", action: "stop" });
+      if (!r.ok) return toast(WR.problem(r.error, appName), false);
+      trackPlaying = null;
+    } else {
+      const r = await ask({ type: "send", url: location.href, mode: "play", position: side });
+      if (!r.ok) return toast(WR.problem(r.error, appName), false);
+      trackWait = { side, until: Date.now() + TRACK_WAIT_MS };
+    }
+    trackButtons();
+    if (!trackPoll) trackPoll = setInterval(pollTrack, 1000);
+  }
+
+  async function pollTrack() {
+    const id = releaseId();
+    const r = id ? await ask({ type: "status" }) : null;
+    const p = r?.ok ? r.json.playing : null;
+    trackPlaying = p && String(p.release) === id ? p.position : null;
+    if (trackWait && (sameSide(trackWait.side, trackPlaying) || Date.now() > trackWait.until)) trackWait = null;
+    if (!trackWait && trackPlaying == null) {
+      clearInterval(trackPoll);
+      trackPoll = null;
+    }
+    trackButtons();
+  }
+
+  const TRACK_STYLE = `
+    :host { all: initial; white-space: nowrap; }
+    button { font: 11px/1 "Trebuchet MS", Tahoma, sans-serif; margin-right: 6px; padding: 2px 5px;
+      min-width: 22px; background: #1b1b24; color: #2fe45a; border: 1px solid #4a4a5e;
+      border-radius: 3px; cursor: pointer; vertical-align: middle; }
+    button:hover { border-color: #2fe45a; }
+  `;
+
   // Discogs changes pages without reloading: follow the address, and put the button back if
   // the page redraws its heading.
   function tick() {
     discogsButtons();
+    trackButtons();
     bandcampButtons();
     storeButtons();
     bleepButtons();
     if (location.href !== lastHref) {
       lastHref = location.href;
+      trackWait = null; // another page's click
       closeMenus();
       render();
     } else if (host && root.querySelector(".wrap")) {

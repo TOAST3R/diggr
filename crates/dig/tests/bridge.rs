@@ -332,6 +332,7 @@ fn only_supported_discogs_pages_in_the_exact_shape_are_accepted() {
                 page,
                 mode,
                 filters,
+                ..
             },
         ] => {
             assert_eq!(page.url(), "https://www.discogs.com/artist/4242");
@@ -370,6 +371,8 @@ fn crates_and_status_come_from_the_snapshot() {
             artist: "Nightcraft".into(),
             title: "Glasshouse".into(),
             crate_name: "Playlist".into(),
+            release: Some(1001),
+            position: "A1".into(),
         }),
         sends: vec![SendState {
             page: "Label: Lowtide Tapes".into(),
@@ -392,7 +395,7 @@ fn crates_and_status_come_from_the_snapshot() {
     assert_eq!(s["app"], dig::APP_NAME);
     assert_eq!(
         s["playing"],
-        serde_json::json!({"artist": "Nightcraft", "title": "Glasshouse", "crate": "Playlist"})
+        serde_json::json!({"artist": "Nightcraft", "title": "Glasshouse", "crate": "Playlist", "release": 1001, "position": "A1"})
     );
     assert_eq!(
         s["sends"],
@@ -400,6 +403,71 @@ fn crates_and_status_come_from_the_snapshot() {
     );
     let a = r.send(&key, &send_body(ARTIST, "enqueue"));
     assert_eq!(a.json["crate"], "Friday", "enqueue goes to the shown crate");
+}
+
+const RELEASE: &str = "https://www.discogs.com/release/5077187-Massive-Attack-Mezzanine";
+
+fn position_body(url: &str, mode: &str, position: &str) -> String {
+    format!(r#"{{"url":"{url}","mode":"{mode}","skip_passed":false,"position":"{position}"}}"#)
+}
+
+#[test]
+fn a_play_send_of_a_release_can_name_one_track() {
+    let r = rig("position");
+    let key = r.pair();
+    r.bridge.poll();
+    let a = r.send(&key, &position_body(RELEASE, "play", " B2 "));
+    assert_eq!(a.status, 202, "{}", a.json);
+    match r.bridge.poll().as_slice() {
+        [BridgeCommand::Send { mode, position, .. }] => {
+            assert_eq!(*mode, Mode::Play);
+            assert_eq!(position.as_deref(), Some("B2"), "trimmed");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Without one, the first track plays, as before.
+    r.send(&key, &send_body(RELEASE, "play"));
+    assert!(matches!(
+        r.bridge.poll().as_slice(),
+        [BridgeCommand::Send { position: None, .. }]
+    ));
+    for (url, mode, position) in [
+        (LABEL, "play", "A1"),
+        (RELEASE, "enqueue", "A1"),
+        (RELEASE, "play", ""),
+        (RELEASE, "play", "A1234567890"),
+        (RELEASE, "play", "A\\u00071"),
+        ("https://www.discogs.com/master/98765", "play", "A1"),
+    ] {
+        let a = r.send(&key, &position_body(url, mode, position));
+        assert_eq!(a.status, 422, "{url} {mode} {position:?}");
+    }
+    assert!(r.bridge.poll().is_empty(), "nothing refused is sent on");
+}
+
+#[test]
+fn control_stops_playback_and_nothing_else() {
+    let r = rig("control");
+    let key = r.pair();
+    r.bridge.poll();
+    let stop = r#"{"action":"stop"}"#;
+    assert_eq!(r.call("POST", "/v1/control", None, stop).status, 401);
+    let t = Instant::now();
+    assert_eq!(r.call("POST", "/v1/control", Some(&key), stop).status, 202);
+    assert!(t.elapsed() < Duration::from_millis(100));
+    assert_eq!(r.bridge.poll(), vec![BridgeCommand::Stop]);
+    for body in [
+        r#"{"action":"next"}"#,
+        r#"{"action":"stop","volume":1}"#,
+        "",
+    ] {
+        assert_eq!(
+            r.call("POST", "/v1/control", Some(&key), body).status,
+            422,
+            "{body}"
+        );
+    }
+    assert!(r.bridge.poll().is_empty());
 }
 
 #[test]

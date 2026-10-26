@@ -50,6 +50,8 @@ pub const MAX_BODY: usize = 16 * 1024;
 pub const MAX_STORE_BODY: usize = 1 << 20;
 /// Crate names: 1 to 40 characters (the crates' own limit).
 pub const MAX_CRATE_NAME: usize = 40;
+/// A track's side on a Play send ("A1", "B2", "1-3"): 1 to 8 characters.
+pub const MAX_POSITION: usize = 8;
 pub const KEY_HEADER: &str = "X-Bridge-Key";
 /// How often the bridge thread looks at the cart queue while no request comes (a queued
 /// action reaches a waiting extension within this).
@@ -74,6 +76,8 @@ pub enum BridgeCommand {
         page: Page,
         mode: Mode,
         filters: Filters,
+        /// The side to play, on a release page sent with mode Play (the first track otherwise).
+        position: Option<String>,
     },
     /// A Bandcamp page; `title` is the page's title, to name a label.
     SendBandcamp {
@@ -108,6 +112,8 @@ pub enum BridgeCommand {
     ResolveShopItem(u64),
     /// A store cart action ended: answered by the extension, or expired.
     CartResult(CartResult),
+    /// Stop playback, as the Stop button does.
+    Stop,
 }
 
 /// The URL that brings the app to the front, when `exe` runs inside `Diggr.app` (which
@@ -154,6 +160,10 @@ pub struct Playing {
     pub title: String,
     #[serde(rename = "crate")]
     pub crate_name: String,
+    /// The Discogs release it is from, and its side ("" when it has none), so a release's page
+    /// can mark the track playing.
+    pub release: Option<u64>,
+    pub position: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -377,6 +387,15 @@ struct SendBody {
     /// A Bandcamp page's title, to name its label (Bandcamp only).
     #[serde(default)]
     title: Option<String>,
+    /// The side to play (a Discogs release page with mode Play only).
+    #[serde(default)]
+    position: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlBody {
+    action: String,
 }
 
 /// Checks a request in the order of the design (host, origin, route, size, key, body) and
@@ -411,6 +430,7 @@ fn answer(
         (Get, "/v1/status") => "status",
         (Post, "/v1/send") => "send",
         (Post, "/v1/owned") => "owned",
+        (Post, "/v1/control") => "control",
         (Get, "/v1/cart/next") => "cart_next",
         (Post, "/v1/cart/result") => "cart_result",
         _ => return error(404, "not found"),
@@ -472,6 +492,10 @@ fn answer(
             )
         }
         "owned" => owned(&body, shared),
+        "control" => match serde_json::from_slice::<ControlBody>(&body) {
+            Ok(b) if b.action == "stop" => (202, json!({}), Some(BridgeCommand::Stop)),
+            _ => error(422, "invalid body"),
+        },
         "cart_next" => match shared.cart().take(Instant::now()) {
             Some(a) => (200, json!({ "action": a.wire() }), None),
             None => (PARK, Value::Null, None),
@@ -563,6 +587,18 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
     let Ok(b) = serde_json::from_slice::<SendBody>(body) else {
         return error(422, "invalid body");
     };
+    let position = match b.position.as_deref().map(str::trim) {
+        None => None,
+        Some(p)
+            if (1..=MAX_POSITION).contains(&p.chars().count())
+                && !p.chars().any(char::is_control)
+                && matches!(b.mode, ModeName::Play)
+                && url::parse(&b.url).is_ok_and(|p| matches!(p.kind, PageKind::Release(_))) =>
+        {
+            Some(p.to_owned())
+        }
+        Some(_) => return error(422, "invalid position"),
+    };
     // A fan's page imports their collection and wishlist, whatever the mode.
     if let Ok(page) = bandcamp::fan::parse(&b.url) {
         let answer = json!({
@@ -641,6 +677,7 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             filters: Filters {
                 skip_passed: b.skip_passed,
             },
+            position: None,
         };
         return (202, answer, Some(cmd));
     }
@@ -666,6 +703,7 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
             page,
             mode,
             filters: Filters { skip_passed: true },
+            position: None,
         };
         return (202, answer, Some(cmd));
     }
@@ -676,6 +714,7 @@ fn send(body: &[u8], shared: &Shared) -> (u16, Value, Option<BridgeCommand>) {
         filters: Filters {
             skip_passed: b.skip_passed,
         },
+        position,
     };
     (202, answer, Some(cmd))
 }
