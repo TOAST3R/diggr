@@ -23,9 +23,8 @@ use crate::format;
 use crate::metadata::{MetaResult, MetaWorker};
 use crate::playlist::{AlbumKey, ClickMods, CursorMove, EntryId, EntryStatus, Facet};
 use crate::records::{self, ListRow};
-use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, SideGroup, Store, VisMode};
+use crate::settings::{PRESETS_FILE, Repeat, SETTINGS_FILE, Settings, SideGroup, Store};
 use crate::skin::LoadedSkin;
-use crate::spectrum::{Analyzer, BARS};
 use crate::sync::speed_label;
 use crate::widgets::{self, Skinned, SliderSprites, color};
 
@@ -107,7 +106,6 @@ pub struct DiggrApp {
     /// A waiting entry that starts as soon as its audio arrives.
     armed: Option<(CrateId, EntryId)>,
     tap: Option<TapReader>,
-    analyzer: Analyzer,
     meta: Option<MetaWorker<MetaKey>>,
     now_playing: Option<TrackInfo>,
     position: Position,
@@ -155,7 +153,6 @@ pub struct DiggrApp {
     /// When a drag at a list's edge last stepped it.
     side_edge_at: Option<Instant>,
     /// The CRATES panel's crate under the pointer while entries are dragged.
-    panel_drop: Option<CrateId>,
     /// Where the footer's BPM slider was last drawn: its track's ends and whether the range
     /// text fit (skin pixels, footer coordinates), for tests.
     #[cfg(test)]
@@ -173,7 +170,6 @@ pub struct DiggrApp {
     /// The CART switch as last drawn (its label and where, in points), for tests.
     #[cfg(test)]
     cart_drawn: Option<(String, Pos2)>,
-    pl_resize_acc: egui::Vec2,
     /// The filter bar's search text as typed (the shown crate holds its folded words).
     pl_search: String,
     /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
@@ -188,13 +184,11 @@ pub struct DiggrApp {
     win_px: egui::Vec2,
     /// The OS has reported the window maximized since the playlist was maximized (so a
     /// later "not maximized" means it was restored behind our back).
-    max_seen: bool,
     /// Which side the arrow keys work on.
     focus: Focus,
     /// The shown crate's playing entry when the list last looked (see `follow_playing_entry`).
     pl_follow: Option<(CrateId, EntryId)>,
     /// The playlist width has been fitted to the monitor.
-    width_fitted: bool,
     name_dialog: Option<NameDialog>,
     /// A crate with entries waiting for "Delete crate…" to be confirmed.
     confirm_delete: Option<CrateId>,
@@ -224,7 +218,6 @@ pub struct DiggrApp {
     /// `DIGGR_AUTO_QUIT_SECS=n`: close the app after n seconds.
     auto_quit: Option<Instant>,
     settings_dirty: Option<Instant>,
-    last_size: Option<egui::Vec2>,
     message: Option<(String, Instant)>,
     /// A verdict just landed: the title line shows it for [`FLASH_SECS`] (WANTED, PASS, …).
     flash: Option<(String, Instant)>,
@@ -316,7 +309,6 @@ impl DiggrApp {
             skin,
             tex: None,
             store,
-            analyzer: Analyzer::new(48_000),
             settings,
             presets,
             queue: Vec::new(),
@@ -362,7 +354,6 @@ impl DiggrApp {
             side_revealed: None,
             side_scroll_to: [false; 2],
             side_edge_at: None,
-            panel_drop: None,
             #[cfg(test)]
             bpm_slider: None,
             facet_cache: Default::default(),
@@ -372,17 +363,14 @@ impl DiggrApp {
             filters_drawn: None,
             #[cfg(test)]
             cart_drawn: None,
-            pl_resize_acc: egui::Vec2::ZERO,
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
             year_anchor: None,
             pl_scroll_acc: 0.0,
             win_px: egui::Vec2::ZERO,
-            max_seen: false,
             focus: Focus::Player,
             pl_follow: None,
-            width_fitted: false,
             name_dialog: None,
             confirm_delete: None,
             last_frame: Instant::now(),
@@ -395,7 +383,6 @@ impl DiggrApp {
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|s| Instant::now() + Duration::from_secs(s)),
             settings_dirty: None,
-            last_size: None,
             message,
             flash: None,
             analysis: ctx.analysis,
@@ -416,10 +403,10 @@ impl DiggrApp {
         }
     }
 
-    /// Window size in points for the current settings.
-    pub fn window_size(settings: &Settings, skin: &LoadedSkin) -> egui::Vec2 {
-        let (w, h) = crate::layout::window_size(settings, &skin.def);
-        vec2(w as f32, h as f32) * settings.scale as f32
+    /// The window's size in points when it isn't maximized: a playlist wide enough for its
+    /// sidebar and columns, with 20 rows under the band.
+    pub fn window_size(settings: &Settings) -> egui::Vec2 {
+        vec2(1100.0, 600.0) * settings.scale as f32 / 2.0
     }
 
     fn engine(&mut self) -> Option<&mut Engine> {
@@ -640,7 +627,6 @@ impl DiggrApp {
                 engine.set_repeat(s.repeat.to_engine());
                 engine.set_av_offset_ms(s.av_offset_ms);
                 self.tap = engine.take_tap();
-                self.analyzer.set_rate(engine.stats().format.sample_rate);
                 self.engine = EngineSlot::Ready(Box::new(engine));
                 self.queue_dirty = true;
             }
@@ -887,7 +873,7 @@ impl DiggrApp {
         }
     }
 
-    fn update_audio(&mut self, dt: f32) {
+    fn update_audio(&mut self) {
         self.poll_engine_start();
         if self.queue_dirty && self.engine().is_some() {
             self.sync_queue(None);
@@ -1000,8 +986,8 @@ impl DiggrApp {
         let live = self.spectro_open && self.spectro.live_mode();
         let mut chunks = Vec::new();
         if let Some(tap) = &mut self.tap {
+            // Drained even when nothing reads it, so the ring never fills.
             while let Some(chunk) = tap.pop() {
-                self.analyzer.push(&chunk);
                 if live {
                     chunks.push(chunk);
                 }
@@ -1012,10 +998,6 @@ impl DiggrApp {
                 .push_tap(&chunks, engine.stats().format.sample_rate);
         }
         self.position = engine.position();
-        if self.position.discontinuity {
-            self.analyzer.set_rate(engine.stats().format.sample_rate);
-        }
-        self.analyzer.update(&self.position, dt);
         self.now_playing = engine.track_info(self.position.track).cloned();
         // Drive the analyzer with the audible position and pick up its latest score.
         self.score = None;
@@ -1361,9 +1343,7 @@ impl DiggrApp {
         if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Tab) && !i.modifiers.any())
         {
             ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-            if self.settings.show_playlist {
-                self.focus = self.focus.other();
-            }
+            self.focus = self.focus.other();
         }
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -1413,9 +1393,7 @@ impl DiggrApp {
         for key in pressed {
             // Cmd+F (Ctrl+F) finds in the shown crate.
             if key == Key::F && mods.command {
-                if self.settings.show_playlist {
-                    self.search_focus = true;
-                }
+                self.search_focus = true;
                 continue;
             }
             // The help panel takes its own close keys first.
@@ -1530,7 +1508,6 @@ impl DiggrApp {
                 }
                 _ => {}
             },
-            Key::P if mods.shift && !mods.command => self.apply(Action::ToggleMaximized, ctx),
             Key::P if !mods.command => self.show_playing_entry(),
             _ if !mods.command && self.arrows_move_cursor() => {
                 let mv = match key {
@@ -1631,21 +1608,7 @@ impl DiggrApp {
 
     /// ↑/↓ move the playlist cursor while the playlist has the keyboard.
     fn arrows_move_cursor(&self) -> bool {
-        self.focus == Focus::Playlist && self.settings.show_playlist
-    }
-
-    /// Maximizes the window for the playlist (showing it, and giving it the keyboard), or
-    /// restores the previous frame and layout.
-    fn set_maximized(&mut self, ctx: &egui::Context, on: bool) {
-        self.settings.playlist_maximized = on;
-        if on {
-            self.settings.show_playlist = true;
-            self.focus = Focus::Playlist;
-        }
-        self.max_seen = false;
-        self.last_size = None;
-        ctx.send_viewport_cmd(ViewportCommand::Maximized(on));
-        self.mark_settings();
+        self.focus == Focus::Playlist
     }
 
     /// The shown crate's rows (see [`records`]), rebuilt only when the crate, its filter, its
@@ -1835,280 +1798,6 @@ impl DiggrApp {
         }
     }
 
-    fn main_section(&mut self, ui: &mut Ui, origin: Pos2) {
-        let state = self.position.state;
-        let info = self.now_playing.clone();
-        let duration = info.as_ref().and_then(|i| i.duration_secs);
-        let elapsed = self.position.seconds();
-        let mut actions: Vec<Action> = Vec::new();
-        {
-            let def = self.def.clone();
-            let sk = self.skinned(&def, ui, origin);
-            sk.sprite("main_bg", 0.0, 0.0);
-            // Under every control: a right-click anywhere else opens Options.
-            let (mw, mh) = def.main_size;
-            self.options_menu(
-                ui,
-                sk.rect(0.0, 0.0, mw as f32, mh as f32),
-                "main_options",
-                &mut actions,
-            );
-            dim_title(&sk, "titlebar", self.focus == Focus::Player);
-            Self::titlebar_drag(ui, &sk, "main_title", "titlebar");
-            if widgets::button(ui, &sk, "min", "btn_min", "btn_min").clicked() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
-            }
-            if widgets::button(ui, &sk, "close", "btn_close", "btn_close").clicked() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-            }
-
-            // LCD: status, time, visualizer.
-            let st = sk.def.at("status");
-            let status = match state {
-                PlayState::Playing => "status_play",
-                PlayState::Paused => "status_pause",
-                PlayState::Stopped => "status_stop",
-            };
-            sk.sprite(status, st.x as f32, st.y as f32);
-            let t = sk.def.at("time");
-            let show_time = state != PlayState::Stopped;
-            let remaining = self.settings.time_remaining && duration.is_some();
-            let secs = if remaining {
-                (duration.unwrap_or(0.0) - elapsed).max(0.0)
-            } else {
-                elapsed
-            };
-            let (mm, ss) = format::lcd(secs);
-            let (tx, ty) = (t.x as f32, t.y as f32);
-            sk.sprite(
-                if show_time && remaining {
-                    "digit_minus"
-                } else {
-                    "digit_blank"
-                },
-                tx,
-                ty,
-            );
-            let digit = |c: char| {
-                if show_time {
-                    format!("digit_{c}")
-                } else {
-                    "digit_blank".to_owned()
-                }
-            };
-            let mins: Vec<char> = mm.chars().collect();
-            for (i, c) in mins.iter().rev().take(3).enumerate() {
-                sk.sprite(&digit(*c), tx + 21.0 - 10.0 * i as f32, ty);
-            }
-            if show_time {
-                sk.sprite("digit_colon", tx + 31.0, ty);
-            }
-            for (i, c) in ss.chars().enumerate() {
-                sk.sprite(&digit(c), tx + 35.0 + 10.0 * i as f32, ty);
-            }
-            if ui
-                .interact(sk.at("time"), Id::new("time"), Sense::click())
-                .clicked()
-            {
-                actions.push(Action::ToggleRemaining);
-            }
-            self.draw_vis(&sk);
-            if ui
-                .interact(sk.at("vis"), Id::new("vis"), Sense::click())
-                .clicked()
-            {
-                actions.push(Action::CycleVis);
-            }
-
-            // Title, kbps, kHz.
-            let tt = sk.def.at("title_text");
-            let lcd = color(sk.def.colors.lcd);
-            let left = self
-                .flash
-                .as_ref()
-                .and_then(|(_, at)| FLASH_SECS.checked_sub(at.elapsed()))
-                .filter(|d| !d.is_zero());
-            if let (Some(left), Some((text, _))) = (left, &self.flash) {
-                // Centred and still; the track line comes back by itself.
-                let x = tt.x as f32 + ((tt.w as f32 - sk.text_width(text)) / 2.0).round();
-                sk.text(x, tt.y as f32, text, lcd);
-                ui.ctx().request_repaint_after(left);
-            } else {
-                self.flash = None;
-                let title = self
-                    .now_playing_line()
-                    .unwrap_or_else(|| engine_status(&self.engine));
-                let width = (tt.w / sk.def.font.advance) as usize;
-                let shown = format::scroll(&title, width, self.title_offset);
-                sk.text(tt.x as f32, tt.y as f32, &shown, lcd);
-            }
-            if let Some(i) = &info {
-                let k = sk.def.at("kbps");
-                if let Some(kbps) = i.bitrate_kbps {
-                    let s = kbps.min(999).to_string();
-                    sk.text(
-                        k.x as f32 + k.w as f32 - sk.text_width(&s),
-                        k.y as f32,
-                        &s,
-                        lcd,
-                    );
-                }
-                let k = sk.def.at("khz");
-                let s = ((i.sample_rate as f32 / 1000.0).round() as u32).to_string();
-                sk.text(
-                    k.x as f32 + k.w as f32 - sk.text_width(&s),
-                    k.y as f32,
-                    &s,
-                    lcd,
-                );
-            }
-
-            // Sliders.
-            let vol = SliderSprites {
-                track: "volume_track",
-                fill: Some("volume_fill"),
-                thumb: "volume_thumb",
-            };
-            if let (_, Some(v)) =
-                widgets::hslider(ui, &sk, "volume", "volume", vol, self.settings.volume)
-            {
-                actions.push(Action::Volume(v));
-            }
-            // Where the classic player had balance: the waveform section, as with `W`.
-            if widgets::toggle(
-                ui,
-                &sk,
-                "wave_tog",
-                "wave_toggle",
-                "tog_wave",
-                self.settings.show_waveform,
-            )
-            .on_hover_text("Waveform (W)")
-            .clicked()
-            {
-                actions.push(Action::ToggleWaveform);
-            }
-            if widgets::toggle(
-                ui,
-                &sk,
-                "eq_tog",
-                "eq_toggle",
-                "tog_eq",
-                self.settings.show_eq,
-            )
-            .on_hover_text("Equalizer")
-            .clicked()
-            {
-                actions.push(Action::ToggleEq);
-            }
-            if widgets::toggle(
-                ui,
-                &sk,
-                "cr_tog",
-                "cr_toggle",
-                "tog_cr",
-                self.settings.show_crates,
-            )
-            .on_hover_text("Crates")
-            .clicked()
-            {
-                actions.push(Action::ToggleCrates);
-            }
-            if widgets::toggle(
-                ui,
-                &sk,
-                "pl_tog",
-                "pl_toggle",
-                "tog_pl",
-                self.settings.show_playlist,
-            )
-            .on_hover_text("Playlist")
-            .clicked()
-            {
-                actions.push(Action::TogglePlaylist);
-            }
-            let r = sk.def.at("seek");
-            if let Some(d) = duration.filter(|d| *d > 0.0 && state != PlayState::Stopped) {
-                let value = self.seek_drag.unwrap_or((elapsed / d) as f32);
-                let seek = SliderSprites {
-                    track: "seek_track",
-                    fill: None,
-                    thumb: "seek_thumb",
-                };
-                let (resp, new) = widgets::hslider(ui, &sk, "seek", "seek", seek, value);
-                if let Some(v) = new {
-                    self.seek_drag = Some(v);
-                }
-                if (resp.drag_stopped() || (resp.clicked() && new.is_some()))
-                    && let Some(v) = self.seek_drag.take()
-                {
-                    actions.push(Action::Seek(v as f64 * d));
-                }
-            } else {
-                sk.sprite("seek_track", r.x as f32, r.y as f32);
-            }
-
-            // Transport: the button of the play state is lit.
-            let lit = match self.position.state {
-                PlayState::Playing => "play",
-                PlayState::Paused => "pause",
-                PlayState::Stopped => "stop",
-            };
-            for (name, action) in [
-                ("prev", Action::Prev),
-                ("play", Action::Play),
-                ("pause", Action::Pause),
-                ("stop", Action::Stop),
-                ("next", Action::Next),
-            ] {
-                let sprite = if name == lit {
-                    format!("{name}_on")
-                } else {
-                    name.to_owned()
-                };
-                if widgets::button(ui, &sk, name, name, &sprite).clicked() {
-                    actions.push(action);
-                }
-            }
-            let shuffle = if self.settings.shuffle {
-                "shuffle_on"
-            } else {
-                "shuffle_off"
-            };
-            if widgets::button(ui, &sk, "shuffle", "shuffle", shuffle)
-                .on_hover_text("Shuffle")
-                .clicked()
-            {
-                actions.push(Action::Shuffle);
-            }
-            let (repeat, tip) = match self.settings.repeat {
-                Repeat::Off => ("repeat_off", "Repeat: off"),
-                Repeat::All => ("repeat_all", "Repeat: all"),
-                Repeat::One => ("repeat_one", "Repeat: one"),
-            };
-            if widgets::button(ui, &sk, "repeat", "repeat", repeat)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                actions.push(Action::Repeat);
-            }
-            let sync = if self.settings.sync.on {
-                "sync_on"
-            } else {
-                "sync_off"
-            };
-            if widgets::button(ui, &sk, "sync", "sync", sync)
-                .on_hover_text("SYNC: every track at one tempo, set on the turntable")
-                .clicked()
-            {
-                actions.push(Action::Sync);
-            }
-        }
-        for a in actions {
-            self.apply(a, ui.ctx());
-        }
-    }
-
     /// Artist, title and duration of what plays: the file's tags, except that an entry with
     /// an origin keeps its own artist and title (the record, not the file, is the truth).
     fn now_playing_names(&self) -> Option<(String, String, Option<f64>)> {
@@ -2141,147 +1830,6 @@ impl DiggrApp {
             line += &format::origin_details(o);
         }
         Some(line)
-    }
-
-    fn draw_vis(&self, sk: &Skinned) {
-        let v = sk.def.at("vis");
-        let c = &sk.def.colors;
-        match self.settings.vis {
-            VisMode::Off => {}
-            VisMode::Spectrum => {
-                let bars = self.analyzer.bars();
-                let peaks = self.analyzer.peaks();
-                let h = v.h as f32;
-                for i in 0..BARS {
-                    let x = v.x as f32 + i as f32 * 4.0;
-                    let bh = (bars[i] * h).round();
-                    for row in 0..bh as u32 {
-                        let t = row as f32 / (h - 1.0);
-                        let col = lerp_color(c.vis_bar_low, c.vis_bar_high, t);
-                        sk.fill(sk.rect(x, v.y as f32 + h - 1.0 - row as f32, 3.0, 1.0), col);
-                    }
-                    let py = (peaks[i] * h).round();
-                    if py >= 1.0 {
-                        sk.fill(sk.rect(x, v.y as f32 + h - py, 3.0, 1.0), color(c.vis_peak));
-                    }
-                }
-            }
-            VisMode::Scope => {
-                let samples = self.analyzer.scope(&self.position, v.w as usize);
-                let mid = v.y as f32 + v.h as f32 / 2.0;
-                for (i, s) in samples.iter().enumerate() {
-                    let y = (mid + s.clamp(-1.0, 1.0) * (v.h as f32 / 2.0 - 1.0)).round();
-                    sk.fill(
-                        sk.rect(v.x as f32 + i as f32, y, 1.0, 1.0),
-                        color(c.vis_scope),
-                    );
-                }
-            }
-        }
-    }
-
-    /// The waveform's title bar in the player column: drags the window like the others, and
-    /// its close button hides the waveform.
-    fn wave_title(&mut self, ui: &mut Ui, origin: Pos2) {
-        let def = self.def.clone();
-        let sk = self.skinned(&def, ui, origin);
-        sk.sprite("wave_title", 0.0, 0.0);
-        dim_title(&sk, "wave_titlebar", self.focus == Focus::Player);
-        Self::titlebar_drag(ui, &sk, "wave_title", "wave_titlebar");
-        if widgets::button(ui, &sk, "wave_close", "wave_close", "btn_close").clicked() {
-            self.apply(Action::ToggleWaveform, ui.ctx());
-        }
-    }
-
-    /// The CRATES panel in the EQ's place: the user's own crates, then "+ New crate", in one
-    /// list that scrolls. Dropping entries on a crate sends them there, as in the sidebar.
-    fn crates_panel(&mut self, ui: &mut Ui, origin: Pos2) {
-        let mut actions = Vec::new();
-        let def = self.def.clone();
-        let sk = self.skinned(&def, ui, origin);
-        let colors = sk.def.colors.clone();
-        let scale = sk.scale;
-        let (w, h) = (sk.def.eq_size.0 as f32, sk.def.eq_size.1 as f32);
-        sk.sprite("crates_title", 0.0, 0.0);
-        dim_title(&sk, "eq_titlebar", self.focus == Focus::Player);
-        Self::titlebar_drag(ui, &sk, "crates_title", "eq_titlebar");
-        if widgets::button(ui, &sk, "crates_close", "eq_close", "btn_close").clicked() {
-            actions.push(Action::ToggleCrates);
-        }
-        let top = sk.def.sprite("crates_title").h as f32;
-        sk.fill(
-            sk.rect(0.0, top, w, h - top),
-            lerp_color(colors.pl_bg, colors.pl_text, 0.06),
-        );
-        let row_h = sk.def.pl_row_h as f32;
-        let (x, y, list_w) = (3.0, top + 2.0, w - 6.0);
-        let rows = (((h - y - 2.0) / row_h).floor() as usize).max(1);
-        let seller_of: HashMap<CrateId, (bool, bool)> = self
-            .sidebar_sellers()
-            .into_iter()
-            .map(|(id, dug, busy)| (id, (dug, busy)))
-            .collect();
-        let friend_of: HashMap<CrateId, (bool, bool, bool)> = self
-            .sidebar_friends()
-            .into_iter()
-            .map(|(id, dug, private, busy)| (id, (dug, private, busy)))
-            .collect();
-        let (mine, _) = self.side_crates(&seller_of, &friend_of);
-        let len = mine.len() + 1;
-        let shown = self.crates.shown_id();
-        if std::mem::take(&mut self.side_scroll_to[1])
-            && let Some(i) = mine.iter().position(|c| c.id == shown)
-        {
-            self.side_scroll[2] = reveal_row(self.side_scroll[2], i, rows);
-        }
-        let pane = sk.rect(x, y, list_w, rows as f32 * row_h);
-        let first = self.pane_scroll(ui, pane, 2, len, rows, row_h * scale);
-        let painter = sk.painter.with_clip_rect(pane);
-        let font = egui::FontId::proportional(9.5 * scale);
-        let pad = if len > rows { SIDE_BAR_W + 1.0 } else { 0.0 };
-        let mut target = None;
-        for (r, i) in (first..len.min(first + rows)).enumerate() {
-            let rr = sk.rect(x, y + r as f32 * row_h, list_w, row_h);
-            match mine.get(i) {
-                Some(c) => {
-                    if self.crate_row(
-                        ui,
-                        &sk,
-                        &painter,
-                        "crates_panel",
-                        rr,
-                        c,
-                        None,
-                        None,
-                        pad,
-                        &font,
-                        &mut actions,
-                    ) {
-                        target = Some(c.id);
-                    }
-                }
-                None => {
-                    painter.text(
-                        pos2(rr.left() + 3.0 * scale, rr.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        "+ New crate",
-                        font.clone(),
-                        lerp_color(colors.pl_text, colors.pl_bg, 0.3),
-                    );
-                    if ui
-                        .interact(rr, Id::new("crates_panel_new"), Sense::click())
-                        .clicked()
-                    {
-                        actions.push(Action::NewCrate);
-                    }
-                }
-            }
-        }
-        self.pane_bar(ui, &sk, pane, 2, len, rows, first);
-        self.panel_drop = target;
-        for a in actions {
-            self.apply(a, ui.ctx());
-        }
     }
 
     /// The turntable under the main window while SYNC is on. The pitch fader sets the set's
@@ -2453,7 +2001,6 @@ impl DiggrApp {
             let def = self.def.clone();
             let sk = self.skinned(&def, ui, origin);
             sk.sprite("eq_bg", 0.0, 0.0);
-            dim_title(&sk, "eq_titlebar", self.focus == Focus::Player);
             Self::titlebar_drag(ui, &sk, "eq_title", "eq_titlebar");
             if widgets::button(ui, &sk, "eq_close", "eq_close", "btn_close").clicked() {
                 actions.push(Action::ToggleEq);
@@ -2616,20 +2163,12 @@ impl DiggrApp {
         }
     }
 
-    /// The playlist's width and rows now: the chosen ones, or, while maximized, what the
-    /// window leaves under the band (the chosen ones are kept for restoring).
+    /// The playlist's width and rows now: what the window leaves under the band.
     fn pl_geometry(&self) -> (u16, usize) {
-        if self.settings.playlist_maximized {
-            let d = &self.skin.def;
-            let band = crate::layout::band_h(&self.settings, d);
-            let (w, rows) = crate::layout::maximized(d, band, self.win_px.x, self.win_px.y);
-            (w, rows as usize)
-        } else {
-            (
-                self.settings.playlist_width,
-                crate::layout::playlist_rows(&self.settings, &self.skin.def) as usize,
-            )
-        }
+        let d = &self.skin.def;
+        let band = crate::layout::band_h(&self.settings, d);
+        let (w, rows) = crate::layout::playlist_fit(d, band, self.win_px.x, self.win_px.y);
+        (w, rows as usize)
     }
 
     /// Rows the playlist shows now.
@@ -2655,7 +2194,7 @@ impl DiggrApp {
 
     /// The playlist is wide enough for the crate sidebar (whether or not it is on).
     fn pl_sidebar_fits(&self) -> bool {
-        self.settings.playlist_maximized || self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
+        self.pl_geometry().0 >= SIDEBAR_FROM_WIDTH
     }
 
     /// The seller crates for the sidebar (crate, dug, refreshing), in Top Sellers order.
@@ -5153,12 +4692,6 @@ impl DiggrApp {
                     .id(Id::new("crate_menu"))
                     .show(|ui| self.crate_menu(ui, &mut actions));
             }
-            if widgets::button(ui, &sk, "pl_close", "pl_close", "btn_close").clicked() {
-                actions.push(Action::TogglePlaylist);
-            }
-            if widgets::button(ui, &sk, "pl_max", "pl_max", "btn_max").clicked() {
-                actions.push(Action::ToggleMaximized);
-            }
             // ▤: one row per record (lit while grouped).
             let on = self.crates.shown().is_grouped();
             let sprite = if on { "btn_group_on" } else { "btn_group" };
@@ -5857,7 +5390,7 @@ impl DiggrApp {
                     }
                     (Some(to), None) => actions.push(Action::Move(from, to)),
                     (None, _) => {
-                        if let Some(c) = side_drop.or(self.panel_drop)
+                        if let Some(c) = side_drop
                             && let Some(e) = shown.entries().get(from)
                         {
                             actions.push(Action::DropOnCrate(e.id, c));
@@ -5971,27 +5504,6 @@ impl DiggrApp {
             };
             let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
             bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
-
-            // The resize grip: whole rows down, any width sideways.
-            let rz = bsk.at("pl_resize");
-            bsk.sprite(
-                "pl_resize",
-                d.at("pl_resize").x as f32,
-                d.at("pl_resize").y as f32,
-            );
-            let (_, delta) = widgets::drag_area(ui, &bsk, "pl_resize", rz);
-            self.pl_resize_acc += delta;
-            let rows = (self.pl_resize_acc.y / row_h).trunc();
-            let width = self.pl_resize_acc.x.trunc();
-            if self.settings.playlist_maximized {
-                self.pl_resize_acc = egui::Vec2::ZERO;
-            } else if rows != 0.0 || width != 0.0 {
-                self.pl_resize_acc -= vec2(width, rows * row_h);
-                actions.push(Action::ResizePlaylist {
-                    rows: rows as i32,
-                    width: width as i32,
-                });
-            }
         }
         for a in actions {
             self.apply(a, ui.ctx());
@@ -6495,48 +6007,16 @@ impl DiggrApp {
             }
             Action::ToggleEq => {
                 self.settings.show_eq = !self.settings.show_eq;
-                self.settings.show_crates &= !self.settings.show_eq;
                 self.mark_settings();
-            }
-            Action::ToggleCrates => {
-                self.settings.show_crates = !self.settings.show_crates;
-                self.settings.show_eq &= !self.settings.show_crates;
-                self.mark_settings();
-            }
-            Action::TogglePlaylist => {
-                if self.settings.playlist_maximized {
-                    // Hiding the playlist leaves nothing to maximize.
-                    self.set_maximized(ctx, false);
-                }
-                self.settings.show_playlist = !self.settings.show_playlist;
-                self.mark_settings();
-            }
-            Action::ToggleMaximized => {
-                self.set_maximized(ctx, !self.settings.playlist_maximized);
             }
             Action::ToggleRemaining => {
                 self.settings.time_remaining = !self.settings.time_remaining;
-                self.mark_settings();
-            }
-            Action::CycleVis => {
-                self.settings.vis = self.settings.vis.cycle();
                 self.mark_settings();
             }
             Action::ToggleSpectrogram => self.spectro_open = !self.spectro_open,
             Action::OpenInsights => self.insights_open = true,
             Action::ToggleScale => {
                 self.settings.scale = if self.settings.scale >= 2 { 1 } else { 2 };
-                self.mark_settings();
-            }
-            Action::ResizePlaylist { rows, width } => {
-                // From the rows shown, which may be more than chosen (never shorter than the
-                // player column).
-                let shown = crate::layout::playlist_rows(&self.settings, &self.skin.def);
-                self.settings.playlist_rows = (shown as i32 + rows).clamp(4, 60) as u16;
-                self.settings.playlist_width = (self.settings.playlist_width as i32 + width).clamp(
-                    crate::settings::MIN_PLAYLIST_WIDTH as i32,
-                    crate::settings::MAX_PLAYLIST_WIDTH as i32,
-                ) as u16;
                 self.mark_settings();
             }
             Action::SavePreset => self.name_dialog = Some(NameDialog::new(NameFor::Preset, "")),
@@ -6865,8 +6345,6 @@ enum Action {
     Seek(f64),
     Volume(f32),
     ToggleWaveform,
-    /// Maximize the playlist beside a thin player strip, or restore the normal layout.
-    ToggleMaximized,
     /// Sort the shown crate by a column (again: the other way).
     Sort(Field),
     /// Show (and play) only the shown crate's entries in this BPM range; `None` shows all.
@@ -6910,21 +6388,13 @@ enum Action {
     SyncTarget(u16),
     /// SYNC's target from the playing track.
     SyncTakeBpm,
+    /// The EQ window.
     ToggleEq,
-    /// The CRATES panel in the EQ's place.
-    ToggleCrates,
-    TogglePlaylist,
     ToggleRemaining,
-    CycleVis,
     ToggleScale,
     ToggleSpectrogram,
     /// Open Insights, on the collection crate.
     OpenInsights,
-    /// Rows and skin pixels to add to the playlist.
-    ResizePlaylist {
-        rows: i32,
-        width: i32,
-    },
     SavePreset,
     DeletePreset(String),
     PlayEntry(EntryId),
@@ -7625,7 +7095,31 @@ fn sprite_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) 
     resp
 }
 
-/// The side that has the keyboard: the player (main, waveform, EQ) or the playlist.
+/// A toggle icon (`{base}_on` / `{base}_off`) at any rectangle: the mini player's icons have
+/// no layout entry.
+fn icon_toggle(
+    ui: &mut Ui,
+    sk: &Skinned,
+    id: &str,
+    rect: Rect,
+    base: &str,
+    on: bool,
+) -> egui::Response {
+    let resp = ui.interact(rect, Id::new(id), Sense::click());
+    sk.sprite_in(&format!("{base}_{}", if on { "on" } else { "off" }), rect);
+    resp
+}
+
+/// The band's icon buttons' width (skin pixels), and the corner that holds minimize and close.
+const ICON_W: f32 = 17.0;
+const CORNER_W: f32 = 28.0;
+
+/// The EQ window's viewport.
+fn eq_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("eq")
+}
+
+/// The side that has the keyboard: the player (the band) or the playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Player,
@@ -7697,7 +7191,6 @@ pub struct Activity {
     pub playing: bool,
     /// The waveform section is visible (it scrolls with the playhead).
     pub waveform: bool,
-    pub bars_moving: bool,
     pub engine_starting: bool,
     pub hidden: bool,
 }
@@ -7709,7 +7202,7 @@ pub fn repaint_after(a: Activity) -> Option<Duration> {
     } else if a.playing && a.waveform {
         // The waveform scrolls with the playhead: smooth at the display rate.
         Some(Duration::from_millis(16))
-    } else if a.playing || a.bars_moving {
+    } else if a.playing {
         Some(Duration::from_millis(33))
     } else if a.engine_starting {
         Some(Duration::from_millis(50))
@@ -8085,7 +7578,7 @@ impl DiggrApp {
         }
         let dt = (now - self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
-        self.update_audio(dt);
+        self.update_audio();
         self.show_playing_bpm();
         self.sync_wait();
         self.handle_keys(ctx);
@@ -8122,59 +7615,12 @@ impl DiggrApp {
             }
         }
 
-        // A playlist width saved on a bigger screen is narrowed to fit this one, once.
-        if !self.width_fitted
-            && let Some(m) = ctx.input(|i| i.viewport().monitor_size)
-        {
-            self.width_fitted = true;
-            let fit = crate::layout::fit_playlist_width(
-                self.settings.playlist_width,
-                &self.skin.def,
-                self.settings.scale as f32,
-                m.x,
-            );
-            if fit != self.settings.playlist_width {
-                self.settings.playlist_width = fit;
-                self.mark_settings();
-            }
-        }
-        // While the playlist is maximized the OS sizes the window and the layout follows it.
-        // Restored from outside (a window manager): back to the normal layout.
-        if self.settings.playlist_maximized {
-            match ctx.input(|i| i.viewport().maximized) {
-                Some(true) => self.max_seen = true,
-                Some(false) if self.max_seen => {
-                    self.settings.playlist_maximized = false;
-                    self.max_seen = false;
-                    self.last_size = None;
-                    self.mark_settings();
-                }
-                _ => {}
-            }
-        }
-        // Keep the window sized to the visible sections (not while maximized).
-        if !self.settings.playlist_maximized {
-            let size = Self::window_size(&self.settings, &self.skin);
-            if self.last_size != Some(size) {
-                ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-                self.last_size = Some(size);
-            }
-            if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
-                let pos = Some((r.min.x, r.min.y));
-                if self.settings.window_pos != pos && ctx.input(|i| !i.pointer.any_down()) {
-                    self.settings.window_pos = pos;
-                    self.mark_settings();
-                }
-            }
-        }
-
         let hidden = ctx.input(|i| {
             i.viewport().minimized.unwrap_or(false) || i.viewport().occluded.unwrap_or(false)
         });
         let activity = Activity {
             playing: self.position.state == PlayState::Playing,
             waveform: self.settings.show_waveform,
-            bars_moving: self.analyzer.is_active(),
             engine_starting: matches!(self.engine, EngineSlot::Starting(_)),
             hidden,
         };
@@ -8200,7 +7646,6 @@ impl DiggrApp {
         let scale = self.settings.scale as f32;
         let d = self.skin.def.clone();
         self.win_px = ui.max_rect().size() / scale;
-        let maximized = self.settings.playlist_maximized;
         // A click gives its side the keyboard (lit in this same frame).
         if let Some(p) = ctx.input(|i| {
             i.pointer
@@ -8208,27 +7653,15 @@ impl DiggrApp {
                 .then(|| i.pointer.interact_pos())
                 .flatten()
         }) {
-            // Maximized, the player is the band on top; otherwise the column on the left.
-            let on_playlist = if maximized {
-                p.y >= origin.y
-                    + crate::layout::band_h(&self.settings, &self.skin.def) as f32 * scale
-            } else {
-                p.x >= origin.x + d.main_size.0 as f32 * scale
-            };
-            self.focus = if self.settings.show_playlist && on_playlist {
+            // The player is the band on top, the playlist under it.
+            let band = crate::layout::band_h(&self.settings, &d) as f32 * scale;
+            self.focus = if p.y >= origin.y + band {
                 Focus::Playlist
             } else {
                 Focus::Player
             };
         }
-        if !self.settings.show_playlist {
-            self.focus = Focus::Player;
-        }
-        if maximized {
-            self.maximized_layout(ui, origin);
-        } else {
-            self.normal_layout(ui, origin);
-        }
+        self.band_layout(ui, origin);
         if self
             .message
             .as_ref()
@@ -8260,6 +7693,7 @@ impl DiggrApp {
             crate::help::show(&ctx, &mut self.help);
         }
         self.spectrogram_window(&ctx);
+        self.eq_window(&ctx);
         self.insights_window(&ctx);
         if !self.first_frame_done {
             self.first_frame_done = true;
@@ -8280,59 +7714,10 @@ impl DiggrApp {
         }
     }
 
-    /// The player column (main, waveform, EQ) with the playlist to its right.
-    fn normal_layout(&mut self, ui: &mut Ui, origin: Pos2) {
-        let scale = self.settings.scale as f32;
-        let d = self.skin.def.clone();
-        self.main_section(ui, origin);
-        let mut y = d.main_size.1 as f32;
-        let deck = crate::layout::deck_h(&self.settings, &d) as f32;
-        if deck > 0.0 {
-            self.deck_section(ui, origin + vec2(0.0, y * scale));
-            y += deck;
-        }
-        if self.settings.show_waveform {
-            let title_h = crate::layout::wave_title_h(&d) as f32;
-            if title_h > 0.0 {
-                self.wave_title(ui, origin + vec2(0.0, y * scale));
-                y += title_h;
-            }
-            let rect = Rect::from_min_size(
-                origin + vec2(0.0, y * scale),
-                vec2(d.main_size.0 as f32, crate::waveform::HEIGHT as f32) * scale,
-            );
-            self.waveform_section(ui, rect);
-            y += crate::waveform::HEIGHT as f32;
-        }
-        if self.settings.show_eq {
-            self.eq_section(ui, origin + vec2(0.0, y * scale));
-            y += d.eq_size.1 as f32;
-        } else if self.settings.show_crates {
-            self.crates_panel(ui, origin + vec2(0.0, y * scale));
-            y += d.eq_size.1 as f32;
-        } else {
-            self.panel_drop = None;
-        }
-        if self.settings.show_playlist {
-            // The playlist sits right of the player column; below a shorter player column,
-            // plain panel.
-            let (_, h) = crate::layout::window_size(&self.settings, &d);
-            if (h as f32) > y {
-                let def = self.def.clone();
-                let sk = self.skinned(&def, ui, origin);
-                sk.sprite_in(
-                    "pl_bottom_fill",
-                    sk.rect(0.0, y, d.main_size.0 as f32, h as f32 - y),
-                );
-            }
-            self.playlist_section(ui, origin + vec2(d.main_size.0 as f32 * scale, 0.0));
-        }
-    }
-
-    /// The maximized playlist: a band on top with the mini player on the left, SYNC's
-    /// turntable beside it while on, then the waveform (when on), and the playlist under it,
-    /// filling the window.
-    fn maximized_layout(&mut self, ui: &mut Ui, origin: Pos2) {
+    /// The one layout: a band on top with the mini player on the left, SYNC's turntable beside
+    /// it while on, then the waveform (or a seek bar) and the window buttons, and the playlist
+    /// under it, filling the window.
+    fn band_layout(&mut self, ui: &mut Ui, origin: Pos2) {
         let scale = self.settings.scale as f32;
         let mini_w = self.def.main_size.0 as f32;
         let band_h = crate::layout::band_h(&self.settings, &self.skin.def) as f32;
@@ -8341,27 +7726,86 @@ impl DiggrApp {
             self.deck_section(ui, origin + vec2(mini_w * scale, 0.0));
             left += mini_w;
         }
+        let right = (self.win_px.x - CORNER_W).max(left);
         let rest = Rect::from_min_size(
             origin + vec2(left * scale, 0.0),
-            vec2(self.win_px.x - left, band_h) * scale,
+            vec2(right - left, band_h) * scale,
         );
         if self.settings.show_waveform {
             self.waveform_section(ui, rest);
         } else {
-            let def = self.def.clone();
-            let sk = self.skinned(&def, ui, rest.min);
-            sk.sprite_in(
-                "pl_bottom_fill",
-                sk.rect(0.0, 0.0, rest.width() / scale, band_h),
-            );
+            self.band_seek(ui, rest);
         }
+        self.window_buttons(ui, origin + vec2(right * scale, 0.0), band_h);
         self.mini_player(ui, origin);
         self.playlist_section(ui, origin + vec2(0.0, band_h * scale));
     }
 
-    /// The player folded into the band: play state, time and title on an LCD line; previous,
-    /// play or pause, stop, next, volume and ⇔ to restore under it. A right-click off the
-    /// controls opens the Options menu.
+    /// The band's top-right corner: minimize and close (which quits). Dragging it moves a
+    /// window that isn't maximized.
+    fn window_buttons(&mut self, ui: &mut Ui, origin: Pos2, band_h: f32) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        let r = sk.rect(0.0, 0.0, CORNER_W, band_h);
+        sk.sprite_in("pl_bottom_fill", r);
+        let corner = ui.interact(r, Id::new("band_corner"), Sense::drag());
+        if corner.drag_started() && !ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if sprite_button(ui, &sk, "min", sk.rect(4.0, 3.0, 9.0, 9.0), "btn_min").clicked() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+        if sprite_button(ui, &sk, "close", sk.rect(15.0, 3.0, 9.0, 9.0), "btn_close").clicked() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
+    }
+
+    /// The band's seek bar while the waveform is hidden: the track's position, seeking on
+    /// release.
+    fn band_seek(&mut self, ui: &mut Ui, rect: Rect) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, rect.min);
+        let (w, h) = (rect.width() / sk.scale, rect.height() / sk.scale);
+        sk.sprite_in("pl_bottom_fill", sk.rect(0.0, 0.0, w, h));
+        let (track, thumb) = (sk.def.sprite("seek_track"), sk.def.sprite("seek_thumb"));
+        let y = ((h - track.h as f32) / 2.0).round();
+        let bar = sk.rect(8.0, y, (w - 16.0).max(thumb.w as f32), track.h as f32);
+        sk.sprite_in("seek_track", bar);
+        let Some(d) = self
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.duration_secs)
+            .filter(|d| *d > 0.0 && self.position.state != PlayState::Stopped)
+        else {
+            return;
+        };
+        let resp = ui.interact(bar, Id::new("band_seek"), Sense::click_and_drag());
+        let travel = bar.width() / sk.scale - thumb.w as f32;
+        if let Some(p) = resp.interact_pointer_pos() {
+            let x = (p.x - bar.left()) / sk.scale - thumb.w as f32 / 2.0;
+            self.seek_drag = Some((x / travel).clamp(0.0, 1.0));
+        }
+        let v = self
+            .seek_drag
+            .unwrap_or((self.position.seconds() / d) as f32)
+            .clamp(0.0, 1.0);
+        let name = if resp.is_pointer_button_down_on() {
+            "seek_thumb_p"
+        } else {
+            "seek_thumb"
+        };
+        let ty = y + ((track.h as f32 - thumb.h as f32) / 2.0).floor();
+        sk.sprite(name, 8.0 + (v * travel).round(), ty);
+        if (resp.drag_stopped() || resp.clicked())
+            && let Some(v) = self.seek_drag.take()
+        {
+            self.apply(Action::Seek(v as f64 * d), ui.ctx());
+        }
+    }
+
+    /// The player: play state, time and title on an LCD line, with the EQ, waveform and
+    /// spectrum buttons at its end; previous, play, pause, stop, next, volume, shuffle, repeat
+    /// and SYNC under it. A right-click off the controls opens the Options menu.
     fn mini_player(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut def = (*self.def).clone();
         let (w, h) = (
@@ -8382,6 +7826,7 @@ impl DiggrApp {
         let mut actions = Vec::new();
         self.options_menu(ui, sk.rect(0.0, 0.0, w, h), "mini_options", &mut actions);
         let colors = &def.colors;
+        let lcd = color(colors.lcd);
         sk.fill(sk.rect(4.0, 4.0, w - 8.0, 22.0), color(colors.pl_bg));
         let state = self.position.state;
         sk.sprite(
@@ -8390,35 +7835,110 @@ impl DiggrApp {
                 PlayState::Paused => "status_pause",
                 PlayState::Stopped => "status_stop",
             },
-            8.0,
+            6.0,
             11.0,
         );
-        let (mm, ss) = format::lcd(self.position.seconds());
+        // The time, elapsed or (a click away) remaining.
+        let duration = self.now_playing.as_ref().and_then(|i| i.duration_secs);
+        let elapsed = self.position.seconds();
+        let remaining = self.settings.time_remaining && duration.is_some();
+        let secs = if remaining {
+            (duration.unwrap_or(0.0) - elapsed).max(0.0)
+        } else {
+            elapsed
+        };
+        let show = state != PlayState::Stopped;
+        if show && remaining {
+            sk.sprite("digit_minus", 16.0, 9.0);
+        }
+        let (mm, ss) = format::lcd(secs);
         let digit = |c: char| {
-            if state == PlayState::Stopped {
-                "digit_blank".to_owned()
-            } else {
+            if show {
                 format!("digit_{c}")
+            } else {
+                "digit_blank".to_owned()
             }
         };
         let mins: Vec<char> = mm.chars().collect();
         for (i, c) in mins.iter().rev().take(2).enumerate() {
-            sk.sprite(&digit(*c), 30.0 - 10.0 * i as f32, 9.0);
+            sk.sprite(&digit(*c), 36.0 - 10.0 * i as f32, 9.0);
         }
-        if state != PlayState::Stopped {
-            sk.sprite("digit_colon", 40.0, 9.0);
+        if show {
+            sk.sprite("digit_colon", 46.0, 9.0);
         }
         for (i, c) in ss.chars().enumerate() {
-            sk.sprite(&digit(c), 44.0 + 10.0 * i as f32, 9.0);
+            sk.sprite(&digit(c), 50.0 + 10.0 * i as f32, 9.0);
         }
-        let title = self
-            .now_playing_line()
-            .unwrap_or_else(|| engine_status(&self.engine));
-        let (tx, tw) = (70.0, w - 4.0 - 70.0 - 4.0);
-        let fits = (tw / def.font.advance as f32) as usize;
+        if ui
+            .interact(
+                sk.rect(16.0, 9.0, 53.0, 13.0),
+                Id::new("mini_time"),
+                Sense::click(),
+            )
+            .clicked()
+        {
+            actions.push(Action::ToggleRemaining);
+        }
+        // The title line, or a verdict's flash centred on it.
+        let icons_x = w - 4.0 - 3.0 * ICON_W - 4.0;
+        let (tx, tw) = (74.0, icons_x - 3.0 - 74.0);
         let ty = 4.0 + ((22.0 - def.font.glyph_h as f32) / 2.0).round();
-        let shown = format::scroll(&title, fits, self.title_offset);
-        sk.text(tx, ty, &shown, color(colors.lcd));
+        let left = self
+            .flash
+            .as_ref()
+            .and_then(|(_, at)| FLASH_SECS.checked_sub(at.elapsed()))
+            .filter(|d| !d.is_zero());
+        if let (Some(left), Some((text, _))) = (left, &self.flash) {
+            let x = tx + ((tw - sk.text_width(text)) / 2.0).round();
+            sk.text(x, ty, text, lcd);
+            ui.ctx().request_repaint_after(left);
+        } else {
+            self.flash = None;
+            let title = self
+                .now_playing_line()
+                .unwrap_or_else(|| engine_status(&self.engine));
+            let fits = (tw / def.font.advance as f32) as usize;
+            sk.text(
+                tx,
+                ty,
+                &format::scroll(&title, fits, self.title_offset),
+                lcd,
+            );
+        }
+        for (i, (id, icon, on, tip, action)) in [
+            (
+                "mini_eq",
+                "tog_eq",
+                self.settings.show_eq,
+                "Equalizer",
+                Action::ToggleEq,
+            ),
+            (
+                "mini_wave",
+                "tog_wave",
+                self.settings.show_waveform,
+                "Waveform (W)",
+                Action::ToggleWaveform,
+            ),
+            (
+                "mini_spec",
+                "tog_spec",
+                self.spectro_open,
+                "Spectrogram (S)",
+                Action::ToggleSpectrogram,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let r = sk.rect(icons_x + (ICON_W + 2.0) * i as f32, 9.0, ICON_W, 12.0);
+            if icon_toggle(ui, &sk, id, r, icon, on)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                actions.push(action);
+            }
+        }
         // The main transport's buttons, the one of the play state lit.
         let lit = match state {
             PlayState::Playing => "play",
@@ -8460,6 +7980,32 @@ impl DiggrApp {
         ) {
             actions.push(Action::Volume(v));
         }
+        let r = sk.rect(174.0, 37.0, ICON_W, 12.0);
+        if icon_toggle(
+            ui,
+            &sk,
+            "mini_shuffle",
+            r,
+            "tog_shuf",
+            self.settings.shuffle,
+        )
+        .on_hover_text("Shuffle")
+        .clicked()
+        {
+            actions.push(Action::Shuffle);
+        }
+        let (icon, on, tip) = match self.settings.repeat {
+            Repeat::Off => ("tog_rep", false, "Repeat: off"),
+            Repeat::All => ("tog_rep", true, "Repeat: all"),
+            Repeat::One => ("tog_rep1", true, "Repeat: one"),
+        };
+        let r = sk.rect(193.0, 37.0, ICON_W, 12.0);
+        if icon_toggle(ui, &sk, "mini_repeat", r, icon, on)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            actions.push(Action::Repeat);
+        }
         let sync = if self.settings.sync.on {
             "sync_on"
         } else {
@@ -8472,13 +8018,58 @@ impl DiggrApp {
         {
             actions.push(Action::Sync);
         }
-        let r = sk.rect(w - 13.0, 38.0, 9.0, 9.0);
-        if sprite_button(ui, &sk, "mini_max", r, "btn_max").clicked() {
-            actions.push(Action::ToggleMaximized);
-        }
         for a in actions {
             self.apply(a, ui.ctx());
         }
+    }
+
+    /// The EQ window while it is open: the skin's EQ section in a window of its own, above the
+    /// app's. Where it was put is remembered.
+    fn eq_window(&mut self, ctx: &egui::Context) {
+        if !self.settings.show_eq {
+            return;
+        }
+        let (w, h) = self.def.eq_size;
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("Diggr EQ")
+            .with_inner_size(vec2(w as f32, h as f32) * self.settings.scale as f32)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_window_level(egui::WindowLevel::AlwaysOnTop);
+        if let Some((x, y)) = self.settings.eq_window_pos {
+            builder = builder.with_position([x, y]);
+        }
+        // Without windows of its own (the web, tests), it floats over the playlist's top left.
+        if ctx.embed_viewports() {
+            let band = crate::layout::band_h(&self.settings, &self.skin.def) as f32;
+            let at = pos2(0.0, band * self.settings.scale as f32);
+            egui::Area::new(Id::new("eq_area"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .show(ctx, |ui| {
+                    ui.allocate_space(vec2(w as f32, h as f32) * self.settings.scale as f32);
+                    self.eq_section(ui, at);
+                });
+            return;
+        }
+        ctx.show_viewport_immediate(eq_viewport_id(), builder, |ui, _| {
+            if ui.input(|i| i.viewport().close_requested()) {
+                self.apply(Action::ToggleEq, ui.ctx());
+                return;
+            }
+            let origin = ui.max_rect().min;
+            self.eq_section(ui, origin);
+            let pos = ui
+                .input(|i| i.viewport().outer_rect)
+                .map(|r| (r.min.x, r.min.y));
+            if pos.is_some()
+                && self.settings.eq_window_pos != pos
+                && ui.input(|i| !i.pointer.any_down())
+            {
+                self.settings.eq_window_pos = pos;
+                self.mark_settings();
+            }
+        });
     }
 
     /// The Insights window while it is open: the collection's numbers, recomputed when the
@@ -8846,11 +8437,6 @@ mod tests {
             None,
             "no repaint while paused"
         );
-        let falling = Activity {
-            bars_moving: true,
-            ..Default::default()
-        };
-        assert!(repaint_after(falling).is_some(), "bars settle after stop");
         let minimized = Activity {
             playing: true,
             hidden: true,
@@ -8870,10 +8456,11 @@ mod tests {
         assert_eq!(flash_text(Verdict::Unwanted, 1), "UNWANTED");
         assert_eq!(flash_text(Verdict::Pass, 1), "PASS");
         assert_eq!(flash_text(Verdict::Owned, 2), "OWNED 2");
-        // Every flash fits the title line.
+        // Every flash fits the mini player's title line, between the time and its icons.
         let def = LoadedSkin::default_skin().def;
-        let w = flash_text(Verdict::Unwanted, 999).chars().count() as u16 * def.font.advance;
-        assert!(w <= def.at("title_text").w);
+        let w = flash_text(Verdict::Unwanted, 999).chars().count() as f32 * def.font.advance as f32;
+        let icons_x = def.main_size.0 as f32 - 4.0 - 3.0 * ICON_W - 4.0;
+        assert!(w <= icons_x - 3.0 - 74.0);
     }
 
     #[test]
@@ -8981,24 +8568,6 @@ mod tests {
         );
         assert!(!opens_context_menu(false, true, Modifiers::NONE));
     }
-
-    #[test]
-    fn window_size_is_in_points() {
-        let skin = LoadedSkin::default_skin();
-        let s = Settings {
-            scale: 2,
-            show_eq: true,
-            show_waveform: false,
-            show_playlist: true,
-            playlist_rows: 20,
-            playlist_width: 300,
-            ..Default::default()
-        };
-        assert_eq!(
-            DiggrApp::window_size(&s, &skin),
-            vec2(575.0, 20.0 + 16.0 + 260.0 + 38.0) * 2.0
-        );
-    }
 }
 
 /// The player driven headlessly: a real engine on a `ManualSink`, crates in a temp config
@@ -9015,10 +8584,12 @@ mod headless_tests {
     use std::path::Path;
 
     const BUF: usize = 512;
-    /// Classic size, main window and playlist only.
-    /// The playlist's top-left at 1×: right of the player column.
-    const PL_LEFT: f32 = 275.0;
-    const PL_TOP: f32 = 0.0;
+    /// Classic size, no SYNC. The playlist's top-left at 1×: under the band.
+    const PL_LEFT: f32 = 0.0;
+    const PL_TOP: f32 = crate::layout::BAND_H as f32;
+    /// The rig's window by default: the classic playlist's width (no sidebar, no columns), and
+    /// tall enough for menus and dialogs.
+    const SCREEN: egui::Vec2 = vec2(275.0, 400.0);
     /// The list's top below the playlist's: the title bar, then the filter bar.
     const LIST_TOP: f32 = 36.0;
 
@@ -9041,6 +8612,8 @@ mod headless_tests {
         dir: platform::testing::TestDir,
         /// Modifier keys held during the next frames.
         mods: Modifiers,
+        /// The window, in points; the playlist fills it under the band.
+        screen: egui::Vec2,
     }
 
     impl Rig {
@@ -9121,13 +8694,14 @@ mod headless_tests {
                 now_ns: 0,
                 dir,
                 mods: Modifiers::NONE,
+                screen: SCREEN,
             }
         }
 
         fn frame(&mut self, mut events: Vec<Event>) -> egui::FullOutput {
             events.insert(0, Event::ModifiersChanged(self.mods));
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 400.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.screen)),
                 events,
                 ..Default::default()
             };
@@ -9273,6 +8847,13 @@ mod headless_tests {
         }
 
         /// A point on row `index`, right of its badges and cart pill.
+        /// A window just tall enough for `rows` playlist rows under the band.
+        fn set_rows(&mut self, rows: usize) {
+            let d = &self.app.skin.def;
+            let h = crate::layout::playlist_chrome(d) as usize + rows * d.pl_row_h as usize;
+            self.screen.y = PL_TOP + h as f32;
+        }
+
         fn row(&self, index: usize) -> Pos2 {
             pos2(
                 PL_LEFT + 200.0,
@@ -9385,18 +8966,19 @@ mod headless_tests {
 
     // ---- SYNC ------------------------------------------------------------------------------
 
-    /// The SYNC button, and on the turntable under the main window (at 1×) the pitch fader's
-    /// top, centre and bottom, its 8/16 and RESET buttons and its ×.
-    const SYNC: Pos2 = pos2(253.0, 64.0);
-    const PITCH_UP: Pos2 = pos2(251.0, 116.0 + 22.0);
-    const PITCH_MID: Pos2 = pos2(251.0, 116.0 + 54.0);
-    const DECK_RANGE: Pos2 = pos2(147.0, 116.0 + 92.0);
-    const DECK_RESET: Pos2 = pos2(187.0, 116.0 + 92.0);
-    const DECK_CLOSE: Pos2 = pos2(266.0, 116.0 + 7.0);
+    /// The mini player's SYNC button, and on the turntable beside it in the band (at 1×) the
+    /// pitch fader's top, centre and bottom, its 8/16 and RESET buttons and its ×.
+    const SYNC: Pos2 = pos2(275.0 - 49.0 + 15.0, 37.0 + 6.0);
+    const PITCH_UP: Pos2 = pos2(275.0 + 251.0, 22.0);
+    const PITCH_MID: Pos2 = pos2(275.0 + 251.0, 54.0);
+    const DECK_RANGE: Pos2 = pos2(275.0 + 147.0, 92.0);
+    const DECK_RESET: Pos2 = pos2(275.0 + 187.0, 92.0);
+    const DECK_CLOSE: Pos2 = pos2(275.0 + 266.0, 7.0);
 
     #[test]
     fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
         let mut rig = Rig::new("sync", vec![fixture("tone.flac")], |_| {});
+        rig.screen.x = 1100.0;
         rig.until(
             |r| {
                 r.app.position.state == PlayState::Playing
@@ -9407,14 +8989,14 @@ mod headless_tests {
         let track = rig.app.track_refs[&rig.app.position.track].clone();
         rig.app.set_track_bpm(&track, 123.0);
         // On: the turntable opens at the playing record's tempo, which plays on as it is.
-        let closed = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
+        let closed = rig.app.pl_geometry().1;
         rig.click(SYNC);
         assert!(rig.app.settings.sync.on);
         assert_eq!(rig.app.settings.sync.target, 123);
-        let open = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
+        rig.frame(Vec::new());
         assert!(
-            open.y > closed.y,
-            "the turntable takes its place in the column"
+            rig.app.pl_geometry().1 < closed,
+            "the turntable makes the band taller"
         );
         assert_eq!(rig.engine().speed(0), 1.0);
         // The fader at the top: as fast as the range allows, and heard.
@@ -9459,10 +9041,7 @@ mod headless_tests {
         assert!(rig.app.settings.sync.wide);
         rig.click(DECK_CLOSE);
         assert!(!rig.app.settings.sync.on);
-        assert_eq!(
-            DiggrApp::window_size(&rig.app.settings, &rig.app.skin),
-            closed
-        );
+        assert_eq!(rig.app.pl_geometry().1, closed);
     }
 
     #[test]
@@ -9879,6 +9458,7 @@ mod headless_tests {
     #[test]
     fn the_cursor_scrolls_the_list_and_enter_plays_it() {
         let mut rig = Rig::new("cursor", Vec::new(), |_| {});
+        rig.set_rows(10);
         let ids = rig.fill_playlist(40);
         rig.click(rig.row(8));
         rig.key(Key::ArrowDown, Modifiers::NONE);
@@ -9906,6 +9486,7 @@ mod headless_tests {
     #[test]
     fn p_shows_the_playing_entry_and_the_list_follows_it_only_from_view() {
         let mut rig = Rig::new("follow", Vec::new(), |_| {});
+        rig.set_rows(10);
         let ids = rig.fill_playlist(40);
         rig.app.crates.shown_mut().set_current(Some(ids[25]));
         rig.frame(Vec::new());
@@ -9995,7 +9576,7 @@ mod headless_tests {
             "listed",
         );
         p.entries_mut().find(|e| e.id == dig).unwrap().bpm = Some(124);
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         let out = rig.frame(Vec::new());
         for t in [
             "#", "Cat#", "Artist", "Title", "BPM", "Side", "Year", "For sale", "Time",
@@ -10064,7 +9645,7 @@ mod headless_tests {
         assert!(!shows(&rig.frame(Vec::new()), "1994"));
 
         // Narrow again: the single line, no header.
-        rig.app.settings.playlist_width = 400;
+        rig.screen.x = 400.0;
         let out = rig.frame(Vec::new());
         assert!(!shows(&out, "Cat#"));
         assert!(
@@ -10100,64 +9681,32 @@ mod headless_tests {
         assert_eq!(rig.app.pl_scroll_acc, 0.0, "dropped off the list");
     }
 
-    fn maximize_commands(out: &egui::FullOutput) -> Vec<bool> {
-        out.viewport_output
-            .values()
-            .flat_map(|v| v.commands.iter())
-            .filter_map(|c| match c {
-                ViewportCommand::Maximized(on) => Some(*on),
-                _ => None,
-            })
-            .collect()
-    }
-
     #[test]
-    fn shift_p_maximizes_the_playlist_and_restores_it() {
-        let mut rig = Rig::new("maximize", Vec::new(), |_| {});
+    fn shift_p_changes_nothing() {
+        let mut rig = Rig::new("shift-p", Vec::new(), |_| {});
         rig.fill_playlist(5);
-        rig.app.settings.show_playlist = false;
+        let geometry = rig.app.pl_geometry();
         let out = rig.key(Key::P, Modifiers::SHIFT);
-        assert!(rig.app.settings.playlist_maximized);
-        assert!(rig.app.settings.show_playlist, "shown first");
-        assert_eq!(rig.app.focus, Focus::Playlist, "with the keyboard");
-        assert_eq!(maximize_commands(&out), [true]);
-        let saved = (
-            rig.app.settings.playlist_width,
-            rig.app.settings.playlist_rows,
-        );
-        // The rig's window is 1100 × 400: the playlist takes its full width, in columns.
-        let out = rig.frame(Vec::new());
-        assert!(shows(&out, "Cat#"), "{:?}", text_list(&out));
-        assert_eq!(rig.app.pl_geometry().0, 1100);
-        let out = rig.key(Key::P, Modifiers::SHIFT);
-        assert!(!rig.app.settings.playlist_maximized);
-        assert_eq!(maximize_commands(&out), [false]);
-        assert_eq!(
-            (
-                rig.app.settings.playlist_width,
-                rig.app.settings.playlist_rows
-            ),
-            saved,
-            "the normal size is untouched"
-        );
-        assert!(!shows(&rig.frame(Vec::new()), "Cat#"));
+        let viewport = out.viewport_output.values().any(|v| !v.commands.is_empty());
+        assert!(!viewport, "no window change");
+        assert_eq!(rig.app.pl_geometry(), geometry);
     }
 
     #[test]
-    fn the_mini_player_steers_playback_and_restores_the_layout() {
+    fn the_mini_player_is_the_player() {
         let mut rig = Rig::new(
             "mini-player",
             vec![fixture("tone.flac"), fixture("tone.wav")],
             |_| {},
         );
+        rig.screen.x = 1100.0;
         rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
         let ids = rig.ids(PLAYLIST);
-        rig.key(Key::P, Modifiers::SHIFT);
         let rows = rig.app.pl_geometry().1;
-        let out = rig.frame(Vec::new());
-        assert!(!shows(&out, "DIGGR EQUALIZER"));
-        // W off still keeps the band: the rows don't move.
+        // W keeps the band (a seek bar takes the waveform's place when off): the rows don't move.
+        assert!(!rig.app.settings.show_waveform);
         rig.key(Key::W, Modifiers::NONE);
+        assert!(rig.app.settings.show_waveform);
         assert_eq!(rig.app.pl_geometry().1, rows);
         // Pause is the third button of the second line, play the second.
         let button = |i: f32| pos2(4.0 + 23.0 * i + 11.0, 34.0 + 9.0);
@@ -10171,9 +9720,22 @@ mod headless_tests {
             |r| r.app.position.state == PlayState::Playing,
             "play resumes",
         );
-        // SYNC, left of ⇔, turns SYNC on, says what it does, and puts the turntable in the
-        // band beside the mini player, which grows to hold it.
-        rig.click(pos2(275.0 - 49.0 + 15.0, 37.0 + 6.0));
+        // Shuffle and repeat, between the volume slider and SYNC.
+        rig.click(pos2(174.0 + 8.0, 37.0 + 6.0));
+        assert!(rig.app.settings.shuffle);
+        rig.click(pos2(174.0 + 8.0, 37.0 + 6.0));
+        assert!(!rig.app.settings.shuffle);
+        let repeat = pos2(193.0 + 8.0, 37.0 + 6.0);
+        let was = rig.app.settings.repeat;
+        rig.click(repeat);
+        assert_eq!(rig.app.settings.repeat, was.cycle());
+        for _ in 0..2 {
+            rig.click(repeat);
+        }
+        assert_eq!(rig.app.settings.repeat, was, "around the three");
+        // SYNC turns SYNC on, says what it does, and puts the turntable in the band beside
+        // the mini player, which grows to hold it.
+        rig.click(SYNC);
         assert!(rig.app.settings.sync.on);
         let said = rig.app.message.as_ref().map(|(t, _)| t.clone());
         assert!(
@@ -10182,29 +9744,113 @@ mod headless_tests {
             "{said:?}"
         );
         assert!(rig.app.pl_geometry().1 < rows, "the band is taller");
-        // Its × (at the turntable's top right) turns SYNC off again.
-        rig.click(pos2(275.0 + 262.0 + 4.0, 3.0 + 4.0));
+        rig.click(DECK_CLOSE);
         assert!(!rig.app.settings.sync.on);
         assert_eq!(rig.app.pl_geometry().1, rows);
-        assert!(
-            rig.app
-                .message
-                .as_ref()
-                .is_some_and(|(t, _)| t.starts_with("SYNC off"))
-        );
         // Next is the fifth.
         rig.click(button(4.0));
         rig.until(
             |r| r.app.crates.playing().current() == Some(ids[1]),
             "the mini player's next starts the next track",
         );
-        // A right-click on its LCD line opens the options.
+        // The LCD row's buttons: EQ, waveform, spectrum.
+        let icon = |i: f32| pos2(216.0 + 19.0 * i + 8.0, 9.0 + 6.0);
+        rig.click(icon(0.0));
+        assert!(rig.app.settings.show_eq, "the EQ window opens");
+        rig.click(icon(0.0));
+        assert!(!rig.app.settings.show_eq);
+        rig.click(icon(1.0));
+        assert!(
+            !rig.app.settings.show_waveform,
+            "the waveform goes, as with W"
+        );
+        rig.click(icon(2.0));
+        assert!(rig.app.spectro_open, "the spectrogram opens, as with S");
+        // (Here it is drawn over the band, having no window of its own: S closes it.)
+        rig.key(Key::S, Modifiers::NONE);
+        assert!(!rig.app.spectro_open);
+        // A click on the time shows what remains.
+        rig.click(pos2(40.0, 15.0));
+        assert!(rig.app.settings.time_remaining);
+        // A right-click on its title line opens the options.
         rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
         assert!(shows(&rig.frame(Vec::new()), "Spectrogram (S)"));
-        rig.key(Key::Escape, Modifiers::NONE);
-        // ⇔ at its right end restores.
-        rig.click(pos2(275.0 - 13.0 + 4.0, 38.0 + 4.0));
-        assert!(!rig.app.settings.playlist_maximized);
+    }
+
+    #[test]
+    fn the_mini_players_title_line_flashes_a_verdict() {
+        let mut rig = Rig::new("flash", vec![fixture("tone.flac")], |_| {});
+        rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+        // (The LCD is drawn in the skin's bitmap font, so this checks what the line holds.)
+        rig.app.flash(Verdict::Wanted, 1);
+        rig.frame(Vec::new());
+        assert_eq!(rig.app.flash.as_ref().map(|f| f.0.as_str()), Some("WANTED"));
+        // It ends by itself, and the track line comes back.
+        rig.app.flash = Some(("WANTED".into(), Instant::now() - FLASH_SECS));
+        rig.frame(Vec::new());
+        assert!(rig.app.flash.is_none(), "the mini player ends it");
+    }
+
+    #[test]
+    fn the_buttons_fit_in_the_mini_player() {
+        // The button row, left to right: transport, volume, shuffle, repeat, SYNC.
+        let d = LoadedSkin::default_skin().def;
+        let vol = d.at("volume").w as f32;
+        let row = [
+            (4.0, 5.0 * 23.0),
+            (123.0, vol),
+            (174.0, ICON_W),
+            (193.0, ICON_W),
+            (275.0 - 49.0, 30.0),
+        ];
+        for pair in row.windows(2) {
+            assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:?} overlap");
+        }
+        let (x, w) = row[row.len() - 1];
+        assert!(x + w <= d.main_size.0 as f32 - 4.0, "inside 275 pixels");
+    }
+
+    #[test]
+    fn the_band_has_minimize_and_close() {
+        let mut rig = Rig::new("window-buttons", Vec::new(), |_| {});
+        rig.screen.x = 1100.0;
+        rig.frame(Vec::new());
+        let corner = 1100.0 - CORNER_W;
+        let commands = |out: &egui::FullOutput| -> Vec<ViewportCommand> {
+            out.viewport_output
+                .values()
+                .flat_map(|v| v.commands.clone())
+                .collect()
+        };
+        rig.frame(vec![Event::PointerMoved(pos2(corner + 8.0, 7.0))]);
+        rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, true);
+        let out = rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, false);
+        assert!(commands(&out).contains(&ViewportCommand::Minimized(true)));
+        rig.frame(vec![Event::PointerMoved(pos2(corner + 19.0, 7.0))]);
+        rig.press(pos2(corner + 19.0, 7.0), PointerButton::Primary, true);
+        let out = rig.press(pos2(corner + 19.0, 7.0), PointerButton::Primary, false);
+        assert!(
+            commands(&out).contains(&ViewportCommand::Close),
+            "close quits"
+        );
+    }
+
+    #[test]
+    fn the_band_seeks_while_the_waveform_is_hidden() {
+        let mut rig = Rig::new("band-seek", vec![fixture("tone.flac")], |_| {});
+        rig.screen.x = 1100.0;
+        rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+        let rows = rig.app.pl_geometry().1;
+        // The bar runs from 8 pixels in to 8 before the window buttons: 75% is 1.5 s of 2 s.
+        let (left, right) = (275.0 + 8.0, 1100.0 - CORNER_W - 8.0);
+        let thumb = rig.app.skin.def.sprite("seek_thumb").w as f32;
+        let x = left + thumb / 2.0 + (right - left - thumb) * 0.75;
+        rig.click(pos2(x, crate::layout::BAND_H as f32 / 2.0));
+        rig.until(
+            |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
+            "seeked to 1.5 s",
+        );
+        assert_eq!(rig.app.pl_geometry().1, rows, "the playlist keeps its rows");
     }
 
     #[test]
@@ -10254,19 +9900,18 @@ mod headless_tests {
         let viewport = out.viewport_output.values().any(|v| !v.commands.is_empty());
         assert!(!viewport, "no window change");
         assert!(!rig.app.help);
-        assert!(!rig.app.settings.playlist_maximized);
     }
 
     #[test]
     fn the_waveform_sits_beside_the_mini_player_and_seeks() {
         let mut rig = Rig::new("band", vec![fixture("tone.flac")], |_| {});
+        rig.screen.x = 1100.0;
         rig.app.settings.show_waveform = true;
         rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
-        rig.key(Key::P, Modifiers::SHIFT);
-        rig.frame(Vec::new());
-        // Three quarters across the overview row, right of the mini player: 1.5 s of 2 s.
+        // Three quarters across the overview row, between the mini player and the window
+        // buttons: 1.5 s of 2 s.
         let mini = rig.app.skin.def.main_size.0 as f32;
-        let x = mini + (1100.0 - mini) * 0.75;
+        let x = mini + (1100.0 - CORNER_W - mini) * 0.75;
         rig.click(pos2(x, 6.0));
         rig.until(
             |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
@@ -10277,14 +9922,17 @@ mod headless_tests {
     #[test]
     fn the_waveform_button_shows_and_hides_the_waveform_like_w() {
         let mut rig = Rig::new("wave-button", Vec::new(), |_| {});
-        let b = rig.app.skin.def.at("wave_toggle");
-        let at = pos2(b.x as f32 + 5.0, b.y as f32 + 5.0);
+        // The mini player's second LCD-row icon.
+        let at = pos2(216.0 + 19.0 + 8.0, 9.0 + 6.0);
+        let rows = rig.app.pl_geometry().1;
         assert!(!rig.app.settings.show_waveform);
         rig.click(at);
         assert!(rig.app.settings.show_waveform);
-        // Main + waveform (174) still fits beside the playlist's 10 rows (204).
-        let size = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
-        assert_eq!(size, vec2(550.0, 204.0));
+        assert_eq!(
+            rig.app.pl_geometry().1,
+            rows,
+            "the band doesn't change height"
+        );
         rig.click(at);
         assert!(!rig.app.settings.show_waveform);
     }
@@ -10519,8 +10167,8 @@ mod headless_tests {
                 .unwrap();
         };
         let mut rig = Rig::new("lp-knob", Vec::new(), with_eq);
-        // The EQ sits under the main section (116 px); the knob at (46, 17) in it.
-        let knob = pos2(46.0 + 7.0, 116.0 + 17.0 + 7.0);
+        // The EQ floats under the band (58 px) without windows of its own; the knob at (46, 17).
+        let knob = pos2(46.0 + 7.0, 58.0 + 17.0 + 7.0);
         assert_eq!(rig.engine().filter(), audio::filter::OFF, "off at launch");
         rig.frame(vec![Event::PointerMoved(knob)]);
         rig.press(knob, PointerButton::Primary, true);
@@ -10621,7 +10269,7 @@ mod headless_tests {
         let ids = rig.ids(PLAYLIST);
         let keepers = rig.app.crates.create("Keepers").unwrap();
         let friday = rig.app.crates.create("Friday").unwrap();
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         rig.frame(Vec::new());
         (rig, ids, keepers, friday)
     }
@@ -10663,13 +10311,13 @@ mod headless_tests {
 
         // Narrower than 600 px it hides, and the title bar opens the crate menu again; it
         // comes back when widened: no switch.
-        rig.app.settings.playlist_width = 400;
+        rig.screen.x = 400.0;
         rig.frame(Vec::new());
         assert!(!rig.app.pl_sidebar());
         rig.click(rig.title_bar());
         assert!(rig.menu_open(), "the menu is the way to crates when narrow");
         rig.click(rig.title_bar());
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         rig.frame(Vec::new());
         assert!(rig.app.pl_sidebar());
     }
@@ -10684,8 +10332,9 @@ mod headless_tests {
             )
             .unwrap();
         };
-        let rig = Rig::new("sidebar-old-setting", Vec::new(), old);
-        assert!(rig.app.settings.playlist_maximized, "the file loaded");
+        let mut rig = Rig::new("sidebar-old-setting", Vec::new(), old);
+        rig.screen.x = 700.0;
+        rig.frame(Vec::new());
         assert!(rig.app.pl_sidebar(), "shown when it fits");
     }
 
@@ -10799,89 +10448,6 @@ mod headless_tests {
         rig.click_text("Clear crate");
         assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
         assert!(rig.app.crates.find("Playlist").is_some());
-    }
-
-    #[test]
-    fn the_crates_panel_takes_the_eqs_place_and_takes_drops() {
-        let mut rig = Rig::new("crates-panel", Vec::new(), |_| {});
-        let tracks = ["tone.flac", "tone.wav"].map(|f| TrackRef::new(fixture(f).to_string_lossy()));
-        rig.app.crates.shown_mut().add(tracks);
-        let ids = rig.ids(PLAYLIST);
-        let keepers = rig.app.crates.create("Keepers").unwrap();
-        let friday = rig.app.crates.create("Friday").unwrap();
-        let label = rig.app.crates.create("Label: Siesta Records").unwrap();
-        rig.app.crates.set_label(label, 77);
-        rig.app.settings.eq.preamp_db = 3.0;
-        rig.app.settings.show_eq = true;
-        rig.frame(Vec::new());
-        assert!(!rig.app.pl_sidebar(), "a narrow playlist: no sidebar");
-        let size = DiggrApp::window_size(&rig.app.settings, &rig.app.skin);
-
-        let b = rig.app.skin.def.at("cr_toggle");
-        rig.click(pos2(b.x as f32 + 5.0, b.y as f32 + 5.0));
-        assert!(rig.app.settings.show_crates && !rig.app.settings.show_eq);
-        assert_eq!(
-            DiggrApp::window_size(&rig.app.settings, &rig.app.skin),
-            size,
-            "same place, same size"
-        );
-        let out = rig.frame(Vec::new());
-        for t in ["Playlist", "Keepers", "Friday", "+ New crate"] {
-            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
-        }
-        assert!(
-            !shows(&out, "Label: Siesta Records"),
-            "only the user's crates"
-        );
-
-        // A click shows a crate; an entry dragged onto another is sent there.
-        rig.click_text("Friday");
-        assert_eq!(rig.app.crates.shown_id(), friday);
-        rig.click_text("Playlist");
-        let from = rig.row(0);
-        let out = rig.frame(vec![Event::PointerMoved(from)]);
-        let to = texts(&out)
-            .into_iter()
-            .find(|t| t.text == "Keepers")
-            .unwrap()
-            .rect
-            .center();
-        rig.press(from, PointerButton::Primary, true);
-        for t in [0.3, 0.6, 1.0] {
-            rig.frame(vec![Event::PointerMoved(from + (to - from) * t)]);
-        }
-        rig.press(to, PointerButton::Primary, false);
-        rig.frame(Vec::new());
-        assert_eq!(rig.ids(keepers), [ids[0]], "sent to Keepers");
-        assert_eq!(rig.ids(PLAYLIST), ids, "not reordered");
-
-        // Many crates scroll to the last one and + New crate.
-        for i in 3..20 {
-            rig.app.crates.create(&format!("Crate {i:02}")).unwrap();
-        }
-        let out = rig.frame(Vec::new());
-        assert!(!shows(&out, "Crate 19") && !shows(&out, "+ New crate"));
-        rig.frame(vec![
-            Event::PointerMoved(to),
-            Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(0.0, -3000.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: Modifiers::NONE,
-            },
-        ]);
-        for _ in 0..30 {
-            rig.frame(vec![Event::PointerMoved(to)]);
-        }
-        let out = rig.frame(Vec::new());
-        assert!(shows(&out, "Crate 19") && shows(&out, "+ New crate"));
-
-        // Back to the EQ, as it was.
-        let b = rig.app.skin.def.at("eq_toggle");
-        rig.click(pos2(b.x as f32 + 5.0, b.y as f32 + 5.0));
-        assert!(rig.app.settings.show_eq && !rig.app.settings.show_crates);
-        assert_eq!(rig.app.settings.eq.preamp_db, 3.0);
-        assert!(!shows(&rig.frame(Vec::new()), "+ New crate"));
     }
 
     #[test]
@@ -11065,10 +10631,10 @@ mod headless_tests {
     }
 
     #[test]
-    fn a_right_click_on_the_main_window_opens_the_options() {
+    fn a_right_click_on_the_mini_player_opens_the_options() {
         let mut rig = Rig::new("options", Vec::new(), |_| {});
-        // The track info area: no control there.
-        rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
+        // The title line: no control there.
+        rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
         let out = rig.frame(Vec::new());
         assert!(shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
         rig.click_text("Spectrogram (S)");
@@ -11076,16 +10642,9 @@ mod headless_tests {
         rig.app.spectro_open = false;
 
         // The volume slider keeps its own right-click.
-        rig.click_with(pos2(141.0, 63.0), PointerButton::Secondary);
+        rig.click_with(pos2(141.0, 42.0), PointerButton::Secondary);
         let out = rig.frame(Vec::new());
         assert!(!shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
-
-        // While the playlist is maximized, the mini player has it too.
-        rig.app.settings.playlist_maximized = true;
-        rig.frame(Vec::new());
-        rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
-        let out = rig.frame(Vec::new());
-        assert!(shows(&out, "Spectrogram (S)"), "{:?}", text_list(&out));
     }
 
     #[test]
@@ -11173,7 +10732,7 @@ mod headless_tests {
         );
 
         // Wider, the slider keeps its width.
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         rig.frame(Vec::new());
         let (x0, x1, _) = rig.app.bpm_slider.unwrap();
         assert_eq!(x1 - x0, BPM_SLIDER_W);
@@ -11220,7 +10779,7 @@ mod headless_tests {
             &mut rig,
             &["Deep House", "Minimal, Techno", "Electro", "Deep House"],
         );
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         // Not a Discogs crate: the control is drawn all the same.
         rig.frame(Vec::new());
         assert!(rig.app.filters_drawn.is_some(), "drawn in any crate");
@@ -11345,19 +10904,19 @@ mod headless_tests {
     #[test]
     fn the_bar_shows_chips_then_buttons_then_filters_as_it_narrows() {
         let mut rig = credited_rig("filter-tiers");
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         rig.frame(Vec::new());
         let (x, tier) = rig.app.filters_drawn.unwrap();
         assert_eq!(tier, FooterFilters::Chips);
         // The search field takes at most half the bar; the filters follow it.
         assert!(x <= 4.0 + 350.0 + 4.0 + STYLE_GAP, "{x}");
-        rig.app.settings.playlist_width = 300;
+        rig.screen.x = 300.0;
         rig.frame(Vec::new());
         let (x, tier) = rig.app.filters_drawn.unwrap();
         assert_eq!(tier, FooterFilters::Buttons);
         assert!(x >= 4.0 + SEARCH_MIN_W, "after the search field: {x}");
         // Classic width with tempos: one FILTERS button after the BPM control.
-        rig.app.settings.playlist_width = 275;
+        rig.screen.x = 275.0;
         set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
         rig.frame(Vec::new());
         assert_eq!(rig.app.filters_drawn.unwrap().1, FooterFilters::Folded);
@@ -11418,7 +10977,7 @@ mod headless_tests {
     #[test]
     fn a_lit_button_counts_its_picks_and_a_double_click_clears_them() {
         let mut rig = credited_rig("filter-button");
-        rig.app.settings.playlist_width = 700;
+        rig.screen.x = 700.0;
         let ctx = rig.ctx.clone();
         rig.app.apply(
             Action::TogglePick(Facet::Label, "Lowtide Tapes".into()),
@@ -11474,7 +11033,7 @@ mod headless_tests {
         {
             e.origin.as_mut().unwrap().year = Some(y);
         }
-        rig.app.settings.playlist_width = 400;
+        rig.screen.x = 400.0;
         rig.frame(Vec::new());
         assert_eq!(rig.app.offered_facets(), [Facet::Year]);
         // YEARS opens the panel on its grid: a cell per year, with its records ("·": none).
@@ -11533,7 +11092,7 @@ mod headless_tests {
         {
             e.origin.as_mut().unwrap().formats = f.into();
         }
-        rig.app.settings.playlist_width = 400;
+        rig.screen.x = 400.0;
         rig.frame(Vec::new());
         assert_eq!(rig.app.offered_facets(), [Facet::Format]);
         // No styles here: just the FORMATS button, opening the panel's only tab.

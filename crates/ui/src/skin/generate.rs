@@ -562,17 +562,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         sprites: BTreeMap::new(),
     };
 
-    // ---- section backgrounds --------------------------------------------------------------
-    b.sprite("main_bg", 275, 116, |c, x, y| {
-        panel(c, x, y, 275, 116);
-        titlebar(c, x, y, 275, 14, "DIGGR");
-        c.inset(x + 9, y + 15, 93, 46, LCD_BG);
-        c.inset(x + 109, y + 22, 157, 13, LCD_BG);
-        c.inset(x + 109, y + 38, 20, 11, LCD_BG);
-        c.text(x + 131, y + 40, "KBPS", LABEL);
-        c.inset(x + 157, y + 38, 14, 11, LCD_BG);
-        c.text(x + 173, y + 40, "KHZ", LABEL);
-    });
     b.sprite("eq_bg", 275, 116, |c, x, y| {
         panel(c, x, y, 275, 116);
         titlebar(c, x, y, 275, 14, "DIGGR EQUALIZER");
@@ -671,14 +660,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.text_centered(x + 38, y + 3, "OWN TEMPO", col);
         });
     }
-    // The waveform's title bar, over the waveform in the player column.
-    b.sprite("wave_title", 275, 14, |c, x, y| {
-        titlebar(c, x, y, 275, 14, "DIGGR WAVEFORM");
-    });
-    // The CRATES panel's title bar, in the EQ's place.
-    b.sprite("crates_title", 275, 14, |c, x, y| {
-        titlebar(c, x, y, 275, 14, "DIGGR CRATES");
-    });
     // The playlist stretches sideways: its title and bottom bars are a left cap, a column
     // the app tiles to the width, and a right cap. The title bar names the shown crate: the
     // app draws it on `pl_title_fill`.
@@ -807,7 +788,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- title bar buttons ----------------------------------------------------------------
-    for (name, icon) in [("btn_min", 0), ("btn_close", 1), ("btn_max", 2)] {
+    for (name, icon) in [("btn_min", 0), ("btn_close", 1)] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -819,13 +800,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
-                } else if icon == 2 {
-                    // ⇔: a bar with a head at each end.
-                    c.fill(x + 2 + o, y + 4 + o, 5, 1, ICON);
-                    for (hx, dir) in [(2, 1), (6, -1)] {
-                        c.px(x + hx + dir + o, y + 3 + o, ICON);
-                        c.px(x + hx + dir + o, y + 5 + o, ICON);
-                    }
                 } else {
                     for i in 0..5 {
                         c.px(x + 2 + i + o, y + 2 + i + o, ICON);
@@ -909,48 +883,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 c.text_centered(x + w as i32 / 2 + o, y + (h as i32 - 7) / 2 + o, label, col);
             });
         };
-    // Shuffle and repeat: icons, lit while on; repeat one adds a small 1 in the loop.
-    const SHUFFLE: [&str; 9] = [
-        ".............#.",
-        "####.....######",
-        "....#...#....#.",
-        ".....#.#.......",
-        "......#........",
-        ".....#.#.......",
-        "....#...#....#.",
-        "####.....######",
-        ".............#.",
-    ];
-    const REPEAT: [&str; 9] = [
-        "...............",
-        ".#############.",
-        "#.............#",
-        "#.............#",
-        "#.............#",
-        "#.............#",
-        "#....#........#",
-        ".#..##########.",
-        ".....#.........",
-    ];
-    for (state, icon, lit, one) in [
-        ("shuffle_off", &SHUFFLE, false, false),
-        ("shuffle_on", &SHUFFLE, true, false),
-        ("repeat_off", &REPEAT, false, false),
-        ("repeat_all", &REPEAT, true, false),
-        ("repeat_one", &REPEAT, true, true),
-    ] {
-        for pressed in [false, true] {
-            let p = if pressed { "_p" } else { "" };
-            b.sprite(&format!("{state}{p}"), 22, 15, |c, x, y| {
-                button_face(c, x, y, 22, 15, pressed);
-                let (o, col) = (pressed as i32, if lit { rgb(170, 100, 0) } else { ICON });
-                c.bits(x + 3 + o, y + 3 + o, icon, col);
-                if one {
-                    c.tiny(x + 11 + o, y + 5 + o, "1", col);
-                }
-            });
-        }
-    }
     for (state, lit) in [("off", false), ("on", true)] {
         for pressed in [false, true] {
             let p = if pressed { "_p" } else { "" };
@@ -980,8 +912,9 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             pressed,
         );
     }
-    // The waveform, EQ, crates and playlist toggles: icons, lit while their section shows.
-    const TOGGLE_ICONS: [(&str, [&str; 8]); 4] = [
+    // The mini player's icon buttons, lit while on: waveform, EQ, spectrum (the spectrogram
+    // window), shuffle and repeat; repeat one adds a small 1 in the loop.
+    const TOGGLE_ICONS: [(&str, [&str; 8]); 5] = [
         (
             "tog_wave",
             [
@@ -1009,29 +942,42 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             ],
         ),
         (
-            "tog_cr",
+            "tog_spec",
             [
+                "........#..",
+                "....#...#..",
+                "....#.#.#..",
+                "..#.#.#.#.#",
+                "..#.#.#.#.#",
                 "#.#.#.#.#.#",
                 "#.#.#.#.#.#",
                 "#.#.#.#.#.#",
-                "#.#.#.#.#.#",
-                "###########",
-                "#.........#",
-                "#.........#",
-                "###########",
             ],
         ),
         (
-            "tog_pl",
+            "tog_shuf",
             [
-                "#.#########",
+                "##.....####",
+                "..#...#..#.",
+                "...#.#.....",
+                "....#......",
+                "...#.#.....",
+                "..#...#..#.",
+                "##.....####",
                 "...........",
-                "#.#########",
-                "...........",
-                "#.#########",
-                "...........",
-                "#.#########",
-                "...........",
+            ],
+        ),
+        (
+            "tog_rep",
+            [
+                ".#########.",
+                "#.........#",
+                "#.........#",
+                "#.........#",
+                "#....#....#",
+                "#...##....#",
+                ".#..######.",
+                ".....#.....",
             ],
         ),
     ];
@@ -1039,9 +985,18 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         for (state, lit) in [("off", false), ("on", true)] {
             b.sprite(&format!("{name}_{state}"), 17, 12, |c, x, y| {
                 button_face(c, x, y, 17, 12, lit);
-                c.bits(x + 3, y + 2, &icon, if lit { ACCENT } else { ICON });
+                let col = if lit { ACCENT } else { ICON };
+                c.bits(x + 3, y + 2, &icon, col);
             });
         }
+    }
+    for (state, lit) in [("off", false), ("on", true)] {
+        b.sprite(&format!("tog_rep1_{state}"), 17, 12, |c, x, y| {
+            button_face(c, x, y, 17, 12, lit);
+            let col = if lit { ACCENT } else { ICON };
+            c.bits(x + 3, y + 2, &TOGGLE_ICONS[4].1, col);
+            c.tiny(x + 7, y + 3, "1", col);
+        });
     }
     for (name, w, label) in [("eq_on", 26, "ON")] {
         for (state, lit) in [("off", false), ("on", true)] {
@@ -1199,17 +1154,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.fill(x + 3, y + gy, 4, 1, ICON);
         }
     });
-    b.sprite("pl_resize", 11, 11, |c, x, y| {
-        for i in 0..3 {
-            for k in 0..=(2 * i + 2) {
-                let d = 4 * i + 2;
-                let (px, py) = (x + 10 - (d - k.min(d)), y + 10 - k.min(d));
-                if k <= d {
-                    c.px(px, py, if k % 2 == 0 { HI } else { LO });
-                }
-            }
-        }
-    });
 
     b.sprite("pl_title_fill", 1, 20, |c, x, y| title_fill(c, x, y, 20));
 
@@ -1336,30 +1280,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
 
 fn layout() -> BTreeMap<String, R> {
     let mut l: Vec<(&str, R)> = vec![
-        // main (relative to the main section)
-        ("titlebar", R::new(0, 0, 275, 14)),
-        ("btn_min", R::new(244, 3, 9, 9)),
-        ("btn_close", R::new(262, 3, 9, 9)),
-        ("status", R::new(14, 28, 9, 9)),
-        ("time", R::new(26, 26, 64, 13)),
-        ("vis", R::new(24, 43, 76, 16)),
-        ("title_text", R::new(112, 25, 152, 7)),
-        ("kbps", R::new(111, 40, 17, 7)),
-        ("khz", R::new(158, 40, 12, 7)),
+        // the mini player's volume slider (moved into place by the app)
         ("volume", R::new(107, 57, 48, 13)),
-        ("wave_toggle", R::new(157, 58, 17, 12)),
-        ("eq_toggle", R::new(177, 58, 17, 12)),
-        ("cr_toggle", R::new(197, 58, 17, 12)),
-        ("pl_toggle", R::new(217, 58, 17, 12)),
-        ("sync", R::new(238, 58, 30, 12)),
-        ("seek", R::new(16, 72, 248, 10)),
-        ("prev", R::new(16, 88, 23, 18)),
-        ("play", R::new(39, 88, 23, 18)),
-        ("pause", R::new(62, 88, 23, 18)),
-        ("stop", R::new(85, 88, 23, 18)),
-        ("next", R::new(108, 88, 23, 18)),
-        ("shuffle", R::new(221, 89, 22, 15)),
-        ("repeat", R::new(246, 89, 22, 15)),
         // turntable (relative to its section)
         ("deck_titlebar", R::new(0, 0, 275, 14)),
         ("deck_close", R::new(262, 3, 9, 9)),
@@ -1373,9 +1295,6 @@ fn layout() -> BTreeMap<String, R> {
         ("deck_reset", R::new(166, 86, 42, 13)),
         // The fader: its thumb's centre runs from y to y + h.
         ("deck_pitch", R::new(241, 22, 20, 64)),
-        // waveform title bar (relative to the waveform section)
-        ("wave_titlebar", R::new(0, 0, 275, 14)),
-        ("wave_close", R::new(262, 3, 9, 9)),
         // equalizer (relative to the EQ section)
         ("eq_titlebar", R::new(0, 0, 275, 14)),
         ("eq_close", R::new(262, 3, 9, 9)),
@@ -1387,16 +1306,13 @@ fn layout() -> BTreeMap<String, R> {
         // playlist: titlebar/list/scroll relative to the playlist top; buttons, info and
         // resize relative to the bottom bar. A height of 0 means "stretch".
         ("pl_titlebar", R::new(0, 0, 275, 20)),
-        ("pl_close", R::new(262, 6, 9, 9)),
-        ("pl_max", R::new(250, 6, 9, 9)),
-        ("pl_group", R::new(238, 6, 9, 9)),
+        ("pl_group", R::new(262, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
         ("pl_plus", R::new(11, 12, 18, 18)),
         ("pl_opts", R::new(32, 12, 18, 18)),
         // The time readout is right-aligned in `pl_info`.
         ("pl_info", R::new(177, 14, 80, 7)),
-        ("pl_resize", R::new(263, 26, 11, 11)),
     ];
     let bands: Vec<(String, R)> = (0..10)
         .map(|i| (format!("eq_band{i}"), R::new(78 + 18 * i, 38, 14, 63)))

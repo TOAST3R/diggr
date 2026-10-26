@@ -109,20 +109,15 @@ fn gui(open: Vec<PathBuf>, process_start: Instant, startup_time: bool) -> Result
         .map(Store::new)
         .or_else(Store::platform_default);
     let settings = store.as_ref().map(Store::load_settings).unwrap_or_default();
-    let size = DiggrApp::window_size(&settings, &ui::skin::LoadedSkin::default_skin());
-    let mut viewport = eframe::egui::ViewportBuilder::default()
+    // Full screen from the first frame; the size is only for a window manager that restores it.
+    let size = DiggrApp::window_size(&settings);
+    let viewport = eframe::egui::ViewportBuilder::default()
         .with_title("Diggr")
         .with_inner_size(size)
         .with_decorations(false)
-        .with_resizable(false);
-    viewport = viewport.with_icon(app_icon());
-    if let Some((x, y)) = settings.window_pos {
-        viewport = viewport.with_position([x, y]);
-    }
-    // A playlist left maximized opens maximized, from the first frame.
-    if settings.playlist_maximized {
-        viewport = viewport.with_maximized(true);
-    }
+        .with_resizable(false)
+        .with_maximized(true)
+        .with_icon(app_icon());
     // Scores and annotations: ~/Library/Caches/Diggr (DIGGR_CACHE_DIR overrides).
     let cache = analysis::cache::ScoreCache::platform_default();
     let options = eframe::NativeOptions {

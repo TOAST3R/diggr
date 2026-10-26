@@ -258,7 +258,7 @@ fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
         logon,
         ::dig::sellers::Source::Purchases,
     ));
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
     rig.frame(Vec::new());
     (rig, decks, logon)
@@ -348,7 +348,7 @@ fn many_sellers(name: &str, fakes: &Fakes, n: usize) -> Rig {
         let s = ::dig::sellers::Seller::new(&user, c, ::dig::sellers::Source::Added);
         rig.app.dig.as_mut().unwrap().sellers.sellers.push(s);
     }
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
     rig.frame(Vec::new());
     rig
@@ -462,7 +462,7 @@ fn a_closed_group_shows_a_dig_inside_it() {
 fn the_crate_menu_groups_the_crates_and_scrolls() {
     let fakes = Fakes::new();
     let mut rig = many_sellers("sellers-crate-menu", &fakes, 31);
-    rig.app.settings.playlist_width = crate::settings::MIN_PLAYLIST_WIDTH;
+    rig.screen.x = 275.0;
     let label = rig.app.crates.create("Label: Siesta Records").unwrap();
     rig.app.crates.set_label(label, 77);
     let open_menu = |rig: &mut Rig| {
@@ -1034,7 +1034,7 @@ fn dug(name: &str, fakes: &Fakes) -> (Rig, CrateId) {
         },
         "dug",
     );
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     // Past egui's double-click window, so the next click isn't counted with Dig's.
     for _ in 0..30 {
         rig.pump();
@@ -1736,7 +1736,7 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
     let fakes = Fakes::new();
     let (mut rig, logon) = dug("cart-switch", &fakes);
     // Wide enough for the switch in the filter bar.
-    rig.app.settings.playlist_width = 500;
+    rig.screen.x = 500.0;
     rig.frame(Vec::new());
     assert_eq!(rig.app.cart_drawn, None, "nothing in the cart yet");
     let mut snap = cart_with(&[(11, 1001, "logon", "€9.00")]);
@@ -1780,7 +1780,7 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
     for (i, e) in rig.app.crates.shown_mut().entries_mut().enumerate() {
         e.bpm = Some(120 + i as u16);
     }
-    rig.app.settings.playlist_width = 275;
+    rig.screen.x = 275.0;
     rig.frame(Vec::new());
     assert_eq!(rig.app.cart_drawn, None, "no room in the bar");
     let (x, _) = rig.app.filters_drawn.expect("FILTERS is drawn");

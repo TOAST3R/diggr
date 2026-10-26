@@ -2004,14 +2004,10 @@ impl DiggrApp {
                 if !self.crates.load(id) {
                     return self.notify(format!("Crate \"{name}\" can't be read"));
                 }
-                // A crate the send just made comes on screen, with the playlist opened if it
-                // was hidden; sending to an existing crate leaves the view alone.
+                // A crate the send just made comes on screen; sending to an existing crate
+                // leaves the view alone.
                 if created {
                     self.show_crate(id);
-                    if !self.settings.show_playlist {
-                        self.settings.show_playlist = true;
-                        self.mark_settings();
-                    }
                 }
                 (id, created, false)
             }

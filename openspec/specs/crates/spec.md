@@ -15,7 +15,7 @@ The player SHALL keep any number of named crates, each an ordered list of entrie
 - **THEN** the name is refused with a message and no crate is created
 
 ### Requirement: Crate menu
-While the crate sidebar isn't shown (the playlist narrower than 600 skin pixels and not maximized), clicking the playlist title bar without dragging SHALL open a menu listing every crate by name, marking the shown crate and the playing crate, followed by New crate…, Rename crate… and Delete crate…. It SHALL mark the crate the current track comes from with ⏵ only while that track plays or is paused. It SHALL list the user's own crates first, then the user's Discogs crates under a Discogs heading (the wantlist crate, then the collection crate), then the label crates under a Labels heading, the seller crates under a Top sellers heading and the friend crates under a Friends heading, each group in the sidebar's order and each heading shown only when its group has crates. Label, seller and friend crates SHALL NOT be listed among the user's own crates. When the crates don't fit in two thirds of the app window's height, the list of crates SHALL scroll, with the shown crate scrolled into view when the menu opens; New crate…, Rename crate…, Delete crate… and the refresh items SHALL stay visible below it. While the sidebar is shown, clicking the title bar SHALL NOT open a menu: the sidebar lists, creates, renames and deletes crates. Choosing a crate SHALL show it. Dragging the title bar SHALL still move the window and SHALL NOT open the menu. Deleting a crate that has entries SHALL ask for confirmation first.
+While the crate sidebar isn't shown (the playlist narrower than 600 skin pixels), clicking the playlist title bar without dragging SHALL open a menu listing every crate by name, marking the shown crate and the playing crate, followed by New crate…, Rename crate… and Delete crate…. It SHALL mark the crate the current track comes from with ⏵ only while that track plays or is paused. It SHALL list the user's own crates first, then the user's Discogs crates under a Discogs heading (the wantlist crate, then the collection crate), then the label crates under a Labels heading, the seller crates under a Top sellers heading and the friend crates under a Friends heading, each group in the sidebar's order and each heading shown only when its group has crates. Label, seller and friend crates SHALL NOT be listed among the user's own crates. When the crates don't fit in two thirds of the app window's height, the list of crates SHALL scroll, with the shown crate scrolled into view when the menu opens; New crate…, Rename crate…, Delete crate… and the refresh items SHALL stay visible below it. While the sidebar is shown, clicking the title bar SHALL NOT open a menu: the sidebar lists, creates, renames and deletes crates. Choosing a crate SHALL show it. Dragging the title bar SHALL still move the window and SHALL NOT open the menu. Deleting a crate that has entries SHALL ask for confirmation first.
 
 #### Scenario: Switch crate
 - **WHEN** the playlist is 400 px wide and the user clicks the title bar and chooses "Keepers"
@@ -108,7 +108,7 @@ Only the list of crates and the shown crate SHALL be loaded at launch. Other cra
 - **THEN** the window is interactive within 300 ms
 
 ### Requirement: Crate sidebar
-When the playlist is at least 600 skin pixels wide, or maximized, a list of every crate SHALL be shown on the left of the playlist, with each crate's number of records (albums, and entries of no album; see `record-view`), whether it is grouped or flat, and a tooltip naming it. The shown crate SHALL be marked •. The crate the current track comes from SHALL be marked with the player's play sign while it plays and its pause sign while paused, and not marked when playback is stopped; its tooltip SHALL say so. The user's own Discogs crates (the wantlist crate once a token is set, and the collection crate the app makes from their collection, both still recognised after a rename) SHALL be pinned at the bottom of the sidebar under a DISCOGS heading, the wantlist crate above the collection crate, both drawn in the OWNED badge's colour (off-white in the default skin) with a record icon; they SHALL NOT fold. The other crates SHALL be listed from the top, in creation order, under a CRATES heading showing ⏵ or ⏷ and their number, followed by "+ New crate". Clicking the CRATES heading SHALL fold or unfold that list, independently of the Discogs groups, and the fold SHALL be remembered across restarts. Under DISCOGS, below the collection crate, a LABELS heading SHALL list the label crates (see `label-crates`) in the order they were followed, each with its name and number of records. Right-clicking a label crate SHALL offer its menu (see `label-crates`). Below LABELS, a TOP SELLERS heading SHALL list the seller crates (see `seller-crates`) in the list's order, each with its seller's name and number of records. A seller crate never dug SHALL be dimmed and show no count. Right-clicking the TOP SELLERS heading SHALL offer Add seller…. Below TOP SELLERS, a FRIENDS heading SHALL list the friend crates (see `friend-crates`) in the friends list's order, each with its name and number of records; a private friend's crate SHALL be dimmed with no count. FRIENDS SHALL NOT be shown without a token or with no friends, and its heading SHALL offer no menu.
+When the playlist is at least 600 skin pixels wide, a list of every crate SHALL be shown on the left of the playlist, with each crate's number of records (albums, and entries of no album; see `record-view`), whether it is grouped or flat, and a tooltip naming it. The shown crate SHALL be marked •. The crate the current track comes from SHALL be marked with the player's play sign while it plays and its pause sign while paused, and not marked when playback is stopped; its tooltip SHALL say so. The user's own Discogs crates (the wantlist crate once a token is set, and the collection crate the app makes from their collection, both still recognised after a rename) SHALL be pinned at the bottom of the sidebar under a DISCOGS heading, the wantlist crate above the collection crate, both drawn in the OWNED badge's colour (off-white in the default skin) with a record icon; they SHALL NOT fold. The other crates SHALL be listed from the top, in creation order, under a CRATES heading showing ⏵ or ⏷ and their number, followed by "+ New crate". Clicking the CRATES heading SHALL fold or unfold that list, independently of the Discogs groups, and the fold SHALL be remembered across restarts. Under DISCOGS, below the collection crate, a LABELS heading SHALL list the label crates (see `label-crates`) in the order they were followed, each with its name and number of records. Right-clicking a label crate SHALL offer its menu (see `label-crates`). Below LABELS, a TOP SELLERS heading SHALL list the seller crates (see `seller-crates`) in the list's order, each with its seller's name and number of records. A seller crate never dug SHALL be dimmed and show no count. Right-clicking the TOP SELLERS heading SHALL offer Add seller…. Below TOP SELLERS, a FRIENDS heading SHALL list the friend crates (see `friend-crates`) in the friends list's order, each with its name and number of records; a private friend's crate SHALL be dimmed with no count. FRIENDS SHALL NOT be shown without a token or with no friends, and its heading SHALL offer no menu.
 
 LABELS, TOP SELLERS and FRIENDS SHALL form an accordion: at most one of them SHALL be open, showing its crates; the others SHALL show only their heading. Each heading SHALL show ⏷ when open or ⏵ when closed, and its number of crates. Clicking a closed heading SHALL open it and close the open one; clicking the open heading SHALL close it, leaving all three closed. Which group is open SHALL be remembered across restarts; after upgrading from a version with separate folds, all three SHALL start closed. While TOP SELLERS or FRIENDS is closed and a crate in it is being dug or refreshed, its heading SHALL end with " …" and its tooltip SHALL say so.
 
@@ -119,11 +119,11 @@ Whenever the shown crate changes, by any means (the sidebar, the title-bar crate
 Double-clicking a seller crate SHALL dig it (see `seller-crates`), and right-clicking it SHALL offer Refresh seller (once dug), Narrow down… (once dug), Rename crate… and Remove seller…. Narrower, the sidebar SHALL be hidden. There SHALL be no button or setting to hide it. Clicking a crate SHALL show it. Right-clicking a crate (or Control-clicking it on macOS, which SHALL NOT show it) SHALL offer Rename crate… and Delete crate… for that crate, with the same rules as the crate menu (deleting a crate with entries asks first). For the Playlist crate, which can't be renamed or deleted, the menu SHALL offer Clear crate instead and say why. "+ New crate" SHALL create and show a new crate, after asking its name as the crate menu does. A crate that can't be read SHALL be dimmed and can't be chosen. After a crate is clicked in the sidebar, the Delete key (or Backspace) SHALL delete that crate, with the same rules as Delete crate…, until the list is clicked or its cursor moves. The crate menu on the title bar SHALL keep working. Showing a crate from the sidebar SHALL NOT interrupt playback. Scrolling or folding the sidebar SHALL NOT change the shown crate or interrupt playback.
 
 #### Scenario: Switch from the sidebar
-- **WHEN** the playlist is maximized and the user clicks "Keepers" in the sidebar
+- **WHEN** the playlist is 1000 px wide and the user clicks "Keepers" in the sidebar
 - **THEN** the Keepers crate is shown, the sidebar marks it •, and the playing track plays on
 
 #### Scenario: Too narrow
-- **WHEN** the playlist is 400 px wide and not maximized
+- **WHEN** the window is restored so the playlist is 400 px wide
 - **THEN** no sidebar is shown, and the crate menu still works
 
 #### Scenario: Delete from the sidebar
@@ -155,11 +155,11 @@ Double-clicking a seller crate SHALL dig it (see `seller-crates`), and right-cli
 - **THEN** Friday is deleted, after confirming when it has entries; after a click or a cursor move in the list, Delete removes the selected entries instead, and the Playlist crate is never deleted this way
 
 #### Scenario: Always there when it fits
-- **WHEN** the playlist is widened from 400 to 700 px
+- **WHEN** the window is widened so the playlist goes from 400 to 700 px
 - **THEN** the sidebar appears, with no button to hide it
 
 #### Scenario: An old setting
-- **WHEN** the app starts with a `settings.ron` that has `crate_sidebar: false` and `labels_folded: true`, and the playlist maximized
+- **WHEN** the app starts with a `settings.ron` that has `crate_sidebar: false` and `labels_folded: true`
 - **THEN** the settings load, the sidebar is shown, and LABELS, TOP SELLERS and FRIENDS are all closed
 
 #### Scenario: Top Sellers
@@ -247,35 +247,4 @@ On the first launch after this change, the Keepers crate (the one recorded in th
 #### Scenario: Name taken
 - **WHEN** the app starts after this change with both a Keepers crate and a crate named "Wantlist"
 - **THEN** Keepers keeps its name and becomes the wantlist crate, and "Wantlist" is left as it is
-
-### Requirement: Crates panel
-A crates toggle on the main section (see `player-window`) SHALL show a CRATES panel in the place and at the size of the EQ section, and SHALL hide the EQ section; turning the EQ on SHALL hide the panel. The EQ section and the panel SHALL never be shown together, both MAY be hidden, and switching between them SHALL NOT change the window's size or the playlist's position. Whether the panel shows SHALL be remembered across restarts. The panel SHALL have a title bar reading CRATES with a close button that hides it. It SHALL list the user's own crates, the ones the sidebar lists under CRATES (not the wantlist or collection crates, and no label, seller or friend crates), in creation order, followed by "+ New crate", as one list without headings, with the same marks, counts, tooltip, click, right-click menu, Delete key and drop behaviour as the sidebar's crates. When they don't fit, the list SHALL scroll by row with the mouse wheel or trackpad and show a thin scrollbar, and dragging entries over its first or last row SHALL scroll it as the sidebar does. When the shown crate changes to one of the user's crates, the panel SHALL scroll it into view. The panel SHALL be available whether or not the sidebar is shown. Showing, hiding or scrolling the panel SHALL NOT interrupt playback or change the EQ's settings.
-
-#### Scenario: Swap the EQ for crates
-- **WHEN** the EQ shows and the user clicks the crates toggle
-- **THEN** the EQ section is replaced by the CRATES panel at the same size, the crates toggle is lit, the EQ toggle is not, and the window doesn't change size
-
-#### Scenario: Back to the EQ
-- **WHEN** the CRATES panel shows and the user clicks the EQ toggle
-- **THEN** the EQ section is back with its bands and preamp unchanged, and the panel is hidden
-
-#### Scenario: Only the user's crates
-- **WHEN** the crates are Playlist, Friday, "Wantlist: digger", "Collection: digger", "Label: Siesta Records" and "Seller: decks.de"
-- **THEN** the panel lists Playlist, Friday and "+ New crate", and nothing else
-
-#### Scenario: Many crates scroll
-- **WHEN** the user has 20 crates and the panel has room for 7 rows
-- **THEN** the panel shows 7 rows with a scrollbar, and scrolling over it reaches the 20th crate and "+ New crate"
-
-#### Scenario: Pick and drop from the panel at a narrow playlist
-- **WHEN** the playlist is 275 px wide (no sidebar), the user clicks "Friday" in the panel, then drags an entry from the list onto "Keepers" in the panel
-- **THEN** Friday is shown and the playing track plays on, and the entry is sent to Keepers
-
-#### Scenario: Remembered
-- **WHEN** the user shows the CRATES panel and restarts the app
-- **THEN** the panel shows and the EQ section doesn't
-
-#### Scenario: An old settings file
-- **WHEN** the app starts with a `settings.ron` from an earlier version holding `show_eq: true`
-- **THEN** the EQ section shows and the CRATES panel doesn't
 

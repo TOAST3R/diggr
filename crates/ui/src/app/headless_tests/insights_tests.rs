@@ -45,7 +45,7 @@ fn collection(name: &str, fakes: &Fakes) -> (Rig, CrateId) {
         );
     }
     rig.app.show_crate(PLAYLIST);
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.frame(Vec::new());
     (rig, c)
 }
