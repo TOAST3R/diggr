@@ -114,16 +114,17 @@ cargo run --release -p diggr -- ~/Music/album/*.flac  # replaces the Playlist cr
 No music handy? The repo includes short test tones:
 `cargo run --release -p diggr -- crates/audio/tests/fixtures/tone.*`
 
-The window has the classic player's parts, side by side: the player column on the left (main
-player, then the waveform and the equalizer when they show) and the playlist on its right, at
-least as tall as the player column. It's drawn from an original pixel-art skin dressed like a
-DJ's gear (warm graphite panels, an amber LCD, title bars with groove lines), at double size
-by default (switch in **Options**: the gear ⚙ in the playlist's footer, or right-click the main
-window anywhere that isn't a control, or the mini player while the playlist is maximized;
+The window opens full screen, in one layout: a band across the top holds the **mini player**
+on the left, SYNC's turntable beside it while SYNC is on, then the waveform (a seek bar while
+the waveform is off) and, in the top-right corner, minimize and close (which quits); the
+playlist fills the rest. Restoring the window keeps the same layout at the smaller size. It's
+drawn from an original pixel-art skin dressed like a DJ's gear (warm graphite panels, an amber
+LCD, title bars with groove lines), at double size by default (switch in **Options**: the gear
+⚙ in the playlist's footer, or right-click the mini player anywhere that isn't a control;
 Options also has the spectrogram, Discogs… and Browser…).
 
-Click in the player or in the playlist (or press `Tab`) to give it the keyboard: its title bar
-lights up and the other side's dims. With the player focused, `↑` / `↓` set the volume. With the
+Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the playlist's
+title bar lights up while it has it. With the player focused, `↑` / `↓` set the volume. With the
 playlist focused, they move a cursor through the list (Shift extends the selection; PgUp/PgDn
 and Home/End jump), and Enter plays the entry under it.
 
@@ -142,7 +143,7 @@ and Home/End jump), and Enter plays the entry under it.
     (which asks first when the crate has entries). Your crates come first, then Discogs,
     Labels, Top sellers and Friends under their own headings; a long list scrolls and opens on
     the crate shown. Wider, the crate sidebar does this instead
-    and the title bar opens no menu. Dragging the title bar still moves the window.
+    and the title bar opens no menu.
   - Switching crates never interrupts playback: next, previous, shuffle and repeat follow the
     crate the playing track came from, until you start a track in another crate.
   - **Playlist** is the scratch crate. It always exists, can be cleared but not renamed or
@@ -151,7 +152,7 @@ and Home/End jump), and Enter plays the entry under it.
   - **Send to crate** (in an entry's right-click menu) copies the selection, in order, to
     another crate or a new one, skipping entries that crate already holds. It doesn't list
     the crates the app fills itself (Discogs, label, seller and friend crates).
-  - **Crate sidebar:** once the playlist is at least 600 pixels wide (or maximized), every crate
+  - **Crate sidebar:** once the playlist is at least 600 pixels wide (always, full screen), every crate
     is listed on its left with its number of records (grouped or flat; its tooltip also
     counts the tracks): • marks the one shown, and the player's
     play (or pause) sign marks the one your track comes from while it plays (or is paused).
@@ -246,8 +247,6 @@ and Home/End jump), and Enter plays the entry under it.
   - Shift/Cmd-click to select several;
   - drag to reorder;
   - Delete removes the selection;
-  - drag the bottom-right grip to make the playlist wider (any width) or taller (whole rows);
-    its size is remembered, and narrowed to fit a smaller screen;
   - once the playlist is at least 480 pixels wide (at 1×), entries are drawn as columns: #,
     Cat#, Artist, Title, Album, Format, Style, BPM, Side, Year, For sale and Time (Style sorts by
     a record's first style). Drag a divider in the header to
@@ -257,13 +256,6 @@ and Home/End jump), and Enter plays the entry under it.
     the crate itself, as in classic players: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
-  - **⇔** in the playlist's title bar (or `Shift+P`) maximizes the playlist: the window fills
-    the screen below the menu bar, a band runs across the top with a mini player on the left
-    (play state, elapsed time and title on an LCD line; previous, play, pause, stop, next,
-    volume, SYNC and ⇔ to restore under it), SYNC's turntable next to it while SYNC is on, and the waveform beside them when it's on, the EQ hides,
-    and the playlist takes the full width under the band. Press
-    ⇔ or `Shift+P` again to get the previous window and sizes back. It's remembered, and the
-    app opens maximized next time;
   - **▤** in the title bar (or the list menu's **Group by record**) shows the crate one row
     per record: its cover, "Artist – Album" (the record's credit, so a compilation reads
     "Various – …") with its Discogs styles at the right, the catalog
@@ -288,7 +280,7 @@ and Home/End jump), and Enter plays the entry under it.
     warning sign (needs yt-dlp), or a barred circle (no clip, the clip failed, not found by
     search, or already in crate). Both are
     skipped by next, previous and shuffle. Double-clicking a waiting entry arms it: the current
-    track plays on, the main window says it is waiting, and the entry starts as soon as its
+    track plays on, the player says it is waiting, and the entry starts as soon as its
     audio arrives. Double-clicking a "clip failed" or "not found" entry, in any crate, tries
     it again first and arms it; a "no clip" one only says why. Only files that can't be opened
     are drawn in red.
@@ -313,13 +305,18 @@ and Home/End jump), and Enter plays the entry under it.
     clicked becomes the selection. While the menu is open, the rest of the entry's album is
     tinted, wherever it is in the crate. An album is a Discogs release (another pressing is
     another album), or local files with the same artist and album tags.
-- **Main window:**
+- **Mini player** (275 pixels wide, at the band's left): the play state, time and title on an
+  LCD line, and under it previous, play, pause, stop, next, volume, shuffle, repeat and SYNC:
   - click the time to switch between elapsed and remaining;
-  - click the mini visualizer to cycle spectrum → oscilloscope → off;
+  - the title line flashes WANTED, PASS, OWNED or UNWANTED for a moment after a verdict;
+  - three icons at the LCD line's end: **EQ** opens the equalizer in a window of its own (it
+    stays on top, and its place is remembered), the **waveform** icon shows or hides the
+    waveform like `W`, and **spectrum** opens the spectrogram window like `S`; each is lit
+    while its window or waveform shows;
   - the **shuffle** icon (crossed arrows);
   - the **repeat** icon cycles off → all → one, shown with a small 1 (all gapless);
-  - **SYNC**, beside the section icons, plays every track at one tempo, the way it will sit in a set. It opens the
-    **turntable** under the main window, set to the playing record's tempo:
+  - **SYNC** plays every track at one tempo, the way it will sit in a set. It opens the
+    **turntable** in the band, beside the mini player, set to the playing record's tempo:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
       record's own tempo (±8%; the **8%/16%** button widens it). Scroll over it, or press
       `Shift+↑` / `Shift+↓` (player focused), for 1 BPM steps; **RESET** goes back to the
@@ -339,13 +336,8 @@ and Home/End jump), and Enter plays the entry under it.
       started while SYNC is on reads "REC ?" until its BPM is known, then is fitted to the tempo;
     - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
       jumps, loops and analysis all stay in the track's own time;
-  - the **waveform**, **EQ** (sliders), **crates** (records in a box) and **playlist** (lines)
-    icons show or hide the other sections. The crates icon swaps the equalizer for the
-    **CRATES panel**, the same size: your own crates and **+ New crate** in a list that
-    scrolls, to click, right-click or drop tracks on as in the sidebar, even when the playlist
-    is too narrow for one. EQ brings the equalizer back. There is no balance
-    control: playback is always centred.
-- **Equalizer:**
+  - there is no balance control: playback is always centred.
+- **Equalizer** (the mini player's EQ icon; drag its title bar to move it, × closes it):
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
   - **LP** is a DJ filter: drag the knob down to sweep a resonant low-pass over everything
@@ -353,7 +345,7 @@ and Home/End jump), and Enter plays the entry under it.
     Fully up is off (the audio passes untouched); double-click turns it off. It always starts
     off;
   - **PRESETS** loads the built-in presets, and can save or delete your own.
-- **Move the window** by dragging any title bar. Your crates, settings and presets are saved
+- **Move the window**, when it isn't full screen, by dragging the band's top-right corner. Your crates, settings and presets are saved
   in the config folder (see [Where files are kept](#where-files-are-kept)). Set
   `DIGGR_CONFIG_DIR=/some/dir` to use another folder, for example for testing.
 
@@ -371,7 +363,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen (the Playlist when that's a wantlist, collection, label, seller or friend crate) |
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
-| `Shift+P` | maximize the playlist (again: restore) | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
+| | | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
 | | | | `Cmd+F` | search the crate on screen |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
@@ -433,7 +425,7 @@ ahead of what plays. Other pasted text is ignored.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
   (records near the selected or playing entry are fetched first). It then becomes one entry per
   track (its clip, or to search) and its other clips, or "no clip". A send that's still going when you quit resumes
-  when you next show or play its crate. The main window shows the progress
+  when you next show or play its crate. The player shows the progress
   ("12 of 250 releases").
 - **Previews:** the playing entry and the next 3 download two at a time, with progress where
   the duration goes. While stopped, it's the current entry of the crate on screen and the next
@@ -464,7 +456,7 @@ ahead of what plays. Other pasted text is ignored.
   files and pasted pages are refused with a line saying to use Add to wantlist). The same goes
   for your collection crate. Deleting the crate doesn't touch Discogs. You never want what you own: Add to wantlist is
   off for a record you own in any pressing (the menu says "In collection"), and when a sync finds you
-  bought a wanted record elsewhere, it comes off your wantlist and the main window says so.
+  bought a wanted record elsewhere, it comes off your wantlist and the player says so.
 - **When Discogs can't take a change:** a wantlist change made while Discogs is offline waits
   ("wantlist pending") and goes out once it answers. After server errors it's tried again 1,
   2, 5, 15 and 60 minutes later, then the entry shows ⚑ and the menu offers **Retry
@@ -493,7 +485,7 @@ ahead of what plays. Other pasted text is ignored.
     shows how many records it holds and how old it is.
   - **Refresh collection** and **Refresh wantlist**, on a right-click of those crates in the
     sidebar (or in the title-bar crate menu when the playlist is narrow), make the crate match
-    Discogs: records added there come in, records gone from there leave, and the main window
+    Discogs: records added there come in, records gone from there leave, and the player
     says what changed ("Collection: 3 new, 1 gone"). They only read from Discogs, never change
     it. A collection refresh shows a window with a progress bar ("Reading your collection…
     page 3 of 10", then "Adding records… 2 of 4") and **Stop**, which keeps the previous
@@ -501,7 +493,7 @@ ahead of what plays. Other pasted text is ignored.
   - The first sync reads 100 records a request. After that only what was added since is
     read, newest first, which is usually one request; everything is read again only when
     records were removed. Other pressings are never looked up, and without a token nothing
-    is fetched or marked (the main window says once that a token would do it).
+    is fetched or marked (the player says once that a token would do it).
 - **Setup (Options ▸ Discogs…):**
   - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
     instead of 60).
@@ -578,20 +570,20 @@ listed under the heading by the label's name alone), grouped by record. Click th
     moment. Closing the window only hides it: while it runs, the label's menu reads
     **Downloading (N of M)…** and shows it again. It never deletes other previews: when the cache
     is full it pauses, and the window asks to **Raise cache** to twice its size or stop. At the
-    end the main window says "Label: Siesta Records: all 40 tracks downloaded".
+    end the player says "Label: Siesta Records: all 40 tracks downloaded".
   - **Retry failed tracks (N)**: downloads the "clip failed" tracks again and searches the
     "not found" ones again, forgetting that they weren't found. It runs as Download all tracks,
     whose window also offers **Retry failed (N)**. "No clip" and "already in crate" tracks
     aren't retried: nothing on YouTube can change them.
 - **When YouTube limits requests** (too many, or "confirm you're not a bot", which can happen
   on a big label), nothing is marked failed. Downloads and searches pause, and try again after
-  10 minutes, then 20, 40 and at most 60, back to 10 once YouTube answers. The main window says
+  10 minutes, then 20, 40 and at most 60, back to 10 once YouTube answers. The player says
   so once, waiting tracks say "waiting for YouTube" in their tooltip, and Download all tracks'
   window shows the pause with **Try now**. Previews already downloaded keep playing.
 - **When YouTube can't be reached** (no network, a refused connection, or a certificate that
   fails to verify because a proxy, VPN or security tool intercepts secure connections), nothing
   is marked failed either. The same pause applies with shorter waits: 1 minute, then 2, 4, 8
-  and at most 10. The main window says "Can't reach YouTube: trying again in 1 min", adding the
+  and at most 10. The player says "Can't reach YouTube: trying again in 1 min", adding the
   interception hint for a certificate error. Bandcamp and Juno pause the same way on their own.
 
 ### Mixes
@@ -634,7 +626,7 @@ your yt-dlp (nothing is downloaded until a track is about to play):
     Bandcamp audio **in place**, keeping its Discogs record and its pass;
   - a track the crate lacks is **added**, after the entries with its catalogue number.
 
-  The main window sums it up ("af070 the ooze ep: 1 added, 1 fixed, 1 skipped"). A label's own
+  The player sums it up ("af070 the ooze ep: 1 added, 1 fixed, 1 skipped"). A label's own
   account often credits every track to the label and names the artist in the album's title
   ("Gioele Menoni - Mental Roots", "Flits - Advance [TOBAS 006]"): the artist and the catalogue
   number are taken from there, and "[Vinyl]"-style format words are dropped. A track Bandcamp
@@ -642,7 +634,7 @@ your yt-dlp (nothing is downloaded until a track is about to play):
 - **Labels:** a Bandcamp label page sent from the browser is followed under LABELS, like a
   Discogs label page. When a followed Discogs label has the same name (compared without spaces,
   punctuation or a trailing "Records", "Music", "Ltd"…, so `analogicalforce` is "Analogical
-  Force"), that crate follows both and the main window says "Merged into Label: …". A close name
+  Force"), that crate follows both and the player says "Merged into Label: …". A close name
   ("Lowtide" and "Lowtide Tapes") asks **Merge** or **Separate**, once. Following a Discogs label
   whose Bandcamp crate exists joins them the same way. **Refresh label** reads both, and on
   Bandcamp only the albums it hasn't read before. Albums of a followed Bandcamp go to its label
@@ -805,7 +797,7 @@ where you check out.
   browser); Bleep's is the account you're logged in with.
 - **When the basket can't be reached** (no extension picked the action up within 3 s, no answer
   within 10 s, not logged in, or an answer the extension doesn't recognise), the pill goes back,
-  the item's page opens on the store, and the main window says so. Sold out shows **SOLD** on
+  the item's page opens on the store, and the player says so. Sold out shows **SOLD** on
   the row.
 - **Bleep formats come from a release page:** Bleep's lists (a label, a search) show no buy
   buttons, so a record sent from a list opens its page on Bleep instead; send that release page
@@ -855,7 +847,7 @@ seller…**.
   open its listing on discogs.com.
 - **Refresh seller** (right-click the crate) reads the listings again with the saved criteria:
   new copies come in, copies gone stay with a **SOLD** badge (dimmed, listed last; a record
-  whose copies all sold is dimmed and still plays), and prices follow. The main window says
+  whose copies all sold is dimmed and still plays), and prices follow. The player says
   what changed ("decks.de: 14 new, 6 sold, 3 cheaper"). A refresh that would bring more than
   1,000 copies changes nothing and opens Narrow down; a failed one changes nothing.
   While a dig runs, the status line says what it's doing: "www.hhv.de: reading the listing · 380
@@ -1071,7 +1063,7 @@ changes. The extension is plain JavaScript with no build step and no dependencie
       formats asks which one); logged out of Bleep, the release's page opens instead.
 - [ ] A sold-out Juno record or Bleep format shows SOLD after + CART.
 - [ ] With the extension turned off in `chrome://extensions`, + CART goes back after 3 s, the
-      page opens on the store, and the main window says the basket couldn't be reached.
+      page opens on the store, and the player says the basket couldn't be reached.
 - [ ] + CART on a Beatport or Traxsource entry opens the track's page there at once.
 - [ ] After 10 minutes with the player open and nothing clicked, + CART still reaches the
       basket within a second.
@@ -1110,8 +1102,8 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 
 ### Waveform and structure navigation
 
-Under the main window, the **waveform** (`W`) has a title bar like the equalizer's (drag it to
-move the window, × to hide the waveform) and two rows:
+In the band, right of the mini player, the **waveform** (`W`, or the mini player's waveform
+icon) has two rows; while it's off, a seek bar takes its place:
 
 - **Overview** of the whole track: coloured by frequency, with section bands, red markers where
   the energy jumps (the drops), and the playhead. Click or drag to seek.
@@ -1143,7 +1135,7 @@ ends them.
 
 ### Spectrogram
 
-`S` (or **Spectrogram (S)** in **Options**, a right-click on the main window) opens a separate, resizable window
+`S` (or the mini player's spectrum icon, or **Spectrogram (S)** in **Options**) opens a separate, resizable window
 with the current track's spectrogram: time runs left to right, frequency goes up on a log scale
 from 20 Hz to the file's Nyquist frequency, and brighter means louder.
 
@@ -1347,7 +1339,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 1023 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1015 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1403,7 +1395,6 @@ What's covered:
     fader meanwhile, and a new track ending the wait;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
     300-entry `playlist.ron`, and Send to crate without duplicates;
-  - spectrum bars following the *audible* frame;
   - EQ curve;
   - that the committed app and extension icons match `icon-gen`;
   - skin validation, that the committed skin matches its generator, and that a skin without
@@ -1415,8 +1406,11 @@ What's covered:
   - the crate sidebar: how its rows are shared between the two lists; headless, the CRATES
     fold, one Discogs group open at a time (the old folds ignored), long lists scrolling under
     headings that stay, the scrollbar, scrolling while dragging onto a crate, a shown crate
-    opening its group, the busy mark, the CRATES panel in the EQ's place (taking drops, the
-    window keeping its size), and the grouped, scrolling crate menu;
+    opening its group, the busy mark, and the grouped, scrolling crate menu;
+  - the full-screen layout, headless: the mini player's buttons (transport, shuffle, repeat,
+    SYNC, the EQ, waveform and spectrum icons, the time) and that they fit in 275 pixels, the
+    verdict flash on its title line, minimize and close, the band's seek bar while the
+    waveform is off, the EQ window, Shift+P doing nothing, and old layout settings loading;
   - label crates: the label field and `is_locked`, every refused edit while pass still works,
     Move to Labels, the LABELS group, the label crate menu, Export to crate,
     Delete label, Refresh label's summary, a label sent from the browser (followed, then

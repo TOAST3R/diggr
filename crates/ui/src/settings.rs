@@ -31,24 +31,6 @@ impl Repeat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum VisMode {
-    #[default]
-    Spectrum,
-    Scope,
-    Off,
-}
-
-impl VisMode {
-    pub fn cycle(self) -> Self {
-        match self {
-            VisMode::Spectrum => VisMode::Scope,
-            VisMode::Scope => VisMode::Off,
-            VisMode::Off => VisMode::Spectrum,
-        }
-    }
-}
-
 /// A Discogs group in the crate sidebar: at most one is open at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SideGroup {
@@ -62,29 +44,20 @@ pub enum SideGroup {
 pub struct Settings {
     /// Skin pixels per UI point: 1 (classic size) or 2 (double size).
     pub scale: u8,
-    pub window_pos: Option<(f32, f32)>,
+    /// The EQ window is open, and where it was last put.
     pub show_eq: bool,
-    /// The CRATES panel in the EQ's place (never with the EQ).
-    pub show_crates: bool,
-    pub show_playlist: bool,
-    /// The waveform section under the main window (`W`).
+    pub eq_window_pos: Option<(f32, f32)>,
+    /// The waveform in the band (`W`).
     pub show_waveform: bool,
     /// Bars visible in the waveform's zoomed row.
     pub waveform_bars: f32,
-    /// Visible playlist rows.
-    pub playlist_rows: u16,
-    /// Playlist width in skin pixels (it sits right of the player column and can grow).
-    pub playlist_width: u16,
     /// The playlist's columns, shown once it is wide enough.
     pub columns: crate::columns::ColumnSettings,
-    /// The playlist fills the maximized window, beside a thin strip of the player.
-    pub playlist_maximized: bool,
     pub volume: f32,
     pub eq: EqSettings,
     pub shuffle: bool,
     pub repeat: Repeat,
     pub time_remaining: bool,
-    pub vis: VisMode,
     pub av_offset_ms: i64,
     /// The spectrogram window's mode, channel, dB range and size.
     pub spectrogram: crate::spectrogram::SpectroSettings,
@@ -100,22 +73,16 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             scale: 2,
-            window_pos: None,
-            show_eq: true,
-            show_crates: false,
-            show_playlist: true,
+            show_eq: false,
+            eq_window_pos: None,
             show_waveform: true,
             waveform_bars: crate::waveform::DEFAULT_BARS,
-            playlist_rows: 10,
-            playlist_width: MIN_PLAYLIST_WIDTH,
             columns: Default::default(),
-            playlist_maximized: false,
             volume: 0.8,
             eq: EqSettings::default(),
             shuffle: false,
             repeat: Repeat::Off,
             time_remaining: false,
-            vis: VisMode::Spectrum,
             av_offset_ms: 0,
             spectrogram: Default::default(),
             side_open: None,
@@ -129,12 +96,6 @@ impl Settings {
     /// Clamps values that a hand-edited file could break.
     pub fn sanitized(mut self) -> Self {
         self.scale = self.scale.clamp(1, 3);
-        // The EQ and the CRATES panel share a place: the EQ wins.
-        self.show_crates &= !self.show_eq;
-        self.playlist_rows = self.playlist_rows.clamp(4, 60);
-        self.playlist_width = self
-            .playlist_width
-            .clamp(MIN_PLAYLIST_WIDTH, MAX_PLAYLIST_WIDTH);
         self.columns = self.columns.sanitized();
         self.volume = self.volume.clamp(0.0, 1.0);
         self.eq = self.eq.clamped();
@@ -143,10 +104,6 @@ impl Settings {
         self
     }
 }
-
-/// The playlist's narrowest width, in skin pixels: the classic skin's.
-pub const MIN_PLAYLIST_WIDTH: u16 = 275;
-pub const MAX_PLAYLIST_WIDTH: u16 = 4000;
 
 pub const SETTINGS_FILE: &str = "settings.ron";
 pub const PLAYLIST_FILE: &str = "playlist.ron";
@@ -299,26 +256,24 @@ mod tests {
         // Older files with missing fields keep working.
         std::fs::write(s.dir().join(SETTINGS_FILE), "(volume: 0.5)").unwrap();
         assert_eq!(s.load_settings().volume, 0.5);
-        assert!(s.load_settings().show_playlist);
-        assert_eq!(s.load_settings().playlist_width, MIN_PLAYLIST_WIDTH);
-        assert!(!s.load_settings().playlist_maximized);
+        assert!(!s.load_settings().show_eq, "the EQ window starts closed");
         // The balance they may hold is gone: the file still loads, and playback is centred.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),
-            "(volume: 0.5, balance: -0.6, playlist_rows: 20)",
+            "(volume: 0.5, balance: -0.6, repeat: One)",
         )
         .unwrap();
         let old = s.load_settings();
-        assert_eq!((old.volume, old.playlist_rows), (0.5, 20));
+        assert_eq!((old.volume, old.repeat), (0.5, Repeat::One));
         // So are the show-render options the player used to remember.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),
             "(volume: 0.5, render_size: (1280, 720), render_fps: 30, render_overlay: true, \
-             playlist_rows: 20)",
+             repeat: One)",
         )
         .unwrap();
         let old = s.load_settings();
-        assert_eq!((old.volume, old.playlist_rows), (0.5, 20));
+        assert_eq!((old.volume, old.repeat), (0.5, Repeat::One));
         // The old LABELS fold is ignored: every Discogs group starts closed.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),
@@ -330,21 +285,19 @@ mod tests {
     }
 
     #[test]
-    fn the_eq_and_the_crates_panel_never_show_together() {
-        let both = Settings {
-            show_eq: true,
-            show_crates: true,
-            ..Default::default()
-        }
-        .sanitized();
-        assert!(both.show_eq && !both.show_crates, "the EQ wins");
-        let s = store("crates-panel");
-        std::fs::write(s.dir().join(SETTINGS_FILE), "(show_eq: true)").unwrap();
+    fn the_classic_layouts_settings_load_and_are_ignored() {
+        let s = store("classic-layout");
+        std::fs::create_dir_all(s.dir()).unwrap();
+        std::fs::write(
+            s.dir().join(SETTINGS_FILE),
+            "(volume: 0.5, show_eq: true, show_crates: true, show_playlist: false, \
+             playlist_maximized: true, playlist_rows: 20, playlist_width: 700, vis: Scope, \
+             window_pos: Some((10.0, 20.0)))",
+        )
+        .unwrap();
         let old = s.load_settings();
-        assert!(
-            old.show_eq && !old.show_crates,
-            "an older file keeps its EQ"
-        );
+        assert_eq!(old.volume, 0.5, "the file loads");
+        assert!(old.show_eq, "an older EQ section opens the EQ window");
     }
 
     #[test]
@@ -367,18 +320,14 @@ mod tests {
         let s = Settings {
             scale: 9,
             volume: 3.0,
-            playlist_rows: 0,
-            playlist_width: 10,
             ..Default::default()
         }
         .sanitized();
-        assert_eq!((s.scale, s.volume, s.playlist_rows), (3, 1.0, 4));
-        assert_eq!(s.playlist_width, MIN_PLAYLIST_WIDTH);
+        assert_eq!((s.scale, s.volume), (3, 1.0));
     }
 
     #[test]
     fn cycles() {
         assert_eq!(Repeat::Off.cycle().cycle().cycle(), Repeat::Off);
-        assert_eq!(VisMode::Spectrum.cycle(), VisMode::Scope);
     }
 }

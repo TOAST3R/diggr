@@ -303,7 +303,7 @@ fn grouping_is_remembered_per_crate() {
 #[test]
 fn grouped_has_no_column_header_and_record_rows_show_their_styles() {
     let (mut rig, _) = records_rig("group-header", &[1, 1, 2]);
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     let out = rig.frame(Vec::new());
     assert!(
         shows(&out, "Cat#"),
@@ -351,7 +351,7 @@ fn a_record_row_names_the_record_artist() {
 #[test]
 fn the_sidebar_counts_records_grouped_or_flat() {
     let (mut rig, _) = records_rig("group-count", &[1, 1, 1, 2, 2, 3]);
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     let count_of = |out: &egui::FullOutput| {
         // The Playlist crate's count, on its sidebar row.
         let name = texts(out)

@@ -630,7 +630,7 @@ fn an_empty_crate_links_the_stores_and_the_extension() {
     let c = rig.app.crates.create("asdf").unwrap();
     rig.app.show_crate(c);
     // Tall enough for the stores.
-    rig.app.settings.playlist_rows = 20;
+    rig.set_rows(20);
     let at = hint_link(&mut rig, "BANDCAMP").expect("the Bandcamp link");
     rig.click(at.center());
     assert_eq!(
@@ -648,6 +648,6 @@ fn a_short_empty_crate_keeps_the_four_lines() {
     let (mut rig, _) = rig("hint-short");
     let c = rig.app.crates.create("asdf").unwrap();
     rig.app.show_crate(c);
-    rig.app.settings.playlist_rows = 4;
+    rig.set_rows(4);
     assert!(hint_link(&mut rig, "BANDCAMP").is_none(), "no store links");
 }

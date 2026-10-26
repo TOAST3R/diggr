@@ -73,11 +73,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "W",
-                "show / hide the waveform (also the WAVE button, or × on its title bar)",
+                "show / hide the waveform (also the mini player's waveform button)",
             ),
             (
                 "S",
-                "spectrogram window (also in Options: right-click the main window)",
+                "spectrogram window (also the mini player's spectrum button, or Options)",
             ),
             ("H or F1", "this help"),
             (
@@ -90,10 +90,6 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Enter", "play the entry under the cursor"),
             ("P", "show the playing entry"),
-            (
-                "Shift+P",
-                "maximize the playlist under a mini player (again: restore)",
-            ),
             (
                 "Right / Left (playlist focused, grouped)",
                 "open / close the record under the cursor",
@@ -142,7 +138,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "crate menu when no sidebar shows (switch, new, rename, delete) / move the window",
             ),
             (
-                "Crate sidebar (playlist 600 px wide or maximized)",
+                "Crate sidebar (playlist 600 px wide)",
                 "click a crate to show it (then Delete deletes it), right-click or Control-click \
                  to rename or delete (Playlist: clear), drop entries on it to send them; your \
                  Discogs collection is pinned at the bottom",
@@ -199,8 +195,12 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                  (☰ › Filter by… at any width) / turn that filter off",
             ),
             (
-                "Main window: right-click",
+                "Mini player: right-click",
                 "Options: size, spectrogram, Discogs…, Browser…",
+            ),
+            (
+                "Mini player's EQ button",
+                "the equalizer, in its own window",
             ),
             (
                 "EQ's LP knob: drag down / double-click",
@@ -339,13 +339,12 @@ mod tests {
             "I",
             "Tab",
             "P",
-            "Shift+P",
             "Right / Left (playlist focused, grouped)",
             "Shift+Up / Shift+Down",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }
-        for k in ["F", "F or Esc", "T", "A", "D", "K", "X"] {
+        for k in ["F", "F or Esc", "T", "A", "D", "K", "X", "Shift+P"] {
             assert!(!keys.contains(&k), "help still lists {k}");
         }
         assert_eq!(GROUPS[0].1[0], ("Space", "play / pause"), "Space leads");

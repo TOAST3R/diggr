@@ -51,6 +51,15 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Changed
 
+- **Full screen, one layout.** Diggr opens full screen: the mini player, the turntable and the
+  waveform share a band across the top, and the playlist, with its crate sidebar, fills the rest.
+  The classic side-by-side window, its ⇔ button and Shift+P are gone.
+- **Everything in the mini player.** Shuffle and repeat sit beside the volume. Three icons at the
+  end of its LCD line open the equalizer, in a window of its own that stays on top, show or hide
+  the waveform, and open the spectrogram. Its title line flashes WANTED or PASS after a verdict,
+  minimize and close sit in the band's top-right corner, and a seek bar takes the waveform's
+  place while it's off. The little spectrum, the bitrate readout and the CRATES panel are gone:
+  the spectrogram and the crate sidebar do their jobs.
 - **A quicker Narrow down.** Price, condition and ships-from are gone, so the dialog never waits
   for pages of listings. Each copy still shows its price, condition and country; a seller you
   narrowed by them keeps its other choices.

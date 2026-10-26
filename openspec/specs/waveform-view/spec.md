@@ -4,27 +4,23 @@
 TBD - created by archiving change waveform-navigation. Update Purpose after archive.
 ## Requirements
 ### Requirement: Waveform section
-The player SHALL offer a waveform section under the main window, in the player column, toggled with `W` or the main window's waveform button and remembered across launches, showing a whole-track overview row and a zoomed row centered on the playhead. In the player column, the section SHALL have a title bar like the equalizer's, reading "DIGGR WAVEFORM", that drags the window and has a close button that hides the waveform like `W`. While the playlist is maximized, the section SHALL be drawn in the top band, to the right of the mini player (see `playlist` "Maximized playlist") and across the rest of the window's width, with the same rows, seeking and zoom, and without the title bar.
+The band (see `player-window` "Full-screen window") SHALL show the waveform to the right of the mini player (and of the turntable while SYNC is on), across the rest of the band's width up to the window buttons, with a whole-track overview row and a zoomed row centered on the playhead, and no title bar. It SHALL be toggled with `W` or the mini player's waveform button and remembered across launches. While it is hidden, the band SHALL show a thin seek bar in its place, which seeks on release like the waveform's overview row; the band's height and the playlist's rows SHALL NOT change.
 
 #### Scenario: Toggle
 - **WHEN** the user presses W
-- **THEN** the waveform section appears under the main window, and pressing W again hides it
+- **THEN** the waveform hides and a seek bar takes its place in the band, and pressing W again brings the waveform back
 
 #### Scenario: Toggle with the button
-- **WHEN** the user clicks the waveform button in the main window
-- **THEN** the waveform section appears or hides, exactly as with W
-
-#### Scenario: Title bar
-- **WHEN** the waveform is on and the playlist is not maximized
-- **THEN** a 14-pixel title bar reading "DIGGR WAVEFORM", with groove lines, sits between the main window and the waveform, and the player column is 14 pixels taller
-
-#### Scenario: Close from the title bar
-- **WHEN** the user clicks the waveform title bar's close button
-- **THEN** the waveform section hides, exactly as with W
+- **WHEN** the user clicks the mini player's waveform button
+- **THEN** the waveform hides or shows, exactly as with W
 
 #### Scenario: Beside the mini player
-- **WHEN** the playlist is maximized in a window 1000 skin pixels wide and the waveform is on
-- **THEN** the overview row starts right of the 275-pixel mini player and spans the remaining 725 pixels, and clicking in it seeks
+- **WHEN** the window is 1000 skin pixels wide, SYNC is off and the waveform is on
+- **THEN** the overview row starts right of the 275-pixel mini player and ends before the window buttons, and clicking in it seeks
+
+#### Scenario: Seek bar while hidden
+- **WHEN** the waveform is hidden and the user drags the band's seek bar and releases at 75%
+- **THEN** the Engine seeks to 75% of the track, and the playlist keeps the same rows
 
 ### Requirement: Frequency colouring
 The waveform SHALL colour each column by its low/mid/high energy, with bass towards red, mids towards green, and highs towards blue.

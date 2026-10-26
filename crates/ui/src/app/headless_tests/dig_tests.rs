@@ -294,7 +294,6 @@ fn play_mode_adds_to_the_crate_on_screen_and_plays_the_first_track_it_added() {
 fn a_send_that_creates_a_crate_shows_it_and_one_to_an_existing_crate_does_not() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-new-crate-shown", &fakes, |_| {});
-    rig.app.settings.show_playlist = false;
     rig.app.dig_send(
         url::parse(RELEASE).unwrap(),
         SendMode::Crate("Friday".into()),
@@ -306,7 +305,6 @@ fn a_send_that_creates_a_crate_shows_it_and_one_to_an_existing_crate_does_not() 
         friday,
         "the new crate is on screen"
     );
-    assert!(rig.app.settings.show_playlist, "with the playlist open");
     // Sending again to it, while another crate is shown, leaves the view alone.
     rig.app.show_crate(PLAYLIST);
     rig.app.dig_send(
@@ -1246,6 +1244,8 @@ fn owned_records_are_marked_and_cannot_be_wanted() {
     let fakes = Fakes::new();
     owns_the_release(&fakes);
     let mut rig = rig("dig-owned", &fakes, with_token);
+    // Room for the Discogs dialog, still without columns or the sidebar.
+    rig.screen.x = 479.0;
     play_release(&mut rig);
     rig.until(
         |r| r.app.dig.as_ref().is_some_and(|d| d.collection.is_some()),
@@ -2216,7 +2216,7 @@ fn a_label_crates_menu_is_delete_export_refresh() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-label-menu", &fakes, |_| {});
     followed_label(&mut rig);
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     rig.frame(Vec::new());
     let at = {
@@ -2439,7 +2439,7 @@ fn a_label_crates_menu_offers_download_then_stop() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-label-dl-menu", &fakes, |_| {});
     let c = followed_label(&mut rig);
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Labels);
     let open_menu = |rig: &mut Rig| {
         rig.frame(Vec::new());
@@ -3031,7 +3031,7 @@ fn refresh_collection_brings_the_crate_in_line_with_discogs() {
         "the crate, and a first sync",
     );
     // Wide enough for the sidebar: right-click the crate there.
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     let out = rig.frame(Vec::new());
     rig.click_with(
         text_at(&out, "Collection: digger"),
@@ -3481,7 +3481,7 @@ fn a_digital_only_record_stays_marked_as_a_file() {
     rig.app.show_crate(c);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "FILE"), "{:?}", text_list(&out));
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Format"), "{:?}", text_list(&out));
 }
@@ -4167,7 +4167,7 @@ fn the_vinyl_release_takes_over_a_track_found_for_its_twin() {
 /// `source`, and the fake fetcher answers only for it once it is installed.
 fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig {
     let (f, source) = (fakes.clone(), source.clone());
-    Rig::with_dig(
+    let mut rig = Rig::with_dig(
         name,
         Vec::new(),
         |_| {},
@@ -4181,7 +4181,10 @@ fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig
             setup.tools = Some(source.clone() as Arc<dyn ToolSource>);
             Some(setup)
         },
-    )
+    );
+    // Room for the download question, still without columns or the sidebar.
+    rig.screen.x = 479.0;
+    rig
 }
 
 const YTDLP_SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";

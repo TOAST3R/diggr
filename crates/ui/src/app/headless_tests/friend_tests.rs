@@ -102,7 +102,7 @@ fn rig(name: &str, fakes: &Fakes, tracks: Vec<PathBuf>, prepare: impl FnOnce(&St
     let f = fakes.clone();
     let mut rig = Rig::with_dig(name, tracks, prepare, move |dir| Some(f.setup(dir)));
     // Wide enough for the sidebar.
-    rig.app.settings.playlist_width = 700;
+    rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Friends);
     rig
 }

@@ -370,10 +370,6 @@ impl DiggrApp {
                 }
                 if created {
                     self.show_crate(id);
-                    if !self.settings.show_playlist {
-                        self.settings.show_playlist = true;
-                        self.mark_settings();
-                    }
                 }
                 Some(id)
             }

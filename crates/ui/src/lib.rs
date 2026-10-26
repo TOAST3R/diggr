@@ -17,7 +17,6 @@ pub mod records;
 pub mod settings;
 pub mod skin;
 pub mod spectrogram;
-pub mod spectrum;
 pub mod sync;
 pub mod waveform;
 pub mod widgets;

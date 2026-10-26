@@ -148,19 +148,19 @@ Each entry SHALL carry its tempo once any analysis of its audio is known: from t
 - **THEN** its entry shows no BPM until its whole file is analyzed
 
 ### Requirement: Playlist placement and size
-The playlist SHALL be drawn to the right of the player column (main, waveform and EQ sections) in the same window. Its corner handle SHALL resize it freely in width, from the skin's playlist width (275 points at 1×) upwards, and in whole rows in height, never shorter than the player column. Its width and rows SHALL be remembered across launches. Hiding the playlist SHALL shrink the window to the player column. A restored width SHALL be reduced if the window wouldn't fit on its monitor. Resizing SHALL NOT affect playback.
+The playlist SHALL be drawn under the band (see `player-window` "Full-screen window") at the window's full width, its rows filling the height left, with columns when it is wide enough. Its width and rows SHALL follow the window; it SHALL have no resize handle and SHALL always be shown (there is no playlist toggle). Resizing the window SHALL NOT affect playback.
 
-#### Scenario: Widen
-- **WHEN** the user drags the playlist's corner handle 300 points to the right
-- **THEN** the playlist is 300 points wider, long names show in full where they fit, and the player column keeps its size
+#### Scenario: Fills the window
+- **WHEN** the window is 1100 × 600 skin pixels and SYNC is off
+- **THEN** the playlist is 1100 skin pixels wide and its rows fill the 542 pixels under the 58-pixel band
 
-#### Scenario: Remembered size
-- **WHEN** the playlist is resized to 700 × 30 rows and the app is restarted
-- **THEN** it opens at 700 points wide with 30 rows
+#### Scenario: Follows the window
+- **WHEN** the operating system restores the window to 800 × 500 skin pixels
+- **THEN** the playlist is 800 skin pixels wide, with fewer rows, and the shown crate and playback are unchanged
 
-#### Scenario: Hidden playlist
-- **WHEN** the user hides the playlist
-- **THEN** the window is exactly as wide as the player column
+#### Scenario: Always shown
+- **WHEN** the app starts with a `settings.ron` holding `show_playlist: false`
+- **THEN** the playlist is shown
 
 ### Requirement: Keyboard navigation
 While the playlist has focus it SHALL show a keyboard cursor, drawn as an outline distinct from the selection highlight. The keys SHALL work as follows:
@@ -266,52 +266,6 @@ When the clicked entry is selected, Remove, Send to crate, Add to wantlist, Remo
 - **WHEN** the user right-clicks any entry, in any crate
 - **THEN** the menu offers no Render show item
 
-### Requirement: Maximized playlist
-A toggle SHALL maximize the playlist: the ⇔ button in the playlist's title bar, or Shift+P. The title bar SHALL hold, from the right: the close button, ⇔, and the ▤ button that groups the shown crate by record (see `record-view`), all at the classic 275 skin pixel width. While maximized:
-- the window SHALL fill the screen's usable area (below the menu bar), as the operating system maximizes it;
-- a band as tall as the waveform section (58 skin pixels) SHALL run across the top of the window. On its left, at the main window's width (275 skin pixels), it SHALL hold a mini player showing the play state, the elapsed time, the playing entry's title, previous, play, pause, stop and next as in the main transport (the button of the play state lit, see `player-window`), a volume slider, the SYNC button (lit while SYNC is on, acting as the main window's) and the ⇔ button. While SYNC is on, its turntable SHALL sit right of the mini player, at the same 275-pixel width, and the band SHALL grow to the turntable's height (104 skin pixels), the playlist's rows following. The waveform SHALL fill the rest of the band when it is on (see `waveform-view`); when it is off, the rest SHALL be skin panel. The band SHALL be shown whether the waveform is on or off;
-- the player SHALL NOT be drawn as a strip on the left;
-- the playlist SHALL take the full window width under the band, its width and rows following the window, with columns when it is wide enough;
-- the EQ SHALL be hidden, and the keyboard SHALL go to the playlist.
-
-Toggling again SHALL restore the previous window frame, layout, playlist width and rows exactly. When the playlist is hidden, the toggle SHALL show it first. The mode SHALL be remembered across launches, and a launch in this mode SHALL stay within the 300 ms launch target. Entering or leaving the mode SHALL NOT affect playback.
-
-#### Scenario: Maximize
-- **WHEN** the window is 1100 × 580 points at 2× on a 1440 × 900 display, and the user presses Shift+P
-- **THEN** the window fills the area below the menu bar, the mini player is at the top left, the waveform at the top right, and the playlist fills the full width under them, with columns
-
-#### Scenario: Restore
-- **WHEN** the user clicks ⇔ while maximized
-- **THEN** the window returns to 1100 × 580 points at its previous position, with the player column and the playlist at their previous width and rows
-
-#### Scenario: Mini player controls
-- **WHEN** the playlist is maximized and the user clicks next in the mini player
-- **THEN** the next track starts, exactly as with B
-
-#### Scenario: Mini player pause and SYNC
-- **WHEN** the playlist is maximized, a track is playing, and the user clicks the mini player's pause, then its play, then its SYNC
-- **THEN** playback pauses with pause lit, resumes with play lit, and SYNC turns on as with the main window's SYNC button
-
-#### Scenario: SYNC turntable in the band
-- **WHEN** the playlist is maximized and the user turns SYNC on
-- **THEN** the turntable appears between the mini player and the waveform, the band is 104 skin pixels tall and the playlist has fewer rows; turning SYNC off gives the rows back
-
-#### Scenario: Waveform off
-- **WHEN** the playlist is maximized and the waveform is hidden with W
-- **THEN** the mini player is still shown at the top left, the rest of the band is skin panel, and the playlist keeps the same rows
-
-#### Scenario: Playlist width
-- **WHEN** the playlist is maximized in a window 1100 skin pixels wide
-- **THEN** the playlist is 1100 skin pixels wide, and its rows fill the height under the 58-pixel band
-
-#### Scenario: Remembered
-- **WHEN** the app is quit while maximized and launched again
-- **THEN** its first frame is already maximized, within 300 ms of launch
-
-#### Scenario: Title bar buttons
-- **WHEN** the playlist is shown at 275 skin pixels wide
-- **THEN** its title bar shows ▤, ⇔ and the close button at its right end, and the crate name is shortened to fit before them
-
 ### Requirement: Trackpad scrolling
 Scrolling the playlist SHALL add up partial scroll steps, so that slow two-finger trackpad scrolling, and its momentum, move the list one row per row-height of scrolling. Scrolling SHALL work anywhere over the list, entries included. Leftover partial steps SHALL be dropped when the pointer leaves the list or scrolling pushes past its top or bottom.
 
@@ -356,7 +310,7 @@ When the shown crate has no entries and is not a Discogs crate (wantlist or coll
 - "WITH THE BROWSER EXTENSION", then **Juno**, **Bleep**, **Beatport** and **Traxsource**, then **Set up the extension**;
 - after a gap, "OR DROP FILES · PRESS H FOR HELP".
 
-Each store name SHALL be drawn in the store's brand colour, with at least 3:1 contrast against the playlist background, and SHALL open the store's home page in the default browser when clicked. **Set up the extension** SHALL open the Browser dialog (Options ▸ Browser…). When the list area is too short for these lines, the hint SHALL show "PASTE A DISCOGS OR BANDCAMP LINK", "CMD+V · OR DROP FILES", a gap and "PRESS H FOR HELP" instead. It SHALL show in the normal and maximized layouts, SHALL NOT move, and SHALL go away as soon as the crate has an entry.
+Each store name SHALL be drawn in the store's brand colour, with at least 3:1 contrast against the playlist background, and SHALL open the store's home page in the default browser when clicked. **Set up the extension** SHALL open the Browser dialog (Options ▸ Browser…). When the list area is too short for these lines, the hint SHALL show "PASTE A DISCOGS OR BANDCAMP LINK", "CMD+V · OR DROP FILES", a gap and "PRESS H FOR HELP" instead. It SHALL NOT move, and SHALL go away as soon as the crate has an entry.
 
 #### Scenario: New crate
 - **WHEN** the user creates the crate "asdf" on macOS, the list is tall enough, and it is shown
@@ -373,10 +327,6 @@ Each store name SHALL be drawn in the store's brand colour, with at least 3:1 co
 #### Scenario: Short list
 - **WHEN** the playlist shows only 4 rows and the shown crate is empty
 - **THEN** the hint shows the four short lines
-
-#### Scenario: Maximized
-- **WHEN** the playlist is maximized and the shown crate is empty
-- **THEN** the hint shows in the middle of the list
 
 #### Scenario: Filled
 - **WHEN** a Discogs link is pasted into the empty crate and its first entry arrives
@@ -418,4 +368,11 @@ Each item SHALL act as the same item did in the footer's `≡` menu. A separator
 #### Scenario: Nothing in any cart
 - **WHEN** a label crate is shown and every cart is empty
 - **THEN** the list menu offers no Open cart item
+
+### Requirement: Title bar buttons
+The playlist's title bar SHALL hold, at its right end, the ▤ button that groups the shown crate by record (see `record-view`). It SHALL have no close button and no button that maximizes or restores the playlist.
+
+#### Scenario: Title bar buttons
+- **WHEN** the playlist is shown
+- **THEN** its title bar shows ▤ at its right end, and no close or maximize button
 

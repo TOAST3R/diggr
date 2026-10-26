@@ -958,10 +958,6 @@ impl DiggrApp {
         let e = d.save_sellers();
         self.dig_notify(e);
         self.show_crate(id);
-        if !self.settings.show_playlist {
-            self.settings.show_playlist = true;
-            self.mark_settings();
-        }
         let mut dialog = self.new_dig_dialog(id, &username, Criteria::default());
         let Some(d) = &mut self.dig else { return };
         dialog.counted = Some((String::new(), Ok(total)));
