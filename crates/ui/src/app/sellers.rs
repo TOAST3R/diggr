@@ -22,9 +22,6 @@ pub use crate::format::thousands;
 use crate::playlist::Facet;
 use crate::playlist::SaleCopy;
 
-/// The user's cart on discogs.com.
-pub const CART_PAGE: &str = "https://www.discogs.com/sell/cart";
-
 /// Typing waits this long before the search text is counted or a name looked up.
 pub const TYPING_PAUSE: Duration = Duration::from_millis(500);
 
@@ -275,8 +272,8 @@ pub enum SellerAction {
     CartAdd(Vec<u64>),
     /// Take a copy out of the cart.
     CartRemove(u64),
-    /// The cart on discogs.com, to pay.
-    OpenCart,
+    /// A cart to pay at: discogs.com's (`CART_PAGE`) or a store's basket page.
+    OpenCart(&'static str),
 }
 
 /// A seller crate as the sidebar shows it.
@@ -397,9 +394,9 @@ impl DiggrApp {
                     self.notify(format!("Couldn't open the browser: {e}"));
                 }
             }
-            SellerAction::OpenCart => {
+            SellerAction::OpenCart(page) => {
                 let Some(d) = &self.dig else { return };
-                if let Err(e) = d.open_url(CART_PAGE) {
+                if let Err(e) = d.open_url(page) {
                     self.notify(format!("Couldn't open the browser: {e}"));
                 }
             }

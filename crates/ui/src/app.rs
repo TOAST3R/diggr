@@ -1197,6 +1197,32 @@ impl DiggrApp {
         }
     }
 
+    /// Shown in the collection crate, or sent from a collection page: owned, whatever the
+    /// synced collection says (and even without a token).
+    fn in_collection_view(&self, e: &crate::playlist::Entry) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        let from_collection = e.origin.as_ref().is_some_and(|o| {
+            ::dig::discogs::url::parse(&o.page)
+                .is_ok_and(|p| matches!(p.kind, ::dig::discogs::url::PageKind::Collection(_)))
+        });
+        #[cfg(target_arch = "wasm32")]
+        let from_collection = {
+            let _ = e;
+            false
+        };
+        from_collection || self.crates.is_collection(self.crates.shown_id())
+    }
+
+    /// Whether the user owns the entry's record, and which pressing ("this pressing",
+    /// "another pressing (AF001R, 2019)", or "" in the collection view). Unlike the OWNED
+    /// badge, this holds in the collection crate too: it decides whether a row may buy.
+    fn owns(&self, e: &crate::playlist::Entry) -> Option<String> {
+        if self.in_collection_view(e) {
+            return Some(String::new());
+        }
+        self.dig_owned(e)
+    }
+
     /// An entry's dig marks in the shown crate. In the collection's own crate (or entries
     /// sent from the collection page) everything is owned, so no OWNED badge there.
     fn dig_marks(&self, e: &crate::playlist::Entry) -> format::DigMarks {
@@ -1206,11 +1232,7 @@ impl DiggrApp {
                 return format::DigMarks::default();
             };
             let m = d.marks(e);
-            let from_collection = e.origin.as_ref().is_some_and(|o| {
-                ::dig::discogs::url::parse(&o.page)
-                    .is_ok_and(|p| matches!(p.kind, ::dig::discogs::url::PageKind::Collection(_)))
-            });
-            let badge = !from_collection && !self.crates.is_collection(self.crates.shown_id());
+            let badge = !self.in_collection_view(e);
             format::DigMarks {
                 wanted: m.wanted,
                 passed: m.passed,
@@ -4222,14 +4244,38 @@ impl DiggrApp {
             ui.close();
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.crates.seller_of(self.crates.shown_id()).is_some()
-            && ui.button("Open cart on discogs.com").clicked()
-        {
-            actions.push(Action::Dig(DigAction::Seller(
-                crate::app::sellers::SellerAction::OpenCart,
-            )));
-            ui.close();
+        for page in self.cart_pages() {
+            if ui
+                .button(format!("Open cart on {}", site_of(page)))
+                .clicked()
+            {
+                actions.push(Action::Dig(DigAction::Seller(
+                    crate::app::sellers::SellerAction::OpenCart(page),
+                )));
+                ui.close();
+            }
         }
+    }
+
+    /// The carts the list menu opens: Discogs' in a seller crate or while it holds a copy,
+    /// and each store basket that holds an item.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn cart_pages(&self) -> Vec<&'static str> {
+        use ::dig::stores::Store;
+        let Some(d) = &self.dig else {
+            return Vec::new();
+        };
+        let mut pages = Vec::new();
+        if self.crates.seller_of(self.crates.shown_id()).is_some() || !d.cart.items.is_empty() {
+            pages.push(CART_PAGE);
+        }
+        let carts = &d.stores.carts;
+        for (store, basket) in [(Store::Juno, &carts.juno), (Store::Bleep, &carts.bleep)] {
+            if !basket.is_empty() {
+                pages.extend(::dig::carts::cart_page(store));
+            }
+        }
+        pages
     }
 
     /// The entry menu's filter shortcuts: keep only this record's artist, label or a style,
@@ -4303,16 +4349,18 @@ impl DiggrApp {
         ui: &mut Ui,
         clip: &egui::Painter,
         rr: Rect,
-        listing: u64,
+        (listing, first): (u64, usize),
         font: &egui::FontId,
         colors: &crate::skin::Colors,
         scale: f32,
         actions: &mut Vec<Action>,
     ) {
-        let Some(c) = self.crates.shown().copy(listing) else {
+        let shown = self.crates.shown();
+        let Some(c) = shown.copy(listing) else {
             return;
         };
         let in_cart = self.copy_in_cart(listing);
+        let owned = shown.entries().get(first).and_then(|e| self.owns(e));
         let col = if c.sold {
             lerp_color(colors.pl_text, colors.pl_bg, 0.5)
         } else {
@@ -4320,18 +4368,24 @@ impl DiggrApp {
         };
         let row_clip = clip.with_clip_rect(rr);
         let at = pos2(rr.left() + 3.0 * scale, rr.center().y);
-        // An unsold copy carries its cart pill; a sold one only SOLD.
-        let pill = (!c.sold).then(|| Pill {
+        // An unsold copy carries its cart pill (a record the user owns only to take it out
+        // of the cart); a sold one only SOLD.
+        let pill = (!c.sold && (in_cart || owned.is_none())).then(|| Pill {
             in_cart,
             pointer: self.pill_pointer(ui, rr),
         });
         let marks = Badges {
+            slot: false,
             owned: false,
             cart: false,
             sold: c.sold,
             pill,
+            checkout: checkout_page(pill, false, None).map(|page| Checkout {
+                page,
+                pointer: self.pill_pointer(ui, rr),
+            }),
         };
-        let (w, pill_rect) = entry_badges(&row_clip, at, marks, None, font, colors, scale);
+        let (w, hits) = entry_badges(&row_clip, at, marks, None, font, colors, scale);
         row_clip.text(
             at + vec2(w, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -4372,8 +4426,11 @@ impl DiggrApp {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = resp;
-        if let Some(rect) = pill_rect {
-            self.cart_pill_click(ui, rect, rr, c, in_cart, actions);
+        if let Some(rect) = hits.pill {
+            self.cart_pill_click(ui, rect, rr, c, in_cart, owned.as_deref(), actions);
+        }
+        if let (Some(rect), Some(k)) = (hits.checkout, marks.checkout) {
+            self.checkout_click(ui, rect, rr, k.page, listing, actions);
         }
     }
 
@@ -4420,10 +4477,15 @@ impl DiggrApp {
         let _ = (resp, actions);
     }
 
-    /// A store entry's cart pill.
+    /// A store entry's cart pill; in a cart and owned, its tooltip says it is owned first.
     fn store_pill(&self, e: &crate::playlist::Entry) -> Option<StorePill> {
         #[cfg(not(target_arch = "wasm32"))]
-        return DiggrApp::store_pill_of(self, e);
+        return DiggrApp::store_pill_of(self, e).map(|mut p| {
+            if let Some(o) = self.owns(e).filter(|_| p.in_cart) {
+                p.tip = format::owned_warning(&o) + &p.tip;
+            }
+            p
+        });
         #[cfg(target_arch = "wasm32")]
         {
             let _ = e;
@@ -4483,7 +4545,8 @@ impl DiggrApp {
 
     /// A cart pill's click over the band `rr` of its row, registered after the row's so it
     /// takes its own clicks (the row isn't selected, played or opened): + CART adds the copy,
-    /// IN CART takes it out.
+    /// IN CART takes it out. `owned`: which pressing the user owns (see `owns`).
+    #[allow(clippy::too_many_arguments)]
     fn cart_pill_click(
         &self,
         ui: &mut Ui,
@@ -4491,6 +4554,7 @@ impl DiggrApp {
         rr: Rect,
         copy: &crate::playlist::SaleCopy,
         in_cart: bool,
+        owned: Option<&str>,
         actions: &mut Vec<Action>,
     ) {
         let hit = Rect::from_x_y_ranges(pill.x_range(), rr.y_range());
@@ -4500,7 +4564,10 @@ impl DiggrApp {
             copy.grades
         );
         let tip = if in_cart {
-            format!("Remove {what} from your cart")
+            format!(
+                "{}Remove {what} from your cart",
+                owned.map(format::owned_warning).unwrap_or_default()
+            )
         } else {
             format!("Add {what} to your cart")
         };
@@ -4516,6 +4583,31 @@ impl DiggrApp {
             } else {
                 SellerAction::CartAdd(vec![copy.listing])
             })));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (resp, actions);
+    }
+
+    /// The » pill's click over the band `rr` of its row, registered after the row's as the
+    /// cart pill's is: opens the cart `page` to pay there.
+    fn checkout_click(
+        &self,
+        ui: &mut Ui,
+        pill: Rect,
+        rr: Rect,
+        page: &'static str,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        actions: &mut Vec<Action>,
+    ) {
+        let hit = Rect::from_x_y_ranges(pill.x_range(), rr.y_range());
+        let resp = ui
+            .interact(hit, Id::new(("pl_checkout", salt)), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("Check out on {}", site_of(page)));
+        #[cfg(not(target_arch = "wasm32"))]
+        if resp.clicked() {
+            use crate::app::sellers::SellerAction;
+            actions.push(Action::Dig(DigAction::Seller(SellerAction::OpenCart(page))));
         }
         #[cfg(target_arch = "wasm32")]
         let _ = (resp, actions);
@@ -4658,23 +4750,34 @@ impl DiggrApp {
             .then(|| self.store_pill(first))
             .flatten()
             .filter(|p| !(p.buy && marks.cart.is_some()));
+        // A record the user owns keeps a pill only to take it out of a cart.
+        let owned = self.owns(first);
+        let pill = lone
+            .map(|(_, in_cart)| in_cart)
+            .or(several.then_some(marks.cart.is_some()))
+            .or(store_pill.as_ref().map(|p| p.in_cart))
+            .filter(|&in_cart| in_cart || owned.is_none())
+            .map(|in_cart| Pill {
+                in_cart,
+                // It only opens the record: no REMOVE on hover.
+                pointer: self
+                    .pill_pointer(ui, band)
+                    .filter(|_| !(several && in_cart)),
+            });
         let badges = Badges {
+            slot: false,
             owned: marks.owned.is_some(),
             cart: marks.cart.is_some(),
             sold: all_sold || store_pill.as_ref().is_some_and(|p| p.sold),
-            pill: lone
-                .map(|(_, in_cart)| in_cart)
-                .or(several.then_some(marks.cart.is_some()))
-                .or(store_pill.as_ref().map(|p| p.in_cart))
-                .map(|in_cart| Pill {
-                    in_cart,
-                    // It only opens the record: no REMOVE on hover.
-                    pointer: self
-                        .pill_pointer(ui, band)
-                        .filter(|_| !(several && in_cart)),
-                }),
+            pill,
+            checkout: checkout_page(pill, marks.cart.is_some(), store_pill.as_ref()).map(|page| {
+                Checkout {
+                    page,
+                    pointer: self.pill_pointer(ui, band),
+                }
+            }),
         };
-        let (w, pill_rect) = entry_badges(
+        let (w, hits) = entry_badges(
             &text_clip,
             at,
             badges,
@@ -4684,13 +4787,16 @@ impl DiggrApp {
             scale,
         );
         at.x += w;
-        if let (Some(rect), Some((c, in_cart))) = (pill_rect, lone) {
-            self.cart_pill_click(ui, rect, band, c, in_cart, actions);
+        if let (Some(rect), Some((c, in_cart))) = (hits.pill, lone) {
+            self.cart_pill_click(ui, rect, band, c, in_cart, owned.as_deref(), actions);
         }
-        if let (Some(rect), Some(p)) = (pill_rect, &store_pill) {
+        if let (Some(rect), Some(p)) = (hits.pill, &store_pill) {
             self.store_pill_click(ui, rect, band, first.id, p, actions);
         }
-        if let Some(rect) = pill_rect.filter(|_| several) {
+        if let (Some(rect), Some(k)) = (hits.checkout, badges.checkout) {
+            self.checkout_click(ui, rect, band, k.page, first.id, actions);
+        }
+        if let Some(rect) = hits.pill.filter(|_| several) {
             let hit = Rect::from_x_y_ranges(rect.x_range(), band.y_range());
             let tip = if rec.open {
                 "Its copies are listed below"
@@ -5213,7 +5319,22 @@ impl DiggrApp {
             let mut y = 0usize;
             // The record rows drawn, for their covers.
             let mut in_view: Vec<usize> = Vec::new();
-            for row in list_rows.iter().skip(self.pl_scroll) {
+            // The last list row in view, where a record's run of tracks is cut.
+            let last_in_view = {
+                let (mut y, mut last) = (0usize, self.pl_scroll);
+                for (i, row) in list_rows.iter().enumerate().skip(self.pl_scroll) {
+                    if y > 0 && y + row.units() > visible {
+                        break;
+                    }
+                    y += row.units();
+                    last = i;
+                }
+                last
+            };
+            // Each record's cart mark, drawn across its run: registered after every row, so
+            // the rows under it don't take its clicks.
+            let mut run_marks: Vec<RunMark> = Vec::new();
+            for (i, row) in list_rows.iter().enumerate().skip(self.pl_scroll) {
                 if y > 0 && y + row.units() > visible {
                     break;
                 }
@@ -5239,7 +5360,7 @@ impl DiggrApp {
                         );
                         continue;
                     }
-                    ListRow::Copy { listing, .. } => {
+                    ListRow::Copy { listing, first } => {
                         let indent = if columns {
                             0.0
                         } else {
@@ -5255,7 +5376,7 @@ impl DiggrApp {
                             ui,
                             &clip,
                             rr,
-                            *listing,
+                            (*listing, *first),
                             &font,
                             &d.colors,
                             scale,
@@ -5373,20 +5494,65 @@ impl DiggrApp {
                     ui.ctx().request_repaint_after(Duration::from_millis(50));
                 }
                 let owned = marks.owned.clone();
-                // Already in the Discogs cart: its CART badge says so, no buy pill.
+                // Already in the Discogs cart: its CART badge says so, no buy pill. A record
+                // the user owns keeps a pill only to take it out of a cart.
                 let store_pill = self
                     .store_pill(e)
-                    .filter(|p| !(p.buy && marks.cart.is_some()));
+                    .filter(|p| !(p.buy && marks.cart.is_some()))
+                    .filter(|p| p.in_cart || self.owns(e).is_none());
+                // One cart mark per record: its pill (or CART) and », centred on the part
+                // of its run of tracks in view, between lines; each track keeps the slot so
+                // the titles line up. An open record's tracks leave it to the record row.
+                let (first, last) = record_run(&list_rows, shown.entries(), i);
+                let (from, to) = (first.max(self.pl_scroll), last.min(last_in_view));
+                let band = sk.rect(
+                    l.x as f32 + indent,
+                    rows_top + (at_y + from - i) as f32 * row_h,
+                    l.w as f32 - indent,
+                    (to + 1 - from) as f32 * row_h,
+                );
+                if last > first {
+                    let line = lerp_color(d.colors.pl_text, d.colors.pl_bg, 0.7);
+                    for y in [
+                        (i == first).then_some(rr.top()),
+                        (i == last).then_some(rr.bottom()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        clip.rect_filled(
+                            Rect::from_x_y_ranges(rr.x_range(), y - scale / 2.0..=y + scale / 2.0),
+                            0.0,
+                            line,
+                        );
+                    }
+                }
+                let pill = store_pill.as_ref().filter(|_| !track).map(|p| Pill {
+                    in_cart: p.in_cart,
+                    pointer: self.pill_pointer(ui, band),
+                });
+                let mark = Badges {
+                    cart: pill.is_none() && marks.cart.is_some(),
+                    pill,
+                    checkout: checkout_page(pill, marks.cart.is_some(), store_pill.as_ref())
+                        .filter(|_| !track)
+                        .map(|page| Checkout {
+                            page,
+                            pointer: self.pill_pointer(ui, band),
+                        }),
+                    ..Default::default()
+                };
+                let slot = mark.pill.is_some() || mark.cart;
                 let badges = Badges {
                     owned: owned.is_some(),
-                    cart: marks.cart.is_some(),
+                    cart: marks.cart.is_some() && !slot,
                     sold: store_pill.as_ref().is_some_and(|p| p.sold),
-                    pill: store_pill.as_ref().map(|p| Pill {
-                        in_cart: p.in_cart,
-                        pointer: self.pill_pointer(ui, rr),
-                    }),
+                    slot,
+                    ..Default::default()
                 };
-                let mut pill_rect = None;
+                let mut hits = BadgeHits::default();
+                // Where the slot's cell is, to draw the mark across the run in it.
+                let mut slot_cell = rr;
                 if marks.passed {
                     let [r, g, b, _] = col.to_array();
                     col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
@@ -5458,7 +5624,8 @@ impl DiggrApp {
                                     &d.colors,
                                     scale,
                                 );
-                                pill_rect = r;
+                                hits = r;
+                                slot_cell = cell_clip.clip_rect();
                                 text_marked(
                                     &cell_clip,
                                     at + vec2(w, 0.0),
@@ -5527,7 +5694,8 @@ impl DiggrApp {
                             &d.colors,
                             scale,
                         );
-                        pill_rect = r;
+                        hits = r;
+                        slot_cell = name_clip.clip_rect();
                         text_marked(
                             &name_clip,
                             at + vec2(w, 0.0),
@@ -5549,10 +5717,20 @@ impl DiggrApp {
                         );
                     }
                 }
-                let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
-                if let (Some(rect), Some(p)) = (pill_rect, &store_pill) {
-                    self.store_pill_click(ui, rect, rr, e.id, p, &mut actions);
+                if let Some(x) = hits.slot.filter(|_| i == from) {
+                    let cell = Rect::from_x_y_ranges(slot_cell.x_range(), band.y_range());
+                    let painter = clip.with_clip_rect(cell.intersect(clip.clip_rect()));
+                    let at = pos2(x, band.center().y);
+                    let (_, h) = entry_badges(&painter, at, mark, None, &font, &d.colors, scale);
+                    run_marks.push(RunMark {
+                        hits: h,
+                        band,
+                        id: e.id,
+                        store_pill: store_pill.clone(),
+                        checkout: mark.checkout,
+                    });
                 }
+                let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
                     let mut details = format::entry_details(e, marks.clone(), unix_now());
@@ -5621,6 +5799,14 @@ impl DiggrApp {
                         0.0,
                         Color32::WHITE,
                     );
+                }
+            }
+            for m in &run_marks {
+                if let (Some(rect), Some(p)) = (m.hits.pill, &m.store_pill) {
+                    self.store_pill_click(ui, rect, m.band, m.id, p, &mut actions);
+                }
+                if let (Some(rect), Some(k)) = (m.hits.checkout, m.checkout) {
+                    self.checkout_click(ui, rect, m.band, k.page, m.id, &mut actions);
                 }
             }
             // Below the last row (all of an empty crate's list): the crate's own menu.
@@ -7090,6 +7276,56 @@ struct Badges {
     sold: bool,
     /// The cart pill of a seller crate's copy, drawn where CART would be (instead of it).
     pill: Option<Pill>,
+    /// Keep the cart slot (pill and ») blank: the record's mark is drawn across its run.
+    slot: bool,
+    /// The » pill after IN CART or CART, to the cart to pay at.
+    checkout: Option<Checkout>,
+}
+
+/// The » pill: the cart page it opens, and the pointer as for `Pill`.
+#[derive(Debug, Clone, Copy)]
+struct Checkout {
+    page: &'static str,
+    pointer: Option<Pos2>,
+}
+
+/// Where the badges' pills went, for their clicks.
+#[derive(Debug, Clone, Copy, Default)]
+struct BadgeHits {
+    pill: Option<Rect>,
+    checkout: Option<Rect>,
+    /// Where a blank cart slot starts.
+    slot: Option<f32>,
+}
+
+/// A record's cart mark drawn across its run of rows (`band`), whose clicks are registered
+/// after all the rows.
+struct RunMark {
+    hits: BadgeHits,
+    band: Rect,
+    id: EntryId,
+    store_pill: Option<StorePill>,
+    checkout: Option<Checkout>,
+}
+
+/// The cart a row's » opens: an IN CART pill's (a store's basket, else Discogs'), or the
+/// Discogs cart behind a CART badge. None for a row not in a cart.
+fn checkout_page(
+    pill: Option<Pill>,
+    cart_badge: bool,
+    store: Option<&StorePill>,
+) -> Option<&'static str> {
+    match pill {
+        Some(p) if p.in_cart => Some(store.and_then(|s| s.cart_page).unwrap_or(CART_PAGE)),
+        Some(_) => None,
+        None => cart_badge.then_some(CART_PAGE),
+    }
+}
+
+/// "discogs.com" for `https://www.discogs.com/sell/cart`.
+fn site_of(page: &str) -> &str {
+    let host = page.split('/').nth(2).unwrap_or(page);
+    host.strip_prefix("www.").unwrap_or(host)
 }
 
 /// A copy's cart pill: + CART, or IN CART that reads REMOVE while hovered.
@@ -7111,17 +7347,31 @@ pub(crate) struct StorePill {
     pub(crate) tip: String,
     /// A click buys where the record is known, or opens the Buy chooser.
     pub(crate) buy: bool,
+    /// The store's basket page, for » (only for the baskets the app can reach).
+    pub(crate) cart_page: Option<&'static str>,
 }
 
 impl Badges {
     fn any(self) -> bool {
-        self.owned || self.cart || self.sold || self.pill.is_some()
+        self.owned
+            || self.cart
+            || self.sold
+            || self.slot
+            || self.pill.is_some()
+            || self.checkout.is_some()
     }
 }
+
+/// The user's cart on discogs.com, where they pay (one checkout per seller).
+pub(crate) const CART_PAGE: &str = "https://www.discogs.com/sell/cart";
 
 /// CART's fill: apart from OWNED's amber, whatever the skin.
 const CART_FILL: [u8; 3] = [64, 196, 232];
 const SOLD_FILL: [u8; 3] = [196, 84, 84];
+
+/// The checkout pill's label: a word, since » alone says nothing until hovered (and the
+/// default fonts have no arrow glyph).
+const CHECKOUT_MARK: &str = "PAY »";
 
 /// The pill's labels; it is as wide as the widest, so hovering never moves the row's text.
 const PILL_LABELS: [&str; 3] = ["+ CART", "IN CART", "REMOVE"];
@@ -7144,8 +7394,39 @@ fn pill_text_width(painter: &egui::Painter, font: &egui::FontId) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// The width of a cart pill and its » slot, with the gaps after them.
+fn cart_slot_width(painter: &egui::Painter, font: &egui::FontId, scale: f32) -> f32 {
+    let pad = 2.5 * scale * 2.0;
+    let mark = painter
+        .layout_no_wrap(CHECKOUT_MARK.into(), badge_font(font), Color32::WHITE)
+        .size()
+        .x;
+    pill_text_width(painter, font) + pad + 3.0 * scale + mark + pad + 3.0 * scale
+}
+
+/// The list rows `first..=last` of row `i`'s run: the flat rows next to it of the same
+/// record. A row alone when it has no record, or is a track under its open record.
+fn record_run(rows: &[ListRow], entries: &[crate::playlist::Entry], i: usize) -> (usize, usize) {
+    let key = |j: usize| match rows.get(j) {
+        Some(ListRow::Entry { idx, track: false }) => entries.get(*idx)?.album_key(),
+        _ => None,
+    };
+    let Some(k) = key(i) else {
+        return (i, i);
+    };
+    let mut first = i;
+    while first > 0 && key(first - 1).as_ref() == Some(&k) {
+        first -= 1;
+    }
+    let mut last = i;
+    while key(last + 1).as_ref() == Some(&k) {
+        last += 1;
+    }
+    (first, last)
+}
+
 /// Draws the badges; returns their width with the gap after them (0 for none), and where the
-/// cart pill went, for its click.
+/// pills went, for their clicks.
 fn entry_badges(
     painter: &egui::Painter,
     at: Pos2,
@@ -7154,7 +7435,7 @@ fn entry_badges(
     font: &egui::FontId,
     colors: &crate::skin::Colors,
     scale: f32,
-) -> (f32, Option<Rect>) {
+) -> (f32, BadgeHits) {
     let small = badge_font(font);
     let pad = vec2(2.5 * scale, 0.5 * scale);
     let bg = color(colors.pl_bg);
@@ -7171,6 +7452,11 @@ fn entry_badges(
             bg,
             scale,
         );
+    }
+    let mut slot = None;
+    if marks.slot {
+        slot = Some(x);
+        x += cart_slot_width(painter, font, scale);
     }
     match marks.pill {
         Some(p) => {
@@ -7227,6 +7513,34 @@ fn entry_badges(
         }
         None => {}
     }
+    // A cart pill keeps the » slot after it, drawn or not, so a row going in or out of the
+    // cart never moves its text (and copy rows stay lined up).
+    let mut checkout_rect = None;
+    if marks.pill.is_some() || marks.checkout.is_some() {
+        let galley =
+            painter.layout_no_wrap(CHECKOUT_MARK.into(), small.clone(), Color32::PLACEHOLDER);
+        let rect = Rect::from_min_size(
+            pos2(x, at.y - galley.size().y / 2.0 - pad.y),
+            galley.size() + pad * 2.0,
+        );
+        if let Some(c) = marks.checkout {
+            let cart = color(CART_FILL);
+            let r = 2.0 * scale;
+            // Blue on black; hovered, the other way round.
+            let text = if c.pointer.is_some_and(|q| rect.x_range().contains(q.x)) {
+                painter.rect_filled(rect, r, cart);
+                bg
+            } else {
+                painter.rect_filled(rect, r, bg);
+                let stroke = egui::Stroke::new(scale, cart);
+                painter.rect_stroke(rect, r, stroke, egui::StrokeKind::Inside);
+                cart
+            };
+            painter.galley(rect.min + pad, galley, text);
+            checkout_rect = Some(rect);
+        }
+        x += rect.width() + 3.0 * scale;
+    }
     if marks.sold {
         x += badge(
             painter,
@@ -7243,7 +7557,14 @@ fn entry_badges(
         let fill = lerp_color(colors.pl_text, colors.pl_bg, 0.55);
         x += badge(painter, x, at.y, f, fill, &small, bg, scale);
     }
-    (x - at.x, pill_rect)
+    (
+        x - at.x,
+        BadgeHits {
+            pill: pill_rect,
+            checkout: checkout_rect,
+            slot,
+        },
+    )
 }
 
 /// An entry's source at the end of its row ("YT", "BC"), outlined, its right edge at `right`;
@@ -9013,7 +9334,11 @@ mod headless_tests {
                 egui::Shape::Text(t) => acc.push(Text {
                     text: t.galley.text().to_owned(),
                     rect: t.visual_bounding_rect(),
-                    color: t.galley.job.sections.first().map(|s| s.format.color),
+                    // As drawn: a placeholder colour takes the shape's fallback.
+                    color: t.galley.job.sections.first().map(|s| match s.format.color {
+                        Color32::PLACEHOLDER => t.fallback_color,
+                        c => c,
+                    }),
                 }),
                 egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
                 _ => {}

@@ -19,6 +19,14 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Improved
 
+- **Nothing to buy twice.** A record you already own, this pressing or another, no longer
+  offers + CART, in your collection or any other crate. If one is already in your cart, it
+  stays there for you to take out, and its tooltip says you own it.
+- **Straight to checkout.** Everything in a cart now has a PAY » button beside IN CART: click it to
+  open your Discogs cart, or your Juno or Bleep basket, and pay. Right-click any crate's list
+  to open a cart that holds something.
+- **One cart button per record.** In the list, a record's tracks share one + CART, centred
+  beside them, and a thin line sets each record apart from the next.
 - **Your wantlist and collection stay put.** Their menus no longer offer Rename crate or
   Delete crate, and Delete in the sidebar leaves them alone: they mirror your Discogs account.
 - **Dig a giant shop by style.** Narrow down now lets you pick a genre, a style, a format and a year,
