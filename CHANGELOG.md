@@ -6,6 +6,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+## 0.1.3 — 2026-10-29
+
 ### New
 
 - **Play any track from a Discogs release page.** A ▶ now sits before each track of a
