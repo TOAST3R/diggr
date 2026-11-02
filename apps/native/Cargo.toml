@@ -2,6 +2,7 @@
 name = "diggr"
 version = "0.1.4"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 analysis = { version = "0.1.0", path = "../../crates/analysis" }

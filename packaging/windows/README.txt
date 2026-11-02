@@ -33,5 +33,10 @@ Where Diggr keeps its files
 
 Delete those two folders (and this one) to remove Diggr completely.
 
+License
+-------
+Diggr is free software under the GNU General Public License, version 3 or later: see
+LICENSE.txt in this folder. It comes with no warranty.
+
 Tested on Windows 10 (64-bit). Windows 11 should work but isn't tested yet.
 More: https://github.com/TOAST3R/diggr

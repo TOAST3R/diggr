@@ -1743,3 +1743,14 @@ openspec list --specs                 # specs of what's already built
 openspec show classic-ui              # read the next milestone
 openspec show audio-playback --type spec
 ```
+
+## License
+
+Diggr is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License](LICENSE) as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed in the hope
+that it will be useful, but WITHOUT ANY WARRANTY; see the license for details. Each download
+(the Mac app, the Linux tarball and the Windows zip) carries the license text.
+
+Copyright © 2026 TOAST3R. The license covers the code. The name "Diggr" and its logo are not
+licensed under it: a fork may use the code, but should go by another name and icon.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds dist/Diggr-<version>-x86_64-windows.zip on this Mac: Diggr.exe cross-built for Windows 10
-# and later, with a README.txt that gives the first-open steps.
+# and later, with a README.txt that gives the first-open steps and the GPL as LICENSE.txt.
 #
 # The exe is built with cargo-xwin (clang-cl and lld from Homebrew's llvm and lld, Microsoft's
 # CRT fetched once) for x86_64-pc-windows-msvc, with the C runtime linked in (.cargo/config.toml).
@@ -63,6 +63,7 @@ mkdir "$work/$DIR"
 cp "$EXE" "$work/$DIR/$NAME.exe"
 # Notepad on older Windows 10 builds wants CRLF.
 sed 's/$/\r/' packaging/windows/README.txt >"$work/$DIR/README.txt"
+sed 's/$/\r/' LICENSE >"$work/$DIR/LICENSE.txt"
 mkdir -p dist
 rm -f "$ZIP"
 (cd "$work" && zip -q -r -9 -X "$OLDPWD/$ZIP" "$DIR")
