@@ -32,6 +32,7 @@ pub mod juno;
 pub mod memory;
 pub mod prepare;
 pub mod preview;
+mod proc;
 pub mod sellers;
 pub mod stores;
 pub mod tools;

@@ -31,7 +31,8 @@ Cargo workspace, edition 2024, **Rust ≥ 1.95** (egui 0.36); built and tested w
 Data files: the skin is in `assets/skin/default/`. It is generated, so don't hand-edit it; run
 `cargo run -p ui --bin skin-gen`, which a test checks. The app and extension icon PNGs are
 generated the same way from `assets/icon/logo-mark.svg` by `cargo run -p ui --bin icon-gen`.
-Release builds: `scripts/make-dmg.sh` and `scripts/release.sh` (see README, Build a release).
+Release builds: `scripts/make-dmg.sh`, `scripts/make-linux.sh`, `scripts/make-windows.sh` (the exe is
+cross-built on the Mac with `cargo-xwin`) and `scripts/release.sh` (see README, Build a release).
 
 ## Commands
 
@@ -42,6 +43,7 @@ cargo test --workspace                                   # ~850 tests; no audio 
 cargo clippy --workspace --all-targets -- -D warnings    # must be clean
 cargo fmt --all --check                                  # must be clean
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core must stay web-portable
+cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc   # Windows still compiles (needs cargo-xwin, llvm, lld)
 ```
 
 Narrower runs: `cargo test -p audio --test engine`, `cargo test -p dig --test previews`.
@@ -79,6 +81,8 @@ dev (see root `Cargo.toml`), because unoptimized decoders and DSP can't keep up 
 - eframe/egui are used with `default-features = false`. On Linux, `crates/ui/Cargo.toml` enables
   the `x11` and `wayland` features, without which winit doesn't compile. Keep that when touching
   UI dependencies.
+- Start helper processes (yt-dlp) with `dig::proc::command`, never `Command::new`: on Windows it
+  keeps a console window from flashing up for each one, and a test fails otherwise.
 - Don't add model or tool identifiers to code, comments or commit messages.
 
 ## Planning with OpenSpec

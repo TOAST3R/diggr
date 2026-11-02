@@ -10,6 +10,12 @@
 //! diggr --click-test                 clock vs. microphone (needs speaker → mic path)
 //! diggr --startup-time               print time to first frame and quit
 //! ```
+//!
+//! A Windows release build is a GUI program, so double-clicking it opens no console window;
+//! started from a terminal it attaches to that terminal's console, so the modes above (and the
+//! log) still print there. PowerShell doesn't wait for a GUI program: pipe it (`.\Diggr.exe
+//! --help | more`) to see its output in order.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod bench;
 mod click;
@@ -43,8 +49,22 @@ pub fn open_engine() -> Result<Engine, String> {
 
 const USAGE: &str = "usage: diggr [FILE...] | --tui FILE... | --bench [--volume 0..1] [--analysis] [--speed 0.84..1.16] FILE... | --click-test | --startup-time";
 
+/// Lets a GUI-subsystem exe print to the terminal that started it (`ATTACH_PARENT_PROCESS`).
+/// It fails, harmlessly, when there is none (Explorer, the Start menu).
+#[cfg(windows)]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // SAFETY: a plain Win32 call with no pointers; the result only says whether it attached.
+    unsafe { AttachConsole(u32::MAX) };
+}
+
 fn main() -> ExitCode {
     let process_start = Instant::now();
+    #[cfg(windows)]
+    attach_parent_console();
     let all: Vec<String> = std::env::args().skip(1).collect();
     let mut args = all.into_iter().peekable();
     let mut mode = "gui";

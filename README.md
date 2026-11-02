@@ -68,7 +68,7 @@ If you get `zsh: command not found: cargo`, repeat step 3. To make it permanent,
 |---|---|
 | macOS | Xcode command-line tools (the linker): `xcode-select --install` |
 | Linux | a C toolchain plus ALSA headers: `sudo apt install build-essential pkg-config libasound2-dev`; runs under X11 or Wayland |
-| Windows | Visual Studio Build Tools (C++); rustup offers to install them |
+| Windows | Visual Studio Build Tools (C++); rustup offers to install them (the release zip is cross-built from a Mac instead, see [Build a release](#build-a-release)) |
 
 ### 2. Rust
 
@@ -1315,8 +1315,9 @@ Other environment variables, mostly for unattended runs and measurements:
 ```sh
 scripts/make-dmg.sh             # dist/Diggr.app and dist/Diggr-<version>[-unsigned].dmg
 scripts/make-linux.sh           # dist/Diggr-<version>-x86_64-linux.tar.gz (needs Docker)
+scripts/make-windows.sh         # dist/Diggr-<version>-x86_64-windows.zip (needs cargo-xwin, llvm, lld)
 scripts/release.sh --unsigned --dry-run    # every check, then stops before tagging
-scripts/release.sh --unsigned [--notes-file NOTES.md]
+scripts/release.sh --unsigned [--prerelease] [--notes-file NOTES.md]
 ```
 
 `make-dmg.sh` builds `diggr` for Apple Silicon and Intel (macOS 11 or later), joins them into
@@ -1342,17 +1343,35 @@ binary, `packaging/linux/diggr.desktop`, `packaging/linux/install.sh` and the 25
 the tarball. On Apple Silicon the container runs under emulation, so the first build is slow;
 later ones are incremental.
 
-`release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg` and
-`dist/Diggr-<version>-x86_64-linux.tar.gz` as GitHub Release `v<version>`, with one
-`Diggr-<version>-SHA256SUMS` for both (check with `sha256sum -c`) and the macOS Open Anyway and
-Linux install steps appended to the notes, after checking that the tree is clean, both files
-exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
-`--unsigned` it publishes the signed image instead, and only if `spctl` accepts it. Release files are never committed: `dist/` is in `.gitignore`.
+`make-windows.sh` cross-builds `Diggr.exe` for 64-bit Windows 10 and later from the Mac, with
+`cargo-xwin` (`cargo install cargo-xwin --locked`), Homebrew's `llvm` and `lld`
+(`brew install llvm lld`) and the `x86_64-pc-windows-msvc` target (which it adds). The C
+runtime is linked into the exe (`.cargo/config.toml`), so a Windows without the Visual C++
+Redistributable runs it; the script fails if the exe imports `VCRUNTIME*`, `MSVCP*` or
+`ucrtbase`, or isn't a GUI program (a console exe would open a window behind the player). It
+packs `Diggr.exe` and `packaging/windows/README.txt` (the first-open steps) into a zip of about
+12 MB. The exe's icon is `assets/icon/diggr.ico` (made by `icon-gen` with the other icons) and
+`apps/native/build.rs` embeds it with `llvm-rc`. The exe isn't signed: Windows SmartScreen stops
+the first open of a downloaded copy until the user clicks More info, then Run anyway. A release
+build has no console window; started from PowerShell it still prints, but PowerShell doesn't
+wait for it, so pipe it to see the output in order (`.\Diggr.exe --help | more`). Windows 10 is
+the tested system; Windows 11 is expected to work.
+
+`release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg`,
+`dist/Diggr-<version>-x86_64-linux.tar.gz` and `dist/Diggr-<version>-x86_64-windows.zip` as
+GitHub Release `v<version>`, with one `Diggr-<version>-SHA256SUMS` for all three (check with
+`sha256sum -c`) and the macOS Open Anyway, Linux install and Windows first-open steps appended
+to the notes, after checking that the tree is clean, all three files exist and the version in
+`apps/native/Cargo.toml` isn't tagged yet. Without `--unsigned` it publishes the signed image
+instead, and only if `spctl` accepts it. `--prerelease` marks the release as a pre-release, so
+`releases/latest` (and the download links above) keep leading to the previous release until it
+is confirmed on a real machine; then `gh release edit v<version> --prerelease=false --latest`
+promotes it. Release files are never committed: `dist/` is in `.gitignore`.
 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1029 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1034 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

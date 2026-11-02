@@ -10,7 +10,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use super::search::{self, SearchResult};
 use crate::bandcamp::fan::{self, FanList, FanLists, FanPage};
 use crate::bandcamp::{self, BandcampPage, Listing};
 use crate::discogs::model::valid_clip_id;
+use crate::proc;
 
 /// The audio format asked for: AAC in M4A, which the decoder plays and YouTube offers for
 /// nearly every clip.
@@ -161,12 +162,17 @@ pub fn candidates(configured: Option<&str>) -> Vec<PathBuf> {
     if let Some(p) = configured {
         return vec![PathBuf::from(p)];
     }
+    // On Windows, `yt-dlp` finds `yt-dlp.exe` on the PATH, which an app opened from Explorer has.
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut c = vec![PathBuf::from("yt-dlp")];
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        c.push(Path::new(dir).join("yt-dlp"));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        c.push(Path::new(&home).join(".local/bin/yt-dlp"));
+    #[cfg(not(windows))]
+    {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+            c.push(Path::new(dir).join("yt-dlp"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            c.push(Path::new(&home).join(".local/bin/yt-dlp"));
+        }
     }
     c
 }
@@ -214,7 +220,7 @@ impl YtDlp {
     /// Runs yt-dlp with `args` until it ends or `timeout`, giving its output; a failure is
     /// limited or the last error line.
     fn run(&self, args: Vec<String>, timeout: Duration, what: &str) -> Result<String, FetchError> {
-        let mut child = Command::new(&self.program)
+        let mut child = proc::command(&self.program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -297,7 +303,7 @@ impl Fetcher for YtDlp {
         let clip = key.as_str();
         std::fs::create_dir_all(dir).map_err(|e| FetchError::Failed(e.to_string()))?;
         let dest = preview_path(dir, clip);
-        let mut child = Command::new(&self.program)
+        let mut child = proc::command(&self.program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -351,7 +357,7 @@ impl Fetcher for YtDlp {
     }
 
     fn version(&self) -> Option<String> {
-        let mut child = Command::new(&self.program)
+        let mut child = proc::command(&self.program)
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -907,6 +913,20 @@ mod tests {
             [PathBuf::from("/opt/x/yt-dlp")]
         );
         assert_eq!(candidates(None)[0], PathBuf::from("yt-dlp"));
+    }
+
+    #[test]
+    fn a_windows_path_is_kept_as_typed() {
+        // With or without `.exe`: Windows adds it when it starts the program.
+        for p in [r"C:\Tools\yt-dlp.exe", r"C:\Users\Ana María\bin\yt-dlp"] {
+            assert_eq!(candidates(Some(p)), [PathBuf::from(p)]);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_looks_only_on_the_path() {
+        assert_eq!(candidates(None), [PathBuf::from("yt-dlp")]);
     }
 
     /// Needs a real yt-dlp and the network: `cargo test -p dig -- --ignored real_ytdlp`.
