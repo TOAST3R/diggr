@@ -1,0 +1,5 @@
+# Windows: link the C runtime into the exe, so a Windows 10 without the Visual C++
+# Redistributable can run it (see openspec/changes/windows-port). /ignore:4099 silences the
+# linker's complaint that the runtime's debug files (.pdb) aren't shipped with it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/ignore:4099"]

@@ -165,6 +165,22 @@ mod tests {
     }
 
     #[test]
+    fn saving_over_a_file_replaces_it_in_any_folder() {
+        // Windows won't rename onto a file some programs keep open, and folders there often
+        // have spaces and accents (a user called Ana María).
+        let d = crate::test_dir("config María García");
+        let path = d.join("dig/some file.ron");
+        write_atomic(&path, b"first", false).unwrap();
+        write_atomic(&path, b"second", true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["some file.ron"], "no temporary file is left");
+    }
+
+    #[test]
     fn the_token_is_private_and_masked() {
         let d = crate::test_dir("config-token");
         assert_eq!(load_token(&d), None);

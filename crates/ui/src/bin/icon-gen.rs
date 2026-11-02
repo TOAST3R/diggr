@@ -66,6 +66,67 @@ const ICONS: [Icon; 6] = [
     },
 ];
 
+/// The Windows icon, `diggr.exe`'s in Explorer, the taskbar and the Start menu: the toolbar
+/// layout (the mark fills its square) at the sizes Windows asks for.
+const ICO_PATH: &str = "assets/icon/diggr.ico";
+const ICO_FRAMES: [Icon; 4] = [
+    Icon {
+        path: ICO_PATH,
+        size: 16,
+        badge: 1.0,
+        radius: 0.2,
+        mark: 0.85,
+    },
+    Icon {
+        path: ICO_PATH,
+        size: 32,
+        badge: 1.0,
+        radius: 0.2,
+        mark: 0.8,
+    },
+    Icon {
+        path: ICO_PATH,
+        size: 48,
+        badge: 1.0,
+        radius: 0.2,
+        mark: 0.8,
+    },
+    Icon {
+        path: ICO_PATH,
+        size: 256,
+        badge: 1.0,
+        radius: 0.2,
+        mark: 0.75,
+    },
+];
+
+/// An `.ico` holding each image as a PNG (read by Windows since Vista), 256 px as size 0.
+fn ico(frames: &[RgbaImage]) -> Vec<u8> {
+    let pngs: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|f| {
+            let mut png = Vec::new();
+            f.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("encode png");
+            png
+        })
+        .collect();
+    let mut out = vec![0, 0, 1, 0];
+    out.extend((frames.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * frames.len();
+    for (f, png) in frames.iter().zip(&pngs) {
+        let side = if f.width() >= 256 { 0 } else { f.width() as u8 };
+        out.extend([side, side, 0, 0]);
+        out.extend(1u16.to_le_bytes());
+        out.extend(32u16.to_le_bytes());
+        out.extend((png.len() as u32).to_le_bytes());
+        out.extend((offset as u32).to_le_bytes());
+        offset += png.len();
+    }
+    pngs.into_iter().for_each(|png| out.extend(png));
+    out
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -107,11 +168,29 @@ fn main() {
         render(icon).save(&path).expect("write png");
         println!("wrote {}", path.display());
     }
+    let frames: Vec<_> = ICO_FRAMES.iter().map(render).collect();
+    let path = root().join(ICO_PATH);
+    std::fs::write(&path, ico(&frames)).expect("write ico");
+    println!("wrote {}", path.display());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Anti-aliasing may differ by a step between CPUs (SIMD paths), never by more.
+    fn same(committed: &RgbaImage, made: &RgbaImage, what: &str) {
+        assert_eq!(committed.dimensions(), made.dimensions(), "{what}");
+        let off = committed
+            .as_raw()
+            .iter()
+            .zip(made.as_raw())
+            .any(|(a, b)| a.abs_diff(*b) > 2);
+        assert!(
+            !off,
+            "{what} is stale: run `cargo run -p ui --bin icon-gen`"
+        );
+    }
 
     #[test]
     fn committed_icons_match_the_generator() {
@@ -119,19 +198,27 @@ mod tests {
             let committed = image::open(root().join(icon.path))
                 .expect(icon.path)
                 .to_rgba8();
-            let made = render(icon);
-            assert_eq!(committed.dimensions(), made.dimensions(), "{}", icon.path);
-            // Anti-aliasing may differ by a step between CPUs (SIMD paths), never by more.
-            let off = committed
-                .as_raw()
-                .iter()
-                .zip(made.as_raw())
-                .any(|(a, b)| a.abs_diff(*b) > 2);
-            assert!(
-                !off,
-                "{} is stale: run `cargo run -p ui --bin icon-gen`",
-                icon.path
-            );
+            same(&committed, &render(icon), icon.path);
+        }
+    }
+
+    #[test]
+    fn the_committed_windows_icon_matches_the_generator() {
+        let bytes = std::fs::read(root().join(ICO_PATH)).expect(ICO_PATH);
+        assert_eq!(bytes[..4], [0, 0, 1, 0], "not an icon file");
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        assert_eq!(count, ICO_FRAMES.len(), "{ICO_PATH} has the wrong sizes");
+        for (i, icon) in ICO_FRAMES.iter().enumerate() {
+            let entry = &bytes[6 + 16 * i..22 + 16 * i];
+            let size = if entry[0] == 0 { 256 } else { entry[0] as u32 };
+            assert_eq!(size, icon.size, "{ICO_PATH} entry {i}");
+            let len = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+            let at = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+            let committed =
+                image::load_from_memory_with_format(&bytes[at..at + len], image::ImageFormat::Png)
+                    .expect("png entry")
+                    .to_rgba8();
+            same(&committed, &render(icon), ICO_PATH);
         }
     }
 }

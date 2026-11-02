@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Publishes the macOS disk image (scripts/make-dmg.sh) and the Linux tarball
-# (scripts/make-linux.sh) as GitHub Release v<version>, with one SHA256SUMS for both, after
-# checking the tree is clean, the version isn't tagged yet, both files exist and the image is signed.
+# Publishes the macOS disk image (scripts/make-dmg.sh), the Linux tarball (scripts/make-linux.sh)
+# and the Windows zip (scripts/make-windows.sh) as GitHub Release v<version>, with one SHA256SUMS
+# for all three, after checking the tree is clean, the version isn't tagged yet, all three files
+# exist and the image is signed.
 #
-# Usage: scripts/release.sh [--unsigned] [--notes-file FILE] [--dry-run]
+# Usage: scripts/release.sh [--unsigned] [--prerelease] [--notes-file FILE] [--dry-run]
 #   --unsigned    publish dist/Diggr-<version>-unsigned.dmg (the normal case), with the macOS
 #                 Open Anyway steps appended to the notes
+#   --prerelease  mark the release as a pre-release, so releases/latest keeps leading to the
+#                 previous one until it is promoted (gh release edit v<version>
+#                 --prerelease=false --latest), for a version not yet confirmed on every system
 #   --notes-file  release notes, followed by the install steps (without it, only those)
 #   --dry-run     run every check, then stop before tagging
 set -euo pipefail
@@ -14,11 +18,12 @@ cd "$(dirname "$0")/.."
 NAME=Diggr
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/native/Cargo.toml | head -1)
 TAG=v$VERSION
-UNSIGNED=0 DRY=0 NOTES=()
+UNSIGNED=0 DRY=0 PRE=0 NOTES=()
 while (($#)); do
     case $1 in
         --unsigned) UNSIGNED=1 ;;
         --dry-run) DRY=1 ;;
+        --prerelease) PRE=1 ;;
         --notes-file) NOTES=(--notes-file "$2"); shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -41,9 +46,11 @@ else
 fi
 TARBALL=dist/$NAME-$VERSION-x86_64-linux.tar.gz
 [[ -f $TARBALL ]] || fail "$TARBALL not found; run scripts/make-linux.sh."
+ZIP=dist/$NAME-$VERSION-x86_64-windows.zip
+[[ -f $ZIP ]] || fail "$ZIP not found; run scripts/make-windows.sh."
 
 SUMS=dist/$NAME-$VERSION-SHA256SUMS
-(cd dist && shasum -a 256 "$(basename "$DMG")" "$(basename "$TARBALL")") >"$SUMS"
+(cd dist && shasum -a 256 "$(basename "$DMG")" "$(basename "$TARBALL")" "$(basename "$ZIP")") >"$SUMS"
 notes=dist/$NAME-$VERSION-notes.md
 { [[ ${NOTES[1]:-} ]] && cat "${NOTES[1]}" && echo
   if ((UNSIGNED)); then
@@ -54,14 +61,21 @@ notes=dist/$NAME-$VERSION-notes.md
   fi
   echo "**Linux (x86_64):** extract the archive and run \`./install.sh\` in its folder to add Diggr to"
   echo "your applications menu (or just run \`./diggr\`). It needs ALSA and a Vulkan or OpenGL"
-  echo "driver, which desktop distributions have."; } >"$notes"
+  echo "driver, which desktop distributions have."
+  echo
+  echo "**Windows 10 and later (x86_64):** extract the zip anywhere and open \`Diggr.exe\`; there is"
+  echo "nothing to install. This build isn't signed, so Windows SmartScreen stops it once: click"
+  echo "**More info**, then **Run anyway**. Previews need yt-dlp, which the zip's README explains."; } >"$notes"
 NOTES=(--notes-file "$notes")
 echo "Ready: $TAG with"
-for f in "$DMG" "$TARBALL"; do echo "  $f ($(du -h "$f" | cut -f1))"; done
+for f in "$DMG" "$TARBALL" "$ZIP"; do echo "  $f ($(du -h "$f" | cut -f1))"; done
 sed 's/^/  sha256 /' "$SUMS"
 echo "Notes: $notes"
+((PRE)) && echo "As a pre-release: releases/latest keeps leading to the previous release."
 ((DRY)) && { echo "Dry run: stopping before tagging."; exit 0; }
 
 git tag -a "$TAG" -m "$NAME $VERSION"
 git push origin "$TAG"
-gh release create "$TAG" "$DMG" "$TARBALL" "$SUMS" --title "$NAME $VERSION" "${NOTES[@]}"
+FLAGS=()
+((PRE)) && FLAGS+=(--prerelease)
+gh release create "$TAG" "$DMG" "$TARBALL" "$ZIP" "$SUMS" --title "$NAME $VERSION" "${NOTES[@]}" ${FLAGS[@]+"${FLAGS[@]}"}

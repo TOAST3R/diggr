@@ -6,8 +6,14 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+## 0.1.4 — 2026-11-02
+
 ### New
 
+- **Diggr on Windows.** A download for 64-bit Windows 10 sits next to the Mac and Linux ones:
+  extract the zip and open Diggr, with nothing to install. Windows asks once whether to run it
+  (click More info, then Run anyway) because the app isn't signed yet. Previews need yt-dlp
+  there, and the note in the zip says how to get it.
 - **Record stores to dig from the first launch.** Top Sellers now comes with six Spanish
   record stores that sell on Discogs: Melting Pot in Madrid, Rotor in Madrid, Rhythm Control in
   Barcelona, KH Vinyl Store in Valencia, Mita in Gijón and Adepta online. Double-click one to dig
