@@ -14,10 +14,10 @@ use dig::discogs::seller::{Copy, Criteria, LIMIT, MAX_DIG, PER_PAGE, Ranked, rea
 use dig::discogs::styles;
 use dig::discogs::url::{Page, PageKind};
 use dig::intake::Command;
-use dig::sellers::{DoubleClick, Seller, Source};
+use dig::sellers::{DoubleClick, FEATURED, Seller, Source};
 
-use super::DiggrApp;
-use crate::crates::{CrateId, MAX_NAME};
+use super::{DiggrApp, HintLine, HintLink, HintPart, HintTo};
+use crate::crates::{CrateId, Crates, MAX_NAME};
 pub use crate::format::thousands;
 use crate::playlist::Facet;
 use crate::playlist::SaleCopy;
@@ -249,6 +249,44 @@ pub fn seller_crate_name(username: &str) -> String {
     name.chars().take(MAX_NAME).collect()
 }
 
+/// "Seller: ‹shop› · ‹city›", cut to the crates' name limit.
+fn featured_crate_name(shop: &str, city: &str) -> String {
+    format!("{SELLER_PREFIX}{shop} · {city}")
+        .chars()
+        .take(MAX_NAME)
+        .collect()
+}
+
+/// Once per install, the featured record stores are made sure of: one the list already has
+/// gets its crate renamed to the shop's name (unless the user named it), the ones it lacks are
+/// added after the user's sellers, each with an empty crate never dug. The list then says it
+/// was done, so a shop the user removes stays removed. No network: the shops are compiled in.
+pub(super) fn seed_featured(crates: &mut Crates, d: &mut super::digging::Dig) {
+    if d.config.is_none() || d.sellers.featured {
+        return;
+    }
+    for (shop, city, username) in FEATURED {
+        let name = featured_crate_name(shop, city);
+        if let Some(s) = d.sellers.find(username) {
+            if crates.name(s.crate_id) == seller_crate_name(&s.username)
+                && crates.find(&name).is_none()
+            {
+                let _ = crates.rename(s.crate_id, &name);
+            }
+            continue;
+        }
+        let Some(id) = crates.find(&name).or_else(|| crates.create(&name).ok()) else {
+            continue;
+        };
+        crates.set_seller(id, username);
+        d.sellers
+            .sellers
+            .push(Seller::new(username, id, Source::Featured));
+    }
+    d.sellers.featured = true;
+    let _ = d.save_sellers();
+}
+
 /// What the sidebar and the seller dialogs ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SellerAction {
@@ -407,6 +445,44 @@ impl DiggrApp {
 
     fn seller_of_crate(&self, id: CrateId) -> Option<Seller> {
         self.dig.as_ref()?.sellers.by_crate(id).cloned()
+    }
+
+    /// What an empty seller crate says in place of the paste hint: how to dig it, with a
+    /// "here" that does what a double-click does.
+    pub(super) fn seller_hint(&self, id: CrateId) -> Option<Vec<HintLine>> {
+        let d = self.dig.as_ref()?;
+        let s = d.sellers.by_crate(id)?;
+        let text = |lines: &[&str]| -> Vec<HintLine> {
+            lines
+                .iter()
+                .map(|l| HintLine::Text(l.to_string()))
+                .collect()
+        };
+        let start = || {
+            vec![
+                HintLine::Inline(vec![
+                    HintPart::Text("CLICK"),
+                    HintPart::Link(HintLink {
+                        label: "HERE",
+                        color: [47, 228, 90],
+                        to: HintTo::Seller,
+                    }),
+                    HintPart::Text("TO PREVIEW"),
+                ]),
+                HintLine::Text("ITS RECORDS FOR SALE".into()),
+            ]
+        };
+        Some(if d.has_job_for(id) {
+            text(&["DIGGING ITS RECORDS FOR SALE"])
+        } else if s.last_dug.is_some() {
+            text(&["NO RECORDS FOR SALE", "MATCHED THE LAST DIG"])
+        } else if d.token.is_none() {
+            let mut v = start();
+            v.extend(text(&["", "NEEDS A FREE DISCOGS TOKEN"]));
+            v
+        } else {
+            start()
+        })
     }
 
     /// Without a token, the Connect to Discogs dialog opens instead (true).

@@ -4,7 +4,8 @@
 //! file holds what belongs to the seller rather than to the tracks: the order of the list,
 //! the criteria a dig used (a refresh reuses them), when it was last dug and how many copies
 //! the seller had. The list is filled once from the user's purchases (`seeded`), then it is
-//! the user's: removing every seller never fills it again.
+//! the user's: removing every seller never fills it again. A list that hasn't had the
+//! `FEATURED` record stores yet (`featured`) gets them once, at launch.
 
 use std::path::{Path, PathBuf};
 
@@ -21,7 +22,20 @@ pub const STALE_SECS: u64 = 24 * 60 * 60;
 pub enum Source {
     Purchases,
     Added,
+    /// One of the `FEATURED` stores a fresh install starts with.
+    Featured,
 }
+
+/// The record stores a fresh install starts with, as (shop, city, Discogs username), in the
+/// order of the list. The crate is named "Seller: ‹shop› · ‹city›".
+pub const FEATURED: [(&str, &str, &str); 6] = [
+    ("Melting Pot", "Madrid", "logon"),
+    ("Rotor", "Madrid", "rotordiscos"),
+    ("Rhythm Control", "Barcelona", "djbrucelee"),
+    ("KH Vinyl Store", "Valencia", "KHVinylStore"),
+    ("Mita", "Gijón", "MITA_Record_Store"),
+    ("Adepta", "Online", "ADEPTA_STORE"),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seller {
@@ -80,6 +94,8 @@ pub enum DoubleClick {
 pub struct SellerList {
     /// The first list was made from the purchases (it never is again).
     pub seeded: bool,
+    /// The featured record stores were put in the list (they never are again).
+    pub featured: bool,
     /// In the sidebar's order.
     pub sellers: Vec<Seller>,
 }
@@ -219,5 +235,32 @@ mod tests {
         assert_eq!(l.by_crate(1).unwrap().username, "decks.de");
         assert_eq!(l.remove_crate(2).unwrap().username, "logon");
         assert!(l.find("logon").is_none());
+    }
+
+    #[test]
+    fn a_featured_seller_survives_a_restart() {
+        let d = crate::test_dir("sellers-featured");
+        let mut l = SellerList {
+            featured: true,
+            ..SellerList::default()
+        };
+        l.sellers.push(Seller::new("logon", 1, Source::Featured));
+        l.save(d.path()).unwrap();
+        assert_eq!(SellerList::load(d.path()), l);
+        // A file saved before the featured stores existed says it wasn't done.
+        std::fs::write(SellerList::path(d.path()), "(seeded: true, sellers: [])").unwrap();
+        assert!(!SellerList::load(d.path()).featured);
+    }
+
+    #[test]
+    fn featured_crate_names_fit_the_name_limit() {
+        // The crates' limit (`ui::crates::MAX_NAME`).
+        for (shop, city, _) in FEATURED {
+            let name = format!("Seller: {shop} · {city}");
+            assert!(name.chars().count() <= 40, "{name}");
+        }
+        let names: std::collections::HashSet<_> =
+            FEATURED.iter().map(|f| f.2.to_ascii_lowercase()).collect();
+        assert_eq!(names.len(), FEATURED.len(), "usernames are unique");
     }
 }

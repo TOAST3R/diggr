@@ -295,13 +295,15 @@ impl DiggrApp {
         );
         #[cfg(not(target_arch = "wasm32"))]
         let dig = ctx.dig.map(|setup| {
-            digging::Dig::new(
+            let mut d = digging::Dig::new(
                 setup,
                 ctx.spawner.clone(),
                 ctx.files.clone(),
                 store.as_ref().map(|s| s.dir().to_path_buf()),
                 egui_ctx.clone(),
-            )
+            );
+            sellers::seed_featured(&mut crates, &mut d);
+            d
         });
         let skin = LoadedSkin::default_skin();
         Self {
@@ -4784,11 +4786,14 @@ impl DiggrApp {
                 let line_h = sk.def.font.glyph_h as f32 + 4.0;
                 let body = list_h - (rows_top - top);
                 #[cfg(not(target_arch = "wasm32"))]
-                let friend = self.friend_hint(self.crates.shown_id());
+                let friend: Option<Vec<HintLine>> = self
+                    .friend_hint(self.crates.shown_id())
+                    .map(|f| f.into_iter().map(HintLine::Text).collect())
+                    .or_else(|| self.seller_hint(self.crates.shown_id()));
                 #[cfg(target_arch = "wasm32")]
-                let friend: Option<Vec<String>> = None;
+                let friend: Option<Vec<HintLine>> = None;
                 let lines: Vec<HintLine> = match friend {
-                    Some(f) => f.into_iter().map(HintLine::Text).collect(),
+                    Some(f) => f,
                     None => {
                         let long = store_hint(PASTE_MODIFIER);
                         // Too short a list for the stores: the four short lines.
@@ -4825,6 +4830,34 @@ impl DiggrApp {
                                     tint,
                                 ));
                                 x += w + gap * 2.0;
+                            }
+                        }
+                        HintLine::Inline(parts) => {
+                            let width = |p: &HintPart| match p {
+                                HintPart::Text(t) => sk.text_width(t),
+                                HintPart::Link(k) => sk.text_width(k.label),
+                            };
+                            let w: f32 = parts.iter().map(width).sum::<f32>()
+                                + gap * (parts.len() - 1) as f32;
+                            let mut x = l.x as f32 + ((l.w as f32 - w) / 2.0).round();
+                            for p in &parts {
+                                let pw = width(p);
+                                match p {
+                                    HintPart::Text(t) => {
+                                        sk.text(x, y, t, color(d.colors.pl_text));
+                                    }
+                                    HintPart::Link(k) => {
+                                        let tint = readable(k.color, d.colors.pl_bg);
+                                        sk.text(x, y, k.label, color(tint));
+                                        hint_links.push((
+                                            sk.rect(x, y - 1.0, pw, line_h - 2.0),
+                                            sk.rect(x, y + line_h - 4.0, pw, 1.0),
+                                            *k,
+                                            tint,
+                                        ));
+                                    }
+                                }
+                                x += pw + gap;
                             }
                         }
                     }
@@ -5374,8 +5407,11 @@ impl DiggrApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 if below_click.is_some_and(|p| r.contains(p)) {
                     actions.push(Action::Dig(match k.to {
-                        Some(url) => DigAction::OpenUrl(url.to_owned()),
-                        None => DigAction::OpenBrowserDialog,
+                        HintTo::Url(url) => DigAction::OpenUrl(url.to_owned()),
+                        HintTo::Extension => DigAction::OpenBrowserDialog,
+                        HintTo::Seller => DigAction::Seller(
+                            crate::app::sellers::SellerAction::Dig(self.crates.shown_id()),
+                        ),
                     }));
                 }
             }
@@ -7258,18 +7294,39 @@ const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
 };
 
 /// A line of the empty crate's hint: text, or links side by side.
+#[derive(Debug, Clone, PartialEq)]
 enum HintLine {
     Text(String),
     Links(Vec<HintLink>),
+    /// A sentence with links inside it, its parts a space apart.
+    Inline(Vec<HintPart>),
 }
 
-/// A store name in its own colour (made readable on the list), opening its home page; or,
-/// with no address, the extension's pairing dialog.
+/// A part of an inline hint line.
+#[derive(Debug, Clone, PartialEq)]
+enum HintPart {
+    Text(&'static str),
+    Link(HintLink),
+}
+
+/// What a hint's link does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HintTo {
+    /// Opens a page in the browser.
+    Url(&'static str),
+    /// The extension's pairing dialog.
+    Extension,
+    /// The shown seller crate's double-click: count and dig it (or connect Discogs first).
+    Seller,
+}
+
+/// A store name in its own colour (made readable on the list), opening its home page; or the
+/// extension's pairing dialog; or a seller crate's dig.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct HintLink {
     label: &'static str,
     color: [u8; 3],
-    to: Option<&'static str>,
+    to: HintTo,
 }
 
 /// The stores' names in their brand colours: pasted links (Discogs, Bandcamp), and through
@@ -7278,34 +7335,34 @@ const PASTE_STORES: [HintLink; 2] = [
     HintLink {
         label: "DISCOGS",
         color: [51, 51, 51],
-        to: Some("https://www.discogs.com"),
+        to: HintTo::Url("https://www.discogs.com"),
     },
     HintLink {
         label: "BANDCAMP",
         color: [29, 160, 195],
-        to: Some("https://bandcamp.com"),
+        to: HintTo::Url("https://bandcamp.com"),
     },
 ];
 const EXTENSION_STORES: [HintLink; 4] = [
     HintLink {
         label: "JUNO",
         color: [255, 102, 0],
-        to: Some("https://www.juno.co.uk"),
+        to: HintTo::Url("https://www.juno.co.uk"),
     },
     HintLink {
         label: "BLEEP",
         color: [230, 30, 80],
-        to: Some("https://bleep.com"),
+        to: HintTo::Url("https://bleep.com"),
     },
     HintLink {
         label: "BEATPORT",
         color: [1, 255, 149],
-        to: Some("https://www.beatport.com"),
+        to: HintTo::Url("https://www.beatport.com"),
     },
     HintLink {
         label: "TRAXSOURCE",
         color: [58, 157, 211],
-        to: Some("https://www.traxsource.com"),
+        to: HintTo::Url("https://www.traxsource.com"),
     },
 ];
 
@@ -7333,7 +7390,7 @@ fn store_hint(modifier: &str) -> Vec<HintLine> {
         HintLine::Links(vec![HintLink {
             label: "SET UP THE EXTENSION",
             color: [47, 228, 90],
-            to: None,
+            to: HintTo::Extension,
         }]),
         HintLine::Text(String::new()),
         HintLine::Text("OR DROP FILES · PRESS H FOR HELP".into()),
@@ -8496,6 +8553,14 @@ mod tests {
                 HintLine::Links(links) => {
                     links.iter().map(|k| k.label).collect::<Vec<_>>().join("  ")
                 }
+                HintLine::Inline(parts) => parts
+                    .iter()
+                    .map(|p| match p {
+                        HintPart::Text(t) => *t,
+                        HintPart::Link(k) => k.label,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
             };
             assert!(text.chars().all(|c| def.glyph(c).is_some()), "{text}");
             let w = (text.chars().count() as u16 * def.font.advance).saturating_sub(1);
