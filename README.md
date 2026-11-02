@@ -816,16 +816,29 @@ listening through a shop's stock and putting the copies you want in your Discogs
 the heading to open it (closing LABELS or FRIENDS) or close it; right-click it for **Add
 seller…**.
 
+- **Featured record stores:** six Spanish record stores that sell on Discogs come with the app:
+  Melting Pot · Madrid (Discogs seller `logon`), Rotor · Madrid, Rhythm Control · Barcelona, KH
+  Vinyl Store · Valencia, Mita · Gijón and Adepta · Online. At the first launch with this
+  feature, a fresh install starts with all six, none dug yet. A list you already had keeps its
+  sellers and its order: one of the six already in it has its crate renamed to the shop's name
+  (unless you named it yourself), and the ones it lacks go after your sellers. The shops are
+  compiled in, so launch asks Discogs for nothing, and this runs once: they are yours like any
+  seller (double-click to dig, which with no token opens Connect to Discogs; refresh, rename or
+  remove), and a removed one never comes back.
 - **The first list:** the first time a token is saved (or at the first launch with one), the
   sellers you bought from most in your last 100 purchases go in the list, 10 of them, ties
-  going to the latest order. Shops with nothing for sale are skipped. That happens once: after
-  that the list is yours.
+  going to the latest order, after the featured stores (one you buy from is listed once, under its
+  featured name). Shops with nothing for sale are skipped. That happens once: after that the
+  list is yours.
 - **Add seller…** takes a seller's page (`/seller/‹name›/profile`, `/seller/‹name›`,
   `/user/‹name›`) or a bare name, looks it up once you stop typing, and shows how many copies
   they have for sale. Pasting a seller's page in the player, or the extension's **Add seller**
   on a seller's page, does the same (or refreshes a seller already in the list).
 - **A click shows, a double-click digs:** clicking a seller crate only shows what it holds,
-  with no request to Discogs. A double-click on one never dug counts its copies (one request)
+  with no request to Discogs. A seller crate never dug says so in its empty list ("CLICK HERE TO
+  PREVIEW ITS RECORDS FOR SALE"), where the green **HERE** is a link that does what the
+  double-click does (without a token, **Connect to
+  Discogs** opens). A double-click on one never dug counts its copies (one request)
   and asks: **Dig** for 1,000 copies or fewer, **Narrow down** for more. Narrow down takes a
   **genre** and a **style**, a **format** (Vinyl, CD or Cassette), a **year**, search text and
   "only the newest N". Discogs applies them all, across the seller's whole stock, so each change
@@ -1339,7 +1352,7 @@ exist and the version in `apps/native/Cargo.toml` isn't tagged yet. Without
 ## Tests
 
 ```sh
-cargo test --workspace            # 1015 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1029 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1550,7 +1563,9 @@ What's covered:
   owned only as themselves, the lookups taking turns with the sends, and the bridge. A real read
   runs by hand: `cargo test -p dig real_fan -- --ignored`.
 - **Top Sellers and the cart** (`crates/ui`, headless, `seller_tests.rs`; and `crates/dig`):
-  the first list from purchases (once, closed shops skipped), the sidebar group and its fold,
+  the featured stores on a fresh install (in order, saved, no request), on an existing list
+  (renamed in place, the rest added after, a name you chose kept, once only), the first list from purchases (once, after them, closed
+  shops skipped), the sidebar group and its fold,
   click versus double-click (no request on a click), Dig and Narrow down (genre and style, the style
   dropdown's sections, format, year, search text, newest N, no listings read, the 10,000 cap, up
   to 5,000 a thousand at a time from the list's last row, New search cleaning the crate and

@@ -154,6 +154,11 @@ fn names(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
+/// The featured stores' usernames, in the list's order.
+fn featured() -> Vec<&'static str> {
+    ::dig::sellers::FEATURED.iter().map(|f| f.2).collect()
+}
+
 #[test]
 fn the_first_list_comes_from_purchases_once() {
     let fakes = Fakes::new();
@@ -165,15 +170,17 @@ fn the_first_list_comes_from_purchases_once() {
     ]);
     let mut rig = rig("sellers-first", &fakes, with_token);
     rig.until(|r| sellers(r).seeded, "the first list arrives");
+    let mut expect = featured();
+    expect.push("decks.de");
     assert_eq!(
         names(&rig),
-        ["logon", "decks.de"],
-        "closed shops are skipped"
+        expect,
+        "the featured stores first, then the purchases; closed shops are skipped"
     );
-    let s = &sellers(&rig).sellers[0];
-    assert_eq!((s.total, s.last_dug), (2675, None), "counted, never dug");
-    assert_eq!(rig.app.crates.seller_of(s.crate_id), Some("logon"));
-    assert_eq!(rig.app.crates.name(s.crate_id), "Seller: logon");
+    let s = sellers(&rig).find("decks.de").unwrap();
+    assert_eq!((s.total, s.last_dug), (40_728, None), "counted, never dug");
+    assert_eq!(rig.app.crates.seller_of(s.crate_id), Some("decks.de"));
+    assert_eq!(rig.app.crates.name(s.crate_id), "Seller: decks.de");
     assert_eq!(rig.app.crates.entry_count(s.crate_id), 0, "empty until dug");
     assert_eq!(
         SellerList::load(&rig.dir.join("config")),
@@ -181,6 +188,354 @@ fn the_first_list_comes_from_purchases_once() {
         "saved"
     );
     assert_eq!(fakes.requests("/purchases"), 1);
+
+    // logon is in the list once, under its featured name.
+    let logon = sellers(&rig).find("logon").unwrap();
+    assert_eq!(logon.source, ::dig::sellers::Source::Featured);
+    assert_eq!(
+        rig.app.crates.name(logon.crate_id),
+        "Seller: Melting Pot · Madrid"
+    );
+    let marked = rig
+        .app
+        .crates
+        .list()
+        .iter()
+        .filter(|c| c.seller.as_deref() == Some("logon"))
+        .count();
+    assert_eq!(marked, 1);
+}
+
+#[test]
+fn a_fresh_install_starts_with_the_featured_stores() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-featured", &fakes, |_| {});
+    assert_eq!(names(&rig), featured(), "in the proposal's order");
+    assert!(!sellers(&rig).seeded, "the purchases' list still to come");
+    let crate_names = [
+        "Seller: Melting Pot · Madrid",
+        "Seller: Rotor · Madrid",
+        "Seller: Rhythm Control · Barcelona",
+        "Seller: KH Vinyl Store · Valencia",
+        "Seller: Mita · Gijón",
+        "Seller: Adepta · Online",
+    ];
+    for (s, name) in sellers(&rig).sellers.iter().zip(crate_names) {
+        assert_eq!(rig.app.crates.name(s.crate_id), name);
+        assert_eq!(rig.app.crates.seller_of(s.crate_id), Some(&*s.username));
+        assert_eq!(rig.app.crates.entry_count(s.crate_id), 0, "empty");
+        assert_eq!(s.last_dug, None, "never dug");
+        assert_eq!(s.source, ::dig::sellers::Source::Featured);
+    }
+    assert_eq!(
+        SellerList::load(&rig.dir.join("config")),
+        *sellers(&rig),
+        "saved at once"
+    );
+
+    rig.screen.x = 700.0;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    for _ in 0..20 {
+        rig.pump();
+    }
+    let out = rig.frame(Vec::new());
+    for t in [
+        "⏷ TOP SELLERS (6)",
+        "Melting Pot · Madrid",
+        "Rotor · Madrid",
+        "Adepta · Online",
+    ] {
+        assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+    }
+    assert!(
+        fakes.transport.paths().is_empty(),
+        "nothing is asked of Discogs: {:?}",
+        fakes.transport.paths()
+    );
+}
+
+/// A list from before the featured stores: decks.de, then logon (a purchase), each with the
+/// crate it was made with.
+fn old_list(store: &Store) -> SellerList {
+    let mut crates = crate::crates::Crates::open(store);
+    let mut l = SellerList {
+        seeded: true,
+        ..SellerList::default()
+    };
+    for (i, user) in ["decks.de", "logon"].into_iter().enumerate() {
+        let id = crates.create(&format!("Seller: {user}")).unwrap();
+        crates.set_seller(id, user);
+        let mut s = ::dig::sellers::Seller::new(user, id, ::dig::sellers::Source::Purchases);
+        s.total = 10 + i;
+        l.sellers.push(s);
+    }
+    crates.save_due(true, Duration::ZERO);
+    l.save(store.dir()).unwrap();
+    l
+}
+
+#[test]
+fn an_existing_list_gets_the_featured_stores_once() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-existing", &fakes, |store| {
+        old_list(store);
+    });
+    // Its own sellers keep their place; logon is Melting Pot now, the rest follow.
+    let mut expect = vec!["decks.de", "logon"];
+    expect.extend(featured().into_iter().skip(1));
+    assert_eq!(names(&rig), expect);
+    let logon = seller(&rig, "logon");
+    assert_eq!(
+        rig.app.crates.name(logon.crate_id),
+        "Seller: Melting Pot · Madrid"
+    );
+    assert_eq!(logon.source, ::dig::sellers::Source::Purchases, "its own");
+    assert_eq!(logon.total, 11, "what it had");
+    let decks = seller(&rig, "decks.de");
+    assert_eq!(rig.app.crates.name(decks.crate_id), "Seller: decks.de");
+    assert!(sellers(&rig).featured);
+    assert_eq!(SellerList::load(&rig.dir.join("config")), *sellers(&rig));
+
+    rig.screen.x = 700.0;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    let out = rig.frame(Vec::new());
+    for t in [
+        "Melting Pot · Madrid",
+        "Rhythm Control · Barcelona",
+        "Mita · Gijón",
+    ] {
+        assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+    }
+    assert!(!shows(&out, "logon"));
+}
+
+#[test]
+fn a_migrated_list_is_not_filled_again() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-existing-once", &fakes, |store| {
+        old_list(store);
+    });
+    let mita = seller(&rig, "MITA_Record_Store").crate_id;
+    rig.app.seller_remove_confirmed(mita);
+    let saved = SellerList::load(&rig.dir.join("config"));
+    assert!(saved.featured && saved.find("MITA_Record_Store").is_none());
+    let rig2 = rig_from("sellers-existing-restart", &fakes, &saved);
+    assert_eq!(names(&rig2).len(), 6, "decks.de, logon and four more");
+    assert!(sellers(&rig2).find("MITA_Record_Store").is_none());
+}
+
+#[test]
+fn a_crate_the_user_named_keeps_its_name() {
+    let fakes = Fakes::new();
+    let rig = rig("sellers-existing-named", &fakes, |store| {
+        let l = old_list(store);
+        let mut crates = crate::crates::Crates::open(store);
+        let id = l.find("logon").unwrap().crate_id;
+        crates.rename(id, "Jazz shop").unwrap();
+        crates.save_due(true, Duration::ZERO);
+    });
+    let logon = seller(&rig, "logon");
+    assert_eq!(rig.app.crates.name(logon.crate_id), "Jazz shop");
+    assert_eq!(rig.app.crates.seller_of(logon.crate_id), Some("logon"));
+    assert_eq!(names(&rig).len(), 7, "logon is not added twice");
+}
+
+#[test]
+fn a_taken_featured_name_leaves_the_seller_alone() {
+    let fakes = Fakes::new();
+    let rig = rig("sellers-existing-taken", &fakes, |store| {
+        old_list(store);
+        let mut crates = crate::crates::Crates::open(store);
+        crates.create("Seller: Melting Pot · Madrid").unwrap();
+        crates.save_due(true, Duration::ZERO);
+    });
+    let logon = seller(&rig, "logon");
+    assert_eq!(rig.app.crates.name(logon.crate_id), "Seller: logon");
+    assert!(sellers(&rig).featured);
+}
+
+#[test]
+fn a_removed_featured_store_stays_removed() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-featured-removed", &fakes, |_| {});
+    let mita = sellers(&rig).find("MITA_Record_Store").unwrap().crate_id;
+    rig.app.seller_remove_confirmed(mita);
+    assert_eq!(names(&rig).len(), 5);
+    let config = rig.dir.join("config");
+    let saved = SellerList::load(&config);
+    assert!(saved.find("MITA_Record_Store").is_none());
+
+    // The next launch finds the file, so it adds nothing back.
+    let rig2 = rig_from("sellers-featured-restart", &fakes, &saved);
+    let mut expect = featured();
+    expect.remove(4);
+    assert_eq!(names(&rig2), expect);
+}
+
+/// A rig whose config folder already holds `list`, as after a restart.
+fn rig_from(name: &str, fakes: &Fakes, list: &SellerList) -> Rig {
+    rig(name, fakes, |store| list.save(store.dir()).unwrap())
+}
+
+#[test]
+fn a_featured_store_asks_to_connect_without_a_token() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-featured-click", &fakes, |_| {});
+    rig.screen.x = 700.0;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    rig.frame(Vec::new());
+    double_click_seller(&mut rig, "Melting Pot · Madrid");
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connect to Discogs"),
+        "no token: the dialog shows",
+    );
+}
+
+/// A seller hint's lines as they read, a link in brackets.
+fn read_hint(lines: Vec<HintLine>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| match l {
+            HintLine::Text(t) => t,
+            HintLine::Links(ls) => ls
+                .iter()
+                .map(|k| format!("[{}]", k.label))
+                .collect::<Vec<_>>()
+                .join(" "),
+            HintLine::Inline(parts) => parts
+                .iter()
+                .map(|p| match p {
+                    HintPart::Text(t) => t.to_string(),
+                    HintPart::Link(k) => format!("[{}]", k.label),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_seller_crate_says_to_click_here() {
+    let fakes = Fakes::new();
+    let bare = rig("sellers-hint-no-token", &fakes, |_| {});
+    let mp = bare
+        .app
+        .crates
+        .find("Seller: Melting Pot · Madrid")
+        .unwrap();
+    assert_eq!(
+        read_hint(bare.app.seller_hint(mp).unwrap()),
+        [
+            "CLICK [HERE] TO PREVIEW",
+            "ITS RECORDS FOR SALE",
+            "",
+            "NEEDS A FREE DISCOGS TOKEN",
+        ],
+        "without a token it says one is needed"
+    );
+
+    let fakes = Fakes::new();
+    fakes.empty_cart();
+    fakes.purchases(&[]);
+    let mut rig = rig("sellers-hint-token", &fakes, with_token);
+    let rotor = rig.app.crates.find("Seller: Rotor · Madrid").unwrap();
+    assert_eq!(
+        read_hint(rig.app.seller_hint(rotor).unwrap()),
+        ["CLICK [HERE] TO PREVIEW", "ITS RECORDS FOR SALE"]
+    );
+    let d = rig.app.dig.as_mut().unwrap();
+    d.sellers.by_crate_mut(rotor).unwrap().last_dug = Some(1_790_000_000);
+    assert_eq!(
+        read_hint(rig.app.seller_hint(rotor).unwrap()),
+        ["NO RECORDS FOR SALE", "MATCHED THE LAST DIG"],
+        "dug and still empty: nothing matched"
+    );
+    // Any other crate keeps the paste hint.
+    let other = rig.app.crates.create("Digging").unwrap();
+    assert!(rig.app.seller_hint(other).is_none());
+}
+
+#[test]
+fn the_seller_hint_fits_the_list() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-hint-fits", &fakes, |_| {});
+    let def = crate::skin::LoadedSkin::default_skin().def;
+    let mp = rig.app.crates.find("Seller: Melting Pot · Madrid").unwrap();
+    for token in [false, true] {
+        if token {
+            rig.app.dig.as_mut().unwrap().token = Some("tok".into());
+        }
+        for line in read_hint(rig.app.seller_hint(mp).unwrap()) {
+            assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
+            let w = (line.chars().count() as u16 * def.font.advance).saturating_sub(1);
+            assert!(w <= def.at("pl_list").w, "{line}: {w}");
+        }
+    }
+}
+
+#[test]
+fn clicking_here_in_a_seller_hint_digs_like_a_double_click() {
+    let fakes = Fakes::new();
+    fakes.empty_cart();
+    fakes.purchases(&[("decks.de", 1, 5)]);
+    fakes.count("rotordiscos", 120);
+    let mut rig = rig("sellers-hint-click", &fakes, with_token);
+    rig.until(|r| sellers(r).seeded, "the first list arrives");
+    let rotor = rig.app.crates.find("Seller: Rotor · Madrid").unwrap();
+    rig.app.show_crate(rotor);
+    rig.frame(Vec::new());
+    let r = rig
+        .app
+        .pl_hint_links
+        .iter()
+        .find(|(l, _)| *l == "HERE")
+        .map(|(_, r)| *r)
+        .expect("the link is drawn");
+    rig.click(r.center());
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(120)),
+        "rotordiscos' copies are counted",
+    );
+}
+
+#[test]
+fn clicking_here_without_a_token_asks_to_connect() {
+    let fakes = Fakes::new();
+    let mut rig = rig("sellers-hint-click-bare", &fakes, |_| {});
+    let mp = rig.app.crates.find("Seller: Melting Pot · Madrid").unwrap();
+    rig.app.show_crate(mp);
+    rig.frame(Vec::new());
+    let r = rig
+        .app
+        .pl_hint_links
+        .iter()
+        .find(|(l, _)| *l == "HERE")
+        .map(|(_, r)| *r)
+        .expect("the link is drawn");
+    rig.click(r.center());
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connect to Discogs"),
+        "the dialog shows",
+    );
+}
+
+#[test]
+fn a_featured_store_counts_its_copies_with_a_token() {
+    let fakes = Fakes::new();
+    fakes.empty_cart();
+    fakes.purchases(&[("decks.de", 1, 5)]);
+    fakes.count("rotordiscos", 120);
+    let mut rig = rig("sellers-featured-dig", &fakes, with_token);
+    rig.until(|r| sellers(r).seeded, "the first list arrives");
+    rig.screen.x = 700.0;
+    rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
+    rig.frame(Vec::new());
+    double_click_seller(&mut rig, "Rotor · Madrid");
+    rig.until(
+        |r| dig_dialog(r).is_some_and(|d| d.total() == Some(120)),
+        "rotordiscos' copies are counted",
+    );
+    assert!(shows(&rig.frame(Vec::new()), "Dig: rotordiscos"));
 }
 
 #[test]
@@ -192,6 +547,7 @@ fn a_seeded_list_is_never_filled_again() {
         with_token(store);
         SellerList {
             seeded: true,
+            featured: true,
             ..SellerList::default()
         }
         .save(store.dir())
@@ -242,6 +598,7 @@ fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
         with_token(store);
         SellerList {
             seeded: true,
+            featured: true,
             ..SellerList::default()
         }
         .save(store.dir())
@@ -341,7 +698,16 @@ fn top_sellers_sit_under_discogs_and_fold() {
 
 /// A wide playlist with `n` sellers, shop00 to shop‹n-1›, and TOP SELLERS open.
 fn many_sellers(name: &str, fakes: &Fakes, n: usize) -> Rig {
-    let mut rig = rig(name, fakes, with_token);
+    let mut rig = rig(name, fakes, |store| {
+        with_token(store);
+        SellerList {
+            seeded: true,
+            featured: true,
+            ..SellerList::default()
+        }
+        .save(store.dir())
+        .unwrap();
+    });
     for i in 0..n {
         let user = format!("shop{i:02}");
         let c = rig.app.seller_crate(&user).unwrap();

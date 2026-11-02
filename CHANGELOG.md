@@ -6,6 +6,17 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### New
+
+- **Record stores to dig from the first launch.** Top Sellers now comes with six Spanish
+  record stores that sell on Discogs: Melting Pot in Madrid, Rotor in Madrid, Rhythm Control in
+  Barcelona, KH Vinyl Store in Valencia, Mita in Gijón and Adepta online. Double-click one to dig
+  its stock (connect Discogs first if you haven't). If you already had a list, it keeps its
+  sellers, a shop already in it takes its proper name, and the missing ones are added after yours.
+  Remove any you don't want: it stays removed. A seller you haven't dug yet says "click
+  here to preview its records for sale" in its empty list, and "here" starts it: one click, as
+  well as the double-click.
+
 ## 0.1.3 — 2026-10-29
 
 ### New
