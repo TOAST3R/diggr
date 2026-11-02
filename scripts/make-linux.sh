@@ -56,6 +56,7 @@ docker run --rm --platform linux/amd64 \
         install -m 755 packaging/linux/install.sh "$stage/$DIR/install.sh"
         install -m 644 packaging/linux/diggr.desktop "$stage/$DIR/diggr.desktop"
         install -m 644 assets/icon/icon-256.png "$stage/$DIR/diggr.png"
+        install -m 644 LICENSE "$stage/$DIR/LICENSE"
         tar -C "$stage" --owner=0 --group=0 -czf "$TARBALL" "$DIR"
     '
 

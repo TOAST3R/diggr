@@ -6,6 +6,12 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### Changed
+
+- **Diggr is free software.** It now comes under the GNU GPL, version 3 or later: you may
+  use it, share it and change it, and anything built from it stays free in the same way. Each
+  download carries the license.
+
 ## 0.1.4 — 2026-11-02
 
 ### New

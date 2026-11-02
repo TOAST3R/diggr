@@ -53,6 +53,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create "${slices[@]}" -output "$APP/Contents/MacOS/diggr"
 sed -e "s/@NAME@/$NAME/g" -e "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist.in >"$APP/Contents/Info.plist"
 plutil -lint -s "$APP/Contents/Info.plist"
+cp LICENSE "$APP/Contents/Resources/LICENSE"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
