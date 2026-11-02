@@ -33,14 +33,14 @@
 
 - [x] 5.1 Run `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check` and `cargo check -p audio -p platform --target wasm32-unknown-unknown`; all clean
 - [x] 5.2 Run the Windows-target `cargo xwin check` and clippy again, and `cargo run -p ui --bin skin-gen` and `icon-gen` to confirm the generated files are in sync
-- [ ] 5.3 Build all three platforms for 0.1.4 from the committed tree (`scripts/make-dmg.sh`, `scripts/make-linux.sh`, `scripts/make-windows.sh`) and run `scripts/release.sh --unsigned --prerelease --dry-run`; read its summary (files, sizes, sums, notes)
+- [x] 5.3 Build all three platforms for 0.1.4 from the committed tree (`scripts/make-dmg.sh`, `scripts/make-linux.sh`, `scripts/make-windows.sh`) and run `scripts/release.sh --unsigned --prerelease --dry-run`; read its summary (files, sizes, sums, notes)
 - [x] 5.4 Commit on a branch and open a pull request for the user to merge (the release script requires a clean tree on the commit being released)
 
 ## 6. Publish the test release (ask the maintainer first)
 
-- [ ] 6.1 Tell the maintainer exactly what will be published (tag `v0.1.4`, three files plus sums, as a pre-release) and wait for a go; do not push the tag before that
-- [ ] 6.2 Run `scripts/release.sh --unsigned --prerelease --notes-file <notes>`; confirm on GitHub that it is marked pre-release, that `releases/latest` still leads to 0.1.3, and that the three files and the sums are attached
-- [ ] 6.3 Give the maintainer the laptop checklist (section 7) and the pre-release's URL
+- [x] 6.1 Tell the maintainer exactly what will be published (tag `v0.1.4`, three files plus sums, as a pre-release) and wait for a go; do not push the tag before that
+- [x] 6.2 Run `scripts/release.sh --unsigned --prerelease --notes-file <notes>`; confirm on GitHub that it is marked pre-release, that `releases/latest` still leads to 0.1.3, and that the three files and the sums are attached
+- [x] 6.3 Give the maintainer the laptop checklist (section 7) and the pre-release's URL
 
 ## 7. Confirm on the Windows 10 laptop (the maintainer runs these)
 
