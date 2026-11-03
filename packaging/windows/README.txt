@@ -12,9 +12,11 @@ in your user profile, not here.
 
 First open: "Windows protected your PC"
 ----------------------------------------
-Diggr isn't signed with a paid certificate, so Windows SmartScreen stops it once:
+Diggr.exe is signed by SignPath Foundation (right-click it, Properties, Digital Signatures),
+so Windows 11 with Smart App Control on lets it run. Windows SmartScreen may still stop it
+once, until enough people have downloaded it:
 
-  1. In the blue window, click "More info".
+  1. In the blue window, click "More info" (the publisher shown is SignPath Foundation).
   2. Click "Run anyway".
 
 It opens normally from then on, also offline. Diggr asks for no other permission.
@@ -38,5 +40,6 @@ License
 Diggr is free software under the GNU General Public License, version 3 or later: see
 LICENSE.txt in this folder. It comes with no warranty.
 
-Tested on Windows 10 (64-bit). Windows 11 should work but isn't tested yet.
+Tested on Windows 10 (64-bit). Windows 11 is supported, with Smart App Control on or off.
 More: https://github.com/TOAST3R/diggr
+Code signing: https://diggr.es/code-signing/
