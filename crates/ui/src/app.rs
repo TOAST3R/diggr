@@ -692,6 +692,12 @@ impl DiggrApp {
         };
         match &entry.status {
             EntryStatus::Waiting(_) => {
+                // Its preview isn't there: with the guided setup, while yt-dlp is missing, the
+                // question opens.
+                #[cfg(not(target_arch = "wasm32"))]
+                if digging::needs_ytdlp(entry) {
+                    self.dig_wants_ytdlp();
+                }
                 self.armed = Some((crate_id, id));
                 return;
             }
@@ -5152,6 +5158,9 @@ impl DiggrApp {
                         }
                     )
                 };
+                // Where the "needs yt-dlp" icon is drawn, if it is: clicking it asks again.
+                let needs_tool = matches!(dur, RowEnd::Icon(NEEDS_TOOL));
+                let mut tool_icon = None;
                 if columns {
                     for &(c, x, w) in &cols {
                         let cell = Rect::from_min_size(
@@ -5163,6 +5172,7 @@ impl DiggrApp {
                             Col::Number => format!("{}.", idx + 1),
                             Col::Field(Field::Time) => {
                                 let w = draw_row_end(&sk, &cell_clip, cell, &dur, &font, col);
+                                tool_icon = needs_tool.then(|| icon_rect(cell, scale));
                                 if let Some(src) = source {
                                     let right = cell.right() - w - 6.0 * scale;
                                     source_badge(
@@ -5223,6 +5233,7 @@ impl DiggrApp {
                     }
                 } else {
                     let mut dur_w = draw_row_end(&sk, &clip, rr, &dur, &font, col);
+                    tool_icon = needs_tool.then(|| icon_rect(rr, scale));
                     if let Some(src) = source {
                         let right = rr.right() - dur_w - 9.0 * scale;
                         dur_w += source_badge(&clip, right, rr.center().y, src, &font, col, scale);
@@ -5326,8 +5337,14 @@ impl DiggrApp {
                     // The album's tint shows from the next frame on.
                     ui.ctx().request_repaint();
                 }
+                let on_tool_icon = tool_icon
+                    .zip(resp.interact_pointer_pos())
+                    .is_some_and(|(r, p)| r.expand(3.0 * scale).contains(p));
                 if resp.double_clicked() {
                     actions.push(Action::PlayEntry(e.id));
+                } else if resp.clicked() && on_tool_icon && !menu_click {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    actions.push(Action::Dig(DigAction::AskYtDlp));
                 } else if resp.clicked() && !menu_click {
                     actions.push(Action::Select(idx, mods));
                 } else if menu_click && !shown.is_selected(e.id) {
@@ -6675,7 +6692,7 @@ fn row_look(
                 W::Listed => RowEnd::Icon("st_listed"),
                 W::Queued | W::Search => RowEnd::Icon("st_queued"),
                 W::Downloading(p) => RowEnd::Bar(*p),
-                W::NeedsYtDlp => RowEnd::Icon("st_needs_tool"),
+                W::NeedsYtDlp => RowEnd::Icon(NEEDS_TOOL),
                 W::Other(_) => RowEnd::Icon("st_other"),
             },
         ),
@@ -6692,6 +6709,19 @@ fn row_look(
 
 /// Draws a row's end (duration, icon or download bar) against the right of `row`, in `col`;
 /// returns its width in points.
+/// The "needs yt-dlp" row icon.
+const NEEDS_TOOL: &str = "st_needs_tool";
+
+/// Where [`draw_row_end`] puts an icon at the right of `area`.
+fn icon_rect(area: Rect, scale: f32) -> Rect {
+    let size = 9.0 * scale;
+    let right = area.right() - 3.0 * scale;
+    Rect::from_min_size(
+        pos2(right - size, area.center().y - size / 2.0),
+        vec2(size, size),
+    )
+}
+
 fn draw_row_end(
     sk: &Skinned,
     painter: &egui::Painter,
@@ -6713,13 +6743,9 @@ fn draw_row_end(
             )
             .width(),
         RowEnd::Icon(name) => {
-            let size = 9.0 * s;
-            let r = Rect::from_min_size(
-                pos2(right - size, row.center().y - size / 2.0),
-                vec2(size, size),
-            );
+            let r = icon_rect(row, s);
             sk.sprite_tinted(name, r, col);
-            size
+            r.width()
         }
         RowEnd::Bar(pct) => {
             let (w, h) = (ROW_BAR_W * s, 3.0 * s);

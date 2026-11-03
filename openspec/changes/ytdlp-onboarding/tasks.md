@@ -19,16 +19,16 @@
 
 ## 4. The guided modal (Windows)
 
-- [ ] 4.1 `DigSetup::guided_ytdlp` (true on Windows builds); without it, the question works exactly as before this change, and the existing tests stay unchanged
-- [ ] 4.2 With it: the question's text (size, source, own files play without it, the Python note), Install / Not now, Escape; "Installing yt-dlp: N%"; "Previews are ready" then closed after 2 s; the failure with Try again
-- [ ] 4.3 First launch: `ytdlp_setup_asked` in the dig settings; the UI asks the scheduler to look as soon as previews start, and opens the modal if nothing is found; either answer sets the flag. Headless test
-- [ ] 4.4 Triggers: play or arm of a waiting entry that needs yt-dlp, sends from the extension, pastes that make a crate, a click on the "needs yt-dlp" icon; not samples, background prefetch or refreshes. Headless tests: Not now, then paste and play reopen it; the icon action reopens it; Install then plays the armed entry
-- [ ] 4.5 No `brew` text on Windows or Linux: one hint per system, a test for each
+- [x] 4.1 `DigSetup::guided_ytdlp` (true on Windows builds); without it, the question works exactly as before this change, and the existing tests stay unchanged
+- [x] 4.2 With it: the question's text (size, source, own files play without it, the Python note), Install / Not now, Escape; "Installing yt-dlp: N%"; "Previews are ready" then closed after 2 s; the failure with Try again
+- [x] 4.3 First launch: `ytdlp_setup_asked` in the dig settings; the UI asks the scheduler to look as soon as previews start, and opens the modal if nothing is found; either answer sets the flag. Headless test
+- [x] 4.4 Triggers: play or arm of a waiting entry that needs yt-dlp, sends from the extension, pastes that make a crate, a click on the "needs yt-dlp" icon; not samples, background prefetch or refreshes. Headless tests: Not now, then paste and play reopen it; the icon action reopens it; Install then plays the armed entry
+- [x] 4.5 No `brew` text on Windows or Linux: one hint per system, a test for each
 
 ## 5. Outdated detection (Windows)
 
-- [ ] 5.1 Scheduler (`Config::outdated_check`, set with the guided setup): count consecutive `Failed` downloads on different clips, reset on success, ignore `Limited`, `Unreachable` and samples; at 3, force an update check of the app's own copy (at most once an hour) or report the user's version. Tests in `tests/previews.rs`
-- [ ] 5.2 `tools::days_old` and the UI: for a user's yt-dlp older than 60 days, "may be out of date" with where to get a newer one, once a session. Tests
+- [x] 5.1 Scheduler (`Config::outdated_check`, set with the guided setup): count consecutive `Failed` downloads on different clips, reset on success, ignore `Limited`, `Unreachable` and samples; at 3, force an update check of the app's own copy (at most once an hour) or report the user's version. Tests in `tests/previews.rs`
+- [x] 5.2 `tools::days_old` and the UI: for a user's yt-dlp older than 60 days, "may be out of date" with where to get a newer one, once a session. Tests
 
 ## 6. Docs
 

@@ -1208,3 +1208,51 @@ fn real_mixes_are_read_into_tracklists() {
         assert!(list.tracks.len() >= 10, "{url}");
     }
 }
+
+#[test]
+fn clips_failing_in_a_row_say_the_users_yt_dlp_may_be_out_of_date() {
+    let failed_three = |ev: &[PreviewEvent]| {
+        ev.iter()
+            .filter(|e| matches!(e, PreviewEvent::Failed(..)))
+            .count()
+            == 3
+    };
+    for check in [true, false] {
+        let fake = Arc::new(FakeFetcher::new(fixture()));
+        for n in 1..=3 {
+            fake.fail(&clip(n), u32::MAX);
+        }
+        let name = format!("outdated-{check}");
+        let (h, _) = start(&name, &fake, |c| c.outdated_check = check);
+        want(&h, &[clip(1), clip(2), clip(3)]);
+        let ev = until(&h, failed_three);
+        let said = ev.contains(&PreviewEvent::MaybeOutdated(fake.version().unwrap()));
+        assert_eq!(said, check, "{ev:?}");
+    }
+}
+
+#[test]
+fn a_success_between_failures_starts_the_count_again() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    // Three failures, but clip 3's success comes between the second and the third.
+    for n in [1, 2, 4] {
+        fake.fail(&clip(n), u32::MAX);
+    }
+    let (h, _) = start("outdated-reset", &fake, |c| c.outdated_check = true);
+    let mut all = Vec::new();
+    for n in 1..=4 {
+        want(&h, &[clip(n)]);
+        all.extend(until(&h, |ev| {
+            ev.iter().any(|e| {
+                matches!(e, PreviewEvent::Failed(c, _) | PreviewEvent::Done(c, _) if *c == clip(n))
+            })
+        }));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    all.extend(h.poll());
+    assert!(
+        !all.iter()
+            .any(|e| matches!(e, PreviewEvent::MaybeOutdated(_))),
+        "{all:?}"
+    );
+}

@@ -218,6 +218,29 @@ fn valid_version(v: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// How many days before `now` (Unix seconds) yt-dlp version `version` (a date,
+/// `2026.05.01`) came out; `None` for a version that isn't a date.
+pub fn days_old(version: &str, now: u64) -> Option<u64> {
+    let v = version.trim();
+    if !valid_version(v) {
+        return None;
+    }
+    let mut parts = v.split('.').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days since 1970-01-01 of a civil date (H. Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let released = era * 146_097 + doe - 719_468;
+    let today = (now / 86_400) as i64;
+    Some(today.saturating_sub(released).max(0) as u64)
+}
+
 /// Whether release `tag` is newer than `version` (what `yt-dlp --version` printed).
 pub fn newer(tag: &str, version: &str) -> bool {
     let parse = |v: &str| -> Option<Vec<u64>> {
@@ -426,18 +449,20 @@ pub fn update_due(dir: &Path, now: u64) -> bool {
 }
 
 /// Checks for a newer release than `version` once a day (`now` in Unix seconds), installing
-/// it: the new copy, or `None` when nothing was due or newer.
+/// it: the new copy, or `None` when nothing was due or newer. `force`: checks even within a
+/// day of the last check (previews keep failing).
 pub fn update(
     src: &dyn ToolSource,
     dir: &Path,
     version: &str,
     now: u64,
+    force: bool,
 ) -> Result<Option<PathBuf>, String> {
     // A newer app pins a newer Python or Deno: installed at once, with the latest zip app.
     if WITH_PYTHON && src.pins().iter().any(|p| !current(dir, p)) {
         return install(src, dir, &|_| {}).map(Some);
     }
-    if !update_due(dir, now) {
+    if !force && !update_due(dir, now) {
         return Ok(None);
     }
     let _ = std::fs::create_dir_all(dir);
@@ -582,6 +607,36 @@ mod tests {
             expected_sum(&format!("{}  {ASSET}\n", "zz".repeat(32)))
                 .unwrap_err()
                 .contains("malformed")
+        );
+    }
+
+    #[test]
+    fn a_versions_age_is_counted_in_days() {
+        // 2026-11-04 00:00 UTC.
+        let now = 1_793_750_400;
+        assert_eq!(days_old("2026.11.04", now), Some(0));
+        assert_eq!(days_old("2026.11.03\n", now), Some(1));
+        assert_eq!(days_old("2026.05.01", now), Some(187));
+        assert_eq!(days_old("2024.02.29.1", now), Some(979));
+        assert_eq!(days_old("2026.12.01", now), Some(0), "a future date is new");
+        assert_eq!(days_old("2026.13.01", now), None);
+        assert_eq!(days_old("1.2", now), None);
+        assert_eq!(days_old("2026.01.01-fake", now), None);
+    }
+
+    #[test]
+    fn a_forced_check_ignores_the_daily_limit() {
+        let dir = TestDir::new("tools-forced");
+        let src = FakeSource::new("2026.09.01", SCRIPT, true);
+        assert_eq!(update(&src, &dir, "2026.09.01", 1000, false).unwrap(), None);
+        src.asked.lock().unwrap().clear();
+        *src.tag.lock().unwrap() = "2026.09.02".into();
+        // Within the day: not checked unless forced.
+        assert_eq!(update(&src, &dir, "2026.09.01", 1001, false).unwrap(), None);
+        assert!(src.asked.lock().unwrap().is_empty());
+        assert_eq!(
+            update(&src, &dir, "2026.09.01", 1002, true).unwrap(),
+            Some(program(&dir))
         );
     }
 
@@ -827,25 +882,25 @@ mod tests {
         let src = FakeSource::new("2026.08.19", SCRIPT, true);
         let day = UPDATE_EVERY.as_secs();
         // Same version: checked, nothing installed.
-        assert_eq!(update(&src, &dir, "2026.08.19", 1000).unwrap(), None);
+        assert_eq!(update(&src, &dir, "2026.08.19", 1000, false).unwrap(), None);
         assert!(!program(&dir).exists());
         // Within a day of that check: not even asked.
         *src.tag.lock().unwrap() = "2026.09.01".into();
         src.asked.lock().unwrap().clear();
         assert_eq!(
-            update(&src, &dir, "2026.08.19", 1000 + day - 1).unwrap(),
+            update(&src, &dir, "2026.08.19", 1000 + day - 1, false).unwrap(),
             None
         );
         assert!(src.asked.lock().unwrap().is_empty());
         // A day later, a newer release is installed.
         assert_eq!(
-            update(&src, &dir, "2026.08.19", 1000 + day).unwrap(),
+            update(&src, &dir, "2026.08.19", 1000 + day, false).unwrap(),
             Some(program(&dir))
         );
         // An older release never is.
         *src.tag.lock().unwrap() = "2026.01.01".into();
         assert_eq!(
-            update(&src, &dir, "2026.09.01", 1000 + 3 * day).unwrap(),
+            update(&src, &dir, "2026.09.01", 1000 + 3 * day, false).unwrap(),
             None
         );
     }

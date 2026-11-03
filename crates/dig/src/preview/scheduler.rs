@@ -42,6 +42,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(120);
 pub const RECHECK: Duration = Duration::from_secs(30);
 /// Tries per clip: the first and one retry.
 const ATTEMPTS: u32 = 2;
+/// This many different clips failing in a row suggest an outdated yt-dlp.
+const OUTDATED_AFTER: usize = 3;
+/// The least time between two update checks forced by failures.
+const FORCED_UPDATE_EVERY: Duration = Duration::from_secs(3600);
 /// The first wait when YouTube limits requests; each limited try after it doubles the wait,
 /// up to [`MAX_LIMITED_WAITS`] times this.
 pub const LIMITED_WAIT: Duration = Duration::from_secs(10 * 60);
@@ -153,6 +157,9 @@ pub enum PreviewEvent {
     YtDlpProgress(u8),
     /// Downloading the app's own yt-dlp failed, with why; entries keep waiting.
     YtDlpFailed(String),
+    /// Several clips in a row failed with the user's own yt-dlp, at this version: it may be
+    /// out of date (the app's own copy is checked for an update instead).
+    MaybeOutdated(String),
     /// A search found a track's preview: `clip` is the video, `title` its title, `duration`
     /// its length (it answers the entries under `key` whose length agrees).
     Found {
@@ -239,6 +246,8 @@ pub struct Config {
     pub samples: Arc<dyn SampleFetcher>,
     /// The app's own yt-dlp, used when the user has none (macOS); `None`: never downloaded.
     pub tools: Option<Tools>,
+    /// Treat several clips failing in a row as an outdated yt-dlp (the guided setup, Windows).
+    pub outdated_check: bool,
 }
 
 /// Where the app keeps its own yt-dlp (`<cache>/tools`), and where releases come from. The
@@ -262,6 +271,7 @@ impl Config {
             read_gap: READ_GAP,
             samples: Arc::new(Samples::default()),
             tools: None,
+            outdated_check: false,
         }
     }
 }
@@ -323,6 +333,10 @@ struct Scheduler {
     installing: bool,
     /// No update check before this.
     next_update: Option<Instant>,
+    /// Clips that failed in a row, with no success between (see [`OUTDATED_AFTER`]).
+    failing: HashSet<String>,
+    /// The last update check forced by failures.
+    forced_update: Option<Instant>,
     wanted: Vec<String>,
     protected: HashSet<String>,
     running: HashMap<String, Running>,
@@ -880,6 +894,9 @@ impl Scheduler {
             Ok(path) => {
                 self.answered(source_of(&clip));
                 self.failures.remove(&clip);
+                if !source_of(&clip).is_sample() {
+                    self.failing.clear();
+                }
                 self.delivered.insert(clip.clone());
                 let background = !self.protected.contains(&clip);
                 self.background.retain(|c| *c != clip);
@@ -904,6 +921,13 @@ impl Scheduler {
                 self.limited(source_of(&clip), unreachable_reason(&e))
             }
             Err(_) => {
+                if self.cfg.outdated_check && !source_of(&clip).is_sample() {
+                    self.failing.insert(clip.clone());
+                    if self.failing.len() >= OUTDATED_AFTER {
+                        self.failing.clear();
+                        self.maybe_outdated();
+                    }
+                }
                 let n = self.failures.entry(clip.clone()).or_default();
                 *n += 1;
                 if *n >= ATTEMPTS {
@@ -911,6 +935,24 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    /// Clips keep failing: the app's own copy is checked for an update at once (at most once
+    /// an hour); for the user's own, the UI is told its version.
+    fn maybe_outdated(&mut self) {
+        if !self.managed {
+            self.events
+                .push(PreviewEvent::MaybeOutdated(self.version.clone()));
+            return;
+        }
+        if self
+            .forced_update
+            .is_some_and(|t| t.elapsed() < FORCED_UPDATE_EVERY)
+        {
+            return;
+        }
+        self.forced_update = Some(Instant::now());
+        self.update_now(true);
     }
 
     fn forget_due(&mut self) {
@@ -1115,9 +1157,16 @@ impl Scheduler {
     /// most once a day (also across sessions, see [`tools::update`]). A failed check is quiet:
     /// the copy in use keeps working.
     fn update(&mut self) {
+        if self.next_update.is_some_and(|n| Instant::now() < n) {
+            return;
+        }
+        self.update_now(false);
+    }
+
+    /// Checks for a newer release now; `force`: even within a day of the last check.
+    fn update_now(&mut self, force: bool) {
         let Some(t) = &self.cfg.tools else { return };
-        if !self.managed || self.installing || self.next_update.is_some_and(|n| Instant::now() < n)
-        {
+        if !self.managed || self.installing {
             return;
         }
         self.next_update = Some(Instant::now() + tools::UPDATE_EVERY);
@@ -1127,7 +1176,7 @@ impl Scheduler {
             "dig-tools",
             Priority::Low,
             Box::new(move || {
-                let newer = tools::update(&*source, &dir, &version, crate::now_secs());
+                let newer = tools::update(&*source, &dir, &version, crate::now_secs(), force);
                 let _ = inbox.send(Msg::Updated(matches!(newer, Ok(Some(_)))));
             }),
         );
@@ -1214,6 +1263,8 @@ impl PreviewHandle {
             version: String::new(),
             installing: false,
             next_update: None,
+            failing: HashSet::new(),
+            forced_update: None,
             wanted: Vec::new(),
             protected: HashSet::new(),
             running: HashMap::new(),
@@ -1347,6 +1398,8 @@ mod tests {
             version: String::new(),
             installing: false,
             next_update: None,
+            failing: HashSet::new(),
+            forced_update: None,
             wanted: Vec::new(),
             protected: HashSet::new(),
             running: HashMap::new(),

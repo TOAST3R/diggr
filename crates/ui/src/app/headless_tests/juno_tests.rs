@@ -84,6 +84,7 @@ impl Fakes {
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
             tools: None,
+            guided_ytdlp: false,
         }
     }
 

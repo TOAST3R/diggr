@@ -57,6 +57,7 @@ impl Fakes {
             cache_root: Some(dir.join("cache")),
             bridge: BridgeSetup::Off,
             tools: None,
+            guided_ytdlp: false,
         }
     }
 
@@ -4166,6 +4167,11 @@ fn the_vinyl_release_takes_over_a_track_found_for_its_twin() {
 /// A Mac with no yt-dlp of the user's: the app's own copy (a stand-in script) comes from
 /// `source`, and the fake fetcher answers only for it once it is installed.
 fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig {
+    rig_without_ytdlp_on(name, fakes, source, false)
+}
+
+/// The same with the guided setup of Windows (`guided: true`).
+fn rig_without_ytdlp_on(name: &str, fakes: &Fakes, source: &Arc<FakeSource>, guided: bool) -> Rig {
     let (f, source) = (fakes.clone(), source.clone());
     let mut rig = Rig::with_dig(
         name,
@@ -4179,6 +4185,7 @@ fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig
                     .map(|_| (fetcher.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
             });
             setup.tools = Some(source.clone() as Arc<dyn ToolSource>);
+            setup.guided_ytdlp = guided;
             Some(setup)
         },
     );
@@ -4189,6 +4196,8 @@ fn rig_without_ytdlp(name: &str, fakes: &Fakes, source: &Arc<FakeSource>) -> Rig
 
 const YTDLP_SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
 const ASK_YTDLP: &str = "Previews need yt-dlp, a free downloader (37 MB). Download it?";
+/// The guided setup's question (the size is this system's).
+const ASK_GUIDED: &str = "Previews need yt-dlp, a free downloader (37 MB). Install it?";
 
 fn waiting_for_ytdlp(rig: &Rig, c: CrateId) -> bool {
     rig.app.crates.get(c).is_some_and(|p| {
@@ -4272,6 +4281,115 @@ fn a_download_that_fails_its_checksum_says_so_and_entries_keep_waiting() {
     assert!(message(&rig).contains("checksum"), "{}", message(&rig));
     assert!(waiting_for_ytdlp(&rig, c));
     assert!(fakes.fetcher.started().is_empty());
+}
+
+#[test]
+fn the_guided_question_opens_at_first_launch_and_whenever_a_preview_is_wanted() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let mut rig = rig_without_ytdlp_on("dig-ytdlp-first-launch", &fakes, &source, true);
+    // Nothing sent or played: the first launch asks on its own.
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), ASK_GUIDED),
+        "asked at launch",
+    );
+    rig.click_text("Not now");
+    assert!(!shows(&rig.frame(Vec::new()), ASK_GUIDED));
+    // Pasting a page wants its previews: asked again.
+    rig.frame(vec![Event::Paste(RELEASE.into())]);
+    let c = rig.app.crates.shown_id();
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), ASK_GUIDED),
+        "asked on paste",
+    );
+    rig.click_text("Not now");
+    // Previews waiting in the background never reopen it.
+    rig.until(|r| waiting_for_ytdlp(r, c), "entries wait for yt-dlp");
+    rig.app.dig_preview_event(PreviewEvent::NeedsYtDlp);
+    for _ in 0..3 {
+        assert!(!shows(&rig.frame(Vec::new()), ASK_GUIDED));
+    }
+    // Playing one does.
+    let id = rig.app.crates.get(c).unwrap().entries()[0].id;
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::PlayEntry(id), &ctx);
+    rig.until(|r| shows(&r.frame(Vec::new()), ASK_GUIDED), "asked on play");
+    rig.click_text("Not now");
+    // So does its "needs yt-dlp" icon.
+    rig.app.apply(Action::Dig(DigAction::AskYtDlp), &ctx);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), ASK_GUIDED),
+        "asked by the icon",
+    );
+    assert!(
+        source.asked.lock().unwrap().is_empty(),
+        "nothing downloaded without Install"
+    );
+    // Install from there: it stays open, says it's ready, and the armed entry plays.
+    rig.click_text("Install");
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Previews are ready"),
+        "ready, in the question",
+    );
+    rig.until(
+        |r| r.app.position.state == PlayState::Playing && r.app.crates.playing_id() == c,
+        "the played entry starts",
+    );
+}
+
+#[test]
+fn a_guided_install_that_fails_says_why_in_the_question() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, false));
+    let mut rig = rig_without_ytdlp_on("dig-ytdlp-guided-fail", &fakes, &source, true);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), ASK_GUIDED),
+        "asked at launch",
+    );
+    rig.click_text("Install");
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "yt-dlp couldn't be installed"),
+        "the failure is said in the question",
+    );
+    let out = rig.frame(Vec::new());
+    assert!(
+        text_list(&out).iter().any(|t| t.contains("checksum")),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Try again"));
+}
+
+#[test]
+fn an_old_yt_dlp_is_said_to_be_out_of_date_once() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-ytdlp-outdated", &fakes, |_| {});
+    // A recent version (a future date counts as new): nothing said.
+    rig.app
+        .dig_preview_event(PreviewEvent::MaybeOutdated("2099.01.01".into()));
+    assert!(!message(&rig).contains("out of date"), "{}", message(&rig));
+    rig.app
+        .dig_preview_event(PreviewEvent::MaybeOutdated("2020.01.01".into()));
+    assert!(
+        message(&rig).contains("yt-dlp 2020.01.01 may be out of date"),
+        "{}",
+        message(&rig)
+    );
+    // Once a session.
+    rig.app.message = None;
+    rig.app
+        .dig_preview_event(PreviewEvent::MaybeOutdated("2020.01.01".into()));
+    assert!(!message(&rig).contains("out of date"));
+}
+
+#[test]
+fn without_the_guided_setup_nothing_is_asked_at_launch() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let mut rig = rig_without_ytdlp("dig-ytdlp-not-guided", &fakes, &source);
+    for _ in 0..5 {
+        assert!(!shows(&rig.frame(Vec::new()), ASK_YTDLP));
+    }
 }
 
 #[test]
