@@ -1315,9 +1315,10 @@ Other environment variables, mostly for unattended runs and measurements:
 ```sh
 scripts/make-dmg.sh             # dist/Diggr.app and dist/Diggr-<version>[-unsigned].dmg
 scripts/make-linux.sh           # dist/Diggr-<version>-x86_64-linux.tar.gz (needs Docker)
-scripts/make-windows.sh         # dist/Diggr-<version>-x86_64-windows.zip (needs cargo-xwin, llvm, lld)
+scripts/make-windows.sh --signed  # dist/Diggr-<version>-x86_64-windows.zip, built and signed in CI (needs gh, osslsigncode)
+scripts/make-windows.sh         # the same zip, cross-built unsigned on the Mac (needs cargo-xwin, llvm, lld)
 scripts/release.sh --unsigned --dry-run    # every check, then stops before tagging
-scripts/release.sh --unsigned [--prerelease] [--notes-file NOTES.md]
+scripts/release.sh --unsigned [--windows-unsigned] [--prerelease] [--notes-file NOTES.md]
 ```
 
 `make-dmg.sh` builds `diggr` for Apple Silicon and Intel (macOS 11 or later), joins them into
@@ -1350,12 +1351,28 @@ runtime is linked into the exe (`.cargo/config.toml`), so a Windows without the 
 Redistributable runs it; the script fails if the exe imports `VCRUNTIME*`, `MSVCP*` or
 `ucrtbase`, or isn't a GUI program (a console exe would open a window behind the player). It
 packs `Diggr.exe` and `packaging/windows/README.txt` (the first-open steps) into a zip of about
-12 MB. The exe's icon is `assets/icon/diggr.ico` (made by `icon-gen` with the other icons) and
-`apps/native/build.rs` embeds it with `llvm-rc`. The exe isn't signed: Windows SmartScreen stops
-the first open of a downloaded copy until the user clicks More info, then Run anyway. A release
+12 MB. The checks are `scripts/check-windows-exe.sh` and the packing `scripts/pack-windows-zip.sh`,
+shared with the CI build below. The exe's icon is `assets/icon/diggr.ico` (made by `icon-gen` with
+the other icons) and `apps/native/build.rs` embeds it with `llvm-rc`. This exe isn't signed:
+Windows SmartScreen stops the first open of a downloaded copy until the user clicks More info,
+then Run anyway, and Windows 11 with Smart App Control on blocks it outright. A release
 build has no console window; started from PowerShell it still prints, but PowerShell doesn't
 wait for it, so pipe it to see the output in order (`.\Diggr.exe --help | more`). Windows 10 is
 the tested system; Windows 11 is expected to work.
+
+`make-windows.sh --signed` makes the release zip instead. Free code signing is provided by
+SignPath.io, certificate by SignPath Foundation (the [code-signing policy](https://diggr.es/code-signing/)),
+and SignPath signs only builds made by the project's own CI. So the script checks that `HEAD` is
+pushed, starts `.github/workflows/windows-signed.yml` for it (a GitHub-hosted Windows runner
+builds with Rust 1.98 and MSVC, runs the same check and pack scripts, and submits the zip to
+SignPath), waits for the run while the maintainer approves the signing request in SignPath,
+downloads the signed zip into `dist/` and checks with `osslsigncode` (`brew install osslsigncode`)
+that `Diggr.exe` is validly signed by SignPath Foundation. The workflow needs the repository
+secret `SIGNPATH_API_TOKEN` and the repository variables `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_POLICY_SLUG`; without them it skips signing and uploads only
+the unsigned zip. A signed exe opens with Smart App Control on; SmartScreen may still stop it
+once ("Windows protected your PC", publisher SignPath Foundation) until the certificate has a
+download history, so the zip's README and the release notes keep the More info, Run anyway steps.
 
 `release.sh --unsigned` publishes `dist/Diggr-<version>-unsigned.dmg`,
 `dist/Diggr-<version>-x86_64-linux.tar.gz` and `dist/Diggr-<version>-x86_64-windows.zip` as
@@ -1363,7 +1380,9 @@ GitHub Release `v<version>`, with one `Diggr-<version>-SHA256SUMS` for all three
 `sha256sum -c`) and the macOS Open Anyway, Linux install and Windows first-open steps appended
 to the notes, after checking that the tree is clean, all three files exist and the version in
 `apps/native/Cargo.toml` isn't tagged yet. Without `--unsigned` it publishes the signed image
-instead, and only if `spctl` accepts it. `--prerelease` marks the release as a pre-release, so
+instead, and only if `spctl` accepts it. It stops before tagging when the zip's `Diggr.exe` isn't
+signed by SignPath Foundation, unless it is given `--windows-unsigned` (for the Mac cross-build,
+the fallback while signing is unavailable); the notes' Windows steps say which it is. `--prerelease` marks the release as a pre-release, so
 `releases/latest` (and the download links above) keep leading to the previous release until it
 is confirmed on a real machine; then `gh release edit v<version> --prerelease=false --latest`
 promotes it. Release files are never committed: `dist/` is in `.gitignore`.

@@ -6,6 +6,12 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### Improved
+
+- **The Windows download is signed.** Diggr.exe now carries a code signature from SignPath
+  Foundation, so it opens on Windows 11 with Smart App Control on. Windows may still ask once
+  the first time: click More info, then Run anyway.
+
 ### Changed
 
 - **Diggr is free software.** It now comes under the GNU GPL, version 3 or later: you may

@@ -2,11 +2,14 @@
 # Publishes the macOS disk image (scripts/make-dmg.sh), the Linux tarball (scripts/make-linux.sh)
 # and the Windows zip (scripts/make-windows.sh) as GitHub Release v<version>, with one SHA256SUMS
 # for all three, after checking the tree is clean, the version isn't tagged yet, all three files
-# exist and the image is signed.
+# exist, the image is signed and the zip's Diggr.exe is signed by SignPath Foundation.
 #
-# Usage: scripts/release.sh [--unsigned] [--prerelease] [--notes-file FILE] [--dry-run]
+# Usage: scripts/release.sh [--unsigned] [--windows-unsigned] [--prerelease] [--notes-file FILE] [--dry-run]
 #   --unsigned    publish dist/Diggr-<version>-unsigned.dmg (the normal case), with the macOS
 #                 Open Anyway steps appended to the notes
+#   --windows-unsigned  publish a Windows zip that isn't signed (the Mac cross-build, a fallback
+#                 while SignPath signing is unavailable); without it, the zip must come from
+#                 scripts/make-windows.sh --signed
 #   --prerelease  mark the release as a pre-release, so releases/latest keeps leading to the
 #                 previous one until it is promoted (gh release edit v<version>
 #                 --prerelease=false --latest), for a version not yet confirmed on every system
@@ -18,10 +21,11 @@ cd "$(dirname "$0")/.."
 NAME=Diggr
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/native/Cargo.toml | head -1)
 TAG=v$VERSION
-UNSIGNED=0 DRY=0 PRE=0 NOTES=()
+UNSIGNED=0 WIN_UNSIGNED=0 DRY=0 PRE=0 NOTES=()
 while (($#)); do
     case $1 in
         --unsigned) UNSIGNED=1 ;;
+        --windows-unsigned) WIN_UNSIGNED=1 ;;
         --dry-run) DRY=1 ;;
         --prerelease) PRE=1 ;;
         --notes-file) NOTES=(--notes-file "$2"); shift ;;
@@ -47,7 +51,11 @@ fi
 TARBALL=dist/$NAME-$VERSION-x86_64-linux.tar.gz
 [[ -f $TARBALL ]] || fail "$TARBALL not found; run scripts/make-linux.sh."
 ZIP=dist/$NAME-$VERSION-x86_64-windows.zip
-[[ -f $ZIP ]] || fail "$ZIP not found; run scripts/make-windows.sh."
+[[ -f $ZIP ]] || fail "$ZIP not found; run scripts/make-windows.sh --signed."
+if ((!WIN_UNSIGNED)); then
+    scripts/check-windows-signature.sh "$ZIP" ||
+        fail "$ZIP isn't signed by SignPath Foundation; run scripts/make-windows.sh --signed (or pass --windows-unsigned)."
+fi
 
 SUMS=dist/$NAME-$VERSION-SHA256SUMS
 (cd dist && shasum -a 256 "$(basename "$DMG")" "$(basename "$TARBALL")" "$(basename "$ZIP")") >"$SUMS"
@@ -64,8 +72,14 @@ notes=dist/$NAME-$VERSION-notes.md
   echo "driver, which desktop distributions have."
   echo
   echo "**Windows 10 and later (x86_64):** extract the zip anywhere and open \`Diggr.exe\`; there is"
-  echo "nothing to install. This build isn't signed, so Windows SmartScreen stops it once: click"
-  echo "**More info**, then **Run anyway**. Previews need yt-dlp, which the zip's README explains."; } >"$notes"
+  if ((WIN_UNSIGNED)); then
+      echo "nothing to install. This build isn't signed, so Windows SmartScreen stops it once: click"
+      echo "**More info**, then **Run anyway**. Windows 11 with Smart App Control on blocks it."
+  else
+      echo "nothing to install. It is signed by SignPath Foundation. Windows SmartScreen may still"
+      echo "stop it once (\"Windows protected your PC\"): click **More info**, then **Run anyway**."
+  fi
+  echo "Previews need yt-dlp, which the zip's README explains."; } >"$notes"
 NOTES=(--notes-file "$notes")
 echo "Ready: $TAG with"
 for f in "$DMG" "$TARBALL" "$ZIP"; do echo "  $f ($(du -h "$f" | cut -f1))"; done

@@ -1,0 +1,101 @@
+# Builds the Windows zip on a GitHub-hosted Windows runner and has SignPath Foundation sign the
+# Diggr.exe inside it: SignPath signs only builds it can trace to the project's own CI. Started by
+# scripts/make-windows.sh --signed for one pushed commit, which then downloads the `windows-signed`
+# artifact. The checks and the packing are the scripts the Mac build uses, so both zips match.
+#
+# Signing needs the secret SIGNPATH_API_TOKEN and the variables SIGNPATH_ORGANIZATION_ID,
+# SIGNPATH_PROJECT_SLUG and SIGNPATH_POLICY_SLUG. Without them the run uploads only the unsigned
+# zip (`windows-unsigned`) and says signing was skipped.
+name: Windows signed build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      LLVM_OBJDUMP: C:/Program Files/LLVM/bin/llvm-objdump.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: cargo build --release --locked -p diggr --target "$TARGET"
+
+      - name: Check the exe
+        run: scripts/check-windows-exe.sh "target/$TARGET/release/diggr.exe"
+
+      - name: Pack
+        id: pack
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/native/Cargo.toml | head -1)
+          zip=Diggr-$version-x86_64-windows.zip
+          scripts/pack-windows-zip.sh "target/$TARGET/release/diggr.exe" "dist/$zip"
+          7z l "dist/$zip"
+          echo "zip=$zip" >>"$GITHUB_OUTPUT"
+
+      - name: Upload the unsigned zip
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned
+          path: dist/${{ steps.pack.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Signing skipped
+        if: vars.SIGNPATH_ORGANIZATION_ID == ''
+        run: >-
+          echo "::notice::Signing skipped: SIGNPATH_ORGANIZATION_ID is not set; only the unsigned zip is uploaded."
+
+      # The artifact SignPath receives is GitHub's archive around the zip, so its artifact
+      # configuration is zip > zip > Diggr.exe; it returns the same shape, unpacked into signed/.
+      - name: Sign with SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Check the signature
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: |
+          $zip = "signed/${{ steps.pack.outputs.zip }}"
+          Expand-Archive $zip -DestinationPath signed/check
+          $exe = Get-ChildItem signed/check -Recurse -Filter Diggr.exe | Select-Object -First 1
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          Write-Output "status: $($sig.Status), signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'SignPath Foundation') {
+            Write-Error 'Diggr.exe is not validly signed by SignPath Foundation.'
+            exit 1
+          }
+
+      - name: Upload the signed zip
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signed
+          path: signed/${{ steps.pack.outputs.zip }}
+          if-no-files-found: error
