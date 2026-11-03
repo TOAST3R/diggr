@@ -152,8 +152,11 @@ pub fn clip_url(clip: &str) -> String {
     format!("https://www.youtube.com/watch?v={clip}")
 }
 
+/// A yt-dlp to run: a program, and the arguments that always come first (for the app's Windows
+/// copy: the zip app its Python runs, and its JavaScript runtime). The rest are the app's own.
 pub struct YtDlp {
     pub program: PathBuf,
+    pub lead: Vec<String>,
 }
 
 /// Where yt-dlp usually is, for when the app is started without the shell's PATH (a macOS app
@@ -180,13 +183,49 @@ pub fn candidates(configured: Option<&str>) -> Vec<PathBuf> {
 /// The first candidate that runs, with its version.
 pub fn find(configured: Option<&str>) -> Option<(YtDlp, String)> {
     candidates(configured).into_iter().find_map(|program| {
-        let y = YtDlp { program };
+        let y = YtDlp::at(program);
         let v = y.version()?;
         Some((y, v))
     })
 }
 
 impl YtDlp {
+    /// The yt-dlp at `path`. The app's Windows copy is yt-dlp's zip app with the Python that runs
+    /// it beside it (`tools/yt-dlp`, `tools/python/python.exe`, see `tools`): it is started as
+    /// `python.exe tools/yt-dlp`, with the app's Deno as its JavaScript runtime when it is there,
+    /// so every program Windows starts for it is signed. Anything else is a program of its own.
+    pub fn at(path: PathBuf) -> Self {
+        let dir = path
+            .parent()
+            .filter(|_| path.file_name().is_some_and(|n| n == "yt-dlp"));
+        let Some(python) = dir.map(crate::tools::python).filter(|p| p.is_file()) else {
+            return Self {
+                program: path,
+                lead: Vec::new(),
+            };
+        };
+        let mut lead = vec![path.to_string_lossy().into_owned()];
+        let deno = dir.map(crate::tools::deno).filter(|d| d.is_file());
+        if let Some(deno) = deno {
+            lead.extend([
+                "--no-js-runtimes".into(),
+                "--js-runtimes".into(),
+                format!("deno:{}", deno.to_string_lossy()),
+            ]);
+        }
+        Self {
+            program: python,
+            lead,
+        }
+    }
+
+    /// A command for this yt-dlp, its leading arguments already given.
+    fn command(&self) -> std::process::Command {
+        let mut c = proc::command(&self.program);
+        c.args(&self.lead);
+        c
+    }
+
     /// The whole argument list for one clip.
     pub fn args(clip: &Clip, dir: &Path) -> Vec<String> {
         let (format, url) = match clip {
@@ -220,7 +259,8 @@ impl YtDlp {
     /// Runs yt-dlp with `args` until it ends or `timeout`, giving its output; a failure is
     /// limited or the last error line.
     fn run(&self, args: Vec<String>, timeout: Duration, what: &str) -> Result<String, FetchError> {
-        let mut child = proc::command(&self.program)
+        let mut child = self
+            .command()
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -303,7 +343,8 @@ impl Fetcher for YtDlp {
         let clip = key.as_str();
         std::fs::create_dir_all(dir).map_err(|e| FetchError::Failed(e.to_string()))?;
         let dest = preview_path(dir, clip);
-        let mut child = proc::command(&self.program)
+        let mut child = self
+            .command()
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -357,7 +398,8 @@ impl Fetcher for YtDlp {
     }
 
     fn version(&self) -> Option<String> {
-        let mut child = proc::command(&self.program)
+        let mut child = self
+            .command()
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -863,9 +905,7 @@ mod tests {
 
     #[test]
     fn malformed_ids_are_never_run() {
-        let y = YtDlp {
-            program: PathBuf::from("/definitely/not/here/yt-dlp"),
-        };
+        let y = YtDlp::at(PathBuf::from("/definitely/not/here/yt-dlp"));
         let dir = crate::test_dir("fetch-invalid");
         let never = AtomicBool::new(false);
         for id in ["abc;rm -rf", "--exec=rm-x", "dQw4w9WgXc", "../../etc/pw"] {
@@ -920,6 +960,54 @@ mod tests {
         // With or without `.exe`: Windows adds it when it starts the program.
         for p in [r"C:\Tools\yt-dlp.exe", r"C:\Users\Ana María\bin\yt-dlp"] {
             assert_eq!(candidates(Some(p)), [PathBuf::from(p)]);
+        }
+    }
+
+    #[test]
+    fn the_apps_windows_copy_runs_through_its_python_and_deno() {
+        let dir = crate::test_dir("fetch-managed");
+        let tools = dir.join("tools");
+        let zipapp = tools.join("yt-dlp");
+        std::fs::create_dir_all(tools.join("python")).unwrap();
+        std::fs::create_dir_all(tools.join("js")).unwrap();
+        std::fs::write(&zipapp, b"zip").unwrap();
+        let args = |y: &YtDlp| -> Vec<String> {
+            let mut c = y.command();
+            c.arg("--version");
+            c.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+
+        // Without the Python beside it, `tools/yt-dlp` is a program of its own (macOS, Linux).
+        let alone = YtDlp::at(zipapp.clone());
+        assert_eq!(alone.program, zipapp);
+        assert_eq!(args(&alone), ["--version"]);
+
+        // With it: Python runs the zip app, which comes before every argument the app adds.
+        std::fs::write(crate::tools::python(&tools), b"exe").unwrap();
+        let y = YtDlp::at(zipapp.clone());
+        assert_eq!(y.program, crate::tools::python(&tools));
+        let zip = zipapp.to_string_lossy().into_owned();
+        assert_eq!(args(&y), [zip.clone(), "--version".into()]);
+
+        // And with Deno, yt-dlp uses only that one as its JavaScript runtime.
+        std::fs::write(crate::tools::deno(&tools), b"exe").unwrap();
+        let deno = format!("deno:{}", crate::tools::deno(&tools).to_string_lossy());
+        assert_eq!(
+            args(&YtDlp::at(zipapp.clone())),
+            [
+                zip,
+                "--no-js-runtimes".into(),
+                "--js-runtimes".into(),
+                deno,
+                "--version".into()
+            ]
+        );
+
+        // A user's own `yt-dlp.exe` or `yt-dlp_macos` beside them is never taken for the zip app.
+        for name in ["yt-dlp.exe", "yt-dlp_macos"] {
+            assert!(YtDlp::at(tools.join(name)).lead.is_empty(), "{name}");
         }
     }
 

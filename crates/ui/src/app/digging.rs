@@ -64,8 +64,32 @@ const KEEPERS: &str = "Keepers";
 /// Up to this many records missing from the wantlist crate are fetched one by one; more,
 /// and the whole wantlist page is sent into it.
 const FILL_ONE_BY_ONE: usize = 20;
-const INSTALL_HINT: &str =
-    "Previews need yt-dlp: install it (brew install yt-dlp); it is found within 30 s";
+/// How long "Previews are ready" stays before the question closes.
+const YTDLP_READY_FOR: Duration = Duration::from_secs(2);
+/// A user's yt-dlp older than this, with previews failing, is said to be out of date.
+const OUTDATED_DAYS: u64 = 60;
+
+/// How to install yt-dlp by hand on this system: only this system's tools.
+fn install_hint() -> &'static str {
+    hint_for(cfg!(target_os = "macos"), cfg!(windows))
+}
+
+fn hint_for(macos: bool, windows: bool) -> &'static str {
+    if macos {
+        "install it with brew install yt-dlp; it is found within 30 s"
+    } else if windows {
+        "put yt-dlp.exe from github.com/yt-dlp/yt-dlp/releases in a folder on your PATH, or set \
+         its path in OPT > Discogs…; it is found within 30 s"
+    } else {
+        "install it with your package manager, or with python3 -m pip install -U yt-dlp; it is \
+         found within 30 s"
+    }
+}
+
+/// Whether an entry's preview needs yt-dlp (a store's sample doesn't).
+pub(super) fn needs_ytdlp(e: &Entry) -> bool {
+    clip_of(e).is_some_and(|c| !dig::preview::clip::source_of(c).is_sample())
+}
 
 /// What the host provides for digging (fakes in tests).
 pub struct DigSetup {
@@ -80,9 +104,13 @@ pub struct DigSetup {
     /// The app's cache folder: Discogs responses, previews, scores and overviews.
     pub cache_root: Option<PathBuf>,
     pub bridge: BridgeSetup,
-    /// Where the app's own yt-dlp comes from when the user has none (macOS, x86_64 Linux); `None`: the user
-    /// installs it.
+    /// Where the app's own yt-dlp comes from when the user has none (macOS, x86_64 Linux,
+    /// x86_64 Windows); `None`: the user installs it.
     pub tools: Option<Arc<dyn ToolSource>>,
+    /// The guided setup (Windows): asked at first launch and at every action that needs a
+    /// preview, installed with its progress in the question, and an outdated yt-dlp noticed.
+    /// Otherwise (macOS, Linux) asked once per session, as before.
+    pub guided_ytdlp: bool,
 }
 
 /// Whether the browser bridge runs, and on which port.
@@ -108,6 +136,7 @@ impl DigSetup {
             cache_root,
             bridge: BridgeSetup::Configured,
             tools: dig::tools::MANAGED.then(|| Arc::new(GitHub::default()) as _),
+            guided_ytdlp: cfg!(windows),
         }
     }
 }
@@ -158,6 +187,8 @@ pub enum DigAction {
     StopDownload,
     /// Show Download all tracks' window again.
     ShowDownload,
+    /// An entry's "needs yt-dlp" icon was clicked: the question opens again (guided).
+    AskYtDlp,
     /// Retry failed tracks: a label crate's "clip failed" and "not found" tracks, again.
     RetryFailed(CrateId),
     /// While YouTube limits requests: try again now.
@@ -290,10 +321,18 @@ pub(super) struct Dig {
     ytdlp: YtDlpState,
     /// Said (or asked) once per session what to do about a missing yt-dlp.
     hint_shown: bool,
-    /// "Previews need yt-dlp… Download it?" is open.
+    /// "Previews need yt-dlp…" is open.
     ask_ytdlp: bool,
+    /// The user wanted a preview before the lookup said whether yt-dlp is there (guided).
+    want_ytdlp: bool,
     /// The app's own yt-dlp is downloading: percent done.
     ytdlp_download: Option<u8>,
+    /// Why the last install failed, shown in the question with Try again (guided).
+    ytdlp_error: Option<String>,
+    /// The install from the question succeeded at this moment: "Previews are ready" (guided).
+    ytdlp_ready: Option<Instant>,
+    /// Said this session that the user's yt-dlp may be out of date.
+    outdated_said: bool,
     offline: bool,
     pub(super) jobs: BTreeMap<JobId, JobView>,
     /// The clips last asked for, in priority order.
@@ -482,7 +521,11 @@ impl Dig {
             ytdlp: YtDlpState::Unknown,
             hint_shown: false,
             ask_ytdlp: false,
+            want_ytdlp: false,
             ytdlp_download: None,
+            ytdlp_error: None,
+            ytdlp_ready: None,
+            outdated_said: false,
             offline: false,
             jobs: BTreeMap::new(),
             horizon: Vec::new(),
@@ -651,6 +694,13 @@ impl Dig {
         }
     }
 
+    /// Closes "Previews need yt-dlp…" and forgets what it showed.
+    fn close_ytdlp_question(&mut self) {
+        self.ask_ytdlp = false;
+        self.ytdlp_error = None;
+        self.ytdlp_ready = None;
+    }
+
     /// Asks the scheduler for the app's own yt-dlp; progress shows in the status line.
     fn download_ytdlp(&mut self) {
         self.ytdlp_download = Some(0);
@@ -704,6 +754,7 @@ impl Dig {
                         dir: root.join("tools"),
                         source,
                     }),
+                outdated_check: self.setup.guided_ytdlp,
                 ..scheduler::Config::new(
                     self.previews_dir(),
                     self.settings.cache_bytes(),
@@ -714,6 +765,12 @@ impl Dig {
             move || wake.request_repaint(),
         )
         .ok();
+        // Guided, until the first launch's question is answered: yt-dlp is looked for at once
+        // (on the scheduler's thread), so it can be asked without waiting for a preview.
+        if self.setup.guided_ytdlp && self.setup.tools.is_some() && !self.settings.ytdlp_setup_asked
+        {
+            self.preview(PreviewCommand::CheckProgram);
+        }
         let wake = self.wake.clone();
         self.covers.handle = CoverHandle::start(
             &*self.spawner,
@@ -1377,8 +1434,26 @@ impl DiggrApp {
 
     /// Cmd+V / Ctrl+V: a Discogs or Bandcamp address goes to the shown crate; other text is
     /// ignored.
+    /// The user did something that needs a yt-dlp preview: with the guided setup, while
+    /// yt-dlp is missing, the question opens (once the lookup answers, if it hasn't yet).
+    pub(super) fn dig_wants_ytdlp(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        if !d.setup.guided_ytdlp {
+            return;
+        }
+        match d.ytdlp {
+            YtDlpState::Missing => {
+                d.ask_ytdlp = true;
+                d.ytdlp_ready = None;
+            }
+            YtDlpState::Unknown => d.want_ytdlp = true,
+            YtDlpState::Found { .. } => {}
+        }
+    }
+
     pub(super) fn dig_paste(&mut self, text: &str) {
         if self.mix_paste(text) {
+            self.dig_wants_ytdlp();
             return;
         }
         // The app can't read these stores: their pages come from the browser extension.
@@ -1393,17 +1468,26 @@ impl DiggrApp {
             }
         }
         match dig::bandcamp::fan::parse(text) {
-            Ok(page) => return self.fan_import(page),
+            Ok(page) => {
+                self.dig_wants_ytdlp();
+                return self.fan_import(page);
+            }
             Err(Refused::Unsupported) => return self.notify(dig::bandcamp::SUPPORTED),
             Err(Refused::NotDiscogs) => {}
         }
         match dig::bandcamp::parse(text) {
-            Ok(page) => return self.bandcamp_send(page, SendMode::Enqueue, None, None, false),
+            Ok(page) => {
+                self.dig_wants_ytdlp();
+                return self.bandcamp_send(page, SendMode::Enqueue, None, None, false);
+            }
             Err(Refused::Unsupported) => return self.notify(dig::bandcamp::SUPPORTED),
             Err(Refused::NotDiscogs) => {}
         }
         match url::parse(text) {
-            Ok(page) => self.dig_send_asked(page, SendMode::Enqueue, None),
+            Ok(page) => {
+                self.dig_wants_ytdlp();
+                self.dig_send_asked(page, SendMode::Enqueue, None);
+            }
             Err(Refused::Unsupported) => self.notify(url::SUPPORTED),
             Err(Refused::NotDiscogs) => {}
         }
@@ -2142,6 +2226,17 @@ impl DiggrApp {
     // ---- the browser bridge ----------------------------------------------------------------
 
     pub(super) fn dig_bridge_command(&mut self, c: BridgeCommand) {
+        // A page sent to fill a crate wants its previews (a store's samples need no yt-dlp).
+        if matches!(
+            c,
+            BridgeCommand::Send { .. }
+                | BridgeCommand::SendBandcamp { .. }
+                | BridgeCommand::SendTracklist { .. }
+                | BridgeCommand::SendMix { .. }
+                | BridgeCommand::ImportFan(_)
+        ) {
+            self.dig_wants_ytdlp();
+        }
         match c {
             BridgeCommand::Send {
                 page,
@@ -3115,19 +3210,37 @@ impl DiggrApp {
             PreviewEvent::NeedsYtDlp => {
                 let Some(d) = &mut self.dig else { return };
                 d.ytdlp = YtDlpState::Missing;
+                let can_install = d.setup.tools.is_some();
                 let first = !d.hint_shown;
+                let ask = if d.setup.guided_ytdlp {
+                    // Asked at the first launch without one, and when a preview was wanted
+                    // before the lookup answered.
+                    let first_launch = can_install && !d.settings.ytdlp_setup_asked;
+                    (first_launch || std::mem::take(&mut d.want_ytdlp))
+                        && d.ytdlp_download.is_none()
+                } else {
+                    // Where the app can fetch its own copy, it asks once; elsewhere, the hint.
+                    first && can_install && d.ytdlp_download.is_none()
+                };
+                let d_guided = d.setup.guided_ytdlp;
                 d.hint_shown = true;
-                // Where the app can fetch its own copy, it asks once; elsewhere, the hint.
-                let ask = first && d.setup.tools.is_some() && d.ytdlp_download.is_none();
                 d.ask_ytdlp |= ask;
                 self.dig_mark_waiting(WaitKind::Queued, WaitKind::NeedsYtDlp);
-                if first && !ask {
-                    self.notify(INSTALL_HINT);
+                // Guided, where the app can install it, the question says it all.
+                if first && !ask && !(d_guided && can_install) {
+                    self.notify(format!("Previews need yt-dlp: {}", install_hint()));
                 }
             }
             PreviewEvent::YtDlp { version, managed } => {
                 if let Some(d) = &mut self.dig {
                     d.ytdlp = YtDlpState::Found { version, managed };
+                    d.want_ytdlp = false;
+                    // Installed (or found) while the guided question is open: it says so, then
+                    // closes.
+                    if d.ask_ytdlp && d.setup.guided_ytdlp {
+                        d.ytdlp_error = None;
+                        d.ytdlp_ready = Some(Instant::now());
+                    }
                     d.ytdlp_download = None;
                 }
                 self.dig_mark_waiting(WaitKind::NeedsYtDlp, WaitKind::Queued);
@@ -3138,12 +3251,29 @@ impl DiggrApp {
                 }
             }
             PreviewEvent::YtDlpFailed(why) => {
-                if let Some(d) = &mut self.dig {
-                    d.ytdlp_download = None;
+                let Some(d) = &mut self.dig else { return };
+                d.ytdlp_download = None;
+                // Guided: said in the question when it is open, with Try again.
+                if d.ask_ytdlp && d.setup.guided_ytdlp {
+                    d.ytdlp_error = Some(why);
+                } else {
+                    self.notify(format!(
+                        "yt-dlp download failed ({why}); try again in Options › Discogs…"
+                    ));
                 }
-                self.notify(format!(
-                    "yt-dlp download failed ({why}); try again in Options › Discogs…"
-                ));
+            }
+            PreviewEvent::MaybeOutdated(version) => {
+                let Some(d) = &mut self.dig else { return };
+                let old = dig::tools::days_old(&version, dig::now_secs())
+                    .is_some_and(|days| days > OUTDATED_DAYS);
+                if old && !d.outdated_said {
+                    d.outdated_said = true;
+                    self.notify(format!(
+                        "yt-dlp {} may be out of date: get a newer one from \
+                         github.com/yt-dlp/yt-dlp/releases",
+                        version.trim()
+                    ));
+                }
             }
         }
     }
@@ -3753,6 +3883,7 @@ impl DiggrApp {
             }
             DigAction::StopDownload => self.dig_stop_download(),
             DigAction::ShowDownload => self.dig_show_download(),
+            DigAction::AskYtDlp => self.dig_wants_ytdlp(),
             DigAction::RetryFailed(c) => self.dig_retry_failed(c),
             DigAction::TryNow => {
                 if let Some(d) = &self.dig {
@@ -5057,19 +5188,90 @@ impl DiggrApp {
 
     /// "Previews need yt-dlp, a free downloader (37 MB). Download it?": Download (Enter) or
     /// Not now (Esc), which isn't asked again this session (Options ▸ Discogs… still offers it).
+    /// With the guided setup (Windows) it is asked at first launch and at every action that
+    /// needs a preview: Install shows its progress here, then "Previews are ready", or why it
+    /// failed with Try again; where the app can't install one, it says how to.
     fn dig_ask_ytdlp_ui(&mut self, ctx: &egui::Context) {
-        if !self.dig.as_ref().is_some_and(|d| d.ask_ytdlp) {
+        let Some(d) = &self.dig else { return };
+        if !d.ask_ytdlp {
             return;
         }
+        let (can_install, guided) = (d.setup.tools.is_some(), d.setup.guided_ytdlp);
+        let ready = d.ytdlp_ready.map(|t| t.elapsed());
+        if ready.is_some_and(|t| t >= YTDLP_READY_FOR) {
+            if let Some(d) = &mut self.dig {
+                d.close_ytdlp_question();
+            }
+            return;
+        }
+        let (installing, error) = (d.ytdlp_download, d.ytdlp_error.clone());
         let mut choice = None;
         egui::Modal::new(egui::Id::new("ask-ytdlp")).show(ctx, |ui| {
-            ui.set_max_width(380.0);
+            if !guided {
+                ui.set_max_width(380.0);
+                ui.strong(format!(
+                    "Previews need yt-dlp, a free downloader ({SIZE_MB} MB). Download it?"
+                ));
+                ui.label("It comes from yt-dlp's official releases and is checked before it runs.");
+                ui.horizontal(|ui| {
+                    if ui.button("Download").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Not now").clicked() {
+                        choice = Some(false);
+                    }
+                });
+                return;
+            }
+            ui.set_max_width(420.0);
+            if let Some(t) = ready {
+                ui.strong("Previews are ready");
+                ctx.request_repaint_after(YTDLP_READY_FOR.saturating_sub(t));
+                return;
+            }
+            if let Some(p) = installing {
+                ui.strong(format!("Installing yt-dlp: {p}%"));
+                ui.label("Previews start as soon as it's in place.");
+                if ui.button("Hide").clicked() {
+                    choice = Some(false);
+                }
+                return;
+            }
+            if let Some(why) = &error {
+                ui.strong("yt-dlp couldn't be installed");
+                ui.label(why);
+                ui.horizontal(|ui| {
+                    if ui.button("Try again").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Not now").clicked() {
+                        choice = Some(false);
+                    }
+                });
+                return;
+            }
+            if !can_install {
+                ui.strong("Previews need yt-dlp, a free downloader");
+                ui.label(format!("To get it, {}.", install_hint()));
+                ui.label("Your own files play without it.");
+                if ui.button("Close").clicked() {
+                    choice = Some(false);
+                }
+                return;
+            }
             ui.strong(format!(
-                "Previews need yt-dlp, a free downloader ({SIZE_MB} MB). Download it?"
+                "Previews need yt-dlp, a free downloader ({SIZE_MB} MB). Install it?"
             ));
-            ui.label("It comes from yt-dlp's official releases and is checked before it runs.");
+            ui.label(
+                "Previews from Discogs, Bandcamp and the other shops are fetched with it. It \
+                 comes from yt-dlp's official releases and is checked before it runs.",
+            );
+            if dig::tools::WITH_PYTHON {
+                ui.label("It comes with a Python and a JavaScript runtime that only Diggr uses.");
+            }
+            ui.label("Your own files play without it.");
             ui.horizontal(|ui| {
-                if ui.button("Download").clicked() {
+                if ui.button("Install").clicked() {
                     choice = Some(true);
                 }
                 if ui.button("Not now").clicked() {
@@ -5077,16 +5279,39 @@ impl DiggrApp {
                 }
             });
         });
-        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let asking = installing.is_none() && ready.is_none() && can_install;
+        if asking && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             choice = Some(true);
         } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             choice = Some(false);
         }
-        let Some(download) = choice else { return };
+        let Some(install) = choice else { return };
         let Some(d) = &mut self.dig else { return };
-        d.ask_ytdlp = false;
-        if download {
+        if !guided {
+            // As before: the question closes, and the status line shows the download.
+            d.close_ytdlp_question();
+            if install {
+                d.download_ytdlp();
+            }
+            return;
+        }
+        let saved = if d.settings.ytdlp_setup_asked {
+            None
+        } else {
+            d.settings.ytdlp_setup_asked = true;
+            d.save_settings()
+        };
+        if install && can_install {
+            d.ytdlp_error = None;
             d.download_ytdlp();
+        } else if installing.is_some() {
+            // Hidden: the download goes on, and the status line shows it.
+            d.ask_ytdlp = false;
+        } else {
+            d.close_ytdlp_question();
+        }
+        if let Some(e) = saved {
+            self.notify(e);
         }
     }
 
@@ -5224,7 +5449,7 @@ impl DiggrApp {
                         }
                         (YtDlpState::Missing, _) if can_download => ui.label("yt-dlp not found"),
                         (YtDlpState::Missing, _) => {
-                            ui.label("yt-dlp not found: install it with brew install yt-dlp")
+                            ui.label(format!("yt-dlp not found: {}", install_hint()))
                         }
                         (YtDlpState::Unknown, _) => ui.label("Looking for yt-dlp…"),
                     };
@@ -5567,6 +5792,18 @@ pub(super) fn clips_of(p: &Playlist, keep: impl Fn(&Entry) -> bool) -> HashSet<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_advice_names_only_this_systems_tools() {
+        assert!(hint_for(true, false).contains("brew install yt-dlp"));
+        for (name, hint) in [
+            ("Windows", hint_for(false, true)),
+            ("Linux", hint_for(false, false)),
+        ] {
+            assert!(!hint.contains("brew"), "{name}: {hint}");
+        }
+        assert!(hint_for(false, true).contains("yt-dlp.exe"));
+    }
 
     #[test]
     fn a_send_says_records_then_tracks_then_the_record_just_filled() {

@@ -32,6 +32,8 @@ pub struct DigSettings {
     pub wantlist_named: bool,
     /// "Don't show this again" in the Connect to Discogs dialog.
     pub connect_hint_dismissed: bool,
+    /// The first launch's "Previews need yt-dlp" question was answered (the guided setup).
+    pub ytdlp_setup_asked: bool,
 }
 
 impl Default for DigSettings {
@@ -43,6 +45,7 @@ impl Default for DigSettings {
             wantlist: None,
             wantlist_named: false,
             connect_hint_dismissed: false,
+            ytdlp_setup_asked: false,
         }
     }
 }

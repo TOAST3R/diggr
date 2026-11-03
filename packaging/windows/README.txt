@@ -21,10 +21,14 @@ It opens normally from then on, also offline. Diggr asks for no other permission
 
 Previews need yt-dlp
 --------------------
-Previews are downloaded with yt-dlp, a free downloader that Diggr doesn't ship on Windows.
-Until it is installed, entries say "needs yt-dlp". Install it from
-https://github.com/yt-dlp/yt-dlp/releases (yt-dlp.exe) into a folder that is on your PATH, or
-put it anywhere and set its path in OPT > Discogs... . Diggr finds it within 30 seconds.
+Previews are downloaded with yt-dlp, a free downloader. The first time Diggr opens, and
+whenever you play a preview without it, Diggr offers to install it: click Install. It
+downloads about 56 MB (yt-dlp, and a Python and a JavaScript runtime that only Diggr uses),
+checks each file, and keeps them with its caches. You can say Not now; entries then say
+"needs yt-dlp", and clicking that icon asks again.
+
+A yt-dlp.exe of your own still works: put it in a folder on your PATH, or set its path in
+OPT > Discogs... . Diggr uses yours instead, and finds it within 30 seconds.
 
 Where Diggr keeps its files
 ---------------------------

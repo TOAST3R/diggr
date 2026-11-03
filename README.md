@@ -511,8 +511,18 @@ ahead of what plays. Other pasted text is ignored.
     checks for a newer release at most once a day while previews download. **Not now** isn't
     asked again that session. The dialog shows the version and whether it's "installed by you"
     or "downloaded by the app", with **Download** or **Update now**. Until yt-dlp is there,
-    entries say "needs yt-dlp" (elsewhere, such as Windows, install it yourself; it's found
-    within 30 s).
+    entries say "needs yt-dlp" (elsewhere, install it yourself; it's found within 30 s).
+  - On x86_64 Windows the app's copy is yt-dlp's zip app (`yt-dlp`, 3 MB) run by python.org's
+    embeddable Python (13 MB, pinned at 3.15.2), with Deno (40 MB, pinned at 2.9.8) as its
+    JavaScript runtime for YouTube, not `yt-dlp.exe`: every program it starts is signed (Python
+    Software Foundation, Deno Land Inc., Microsoft), so Smart App Control can let it run, and it
+    starts faster. Python and Deno are checked against SHA-256s fixed in the app and change
+    only with it. The question there is guided: it opens at the first launch without yt-dlp
+    and whenever you play, send, paste or click an entry's "needs yt-dlp" icon while it's
+    missing (never for downloads in the background); **Install** shows the progress, then
+    "Previews are ready", or why it failed with **Try again**. If several clips in a row fail,
+    the app checks for a newer yt-dlp at once, or says your own may be out of date when it's
+    more than 60 days old.
   - The dialog also sets the default filter for every send (skip what you've passed) and the
     preview cache size (10 GB by default, for previews and waveform overviews together; the
     least recently played go first, a preview with its overview, except for Download all
@@ -1298,8 +1308,9 @@ delete). `collection.ron` is your Discogs collection (release ids, and each owne
 master, catalog number and year), synced as described in [Digging Discogs](#digging-discogs).
 `cart.ron` is your Discogs cart as last read (listing ids, releases, sellers, prices and
 subtotals), for the CART badges at launch, and `store-carts.ron` the Juno and Bleep baskets
-as the extension last read them (item ids and prices), for IN CART at launch. `tools/` holds the yt-dlp the app downloaded (macOS,
-only when you have none) and `checked`, the time of its last update check.
+as the extension last read them (item ids and prices), for IN CART at launch. `tools/` holds the yt-dlp the app downloaded (only when
+you have none), on Windows with `python/` and `js/` (Deno) beside it, and `checked`, the time of
+its last update check.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -1368,10 +1379,15 @@ instead, and only if `spctl` accepts it. `--prerelease` marks the release as a p
 is confirmed on a real machine; then `gh release edit v<version> --prerelease=false --latest`
 promotes it. Release files are never committed: `dist/` is in `.gitignore`.
 
+The app's Windows copy of yt-dlp runs on a Python and a Deno pinned in `crates/dig/src/tools.rs`
+(`pins()`). Before a release, check python.org for a newer 3.15.x embeddable Python and Deno's
+releases for a newer 2.x; to move a pin, change its version, address and SHA-256 together, then
+run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks them.
+
 ## Tests
 
 ```sh
-cargo test --workspace            # 1034 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1039 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1499,7 +1515,13 @@ What's covered:
   hand (`--ignored real_bandcamp`). `dig::tools` checks the yt-dlp installer against a fake
   release: the checksum read for exactly `yt-dlp_macos`, a matching download installed and run,
   a mismatched one leaving nothing behind, a failed one keeping the old copy, and update checks
-  once a day for newer releases only. Also
+  once a day for newer releases only, or at once when forced; on Windows, the pinned Python
+  and Deno each unpacked whole or not at all (a wrong checksum, a missing file, a zip without
+  its exe, an entry outside its folder, an older pin replaced), the whole install with its
+  progress, and the app's copy started as Python running the zip app with Deno
+  (`--ignored real_pins` checks the real downloads against the pins). The scheduler reports a
+  user's yt-dlp as maybe out of date after three different clips fail in a row, and not when a
+  success comes between. Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate, its
   progress while a file is analyzed, a track put at the front going right after the one in
   progress, a file that fails being passed while the rest are still prepared, and workers
@@ -1521,7 +1543,10 @@ What's covered:
   - "needs yt-dlp", and on a Mac the download question: accepting it installs yt-dlp and starts
     the previews, Not now isn't asked again and Options ▸ Discogs… still offers the download, a
     checksum failure is said while entries keep waiting, and the user's own yt-dlp shows as
-    theirs with no Update now;
+    theirs with no Update now; with the guided setup of Windows, the question at first launch,
+    again on paste, play and the entry's icon but never for background downloads, Install
+    showing "Previews are ready" and playing the armed entry, a failure said in the question
+    with Try again, and an old yt-dlp said to be out of date once;
   - no request to Discogs before the window is interactive;
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget

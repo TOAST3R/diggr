@@ -56,6 +56,7 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
                 cache_root: Some(dir.join("cache")),
                 bridge: BridgeSetup::Port(0),
                 tools: None,
+                guided_ytdlp: false,
             })
         },
     );
