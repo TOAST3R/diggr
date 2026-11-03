@@ -6,6 +6,8 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+## 0.1.5 — 2026-11-04
+
 ### Improved
 
 - **Previews set themselves up on Windows.** The first time you open Diggr, and whenever you
