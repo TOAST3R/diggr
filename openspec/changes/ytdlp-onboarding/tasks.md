@@ -32,11 +32,11 @@
 
 ## 6. Docs
 
-- [ ] 6.1 `packaging/windows/README.txt`: Diggr offers to install yt-dlp the first time previews are needed; a yt-dlp on the PATH is still used
-- [ ] 6.2 `README.md`: the managed copy on Windows (Python, zip app, Deno, sizes, `tools/` layout), the guided modal, the outdated message, the release checklist line for the pins, the test count
-- [ ] 6.3 `CHANGELOG.md` `## Unreleased` with the `changelog` skill
+- [x] 6.1 `packaging/windows/README.txt`: Diggr offers to install yt-dlp the first time previews are needed; a yt-dlp on the PATH is still used
+- [x] 6.2 `README.md`: the managed copy on Windows (Python, zip app, Deno, sizes, `tools/` layout), the guided modal, the outdated message, the release checklist line for the pins, the test count
+- [x] 6.3 `CHANGELOG.md` `## Unreleased` with the `changelog` skill
 
 ## 7. Check
 
-- [ ] 7.1 The four checks from AGENTS.md and `cargo xwin check`
+- [x] 7.1 The four checks from AGENTS.md and `cargo xwin check`
 - [ ] 7.2 A test zip from `scripts/make-windows.sh`; on a Windows PC without yt-dlp: first launch → modal → Install → a Discogs record's preview plays, no console window, no "DASH m4a" playback problem; record in `findings.md`

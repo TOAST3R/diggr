@@ -6,6 +6,13 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### Improved
+
+- **Previews set themselves up on Windows.** The first time you open Diggr, and whenever you
+  play a preview without yt-dlp, Diggr offers to install it: click Install, watch it come in,
+  and the track plays. Nothing to download by hand any more, and every program it runs for
+  previews is signed.
+
 ### Changed
 
 - **Diggr is free software.** It now comes under the GNU GPL, version 3 or later: you may
