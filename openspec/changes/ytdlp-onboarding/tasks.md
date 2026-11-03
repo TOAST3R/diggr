@@ -12,10 +12,10 @@
 
 ## 3. Windows managed install
 
-- [ ] 3.1 `zip` crate (`dig`, deflate only) and one `unpack` helper that refuses entries outside the target folder; tests with zips made in the test, including a `../` entry
-- [ ] 3.2 `tools.rs`: `MANAGED` includes Windows x86_64; the Windows asset is the zip app; pinned Python and Deno (version, address, SHA-256); `SIZE_MB` is the Windows total; `ToolSource::fetch` for fixed addresses, with errors that name the host
-- [ ] 3.3 Install on Windows: Python and Deno each downloaded, checked against their pin, unpacked into `tools/.‹name›.part/` and swapped in with a version stamp; then the zip app as on other systems; progress over the whole; a failure at any step leaves the previous copy and no partial folder. Tests with `FakeSource` for match, mismatch, a missing file, a zip without its exe, and an older stamp
-- [ ] 3.4 Update on Windows: the zip app daily as on other systems; Python or Deno replaced when the pinned version differs from the stamp; ignored tests that download the real Python and Deno and check their pins
+- [x] 3.1 `zip` crate (`dig`, deflate only) and one `unpack` helper that refuses entries outside the target folder; tests with zips made in the test, including a `../` entry
+- [x] 3.2 `tools.rs`: `MANAGED` includes Windows x86_64; the Windows asset is the zip app; pinned Python and Deno (version, address, SHA-256); `SIZE_MB` is the Windows total; `ToolSource::fetch` for fixed addresses, with errors that name the host
+- [x] 3.3 Install on Windows: Python and Deno each downloaded, checked against their pin, unpacked into `tools/.‹name›.part/` and swapped in with a version stamp; then the zip app as on other systems; progress over the whole; a failure at any step leaves the previous copy and no partial folder. Tests with `FakeSource` for match, mismatch, a missing file, a zip without its exe, and an older stamp
+- [x] 3.4 Update on Windows: the zip app daily as on other systems; Python or Deno replaced when the pinned version differs from the stamp; ignored tests that download the real Python and Deno and check their pins
 
 ## 4. The guided modal (Windows)
 

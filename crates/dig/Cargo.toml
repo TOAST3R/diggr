@@ -18,3 +18,5 @@ sha2 = "0.11.0"
 tiny_http = "0.12.0"
 ureq = "3.4.2"
 webbrowser = "1.2.4"
+# Only to unpack the pinned Python and Deno (Windows): deflate, no other compression.
+zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
