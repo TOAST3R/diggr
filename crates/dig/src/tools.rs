@@ -177,6 +177,16 @@ pub fn program(dir: &Path) -> PathBuf {
     dir.join("yt-dlp")
 }
 
+/// The Python beside the app's zip app (Windows), in `dir`.
+pub fn python(dir: &Path) -> PathBuf {
+    dir.join("python").join("python.exe")
+}
+
+/// The JavaScript runtime the app's Windows copy uses, in `dir`.
+pub fn deno(dir: &Path) -> PathBuf {
+    dir.join("js").join("deno.exe")
+}
+
 /// Downloads the latest release into `dir` and installs it, if its SHA-256 matches; a copy
 /// that doesn't is never written.
 pub fn install(src: &dyn ToolSource, dir: &Path, progress: &dyn Fn(u8)) -> Result<PathBuf, String> {

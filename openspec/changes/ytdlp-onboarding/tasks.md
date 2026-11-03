@@ -8,7 +8,7 @@
 
 ## 2. Running yt-dlp as a program plus arguments
 
-- [ ] 2.1 `preview/fetcher.rs`: `YtDlp { program, lead }`; `YtDlp::at` recognises the managed layout and splits it into Python, the zip app and the Deno arguments; every start (fetch, version, searches, reads) goes through one `command()` that puts `lead` first; tests with the layout made in a test folder, and that a user's `yt-dlp.exe` is never split
+- [x] 2.1 `preview/fetcher.rs`: `YtDlp { program, lead }`; `YtDlp::at` recognises the managed layout and splits it into Python, the zip app and the Deno arguments; every start (fetch, version, searches, reads) goes through one `command()` that puts `lead` first; tests with the layout made in a test folder, and that a user's `yt-dlp.exe` is never split
 
 ## 3. Windows managed install
 
