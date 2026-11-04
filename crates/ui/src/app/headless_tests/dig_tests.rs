@@ -5201,3 +5201,39 @@ fn an_account_only_action_opens_the_setup_panel_or_says_why() {
         message(&rig)
     );
 }
+
+#[test]
+fn a_pasted_store_page_points_to_the_extension_once() {
+    let juno = "https://www.juno.co.uk/products/acid-pauli-gwar/1178909-01/";
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-nudge", &fakes, false);
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert!(
+        message(&rig).contains("sent from the browser extension: get it in OPT › Set up Diggr…"),
+        "{}",
+        message(&rig)
+    );
+    // Once a session.
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert_eq!(
+        message(&rig),
+        "Juno pages are sent from the browser extension"
+    );
+    // Declined: never.
+    let mut rig = welcome_rig("welcome-nudge-declined", &fakes, |store| {
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_browser: true,
+                at_launch: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert_eq!(
+        message(&rig),
+        "Juno pages are sent from the browser extension"
+    );
+}

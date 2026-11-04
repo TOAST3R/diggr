@@ -1478,7 +1478,8 @@ impl DiggrApp {
             (dig::bleep::looks_like_bleep, "Bleep"),
         ] {
             if looks(text) {
-                return self.notify(format!("{store} pages are sent from the browser extension"));
+                let text = format!("{store} pages are sent from the browser extension");
+                return self.nudge_extension(text);
             }
         }
         match dig::bandcamp::fan::parse(text) {
@@ -2530,6 +2531,7 @@ impl DiggrApp {
                 if let Some(v) = self.dig.as_mut().and_then(|d| d.jobs.get_mut(&j.id)) {
                     (v.done, v.total) = (done, total);
                 }
+                self.nudge_slow_send(total);
             }
             Event::Finished(j) => {
                 let Some(d) = &mut self.dig else { return };

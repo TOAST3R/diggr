@@ -47,7 +47,12 @@ pub(super) struct Welcome {
     later: HashSet<Step>,
     /// Get the extension was clicked: the step shows the pairing code.
     extension_asked: bool,
+    /// A nudge was given this session (at most one).
+    nudged: bool,
 }
+
+/// More records in a send than the anonymous rate allows a minute: connecting would speed it up.
+const SLOW_SEND: usize = 25;
 
 /// A step's state from what's done and what was declined.
 fn state(done: bool, declined: bool) -> State {
@@ -126,6 +131,32 @@ enum Act {
 }
 
 impl DiggrApp {
+    /// A message about a page only the extension can send: with the Browser step open, it
+    /// also says where to get the extension (once a session, with any other nudge).
+    pub(super) fn nudge_extension(&mut self, text: String) {
+        let nudge = self.dig.as_mut().is_some_and(|d| {
+            let open = d.setup.welcome && d.step(Step::Browser) == Some(State::Open);
+            open && !std::mem::replace(&mut d.welcome.nudged, true)
+        });
+        if nudge {
+            self.notify(format!("{text}: get it in OPT › Set up Diggr…"));
+        } else {
+            self.notify(text);
+        }
+    }
+
+    /// A send of `total` records without an account, slowed by the anonymous rate: once a
+    /// session, says connecting would speed it up.
+    pub(super) fn nudge_slow_send(&mut self, total: usize) {
+        let nudge = self.dig.as_mut().is_some_and(|d| {
+            let open = d.setup.welcome && d.step(Step::Discogs) == Some(State::Open);
+            open && total > SLOW_SEND && !std::mem::replace(&mut d.welcome.nudged, true)
+        });
+        if nudge {
+            self.notify("Sends are slower without an account: connecting Discogs doubles the speed (OPT › Set up Diggr…)");
+        }
+    }
+
     /// An action needs the Discogs account and there is none: the setup panel opens, or, when
     /// the user said they have no account (or there is no panel), the main window says so.
     pub(super) fn dig_needs_account(&mut self) {
