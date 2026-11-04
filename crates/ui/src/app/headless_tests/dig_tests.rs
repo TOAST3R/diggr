@@ -5002,14 +5002,17 @@ fn the_welcome_lists_the_open_steps_at_launch() {
         Some(super::welcome::STORE_URL)
     );
     rig.until(
-        |r| {
-            shows(
-                &r.frame(Vec::new()),
-                "Then open the extension's options and enter this code:",
-            )
-        },
+        |r| shows(&r.frame(Vec::new()), "Enter this code there:"),
         "the pairing code",
     );
+    // With the extension's page address to paste, and a Copy button.
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, super::welcome::OPTIONS_URL),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Copy"));
     // Pairing turns the step done, without closing the panel.
     pair(&rig);
     rig.until(

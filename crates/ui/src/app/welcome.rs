@@ -13,6 +13,9 @@ use super::digging::{BridgeSetup, Dig, YtDlpState};
 /// Diggr Bridge on the Chrome Web Store.
 pub(super) const STORE_URL: &str =
     "https://chromewebstore.google.com/detail/diggr-bridge/cineoflmmlmgdkefaegeocjgelnijfkk";
+/// The extension's own page, where the pairing code is entered (the Web Store copy's ID).
+pub(super) const OPTIONS_URL: &str =
+    "chrome-extension://cineoflmmlmgdkefaegeocjgelnijfkk/options.html";
 /// Where a Discogs account is made.
 const DISCOGS_SIGNUP: &str = "https://www.discogs.com/";
 /// The longest the welcome waits at launch for the yt-dlp lookup before opening without it.
@@ -465,9 +468,19 @@ impl Dig {
     }
 }
 
-/// The pairing code, as the Browser dialog shows it, for entering in the extension's options.
+/// The pairing code, as the Browser dialog shows it, and where to enter it: the extension's
+/// own page, whose address is copied to paste into the browser (macOS and Windows don't open
+/// `chrome-extension://` addresses from an app).
 fn pairing_code(ui: &mut egui::Ui, pairing: &mut dig::bridge::Pairing) {
-    ui.label("Then open the extension's options and enter this code:");
+    ui.label("Then open the extension's page: paste this address into the browser's address bar,");
+    ui.horizontal(|ui| {
+        ui.add(egui::Label::new(egui::RichText::new(OPTIONS_URL).monospace()).selectable(true));
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(OPTIONS_URL.to_owned());
+        }
+    });
+    ui.label("or click the puzzle piece in the toolbar › Diggr Bridge › \"Pairing and port…\".");
+    ui.label("Enter this code there:");
     if let Some(wait) = pairing.locked_for() {
         ui.label(format!(
             "Too many wrong codes: pairing resumes in {} s",
