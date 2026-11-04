@@ -47,6 +47,8 @@ mod sellers;
 #[cfg(not(target_arch = "wasm32"))]
 mod stores;
 #[cfg(not(target_arch = "wasm32"))]
+mod welcome;
+#[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
 
 pub type EngineFactory = Box<dyn FnOnce() -> Result<Engine, String> + Send>;
@@ -2168,7 +2170,34 @@ impl DiggrApp {
                 actions.push(Action::Dig(DigAction::OpenBrowserDialog));
                 ui.close();
             }
+            if ui.button(self.setup_label()).clicked() {
+                actions.push(Action::Dig(DigAction::OpenWelcome));
+                ui.close();
+            }
         }
+    }
+
+    /// The setup links an empty crate shows: with the setup panel, the steps still open;
+    /// without it, the extension's as before.
+    fn setup_links(&self) -> SetupLinks {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(d) = self.dig.as_ref().filter(|d| d.setup.welcome) {
+            use welcome::{State, Step};
+            return SetupLinks {
+                discogs: d.step(Step::Discogs) == Some(State::Open),
+                extension: d.step(Step::Browser) == Some(State::Open),
+            };
+        }
+        SetupLinks {
+            discogs: false,
+            extension: true,
+        }
+    }
+
+    /// Whether the setup panel is part of this app (it opens from links and menus).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn welcome_on(&self) -> bool {
+        self.dig.as_ref().is_some_and(|d| d.setup.welcome)
     }
 
     /// The playlist's width and rows now: what the window leaves under the band.
@@ -4801,7 +4830,7 @@ impl DiggrApp {
                 let lines: Vec<HintLine> = match friend {
                     Some(f) => f,
                     None => {
-                        let long = store_hint(PASTE_MODIFIER);
+                        let long = store_hint(PASTE_MODIFIER, self.setup_links());
                         // Too short a list for the stores: the four short lines.
                         if line_h * long.len() as f32 <= body {
                             long
@@ -5425,7 +5454,9 @@ impl DiggrApp {
                 if below_click.is_some_and(|p| r.contains(p)) {
                     actions.push(Action::Dig(match k.to {
                         HintTo::Url(url) => DigAction::OpenUrl(url.to_owned()),
+                        HintTo::Extension if self.welcome_on() => DigAction::OpenWelcome,
                         HintTo::Extension => DigAction::OpenBrowserDialog,
+                        HintTo::Discogs => DigAction::OpenWelcome,
                         HintTo::Seller => DigAction::Seller(
                             crate::app::sellers::SellerAction::Dig(self.crates.shown_id()),
                         ),
@@ -7340,8 +7371,10 @@ enum HintPart {
 enum HintTo {
     /// Opens a page in the browser.
     Url(&'static str),
-    /// The extension's pairing dialog.
+    /// The extension: the setup panel, or (without it) the pairing dialog.
     Extension,
+    /// The Discogs account: the setup panel.
+    Discogs,
     /// The shown seller crate's double-click: count and dig it (or connect Discogs first).
     Seller,
 }
@@ -7406,21 +7439,38 @@ fn side_name(c: &crate::crates::CrateInfo, grouped: bool) -> &str {
 
 /// The empty crate's hint where the list is tall enough: where to dig, by paste or through
 /// the browser extension.
-fn store_hint(modifier: &str) -> Vec<HintLine> {
-    vec![
+/// Which setup links an empty crate shows: the steps still open (see `welcome-setup`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SetupLinks {
+    discogs: bool,
+    extension: bool,
+}
+
+fn store_hint(modifier: &str, links: SetupLinks) -> Vec<HintLine> {
+    let mut lines = vec![
         HintLine::Text(format!("PASTE A LINK HERE · {modifier}+V")),
         HintLine::Links(PASTE_STORES.to_vec()),
         HintLine::Text(String::new()),
         HintLine::Text("WITH THE BROWSER EXTENSION".into()),
         HintLine::Links(EXTENSION_STORES.to_vec()),
+    ];
+    let link = |label, to| {
         HintLine::Links(vec![HintLink {
-            label: "SET UP THE EXTENSION",
+            label,
             color: [47, 228, 90],
-            to: HintTo::Extension,
-        }]),
-        HintLine::Text(String::new()),
-        HintLine::Text("OR DROP FILES · PRESS H FOR HELP".into()),
-    ]
+            to,
+        }])
+    };
+    if links.extension {
+        lines.push(link("SET UP THE EXTENSION", HintTo::Extension));
+    }
+    if links.discogs {
+        lines.push(HintLine::Text(String::new()));
+        lines.push(link("CONNECT YOUR DISCOGS", HintTo::Discogs));
+    }
+    lines.push(HintLine::Text(String::new()));
+    lines.push(HintLine::Text("OR DROP FILES · PRESS H FOR HELP".into()));
+    lines
 }
 
 /// WCAG contrast ratio of two colours.
@@ -7772,6 +7822,8 @@ impl DiggrApp {
         self.dig_dialog_ui(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_bridge_dialog_ui(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.welcome_ui(&ctx);
         if self.help {
             crate::help::show(&ctx, &mut self.help);
         }
@@ -8573,7 +8625,11 @@ mod tests {
     #[test]
     fn the_store_hint_fits_and_every_store_reads_on_the_list() {
         let def = LoadedSkin::default_skin().def;
-        for line in store_hint("CTRL") {
+        let all = SetupLinks {
+            discogs: true,
+            extension: true,
+        };
+        for line in store_hint("CTRL", all) {
             let text = match line {
                 HintLine::Text(t) => t,
                 HintLine::Links(links) => {

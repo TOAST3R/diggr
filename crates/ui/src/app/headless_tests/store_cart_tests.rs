@@ -57,6 +57,7 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
                 bridge: BridgeSetup::Port(0),
                 tools: None,
                 guided_ytdlp: false,
+                welcome: false,
             })
         },
     );
@@ -651,4 +652,30 @@ fn a_short_empty_crate_keeps_the_four_lines() {
     rig.app.show_crate(c);
     rig.set_rows(4);
     assert!(hint_link(&mut rig, "BANDCAMP").is_none(), "no store links");
+}
+
+#[test]
+fn an_empty_crate_links_the_setup_steps_still_open() {
+    let (mut rig, _) = rig("hint-setup");
+    {
+        let d = rig.app.dig.as_mut().unwrap();
+        d.setup.welcome = true;
+        // Not at launch here: only the links are looked at.
+        d.settings.welcome.at_launch = false;
+    }
+    let c = rig.app.crates.create("asdf").unwrap();
+    rig.app.show_crate(c);
+    rig.set_rows(20);
+    let at = hint_link(&mut rig, "CONNECT YOUR DISCOGS").expect("the Discogs link");
+    assert!(hint_link(&mut rig, "SET UP THE EXTENSION").is_some());
+    // Each opens the setup panel.
+    rig.click(at.center());
+    assert!(rig.app.dig.as_ref().unwrap().welcome.open);
+    rig.app.dig.as_mut().unwrap().welcome.open = false;
+    // A declined step's link is gone.
+    rig.app.dig.as_mut().unwrap().settings.welcome.no_discogs = true;
+    assert!(hint_link(&mut rig, "CONNECT YOUR DISCOGS").is_none());
+    rig.app.dig.as_mut().unwrap().settings.welcome.no_browser = true;
+    assert!(hint_link(&mut rig, "SET UP THE EXTENSION").is_none());
+    assert!(hint_link(&mut rig, "BANDCAMP").is_some(), "the stores stay");
 }

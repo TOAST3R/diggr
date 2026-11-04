@@ -34,6 +34,31 @@ pub struct DigSettings {
     pub connect_hint_dismissed: bool,
     /// The first launch's "Previews need yt-dlp" question was answered (the guided setup).
     pub ytdlp_setup_asked: bool,
+    /// The setup steps the user said no to, and whether the welcome opens at launch.
+    pub welcome: Welcome,
+}
+
+/// What the user answered in the setup panel (see `welcome-setup`). Whether a step is done is
+/// read from the app (a token, a paired browser), never stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Welcome {
+    /// "I don't have an account".
+    pub no_discogs: bool,
+    /// "I don't use Chrome".
+    pub no_browser: bool,
+    /// The welcome opens at launch while a step is open.
+    pub at_launch: bool,
+}
+
+impl Default for Welcome {
+    fn default() -> Self {
+        Self {
+            no_discogs: false,
+            no_browser: false,
+            at_launch: true,
+        }
+    }
 }
 
 impl Default for DigSettings {
@@ -46,6 +71,7 @@ impl Default for DigSettings {
             wantlist_named: false,
             connect_hint_dismissed: false,
             ytdlp_setup_asked: false,
+            welcome: Welcome::default(),
         }
     }
 }
@@ -165,6 +191,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_settings(&d).cache_gb, 3.0);
+    }
+
+    #[test]
+    fn the_welcome_answers_round_trip_and_fail_soft() {
+        let d = crate::test_dir("config-welcome");
+        let w = load_settings(&d).welcome;
+        assert!(
+            !w.no_discogs && !w.no_browser && w.at_launch,
+            "every step open"
+        );
+        let s = DigSettings {
+            welcome: Welcome {
+                no_discogs: true,
+                no_browser: false,
+                at_launch: false,
+            },
+            ..Default::default()
+        };
+        save_settings(&d, &s).unwrap();
+        assert_eq!(load_settings(&d).welcome, s.welcome);
+        // An older file without it, and a broken one, leave every step open.
+        std::fs::write(d.join("dig/settings.ron"), "(cache_gb: 3.0)").unwrap();
+        assert_eq!(load_settings(&d).welcome, Welcome::default());
+        std::fs::write(d.join("dig/settings.ron"), "(welcome: (no_discogs: 7))").unwrap();
+        assert_eq!(load_settings(&d).welcome, Welcome::default());
     }
 
     #[test]

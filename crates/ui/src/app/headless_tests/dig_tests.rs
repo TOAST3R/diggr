@@ -58,6 +58,7 @@ impl Fakes {
             bridge: BridgeSetup::Off,
             tools: None,
             guided_ytdlp: false,
+            welcome: false,
         }
     }
 
@@ -4951,5 +4952,346 @@ fn a_mix_sent_from_its_page_is_read_then_played() {
         rig.app.armed,
         Some((c, first)),
         "its first track, waiting for its search"
+    );
+}
+
+const WELCOME: &str = "Get the most out of Diggr";
+
+/// The welcome switched on, with the bridge running (so the Browser step exists).
+fn welcome_rig(name: &str, fakes: &Fakes, prepare: impl FnOnce(&Store)) -> Rig {
+    let f = fakes.clone();
+    let mut rig = Rig::with_dig(name, Vec::new(), prepare, move |dir| {
+        Some(DigSetup {
+            welcome: true,
+            bridge: BridgeSetup::Port(0),
+            ..f.setup(dir)
+        })
+    });
+    rig.screen.x = 479.0;
+    rig
+}
+
+fn welcome_shows(rig: &mut Rig) -> bool {
+    shows(&rig.frame(Vec::new()), WELCOME)
+}
+
+/// The dig settings file, as a later launch reads it.
+fn saved_welcome(rig: &Rig) -> ::dig::config::Welcome {
+    let config = rig.app.dig.as_ref().unwrap().config.clone().unwrap();
+    ::dig::config::load_settings(&config).welcome
+}
+
+#[test]
+fn the_welcome_lists_the_open_steps_at_launch() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-new", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Your Discogs account"), "{:?}", text_list(&out));
+    assert!(shows(&out, "The browser extension"));
+    // Why connect? opens the page that explains it.
+    rig.click_text("Why connect?");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::DISCOGS_WHY)
+    );
+    // Get the extension: the store listing opens, and the code to pair shows in the step.
+    rig.click_text("Get the extension");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::STORE_URL)
+    );
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Then pair it with this code:"),
+        "the pairing code",
+    );
+    // With the extension's page address to paste, and a Copy button.
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, super::welcome::OPTIONS_URL),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Copy"));
+    assert!(shows(&out, "Copy code"));
+    // Open the extension's page: the default browser is asked to open it.
+    rig.click_text("Open the extension's page");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::OPTIONS_URL)
+    );
+    // Pairing turns the step done, without closing the panel.
+    pair(&rig);
+    rig.until(
+        |r| !shows(&r.frame(Vec::new()), "The browser extension"),
+        "the paired step leaves the launch panel",
+    );
+    assert!(welcome_shows(&mut rig), "Discogs is still open");
+}
+
+#[test]
+fn a_declined_step_is_never_asked_again() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-declined", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("I don't have an account");
+    rig.click_text("I don't use Chrome");
+    // Nothing open is left: the panel closes, and the answers are kept.
+    rig.until(|r| !welcome_shows(r), "the panel closes");
+    let w = saved_welcome(&rig);
+    assert!(w.no_discogs && w.no_browser, "{w:?}");
+    // The next launch asks nothing.
+    let dir = rig.app.dig.as_ref().unwrap().config.clone().unwrap();
+    let mut next = welcome_rig("welcome-declined-2", &fakes, move |store| {
+        let s = ::dig::config::load_settings(&dir);
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    for _ in 0..10 {
+        assert!(!welcome_shows(&mut next));
+    }
+    // OPT ▸ Set up Diggr… still lists both, declined, with a way back.
+    let ctx = next.ctx.clone();
+    next.app.apply(Action::Dig(DigAction::OpenWelcome), &ctx);
+    next.until(welcome_shows, "the panel by hand");
+    let out = next.frame(Vec::new());
+    assert!(
+        shows(&out, "– No Discogs account."),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Connect after all…"));
+    assert!(shows(&out, "– No extension."));
+}
+
+#[test]
+fn the_setup_menu_item_counts_the_steps_set_up() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-count", &fakes, false);
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.setup_label(), "Set up Diggr… (0 of 2)");
+    pair(&rig);
+    assert_eq!(rig.app.setup_label(), "Set up Diggr… (1 of 2)");
+    // Declining the last open step: nothing left to count.
+    rig.app.dig.as_mut().unwrap().settings.welcome.no_discogs = true;
+    assert_eq!(rig.app.setup_label(), "Set up Diggr…");
+}
+
+#[test]
+fn the_welcome_can_be_turned_off_at_startup() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-off", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("Show at startup");
+    rig.click_text("Close");
+    assert!(!saved_welcome(&rig).at_launch);
+    assert!(!welcome_shows(&mut rig));
+}
+
+#[test]
+fn nothing_opens_at_launch_when_every_step_is_done_or_declined() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-done", &fakes, |store| {
+        with_token(store);
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_browser: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    for _ in 0..10 {
+        assert!(!welcome_shows(&mut rig));
+    }
+    // By hand it opens, the account shown as connected.
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenWelcome), &ctx);
+    rig.until(welcome_shows, "the panel by hand");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(
+            &out,
+            "Connected: your wantlist and collection stay in sync."
+        ),
+        "{:?}",
+        text_list(&out)
+    );
+    key(&mut rig, Key::Escape);
+    assert!(!welcome_shows(&mut rig), "Escape closes it");
+}
+
+#[test]
+fn connect_opens_options_with_the_token_field_then_comes_back_for_the_rest() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-connect", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("Connect…");
+    assert!(!welcome_shows(&mut rig));
+    assert!(
+        rig.app.dig.as_ref().unwrap().dialog.is_some(),
+        "Options ▸ Discogs… is open"
+    );
+    // Connected there, and the dialog closed: the panel is back for the extension.
+    {
+        let d = rig.app.dig.as_mut().unwrap();
+        d.token = Some("tok".into());
+        d.dialog = None;
+    }
+    rig.until(welcome_shows, "the panel comes back");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "The browser extension"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(
+        !shows(&out, "Your Discogs account"),
+        "the done step isn't listed"
+    );
+}
+
+#[test]
+fn on_windows_the_welcome_asks_for_yt_dlp_first() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let (f, src) = (fakes.clone(), source.clone());
+    let mut rig = Rig::with_dig(
+        "welcome-previews",
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            let fetcher = f.fetcher.clone();
+            Some(DigSetup {
+                finder: Arc::new(move |path| {
+                    path.filter(|p| Path::new(p).exists())
+                        .map(|_| (fetcher.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
+                }),
+                tools: Some(src.clone() as Arc<dyn ToolSource>),
+                guided_ytdlp: true,
+                welcome: true,
+                ..f.setup(dir)
+            })
+        },
+    );
+    rig.screen.x = 479.0;
+    rig.until(welcome_shows, "the welcome at launch");
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Previews"), "{:?}", text_list(&out));
+    assert!(!shows(&out, ASK_GUIDED), "no separate yt-dlp question");
+    rig.click_text("Install");
+    rig.until(
+        |r| !shows(&r.frame(Vec::new()), "Previews"),
+        "installed: the step leaves the launch panel",
+    );
+    assert!(
+        source
+            .asked
+            .lock()
+            .unwrap()
+            .contains(&dig::tools::ASSET.to_owned())
+    );
+    assert!(welcome_shows(&mut rig), "Discogs is still open");
+}
+
+/// The welcome on, not at launch (only what follows from the answers is tested), with
+/// `no_discogs` as given.
+fn answered_rig(name: &str, fakes: &Fakes, no_discogs: bool) -> Rig {
+    welcome_rig(name, fakes, move |store| {
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_discogs,
+                no_browser: false,
+                at_launch: false,
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    })
+}
+
+#[test]
+fn without_an_account_a_want_says_one_line_instead_of_the_connect_dialog() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-no-account-want", &fakes, true);
+    play_release(&mut rig);
+    key(&mut rig, Key::Y);
+    assert!(memory(&rig).is_wanted(1001));
+    for _ in 0..3 {
+        assert!(!shows(&rig.frame(Vec::new()), "Connect to Discogs"));
+    }
+    assert!(message(&rig).contains("Added"), "{}", message(&rig));
+}
+
+#[test]
+fn an_account_only_action_opens_the_setup_panel_or_says_why() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-refresh-anon", &fakes, false);
+    let coll = rig.app.crates.create("Collection").unwrap();
+    rig.app.dig_act(coll, DigAction::RefreshCollection);
+    rig.until(welcome_shows, "the setup panel");
+
+    let mut rig = answered_rig("welcome-refresh-none", &fakes, true);
+    let coll = rig.app.crates.create("Collection").unwrap();
+    rig.app.dig_act(coll, DigAction::RefreshCollection);
+    assert!(!welcome_shows(&mut rig));
+    assert!(
+        message(&rig).contains("needs a Discogs account"),
+        "{}",
+        message(&rig)
+    );
+}
+
+#[test]
+fn a_pasted_store_page_points_to_the_extension_once() {
+    let juno = "https://www.juno.co.uk/products/acid-pauli-gwar/1178909-01/";
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-nudge", &fakes, false);
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert!(
+        message(&rig).contains("sent from the browser extension: get it in OPT › Set up Diggr…"),
+        "{}",
+        message(&rig)
+    );
+    // Once a session.
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert_eq!(
+        message(&rig),
+        "Juno pages are sent from the browser extension"
+    );
+    // Declined: never.
+    let mut rig = welcome_rig("welcome-nudge-declined", &fakes, |store| {
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_browser: true,
+                at_launch: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    rig.frame(vec![Event::Paste(juno.into())]);
+    assert_eq!(
+        message(&rig),
+        "Juno pages are sent from the browser extension"
     );
 }

@@ -6,6 +6,12 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ## Unreleased
 
+### New
+
+- **A short setup when you open Diggr.** It shows what your Discogs account and the browser
+  extension add, connects the one and installs the other in a click or two, and stops asking
+  about anything you say you don't have. Open it again any time from OPT ▸ Set up Diggr….
+
 ## 0.1.5 — 2026-11-04
 
 ### Improved

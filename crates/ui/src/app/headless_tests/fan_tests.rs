@@ -227,6 +227,7 @@ impl Fakes {
             bridge: BridgeSetup::Off,
             tools: None,
             guided_ytdlp: false,
+            welcome: false,
         }
     }
 
