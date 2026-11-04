@@ -43,36 +43,49 @@ OPT ▸ Set up Diggr… SHALL open the same panel at any time, listing every ste
 - **THEN** the Discogs step shows as declined with Connect…, and connecting makes it Done
 
 ### Requirement: Getting the extension
-Get the extension SHALL open the Chrome Web Store listing of Diggr Bridge (`https://chromewebstore.google.com/detail/diggr-bridge/cineoflmmlmgdkefaegeocjgelnijfkk`) in the default browser, and the Browser step SHALL then show the pairing code and how to enter it in the extension, so the user installs and pairs without leaving the panel. The README SHALL link the same listing.
+Get the extension SHALL open the Chrome Web Store listing of Diggr Bridge (`https://chromewebstore.google.com/detail/diggr-bridge/cineoflmmlmgdkefaegeocjgelnijfkk`) in the default browser, and the Browser step SHALL then show the pairing code with how long it stays valid, and:
+- **Open the extension's page**, which SHALL start the default browser on the extension's pairing page (`chrome-extension://cineoflmmlmgdkefaegeocjgelnijfkk/options.html`): on macOS the app that opens `https://` addresses, on Windows the program registered for them. When the default browser can't have the extension (Safari, Firefox and other non-Chromium browsers) or can't be found, the step SHALL say why;
+- **Copy code**, which SHALL put the code on the clipboard;
+- the page's address with **Copy**, for pasting by hand (another browser, a copy loaded unpacked).
+
+The step SHALL turn Done as soon as a browser pairs, so the user installs and pairs without leaving the panel. The README SHALL link the same listing.
 
 #### Scenario: Install and pair
-- **WHEN** the user clicks Get the extension, installs it, and enters the code shown in the step
-- **THEN** the step turns Done and the panel says a browser was paired
+- **WHEN** the user clicks Get the extension, installs it, clicks Open the extension's page, and pastes the copied code there
+- **THEN** the step turns Done without restarting the app
+
+#### Scenario: A browser that can't have it
+- **WHEN** the default browser is Safari and the user clicks Open the extension's page
+- **THEN** the step says Safari can't have the extension, and the address to paste stays shown
 
 ### Requirement: Empty crates show what to do
-An empty crate SHALL show, in place of its list, a card to paste a Discogs link, a card to connect Discogs and a card to get the extension; the Discogs and extension cards SHALL be hidden while their step is Done or Declined. Clicking a card SHALL open the setup panel at its step (or, for pasting, say how to paste).
+The hint an empty crate shows (how to paste a link, the stores, drop files, help) SHALL also link CONNECT YOUR DISCOGS while the Discogs step is Open and SET UP THE EXTENSION while the Browser step is Open, in the skin's font; each SHALL open the setup panel. Without the setup panel, SET UP THE EXTENSION SHALL open Options ▸ Browser… as before.
 
 #### Scenario: Empty crate, nothing set up
 - **WHEN** the user creates a new crate with no token and no paired browser
-- **THEN** the crate shows the three cards
+- **THEN** the crate's hint links CONNECT YOUR DISCOGS and SET UP THE EXTENSION
 
-#### Scenario: Everything set up
-- **WHEN** a token is set and a browser is paired
-- **THEN** an empty crate shows only the paste card
+#### Scenario: Declined
+- **WHEN** both steps are Declined
+- **THEN** the hint shows neither link, and still shows the stores
 
 ### Requirement: Locked features say what unlocks them
-Actions that need a Discogs account (add to collection, the Discogs cart, syncing the wantlist and the collection) SHALL, without one, open the setup panel at the Discogs step instead of failing silently, unless the step is Declined, in which case their tooltip SHALL say "needs a Discogs account".
+Without a Discogs account, refreshing the collection or the wantlist SHALL open the setup panel instead of doing nothing; add to collection SHALL keep opening the Connect to Discogs dialog (see `discogs-write`). While the Discogs step is Declined, each of these SHALL instead say in one line that it needs a Discogs account.
 
-#### Scenario: The cart without an account
-- **WHEN** the user without a token chooses an action that adds to the Discogs cart
-- **THEN** the setup panel opens at the Discogs step
+#### Scenario: Refresh without an account
+- **WHEN** the user without a token refreshes the collection crate
+- **THEN** the setup panel opens
+
+#### Scenario: Refresh with no account declared
+- **WHEN** the same happens with the Discogs step Declined
+- **THEN** the main window says it needs a Discogs account, and no panel opens
 
 ### Requirement: Nudges when they pay off
-The app SHALL nudge at most once per session, each nudge at most once, never for a Declined step and never during a modal: pasting a page only the extension can send SHALL add Get the extension to the existing message; the first send slowed by the anonymous rate limit SHALL say that connecting Discogs doubles the speed, with Connect….
+The app SHALL nudge at most once per session, each nudge at most once, never for a Declined step and never during a modal: pasting a page only the extension can send SHALL add to the existing message where to get the extension (OPT ▸ Set up Diggr…); the first send of more records than the anonymous rate allows in a minute SHALL say that connecting Discogs doubles the speed, and where.
 
 #### Scenario: A Juno page pasted
 - **WHEN** the user pastes a Juno address with the Browser step Open
-- **THEN** the main window says Juno pages are sent from the browser extension, with Get the extension
+- **THEN** the main window says Juno pages are sent from the browser extension, and to get it in OPT ▸ Set up Diggr…
 
 #### Scenario: Declined
 - **WHEN** the same happens with the Browser step Declined

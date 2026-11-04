@@ -377,7 +377,8 @@ with one click), and on Windows **Previews** (installing yt-dlp) first. Each ste
 say no, **I don't have an account** or **I don't use Chrome**, and is never asked again once
 answered; **Later** leaves it for the next launch. The panel opens at each launch while a step
 is still open, until **Show at startup** is turned off. **Get the extension** opens its Chrome
-Web Store page and shows the pairing code in the step. OPT ▸ Set up Diggr… (with "(1 of 2)"
+Web Store page, then shows the pairing code in the step, with **Open the extension's page** (the
+default browser on the extension's pairing page, if it is a Chromium one) and **Copy code**. OPT ▸ Set up Diggr… (with "(1 of 2)"
 while a step is open) opens the panel at any time, every step listed, a declined one with a way to set it up after all. An empty crate's
 hint links the steps still open (CONNECT YOUR DISCOGS, SET UP THE EXTENSION). Without an
 account, refreshing the collection or wantlist opens the panel; after **I don't have an
