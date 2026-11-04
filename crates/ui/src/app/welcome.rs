@@ -52,6 +52,8 @@ pub(super) struct Welcome {
     extension_asked: bool,
     /// A nudge was given this session (at most one).
     nudged: bool,
+    /// Why Open the extension's page didn't work, shown in the step.
+    page_error: Option<String>,
     /// Connect… went to Options ▸ Discogs…: the panel comes back when that closes, with the
     /// steps still open.
     resume: bool,
@@ -130,6 +132,7 @@ enum Act {
     NoDiscogs(bool),
     SignUp,
     GetExtension,
+    OpenExtensionPage,
     NoBrowser(bool),
     Later(Step),
     AtLaunch(bool),
@@ -232,6 +235,7 @@ impl DiggrApp {
         let installing = d.ytdlp_download;
         let error = d.ytdlp_error.clone();
         let extension_asked = d.welcome.extension_asked;
+        let page_error = d.welcome.page_error.clone();
         let show_at_launch = d.settings.welcome.at_launch;
         let shared = d.bridge_shared.clone();
         let mut acts = Vec::new();
@@ -346,7 +350,13 @@ impl DiggrApp {
                                     }
                                 });
                                 if extension_asked && let Some(shared) = &shared {
-                                    pairing_code(ui, &mut shared.pairing());
+                                    let mut pairing = shared.pairing();
+                                    pairing_code(
+                                        ui,
+                                        &mut pairing,
+                                        page_error.as_deref(),
+                                        &mut acts,
+                                    );
                                 }
                             }
                         }
@@ -425,6 +435,10 @@ impl DiggrApp {
                 self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
                 return;
             }
+            Act::OpenExtensionPage => {
+                d.welcome.page_error = d.setup.browser.open_extension_page(OPTIONS_URL).err();
+                return;
+            }
             Act::NoBrowser(no) => {
                 d.settings.welcome.no_browser = no;
                 save = true;
@@ -468,19 +482,16 @@ impl Dig {
     }
 }
 
-/// The pairing code, as the Browser dialog shows it, and where to enter it: the extension's
-/// own page, whose address is copied to paste into the browser (macOS and Windows don't open
-/// `chrome-extension://` addresses from an app).
-fn pairing_code(ui: &mut egui::Ui, pairing: &mut dig::bridge::Pairing) {
-    ui.label("Then open the extension's page: paste this address into the browser's address bar,");
-    ui.horizontal(|ui| {
-        ui.add(egui::Label::new(egui::RichText::new(OPTIONS_URL).monospace()).selectable(true));
-        if ui.button("Copy").clicked() {
-            ui.ctx().copy_text(OPTIONS_URL.to_owned());
-        }
-    });
-    ui.label("or click the puzzle piece in the toolbar › Diggr Bridge › \"Pairing and port…\".");
-    ui.label("Enter this code there:");
+/// The pairing code, and where to enter it: Open the extension's page starts the default
+/// browser on it; the address, to paste by hand, stays for when that can't work (another
+/// browser, a copy loaded unpacked).
+fn pairing_code(
+    ui: &mut egui::Ui,
+    pairing: &mut dig::bridge::Pairing,
+    page_error: Option<&str>,
+    acts: &mut Vec<Act>,
+) {
+    ui.label("Then pair it with this code:");
     if let Some(wait) = pairing.locked_for() {
         ui.label(format!(
             "Too many wrong codes: pairing resumes in {} s",
@@ -490,18 +501,39 @@ fn pairing_code(ui: &mut egui::Ui, pairing: &mut dig::bridge::Pairing) {
     }
     match pairing.ensure_code() {
         Ok((code, left)) => {
-            ui.label(
-                egui::RichText::new(format!("{} {}", &code[..3], &code[3..]))
-                    .monospace()
-                    .size(24.0),
-            );
-            let secs = left.as_secs_f32().ceil() as u64;
-            ui.label(format!("Valid for {}:{:02}", secs / 60, secs % 60));
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} {}", &code[..3], &code[3..]))
+                        .monospace()
+                        .size(24.0),
+                );
+                let secs = left.as_secs_f32().ceil() as u64;
+                ui.label(format!("valid for {}:{:02}", secs / 60, secs % 60));
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Open the extension's page").clicked() {
+                    acts.push(Act::OpenExtensionPage);
+                }
+                if ui.button("Copy code").clicked() {
+                    ui.ctx().copy_text(code.clone());
+                }
+            });
+            ui.label("Paste the code there and click Pair.");
         }
         Err(e) => {
             ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
         }
     }
+    if let Some(e) = page_error {
+        ui.label(format!("The page didn't open: {e}."));
+    }
+    ui.label("Or paste this address into your browser's address bar:");
+    ui.horizontal(|ui| {
+        ui.add(egui::Label::new(egui::RichText::new(OPTIONS_URL).monospace()).selectable(true));
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(OPTIONS_URL.to_owned());
+        }
+    });
 }
 
 #[cfg(test)]
