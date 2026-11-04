@@ -131,6 +131,18 @@ enum Act {
 }
 
 impl DiggrApp {
+    /// OPT ▸ Set up Diggr…, with how many steps are set up while one is still open
+    /// ("Set up Diggr… (1 of 3)").
+    pub(super) fn setup_label(&self) -> String {
+        let steps = self.dig.as_ref().map(Dig::steps).unwrap_or_default();
+        let done = steps.iter().filter(|(_, s)| *s == State::Done).count();
+        if steps.iter().any(|(_, s)| *s == State::Open) {
+            format!("Set up Diggr… ({done} of {})", steps.len())
+        } else {
+            "Set up Diggr…".into()
+        }
+    }
+
     /// A message about a page only the extension can send: with the Browser step open, it
     /// also says where to get the extension (once a session, with any other nudge).
     pub(super) fn nudge_extension(&mut self, text: String) {

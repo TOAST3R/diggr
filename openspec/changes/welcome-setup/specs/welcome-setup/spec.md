@@ -29,10 +29,10 @@ At every launch where at least one step is Open and "Don't show at startup" isn'
 
 #### Scenario: Turned off
 - **WHEN** the user ticks "Don't show at startup" and restarts the app with steps still open
-- **THEN** no welcome opens, and the status line still says how many steps are set up
+- **THEN** no welcome opens, and OPT ▸ Set up Diggr… still says how many steps are set up
 
 ### Requirement: Setup panel on demand
-OPT ▸ Set up Diggr… SHALL open the same panel at any time, listing every step with its state; a Declined step SHALL offer to set it up after all. While a step is Open, the status line SHALL show "‹n› of ‹m› set up", and clicking it SHALL open the panel.
+OPT ▸ Set up Diggr… SHALL open the same panel at any time, listing every step with its state; a Declined step SHALL offer to set it up after all. While a step is Open, the menu item SHALL read "Set up Diggr… (‹n› of ‹m›)", ‹n› the steps Done and ‹m› the steps this setup has.
 
 #### Scenario: Changing one's mind
 - **WHEN** the user declined Discogs and later opens OPT ▸ Set up Diggr…

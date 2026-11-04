@@ -377,8 +377,8 @@ with one click), and on Windows **Previews** (installing yt-dlp) first. Each ste
 say no, **I don't have an account** or **I don't use Chrome**, and is never asked again once
 answered; **Later** leaves it for the next launch. The panel opens at each launch while a step
 is still open, until **Show at startup** is turned off. **Get the extension** opens its Chrome
-Web Store page and shows the pairing code in the step. OPT ▸ Set up Diggr… opens the panel at
-any time, every step listed, a declined one with a way to set it up after all. An empty crate's
+Web Store page and shows the pairing code in the step. OPT ▸ Set up Diggr… (with "(1 of 2)"
+while a step is open) opens the panel at any time, every step listed, a declined one with a way to set it up after all. An empty crate's
 hint links the steps still open (CONNECT YOUR DISCOGS, SET UP THE EXTENSION). Without an
 account, refreshing the collection or wantlist opens the panel; after **I don't have an
 account**, wanting a record and adding to the collection say so in one line instead of the
@@ -1408,7 +1408,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1051 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1052 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1574,7 +1574,7 @@ What's covered:
     launch when every step is done or declined, Connect… opening Options ▸ Discogs…, the
     Previews step on Windows replacing the separate yt-dlp question, the empty crate's setup
     links following the steps, account-only actions opening the panel or saying why, and the
-    pasted-store nudge once a session;
+    pasted-store nudge once a session, and the menu item counting the steps set up;
   - no request to Discogs before the window is interactive;
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget

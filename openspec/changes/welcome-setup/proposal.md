@@ -18,8 +18,8 @@ learn what it can do.
   is done or declined, or the user ticks "Don't show at startup".
 - **Steps remember "no"**: a declined step is never asked again, at launch or anywhere else,
   until the user reopens it.
-- **The same panel on demand**: OPT ▸ Set up Diggr…, and "‹n› of ‹m› set up" in the status line
-  while a step is open, open it at any time.
+- **The same panel on demand**: OPT ▸ Set up Diggr…, labelled "(‹n› of ‹m›)" while a step is
+  open, opens it at any time.
 - **Empty crates show what to do**: an empty crate shows cards to paste a Discogs link, connect
   Discogs and get the extension (each hidden once done or declined).
 - **Locked features say what unlocks them**: actions that need the account or the extension say

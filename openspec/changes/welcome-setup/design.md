@@ -37,8 +37,9 @@ browser, at_launch }`), so it survives restarts and fails soft: a broken file me
 Declining is undone by the step's own button in the panel ("Connect after all").
 
 ### 2. One panel, three ways in
-The same egui window serves the welcome at launch, OPT ▸ Set up Diggr…, and the status line's
-"‹n› of ‹m› set up". At launch it shows only open steps; opened by hand, it shows every step
+The same panel serves the welcome at launch and OPT ▸ Set up Diggr…, which reads "Set up
+Diggr… (‹n› of ‹m›)" while a step is open. (Not the status line: it is a passing tooltip over
+the playlist, not a place for a lasting, clickable count.) At launch it shows only open steps; opened by hand, it shows every step
 with its state, so a declined one can be reopened.
 
 ### 3. At launch: after the first frame, only while something is open

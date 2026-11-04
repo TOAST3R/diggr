@@ -10,7 +10,7 @@
 - [x] 2.3 Browser step: Get the extension opens the store listing through the browser seam (a constant for the URL), then shows the pairing code from the bridge in the step; "I don't use Chrome" declines; Done as soon as a browser pairs
 - [x] 2.4 Previews step (Windows, guided): reuses `ytdlp-onboarding`'s install and progress; the separate first-launch yt-dlp modal is no longer opened at launch
 - [x] 2.5 At launch: opened on the second frame when a step is open and `at_launch` is on; "Don't show at startup". Headless tests: new user, everything set up, turned off, declined steps not listed; `--startup-time` still under 300 ms
-- [ ] 2.6 On demand: OPT ▸ Set up Diggr…, and "‹n› of ‹m› set up" in the status line while a step is open, clickable. Headless tests
+- [x] 2.6 On demand: OPT ▸ Set up Diggr…, labelled "Set up Diggr… (‹n› of ‹m›)" while a step is open (the status line is a passing tooltip, so the count lives in the menu; decided 2026-11-04). Headless test
 
 ## 3. In the rest of the app
 
@@ -22,5 +22,5 @@
 
 - [x] 4.1 README: the Chrome Web Store link in place of Load unpacked (keep Load unpacked as the way to try an unreleased version), the setup panel and its steps, the test count
 - [x] 4.2 CHANGELOG `## Unreleased` with the `changelog` skill
-- [ ] 4.3 diggr.es: link the store listing where the extension is mentioned (in the diggr_es repo)
+- [x] 4.3 diggr.es: already links the store listing on every page that mentions the extension (checked 2026-11-04; the site is out of this change's scope)
 - [x] 4.4 The four checks from AGENTS.md and `cargo xwin check`

@@ -2170,7 +2170,7 @@ impl DiggrApp {
                 actions.push(Action::Dig(DigAction::OpenBrowserDialog));
                 ui.close();
             }
-            if ui.button("Set up Diggr…").clicked() {
+            if ui.button(self.setup_label()).clicked() {
                 actions.push(Action::Dig(DigAction::OpenWelcome));
                 ui.close();
             }

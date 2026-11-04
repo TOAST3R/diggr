@@ -5054,6 +5054,19 @@ fn a_declined_step_is_never_asked_again() {
 }
 
 #[test]
+fn the_setup_menu_item_counts_the_steps_set_up() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-count", &fakes, false);
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.setup_label(), "Set up Diggr… (0 of 2)");
+    pair(&rig);
+    assert_eq!(rig.app.setup_label(), "Set up Diggr… (1 of 2)");
+    // Declining the last open step: nothing left to count.
+    rig.app.dig.as_mut().unwrap().settings.welcome.no_discogs = true;
+    assert_eq!(rig.app.setup_label(), "Set up Diggr…");
+}
+
+#[test]
 fn the_welcome_can_be_turned_off_at_startup() {
     let fakes = Fakes::new();
     let mut rig = welcome_rig("welcome-off", &fakes, |_| {});
