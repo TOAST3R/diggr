@@ -17,11 +17,15 @@ A step SHALL be Declined only when the user says so ("I don't have an account" f
 - **THEN** the step shows as Done without restarting the app
 
 ### Requirement: Welcome at launch
-At every launch where at least one step is Open and "Don't show at startup" isn't ticked, the app SHALL open the setup panel as a modal after the first frame, listing only the Open steps: Previews first (Windows), then Discogs, then Browser. Launch SHALL still reach its first frame within 300 ms. The Discogs step SHALL say what the account adds (wantlist and collection sync, the Discogs cart, faster sends) and offer Connect…, "I don't have an account" (with a link to create one on discogs.com) and Later. The Browser step SHALL say what the extension adds (sending any Discogs, Bandcamp, Juno, Beatport, Traxsource or Bleep page with one click) and offer Get the extension, "I don't use Chrome" and Later. The modal SHALL offer "Don't show at startup" and Close (or Escape). No modal SHALL open at launch when every step is Done or Declined.
+At every launch where at least one step is Open and "Don't show at startup" isn't ticked, the app SHALL open the setup panel as a modal after the first frame, listing only the Open steps: Previews first (Windows), then Discogs, then Browser. Launch SHALL still reach its first frame within 300 ms. The Discogs step SHALL say what the account adds (wantlist and collection sync, the Discogs cart, faster sends) and offer Connect…, "I don't have an account" (with a link to create one on discogs.com) and Later. The Browser step SHALL say what the extension adds (sending any Discogs, Bandcamp, Juno, Beatport, Traxsource or Bleep page with one click) and offer Get the extension, "I don't use Chrome" and Later. The modal SHALL offer "Don't show at startup" and Close (or Escape). No modal SHALL open at launch when every step is Done or Declined. When Connect… takes the user to Options ▸ Discogs…, the panel SHALL open again when that dialog closes, listing the steps still Open.
 
 #### Scenario: A new user
 - **WHEN** the app is opened for the first time, with no token and no paired browser
 - **THEN** after the player appears, the welcome lists the Discogs and Browser steps (and, on Windows without yt-dlp, Previews first)
+
+#### Scenario: Back after connecting
+- **WHEN** the user clicks Connect… in the welcome, enters a token and closes Options ▸ Discogs…
+- **THEN** the welcome opens again with the Browser step
 
 #### Scenario: Everything set up
 - **WHEN** a token is set and a browser is paired (and, on Windows, yt-dlp is found)

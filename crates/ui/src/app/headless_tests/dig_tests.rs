@@ -5112,7 +5112,7 @@ fn nothing_opens_at_launch_when_every_step_is_done_or_declined() {
 }
 
 #[test]
-fn connect_opens_options_with_the_token_field() {
+fn connect_opens_options_with_the_token_field_then_comes_back_for_the_rest() {
     let fakes = Fakes::new();
     let mut rig = welcome_rig("welcome-connect", &fakes, |_| {});
     rig.until(welcome_shows, "the welcome at launch");
@@ -5121,6 +5121,23 @@ fn connect_opens_options_with_the_token_field() {
     assert!(
         rig.app.dig.as_ref().unwrap().dialog.is_some(),
         "Options ▸ Discogs… is open"
+    );
+    // Connected there, and the dialog closed: the panel is back for the extension.
+    {
+        let d = rig.app.dig.as_mut().unwrap();
+        d.token = Some("tok".into());
+        d.dialog = None;
+    }
+    rig.until(welcome_shows, "the panel comes back");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "The browser extension"),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(
+        !shows(&out, "Your Discogs account"),
+        "the done step isn't listed"
     );
 }
 

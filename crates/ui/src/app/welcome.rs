@@ -49,6 +49,9 @@ pub(super) struct Welcome {
     extension_asked: bool,
     /// A nudge was given this session (at most one).
     nudged: bool,
+    /// Connect… went to Options ▸ Discogs…: the panel comes back when that closes, with the
+    /// steps still open.
+    resume: bool,
 }
 
 /// More records in a send than the anonymous rate allows a minute: connecting would speed it up.
@@ -207,6 +210,7 @@ impl DiggrApp {
 
     pub(super) fn welcome_ui(&mut self, ctx: &egui::Context) {
         self.welcome_at_launch();
+        self.welcome_resume();
         let Some(d) = &self.dig else { return };
         if !d.welcome.open {
             return;
@@ -369,6 +373,20 @@ impl DiggrApp {
         }
     }
 
+    /// Back from Options ▸ Discogs… (opened by Connect…): the panel opens again while a step
+    /// is still open, listed as at launch.
+    fn welcome_resume(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        if !d.welcome.resume || d.dialog.is_some() {
+            return;
+        }
+        d.welcome.resume = false;
+        if d.steps().iter().any(|(_, s)| *s == State::Open) {
+            d.welcome.open = true;
+            d.welcome.at_launch = true;
+        }
+    }
+
     fn welcome_act(&mut self, a: Act) {
         let Some(d) = &mut self.dig else { return };
         let mut save = false;
@@ -378,7 +396,11 @@ impl DiggrApp {
                 d.download_ytdlp();
             }
             Act::Connect => {
+                let back = d.welcome.open;
                 self.close_welcome();
+                if let Some(d) = &mut self.dig {
+                    d.welcome.resume = back;
+                }
                 self.dig_open_dialog();
                 if let Some(dialog) = self.dig.as_mut().and_then(|d| d.dialog.as_mut()) {
                     dialog.focus_token = 3;
