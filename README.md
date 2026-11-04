@@ -368,6 +368,24 @@ and Home/End jump), and Enter plays the entry under it.
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
+### Setting up
+
+The first time the player opens, a panel lists what opens up the rest of it: **Your Discogs
+account** (the wantlist and collection kept in sync, the Discogs cart, sends twice as fast) and
+**The browser extension** (send any Discogs, Bandcamp, Juno, Beatport, Traxsource or Bleep page
+with one click), and on Windows **Previews** (installing yt-dlp) first. Each step has a way to
+say no, **I don't have an account** or **I don't use Chrome**, and is never asked again once
+answered; **Later** leaves it for the next launch. The panel opens at each launch while a step
+is still open, until **Show at startup** is turned off. **Get the extension** opens its Chrome
+Web Store page and shows the pairing code in the step. OPT ▸ Set up Diggr… opens the panel at
+any time, every step listed, a declined one with a way to set it up after all. An empty crate's
+hint links the steps still open (CONNECT YOUR DISCOGS, SET UP THE EXTENSION). Without an
+account, refreshing the collection or wantlist opens the panel; after **I don't have an
+account**, wanting a record and adding to the collection say so in one line instead of the
+Connect to Discogs dialog. At most once a session the player points to a missing step when it
+would help: a pasted Juno, Beatport, Traxsource or Bleep page, or a send slowed by the
+anonymous rate.
+
 ### Digging Discogs
 
 Paste a Discogs address (Cmd+V, anywhere in the player) and the page's tracks go into the crate
@@ -966,8 +984,11 @@ that the player starts once its window is up.
 
 **Install the extension** (Chrome, or any Chromium browser: Brave, Edge, Arc):
 
-1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose
-   the `extensions/chrome/` folder. It asks for site access to discogs.com, bandcamp.com,
+1. Install **Diggr Bridge** from the Chrome Web Store:
+   <https://chromewebstore.google.com/detail/diggr-bridge/cineoflmmlmgdkefaegeocjgelnijfkk>
+   (OPT ▸ Set up Diggr… ▸ **Get the extension** opens it). To try a version that isn't
+   published yet, open `chrome://extensions`, turn on **Developer mode**, click **Load
+   unpacked** and choose the `extensions/chrome/` folder instead. It asks for site access to discogs.com, bandcamp.com,
    juno.co.uk, www.beatport.com, www.traxsource.com, bleep.com, www.youtube.com, soundcloud.com and
    127.0.0.1 only (YouTube and SoundCloud for the mix button, which sends only the address). (An older copy needs
    reloading in `chrome://extensions` for new sites, and Chrome asks you to accept the new site
@@ -1387,7 +1408,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1039 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1051 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1547,6 +1568,13 @@ What's covered:
     again on paste, play and the entry's icon but never for background downloads, Install
     showing "Previews are ready" and playing the armed entry, a failure said in the question
     with Try again, and an old yt-dlp said to be out of date once;
+  - the setup panel: open steps listed at launch, the store page opened and a pairing turning
+    the Browser step done, declined steps never asked again (also at the next launch) but
+    listed with a way back from OPT ▸ Set up Diggr…, Show at startup turned off, nothing at
+    launch when every step is done or declined, Connect… opening Options ▸ Discogs…, the
+    Previews step on Windows replacing the separate yt-dlp question, the empty crate's setup
+    links following the steps, account-only actions opening the panel or saying why, and the
+    pasted-store nudge once a session;
   - no request to Discogs before the window is interactive;
   - the browser bridge: started only after the first frame, a send answered in under 100 ms
     while Discogs is slow and then filling the crate, Options ▸ Browser… pairing once and Forget

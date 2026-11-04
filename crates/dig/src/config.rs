@@ -197,7 +197,10 @@ mod tests {
     fn the_welcome_answers_round_trip_and_fail_soft() {
         let d = crate::test_dir("config-welcome");
         let w = load_settings(&d).welcome;
-        assert!(!w.no_discogs && !w.no_browser && w.at_launch, "every step open");
+        assert!(
+            !w.no_discogs && !w.no_browser && w.at_launch,
+            "every step open"
+        );
         let s = DigSettings {
             welcome: Welcome {
                 no_discogs: true,

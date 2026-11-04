@@ -20,7 +20,7 @@
 
 ## 4. Docs and checks
 
-- [ ] 4.1 README: the Chrome Web Store link in place of Load unpacked (keep Load unpacked as the way to try an unreleased version), the setup panel and its steps, the test count
-- [ ] 4.2 CHANGELOG `## Unreleased` with the `changelog` skill
+- [x] 4.1 README: the Chrome Web Store link in place of Load unpacked (keep Load unpacked as the way to try an unreleased version), the setup panel and its steps, the test count
+- [x] 4.2 CHANGELOG `## Unreleased` with the `changelog` skill
 - [ ] 4.3 diggr.es: link the store listing where the extension is mentioned (in the diggr_es repo)
-- [ ] 4.4 The four checks from AGENTS.md and `cargo xwin check`
+- [x] 4.4 The four checks from AGENTS.md and `cargo xwin check`
