@@ -111,6 +111,9 @@ pub struct DigSetup {
     /// preview, installed with its progress in the question, and an outdated yt-dlp noticed.
     /// Otherwise (macOS, Linux) asked once per session, as before.
     pub guided_ytdlp: bool,
+    /// The setup panel (`welcome-setup`) opens at launch while a step is open (off in the
+    /// tests that don't test it).
+    pub welcome: bool,
 }
 
 /// Whether the browser bridge runs, and on which port.
@@ -137,6 +140,7 @@ impl DigSetup {
             bridge: BridgeSetup::Configured,
             tools: dig::tools::MANAGED.then(|| Arc::new(GitHub::default()) as _),
             guided_ytdlp: cfg!(windows),
+            welcome: true,
         }
     }
 }
@@ -216,6 +220,8 @@ pub enum DigAction {
     ShowFanReport,
     OpenDialog,
     OpenBrowserDialog,
+    /// OPT ▸ Set up Diggr…: the setup panel, every step listed.
+    OpenWelcome,
     /// A store's home page, from the empty crate's hint.
     OpenUrl(String),
     /// Top Sellers and the cart.
@@ -232,7 +238,7 @@ pub(crate) enum BridgeAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum YtDlpState {
+pub(super) enum YtDlpState {
     Unknown,
     Missing,
     /// `managed`: the app's own copy, not the user's.
@@ -306,7 +312,7 @@ pub(super) struct Marks {
 }
 
 pub(super) struct Dig {
-    setup: DigSetup,
+    pub(super) setup: DigSetup,
     spawner: Arc<dyn Spawner>,
     files: Arc<dyn FileSource>,
     /// The app's config folder (`dig/` goes in it); `None` keeps nothing.
@@ -318,7 +324,7 @@ pub(super) struct Dig {
     intake: Option<IntakeHandle>,
     previews: Option<PreviewHandle>,
     prepare: Option<PrepareHandle>,
-    ytdlp: YtDlpState,
+    pub(super) ytdlp: YtDlpState,
     /// Said (or asked) once per session what to do about a missing yt-dlp.
     hint_shown: bool,
     /// "Previews need yt-dlp…" is open.
@@ -326,13 +332,15 @@ pub(super) struct Dig {
     /// The user wanted a preview before the lookup said whether yt-dlp is there (guided).
     want_ytdlp: bool,
     /// The app's own yt-dlp is downloading: percent done.
-    ytdlp_download: Option<u8>,
+    pub(super) ytdlp_download: Option<u8>,
     /// Why the last install failed, shown in the question with Try again (guided).
-    ytdlp_error: Option<String>,
+    pub(super) ytdlp_error: Option<String>,
     /// The install from the question succeeded at this moment: "Previews are ready" (guided).
     ytdlp_ready: Option<Instant>,
     /// Said this session that the user's yt-dlp may be out of date.
     outdated_said: bool,
+    /// The setup panel in this session.
+    pub(super) welcome: super::welcome::Welcome,
     offline: bool,
     pub(super) jobs: BTreeMap<JobId, JobView>,
     /// The clips last asked for, in priority order.
@@ -526,6 +534,7 @@ impl Dig {
             ytdlp_error: None,
             ytdlp_ready: None,
             outdated_said: false,
+            welcome: Default::default(),
             offline: false,
             jobs: BTreeMap::new(),
             horizon: Vec::new(),
@@ -702,7 +711,7 @@ impl Dig {
     }
 
     /// Asks the scheduler for the app's own yt-dlp; progress shows in the status line.
-    fn download_ytdlp(&mut self) {
+    pub(super) fn download_ytdlp(&mut self) {
         self.ytdlp_download = Some(0);
         self.preview(PreviewCommand::DownloadYtDlp);
     }
@@ -767,7 +776,9 @@ impl Dig {
         .ok();
         // Guided, until the first launch's question is answered: yt-dlp is looked for at once
         // (on the scheduler's thread), so it can be asked without waiting for a preview.
-        if self.setup.guided_ytdlp && self.setup.tools.is_some() && !self.settings.ytdlp_setup_asked
+        if self.setup.guided_ytdlp
+            && self.setup.tools.is_some()
+            && (self.setup.welcome || !self.settings.ytdlp_setup_asked)
         {
             self.preview(PreviewCommand::CheckProgram);
         }
@@ -3215,7 +3226,9 @@ impl DiggrApp {
                 let ask = if d.setup.guided_ytdlp {
                     // Asked at the first launch without one, and when a preview was wanted
                     // before the lookup answered.
-                    let first_launch = can_install && !d.settings.ytdlp_setup_asked;
+                    // With the welcome, its Previews step asks at launch instead.
+                    let first_launch =
+                        can_install && !d.settings.ytdlp_setup_asked && !d.setup.welcome;
                     (first_launch || std::mem::take(&mut d.want_ytdlp))
                         && d.ytdlp_download.is_none()
                 } else {
@@ -3253,8 +3266,9 @@ impl DiggrApp {
             PreviewEvent::YtDlpFailed(why) => {
                 let Some(d) = &mut self.dig else { return };
                 d.ytdlp_download = None;
-                // Guided: said in the question when it is open, with Try again.
-                if d.ask_ytdlp && d.setup.guided_ytdlp {
+                // Guided: said in the question (or the welcome's Previews step) when it is
+                // open, with Try again.
+                if d.setup.guided_ytdlp && (d.ask_ytdlp || d.welcome.open) {
                     d.ytdlp_error = Some(why);
                 } else {
                     self.notify(format!(
@@ -3903,6 +3917,11 @@ impl DiggrApp {
             }
             DigAction::OpenDialog => self.dig_open_dialog(),
             DigAction::OpenBrowserDialog => self.dig_open_bridge_dialog(),
+            DigAction::OpenWelcome => {
+                if let Some(d) = &mut self.dig {
+                    d.open_welcome();
+                }
+            }
             DigAction::OpenUrl(url) => {
                 if let Some(d) = &self.dig
                     && let Err(err) = d.open_url(&url)
@@ -5021,7 +5040,7 @@ impl DiggrApp {
 
     // ---- Options ▸ Discogs… ------------------------------------------------------------------
 
-    fn dig_open_dialog(&mut self) {
+    pub(super) fn dig_open_dialog(&mut self) {
         let Some(d) = &mut self.dig else { return };
         d.dialog = Some(DigDialog {
             ytdlp_path: d.settings.ytdlp_path.clone().unwrap_or_default(),
@@ -5319,6 +5338,7 @@ impl DiggrApp {
     pub(super) fn dig_asking(&self) -> bool {
         self.dig.as_ref().is_some_and(|d| {
             d.connect.is_some()
+                || d.welcome.open
                 || d.ask_ytdlp
                 || d.confirm_discard.is_some()
                 || d.stores.buy.is_some()

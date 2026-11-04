@@ -57,6 +57,7 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
                 bridge: BridgeSetup::Port(0),
                 tools: None,
                 guided_ytdlp: false,
+                welcome: false,
             })
         },
     );

@@ -47,6 +47,8 @@ mod sellers;
 #[cfg(not(target_arch = "wasm32"))]
 mod stores;
 #[cfg(not(target_arch = "wasm32"))]
+mod welcome;
+#[cfg(not(target_arch = "wasm32"))]
 pub use digging::{BridgeSetup, DigAction, DigSetup, SendMode};
 
 pub type EngineFactory = Box<dyn FnOnce() -> Result<Engine, String> + Send>;
@@ -2166,6 +2168,10 @@ impl DiggrApp {
             }
             if ui.button("Browser…").clicked() {
                 actions.push(Action::Dig(DigAction::OpenBrowserDialog));
+                ui.close();
+            }
+            if ui.button("Set up Diggr…").clicked() {
+                actions.push(Action::Dig(DigAction::OpenWelcome));
                 ui.close();
             }
         }
@@ -7772,6 +7778,8 @@ impl DiggrApp {
         self.dig_dialog_ui(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.dig_bridge_dialog_ui(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.welcome_ui(&ctx);
         if self.help {
             crate::help::show(&ctx, &mut self.help);
         }

@@ -58,6 +58,7 @@ impl Fakes {
             bridge: BridgeSetup::Off,
             tools: None,
             guided_ytdlp: false,
+            welcome: false,
         }
     }
 
@@ -4952,4 +4953,203 @@ fn a_mix_sent_from_its_page_is_read_then_played() {
         Some((c, first)),
         "its first track, waiting for its search"
     );
+}
+
+const WELCOME: &str = "Get the most out of Diggr";
+
+/// The welcome switched on, with the bridge running (so the Browser step exists).
+fn welcome_rig(name: &str, fakes: &Fakes, prepare: impl FnOnce(&Store)) -> Rig {
+    let f = fakes.clone();
+    let mut rig = Rig::with_dig(name, Vec::new(), prepare, move |dir| {
+        Some(DigSetup {
+            welcome: true,
+            bridge: BridgeSetup::Port(0),
+            ..f.setup(dir)
+        })
+    });
+    rig.screen.x = 479.0;
+    rig
+}
+
+fn welcome_shows(rig: &mut Rig) -> bool {
+    shows(&rig.frame(Vec::new()), WELCOME)
+}
+
+/// The dig settings file, as a later launch reads it.
+fn saved_welcome(rig: &Rig) -> ::dig::config::Welcome {
+    let config = rig.app.dig.as_ref().unwrap().config.clone().unwrap();
+    ::dig::config::load_settings(&config).welcome
+}
+
+#[test]
+fn the_welcome_lists_the_open_steps_at_launch() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-new", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Your Discogs account"), "{:?}", text_list(&out));
+    assert!(shows(&out, "The browser extension"));
+    // Get the extension: the store listing opens, and the code to pair shows in the step.
+    rig.click_text("Get the extension");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::STORE_URL)
+    );
+    rig.until(
+        |r| {
+            shows(
+                &r.frame(Vec::new()),
+                "Then open the extension's options and enter this code:",
+            )
+        },
+        "the pairing code",
+    );
+    // Pairing turns the step done, without closing the panel.
+    pair(&rig);
+    rig.until(
+        |r| !shows(&r.frame(Vec::new()), "The browser extension"),
+        "the paired step leaves the launch panel",
+    );
+    assert!(welcome_shows(&mut rig), "Discogs is still open");
+}
+
+#[test]
+fn a_declined_step_is_never_asked_again() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-declined", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("I don't have an account");
+    rig.click_text("I don't use Chrome");
+    // Nothing open is left: the panel closes, and the answers are kept.
+    rig.until(|r| !welcome_shows(r), "the panel closes");
+    let w = saved_welcome(&rig);
+    assert!(w.no_discogs && w.no_browser, "{w:?}");
+    // The next launch asks nothing.
+    let dir = rig.app.dig.as_ref().unwrap().config.clone().unwrap();
+    let mut next = welcome_rig("welcome-declined-2", &fakes, move |store| {
+        let s = ::dig::config::load_settings(&dir);
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    for _ in 0..10 {
+        assert!(!welcome_shows(&mut next));
+    }
+    // OPT ▸ Set up Diggr… still lists both, declined, with a way back.
+    let ctx = next.ctx.clone();
+    next.app.apply(Action::Dig(DigAction::OpenWelcome), &ctx);
+    next.until(welcome_shows, "the panel by hand");
+    let out = next.frame(Vec::new());
+    assert!(
+        shows(&out, "– No Discogs account."),
+        "{:?}",
+        text_list(&out)
+    );
+    assert!(shows(&out, "Connect after all…"));
+    assert!(shows(&out, "– No extension."));
+}
+
+#[test]
+fn the_welcome_can_be_turned_off_at_startup() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-off", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("Show at startup");
+    rig.click_text("Close");
+    assert!(!saved_welcome(&rig).at_launch);
+    assert!(!welcome_shows(&mut rig));
+}
+
+#[test]
+fn nothing_opens_at_launch_when_every_step_is_done_or_declined() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-done", &fakes, |store| {
+        with_token(store);
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_browser: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    });
+    for _ in 0..10 {
+        assert!(!welcome_shows(&mut rig));
+    }
+    // By hand it opens, the account shown as connected.
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenWelcome), &ctx);
+    rig.until(welcome_shows, "the panel by hand");
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(
+            &out,
+            "Connected: your wantlist and collection stay in sync."
+        ),
+        "{:?}",
+        text_list(&out)
+    );
+    key(&mut rig, Key::Escape);
+    assert!(!welcome_shows(&mut rig), "Escape closes it");
+}
+
+#[test]
+fn connect_opens_options_with_the_token_field() {
+    let fakes = Fakes::new();
+    let mut rig = welcome_rig("welcome-connect", &fakes, |_| {});
+    rig.until(welcome_shows, "the welcome at launch");
+    rig.click_text("Connect…");
+    assert!(!welcome_shows(&mut rig));
+    assert!(
+        rig.app.dig.as_ref().unwrap().dialog.is_some(),
+        "Options ▸ Discogs… is open"
+    );
+}
+
+#[test]
+fn on_windows_the_welcome_asks_for_yt_dlp_first() {
+    let fakes = Fakes::new();
+    let source = Arc::new(FakeSource::new("2026.08.19", YTDLP_SCRIPT, true));
+    let (f, src) = (fakes.clone(), source.clone());
+    let mut rig = Rig::with_dig(
+        "welcome-previews",
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            let fetcher = f.fetcher.clone();
+            Some(DigSetup {
+                finder: Arc::new(move |path| {
+                    path.filter(|p| Path::new(p).exists())
+                        .map(|_| (fetcher.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
+                }),
+                tools: Some(src.clone() as Arc<dyn ToolSource>),
+                guided_ytdlp: true,
+                welcome: true,
+                ..f.setup(dir)
+            })
+        },
+    );
+    rig.screen.x = 479.0;
+    rig.until(welcome_shows, "the welcome at launch");
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "Previews"), "{:?}", text_list(&out));
+    assert!(!shows(&out, ASK_GUIDED), "no separate yt-dlp question");
+    rig.click_text("Install");
+    rig.until(
+        |r| !shows(&r.frame(Vec::new()), "Previews"),
+        "installed: the step leaves the launch panel",
+    );
+    assert!(
+        source
+            .asked
+            .lock()
+            .unwrap()
+            .contains(&dig::tools::ASSET.to_owned())
+    );
+    assert!(welcome_shows(&mut rig), "Discogs is still open");
 }

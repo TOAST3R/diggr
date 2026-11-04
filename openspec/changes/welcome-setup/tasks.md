@@ -1,15 +1,15 @@
 ## 1. Steps and their states
 
-- [ ] 1.1 Dig settings: `welcome: { discogs, browser, at_launch }` (RON, `#[serde(default)]`: open, open, true); a broken file leaves every step open. Unit tests
-- [ ] 1.2 One function per step's state: Discogs Done while a token is set, Browser Done while the bridge has a paired browser (expose that from `dig::bridge`), Previews (Windows, guided) Done while yt-dlp is found; Declined from the settings. Unit tests
+- [x] 1.1 Dig settings: `welcome: { discogs, browser, at_launch }` (RON, `#[serde(default)]`: open, open, true); a broken file leaves every step open. Unit tests
+- [x] 1.2 One function per step's state: Discogs Done while a token is set, Browser Done while the bridge has a paired browser (expose that from `dig::bridge`), Previews (Windows, guided) Done while yt-dlp is found; Declined from the settings. Unit tests
 
 ## 2. The setup panel
 
-- [ ] 2.1 A `welcome` module in `crates/ui/src/app/`: the panel (modal at launch, window on demand), each step with its text and buttons from the spec, Done/Declined shown with a way back; Escape closes
-- [ ] 2.2 Discogs step: Connect… opens Options ▸ Discogs… with the token field focused; "I don't have an account" declines and shows the link to create one; Later
-- [ ] 2.3 Browser step: Get the extension opens the store listing through the browser seam (a constant for the URL), then shows the pairing code from the bridge in the step; "I don't use Chrome" declines; Done as soon as a browser pairs
-- [ ] 2.4 Previews step (Windows, guided): reuses `ytdlp-onboarding`'s install and progress; the separate first-launch yt-dlp modal is no longer opened at launch
-- [ ] 2.5 At launch: opened on the second frame when a step is open and `at_launch` is on; "Don't show at startup". Headless tests: new user, everything set up, turned off, declined steps not listed; `--startup-time` still under 300 ms
+- [x] 2.1 A `welcome` module in `crates/ui/src/app/`: the panel (modal at launch, window on demand), each step with its text and buttons from the spec, Done/Declined shown with a way back; Escape closes
+- [x] 2.2 Discogs step: Connect… opens Options ▸ Discogs… with the token field focused; "I don't have an account" declines and shows the link to create one; Later
+- [x] 2.3 Browser step: Get the extension opens the store listing through the browser seam (a constant for the URL), then shows the pairing code from the bridge in the step; "I don't use Chrome" declines; Done as soon as a browser pairs
+- [x] 2.4 Previews step (Windows, guided): reuses `ytdlp-onboarding`'s install and progress; the separate first-launch yt-dlp modal is no longer opened at launch
+- [x] 2.5 At launch: opened on the second frame when a step is open and `at_launch` is on; "Don't show at startup". Headless tests: new user, everything set up, turned off, declined steps not listed; `--startup-time` still under 300 ms
 - [ ] 2.6 On demand: OPT ▸ Set up Diggr…, and "‹n› of ‹m› set up" in the status line while a step is open, clickable. Headless tests
 
 ## 3. In the rest of the app

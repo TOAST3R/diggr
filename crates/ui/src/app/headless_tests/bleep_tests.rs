@@ -78,6 +78,7 @@ fn rig(name: &str, fakes: &Fakes, token: bool) -> Rig {
                 bridge: BridgeSetup::Off,
                 tools: None,
                 guided_ytdlp: false,
+                welcome: false,
             })
         },
     )
