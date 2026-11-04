@@ -4989,6 +4989,18 @@ fn the_welcome_lists_the_open_steps_at_launch() {
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Your Discogs account"), "{:?}", text_list(&out));
     assert!(shows(&out, "The browser extension"));
+    // Why connect? opens the page that explains it.
+    rig.click_text("Why connect?");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::DISCOGS_WHY)
+    );
     // Get the extension: the store listing opens, and the code to pair shows in the step.
     rig.click_text("Get the extension");
     assert_eq!(

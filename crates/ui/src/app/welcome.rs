@@ -16,6 +16,8 @@ pub(super) const STORE_URL: &str =
 /// The extension's own page, where the pairing code is entered (the Web Store copy's ID).
 pub(super) const OPTIONS_URL: &str =
     "chrome-extension://cineoflmmlmgdkefaegeocjgelnijfkk/options.html";
+/// What connecting Discogs adds, explained on the site.
+pub(super) const DISCOGS_WHY: &str = "https://diggr.es/discogs-player/";
 /// Where a Discogs account is made.
 const DISCOGS_SIGNUP: &str = "https://www.discogs.com/";
 /// The longest the welcome waits at launch for the yt-dlp lookup before opening without it.
@@ -131,6 +133,7 @@ enum Act {
     Connect,
     NoDiscogs(bool),
     SignUp,
+    WhyDiscogs,
     GetExtension,
     OpenExtensionPage,
     NoBrowser(bool),
@@ -301,10 +304,15 @@ impl DiggrApp {
                                 });
                             }
                             State::Open => {
-                                ui.label(
-                                    "Your wantlist and collection kept in sync with Discogs, \
-                                     the Discogs cart, and sends twice as fast.",
-                                );
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        "Your wantlist and collection kept in sync with Discogs, \
+                                         the Discogs cart, and sends twice as fast.",
+                                    );
+                                    if ui.link("Why connect?").clicked() {
+                                        acts.push(Act::WhyDiscogs);
+                                    }
+                                });
                                 ui.horizontal(|ui| {
                                     if ui.button("Connect…").clicked() {
                                         acts.push(Act::Connect);
@@ -423,6 +431,11 @@ impl DiggrApp {
             Act::NoDiscogs(no) => {
                 d.settings.welcome.no_discogs = no;
                 save = true;
+            }
+            Act::WhyDiscogs => {
+                let err = d.setup.browser.open(DISCOGS_WHY).err();
+                self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
+                return;
             }
             Act::SignUp => {
                 let err = d.setup.browser.open(DISCOGS_SIGNUP).err();
