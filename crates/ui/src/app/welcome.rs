@@ -100,6 +100,11 @@ impl Dig {
             .collect()
     }
 
+    /// The user said they have no Discogs account (with the setup panel on).
+    pub(super) fn no_discogs(&self) -> bool {
+        self.setup.welcome && self.settings.welcome.no_discogs
+    }
+
     /// Opens the panel by hand, every step listed.
     pub(super) fn open_welcome(&mut self) {
         self.welcome.open = true;
@@ -121,6 +126,17 @@ enum Act {
 }
 
 impl DiggrApp {
+    /// An action needs the Discogs account and there is none: the setup panel opens, or, when
+    /// the user said they have no account (or there is no panel), the main window says so.
+    pub(super) fn dig_needs_account(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        if d.setup.welcome && !d.settings.welcome.no_discogs {
+            d.open_welcome();
+        } else {
+            self.notify("This needs a Discogs account (OPT › Discogs…)");
+        }
+    }
+
     /// At launch (after the first frame), opens the panel once if a step is open. With the
     /// guided setup it waits for the yt-dlp lookup, at most [`LOOKUP_WAIT`], so Previews can be
     /// part of it.

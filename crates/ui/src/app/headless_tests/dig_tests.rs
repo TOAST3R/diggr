@@ -5153,3 +5153,51 @@ fn on_windows_the_welcome_asks_for_yt_dlp_first() {
     );
     assert!(welcome_shows(&mut rig), "Discogs is still open");
 }
+
+/// The welcome on, not at launch (only what follows from the answers is tested), with
+/// `no_discogs` as given.
+fn answered_rig(name: &str, fakes: &Fakes, no_discogs: bool) -> Rig {
+    welcome_rig(name, fakes, move |store| {
+        let s = ::dig::config::DigSettings {
+            welcome: ::dig::config::Welcome {
+                no_discogs,
+                no_browser: false,
+                at_launch: false,
+            },
+            ..Default::default()
+        };
+        ::dig::config::save_settings(store.dir(), &s).unwrap();
+    })
+}
+
+#[test]
+fn without_an_account_a_want_says_one_line_instead_of_the_connect_dialog() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-no-account-want", &fakes, true);
+    play_release(&mut rig);
+    key(&mut rig, Key::Y);
+    assert!(memory(&rig).is_wanted(1001));
+    for _ in 0..3 {
+        assert!(!shows(&rig.frame(Vec::new()), "Connect to Discogs"));
+    }
+    assert!(message(&rig).contains("Added"), "{}", message(&rig));
+}
+
+#[test]
+fn an_account_only_action_opens_the_setup_panel_or_says_why() {
+    let fakes = Fakes::new();
+    let mut rig = answered_rig("welcome-refresh-anon", &fakes, false);
+    let coll = rig.app.crates.create("Collection").unwrap();
+    rig.app.dig_act(coll, DigAction::RefreshCollection);
+    rig.until(welcome_shows, "the setup panel");
+
+    let mut rig = answered_rig("welcome-refresh-none", &fakes, true);
+    let coll = rig.app.crates.create("Collection").unwrap();
+    rig.app.dig_act(coll, DigAction::RefreshCollection);
+    assert!(!welcome_shows(&mut rig));
+    assert!(
+        message(&rig).contains("needs a Discogs account"),
+        "{}",
+        message(&rig)
+    );
+}

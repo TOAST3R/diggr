@@ -14,8 +14,8 @@
 
 ## 3. In the rest of the app
 
-- [ ] 3.1 Empty crates: the three cards drawn in the playlist area with the skin's colours, hidden per step; a click opens the panel at its step. Headless tests
-- [ ] 3.2 Locked features: add to collection, the Discogs cart and wantlist/collection sync open the panel at the Discogs step without a token, or say "needs a Discogs account" when it's declined; the Connect to Discogs dialog gives the one-line message when declined (the `discogs-write` delta). Headless tests
+- [x] 3.1 Empty crates: the empty-crate hint (already in the skin's font, with store links) shows SET UP THE EXTENSION and CONNECT YOUR DISCOGS while their step is open, each opening the setup panel; without the panel it behaves as before. Headless test
+- [x] 3.2 Locked features: add to collection, the Discogs cart and wantlist/collection sync open the panel at the Discogs step without a token, or say "needs a Discogs account" when it's declined; the Connect to Discogs dialog gives the one-line message when declined (the `discogs-write` delta). Headless tests
 - [ ] 3.3 Nudges: once a session, never for a declined step: a pasted Juno/Beatport/Traxsource/Bleep page gets Get the extension; the first anonymous send slowed by the rate limit says connecting doubles the speed. Headless tests
 
 ## 4. Docs and checks

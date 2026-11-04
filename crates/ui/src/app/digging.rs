@@ -64,6 +64,9 @@ const KEEPERS: &str = "Keepers";
 /// Up to this many records missing from the wantlist crate are fetched one by one; more,
 /// and the whole wantlist page is sent into it.
 const FILL_ONE_BY_ONE: usize = 20;
+/// What an action that needs the account says once the user said they have none.
+const NEEDS_ACCOUNT: &str = "This needs a Discogs account (OPT › Set up Diggr…)";
+
 /// How long "Previews are ready" stays before the question closes.
 const YTDLP_READY_FOR: Duration = Duration::from_secs(2);
 /// A user's yt-dlp older than this, with previews failing, is said to be out of date.
@@ -3877,7 +3880,10 @@ impl DiggrApp {
                     self.fan_refresh(FanList::Collection);
                 }
                 let Some(d) = &mut self.dig else { return };
-                if d.token.is_none() || d.refreshing_collection {
+                if d.token.is_none() {
+                    return self.dig_needs_account();
+                }
+                if d.refreshing_collection {
                     return;
                 }
                 d.refreshing_collection = true;
@@ -3909,7 +3915,10 @@ impl DiggrApp {
                     self.fan_refresh(FanList::Wishlist);
                 }
                 let Some(d) = &mut self.dig else { return };
-                if d.token.is_none() || d.refreshing_wantlist || d.settings.wantlist.is_none() {
+                if d.token.is_none() {
+                    return self.dig_needs_account();
+                }
+                if d.refreshing_wantlist || d.settings.wantlist.is_none() {
                     return;
                 }
                 d.refreshing_wantlist = true;
@@ -4249,11 +4258,15 @@ impl DiggrApp {
         let anon = d.token.is_none();
         let text = if records.len() == 1 {
             match (added.first(), owned.first()) {
-                (Some((_, e)), _) if anon && d.settings.connect_hint_dismissed => format!(
-                    "Added {} to your wantlist (a Discogs token would add it to your Discogs \
+                (Some((_, e)), _)
+                    if anon && (d.settings.connect_hint_dismissed || d.no_discogs()) =>
+                {
+                    format!(
+                        "Added {} to your wantlist (a Discogs token would add it to your Discogs \
                      wantlist too: Options › Discogs…)",
-                    record_name(e)
-                ),
+                        record_name(e)
+                    )
+                }
                 (Some((_, e)), _) => format!("Added {} to your wantlist", record_name(e)),
                 (None, Some((name, what))) => {
                     format!("{name} is already in your collection ({what})")
@@ -4281,7 +4294,7 @@ impl DiggrApp {
             }
             text
         };
-        if anon && !added.is_empty() && !d.settings.connect_hint_dismissed {
+        if anon && !added.is_empty() && !d.settings.connect_hint_dismissed && !d.no_discogs() {
             d.connect = Some(ConnectDialog {
                 from_wantlist: true,
             });
@@ -4364,6 +4377,9 @@ impl DiggrApp {
     fn dig_collect(&mut self, c: CrateId, ids: &[EntryId], check: bool) {
         let Some(d) = &mut self.dig else { return };
         if d.token.is_none() {
+            if d.no_discogs() {
+                return self.notify(NEEDS_ACCOUNT);
+            }
             d.connect = Some(ConnectDialog {
                 from_wantlist: false,
             });
