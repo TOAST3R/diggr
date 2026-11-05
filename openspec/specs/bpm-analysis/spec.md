@@ -52,7 +52,7 @@ While an entry's audio is being analyzed for its tempo, its BPM cell SHALL show 
 - **THEN** within one UI frame its BPM cell shows 124 and no bar
 
 ### Requirement: Analyze BPM on request
-An entry's right-click menu SHALL offer Analyze BPM for the selection (or the entry) when any of it has audio on disk and no complete score: a downloaded preview or a local file. Choosing it SHALL put those entries' audio at the front of the analysis queue, after the playing track, say "Analyzing the BPM of N tracks next", and their BPM cells SHALL show the empty bar at once. Once each is analyzed the app SHALL say "‹title›: 124 BPM" or "‹title›: no steady tempo found". Local files SHALL be analyzed only when asked or when played.
+An entry's right-click menu SHALL always show Analyze BPM for the selection (or the entry), enabled when any of it has audio on disk and no complete score (a downloaded preview or a local file) and greyed out otherwise, so the menu's items never move as downloads and analyses land. Choosing it SHALL put those entries' audio at the front of the analysis queue, after the playing track, say "Analyzing the BPM of N tracks next", and their BPM cells SHALL show the empty bar at once. Once each is analyzed the app SHALL say "‹title›: 124 BPM" or "‹title›: no steady tempo found". Local files SHALL be analyzed only when asked or when played.
 
 #### Scenario: Ask for a local file
 - **WHEN** the user selects 3 local files with no BPM and chooses Analyze BPM
@@ -60,4 +60,4 @@ An entry's right-click menu SHALL offer Analyze BPM for the selection (or the en
 
 #### Scenario: Nothing to analyze
 - **WHEN** the user right-clicks an entry still waiting for its download
-- **THEN** the menu shows no Analyze BPM
+- **THEN** the menu shows Analyze BPM greyed out, in the same place as when it can be chosen

@@ -1,6 +1,6 @@
 //! Puts the digging-D icon and the version into `diggr.exe`, for Explorer, the taskbar and Task
 //! Manager. Nothing happens on other systems. When the exe is cross-built on a Mac, the resource
-//! compiler is Homebrew's `llvm-rc` (on the PATH, as `scripts/make-windows.sh` arranges).
+//! compiler is LLVM's `llvm-rc` (on the PATH, as `scripts/make-windows.sh` arranges).
 
 use std::path::PathBuf;
 
@@ -50,5 +50,7 @@ END
     std::fs::write(&file, rc).expect("write diggr.rc");
     embed_resource::compile(&file, embed_resource::NONE)
         .manifest_required()
-        .expect("embedding the icon and version (llvm-rc not on the PATH? brew install llvm)");
+        .expect(
+            "embedding the icon and version (llvm-rc not on the PATH? see README, Build a release)",
+        );
 }

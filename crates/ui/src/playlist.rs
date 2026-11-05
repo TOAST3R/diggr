@@ -38,6 +38,8 @@ pub enum WaitKind {
     Downloading(u8),
     /// Previews can't download until yt-dlp is found.
     NeedsYtDlp,
+    /// The app's yt-dlp is being downloaded or started for the first time.
+    PreparingYtDlp,
     /// A track of a record with no clip: its preview is searched for near the playhead.
     Search,
     Other(String),
@@ -64,6 +66,7 @@ impl std::fmt::Display for WaitKind {
             WaitKind::Queued => f.write_str("queued"),
             WaitKind::Downloading(p) => write!(f, "downloading {p}%"),
             WaitKind::NeedsYtDlp => f.write_str("needs yt-dlp"),
+            WaitKind::PreparingYtDlp => f.write_str("preparing yt-dlp"),
             WaitKind::Search => f.write_str("to search"),
             WaitKind::Other(t) => f.write_str(t),
         }
@@ -90,6 +93,7 @@ impl From<&str> for WaitKind {
             "listed" => WaitKind::Listed,
             "queued" => WaitKind::Queued,
             "needs yt-dlp" => WaitKind::NeedsYtDlp,
+            "preparing yt-dlp" => WaitKind::PreparingYtDlp,
             "to search" => WaitKind::Search,
             _ => t
                 .strip_prefix("downloading ")
@@ -2258,6 +2262,7 @@ mod tests {
             WaitKind::Queued,
             WaitKind::Downloading(40),
             WaitKind::NeedsYtDlp,
+            WaitKind::PreparingYtDlp,
             WaitKind::Other("paused by Discogs".into()),
         ] {
             assert_eq!(WaitKind::from(w.to_string()), w);

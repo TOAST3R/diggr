@@ -6721,7 +6721,8 @@ fn row_look(
             dim,
             match w {
                 W::Listed => RowEnd::Icon("st_listed"),
-                W::Queued | W::Search => RowEnd::Icon("st_queued"),
+                // Preparing: on its way, not something to click (unlike "needs yt-dlp").
+                W::Queued | W::Search | W::PreparingYtDlp => RowEnd::Icon("st_queued"),
                 W::Downloading(p) => RowEnd::Bar(*p),
                 W::NeedsYtDlp => RowEnd::Icon(NEEDS_TOOL),
                 W::Other(_) => RowEnd::Icon("st_other"),
