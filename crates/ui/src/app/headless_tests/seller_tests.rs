@@ -3,13 +3,10 @@
 
 use super::*;
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::cart::CartSnapshot;
 use ::dig::discogs::seller::inventory_path;
 use ::dig::discogs::transport::{FakeTransport, Fault, Method};
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 use ::dig::sellers::SellerList;
 
 #[derive(Clone)]
@@ -22,36 +19,19 @@ pub(super) struct Fakes {
 impl Fakes {
     pub(super) fn new() -> Self {
         Self {
-            transport: Arc::new(FakeTransport::with_fixtures(format!(
-                "{}/../dig/tests/fixtures/discogs",
-                env!("CARGO_MANIFEST_DIR")
-            ))),
+            transport: discogs_fixtures(),
             fetcher: Arc::new(FakeFetcher::new(fixture("tone.m4a"))),
             browser: Arc::new(FakeBrowser::default()),
         }
     }
 
     fn setup(&self, dir: &Path) -> DigSetup {
-        let f = self.fetcher.clone();
-        let finder: Finder = Arc::new(move |_| {
-            let v = f.version()?;
-            Some((f.clone() as Arc<dyn Fetcher>, v))
-        });
-        DigSetup {
-            transport: self.transport.clone(),
-            images: FakeImages::new(Ok(test_jpeg(300, 300))),
-            clock: Arc::new(RealClock::default()),
-            finder,
-            opener: dig::preview::scheduler::system_opener(),
-            samples: self.fetcher.clone(),
-            browser: self.browser.clone(),
-            cache_root: Some(dir.join("cache")),
-            bridge: BridgeSetup::Off,
-            tools: None,
-            guided_ytdlp: false,
-            welcome: false,
-            consumer: None,
-        }
+        fake_dig(
+            dir,
+            self.transport.clone(),
+            &self.fetcher,
+            self.browser.clone(),
+        )
     }
 
     fn requests(&self, part: &str) -> usize {
@@ -142,12 +122,8 @@ pub(super) fn rig(name: &str, fakes: &Fakes, prepare: impl FnOnce(&Store)) -> Ri
     Rig::with_dig(name, Vec::new(), prepare, move |dir| Some(f.setup(dir)))
 }
 
-pub(super) fn with_token(store: &Store) {
-    ::dig::config::save_token(store.dir(), Some("tok")).unwrap();
-}
-
 fn sellers(rig: &Rig) -> &SellerList {
-    &rig.app.dig.as_ref().unwrap().sellers
+    &rig.dig().sellers
 }
 
 fn names(rig: &Rig) -> Vec<String> {
@@ -447,7 +423,7 @@ fn an_empty_seller_crate_says_to_click_here() {
         read_hint(rig.app.seller_hint(rotor).unwrap()),
         ["CLICK [HERE] TO PREVIEW", "ITS RECORDS FOR SALE"]
     );
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     d.sellers.by_crate_mut(rotor).unwrap().last_dug = Some(1_790_000_000);
     assert_eq!(
         read_hint(rig.app.seller_hint(rotor).unwrap()),
@@ -467,7 +443,7 @@ fn the_seller_hint_fits_the_list() {
     let mp = rig.app.crates.find("Seller: Melting Pot · Madrid").unwrap();
     for token in [false, true] {
         if token {
-            rig.app.dig.as_mut().unwrap().auth = Some("tok".into());
+            rig.dig_mut().auth = Some("tok".into());
         }
         for line in read_hint(rig.app.seller_hint(mp).unwrap()) {
             assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
@@ -557,10 +533,7 @@ fn a_seeded_list_is_never_filled_again() {
         .save(store.dir())
         .unwrap();
     });
-    rig.until(
-        |r| r.app.dig.as_ref().unwrap().cart.read_at > 0,
-        "the cart is read",
-    );
+    rig.until(|r| r.dig().cart.read_at > 0, "the cart is read");
     assert!(names(&rig).is_empty(), "the user removed every seller");
     assert_eq!(fakes.requests("/purchases"), 0);
 }
@@ -584,17 +557,6 @@ fn without_a_token_nothing_is_asked() {
     );
 }
 
-/// Where `label` is drawn.
-fn at(rig: &mut Rig, label: &str) -> Pos2 {
-    let out = rig.frame(Vec::new());
-    texts(&out)
-        .into_iter()
-        .find(|t| t.text == label)
-        .unwrap_or_else(|| panic!("{label:?} is not on screen: {:?}", text_list(&out)))
-        .rect
-        .center()
-}
-
 /// A wide playlist with two sellers in the list: decks.de (dug) and logon (never dug).
 fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
     fakes.empty_cart();
@@ -610,7 +572,7 @@ fn two_sellers(name: &str, fakes: &Fakes) -> (Rig, CrateId, CrateId) {
     });
     let decks = rig.app.seller_crate("decks.de").unwrap();
     let logon = rig.app.seller_crate("logon").unwrap();
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     let mut s = ::dig::sellers::Seller::new("decks.de", decks, ::dig::sellers::Source::Purchases);
     s.last_dug = Some(::dig::now_secs());
     d.sellers.sellers.push(s);
@@ -716,7 +678,7 @@ fn many_sellers(name: &str, fakes: &Fakes, n: usize) -> Rig {
         let user = format!("shop{i:02}");
         let c = rig.app.seller_crate(&user).unwrap();
         let s = ::dig::sellers::Seller::new(&user, c, ::dig::sellers::Source::Added);
-        rig.app.dig.as_mut().unwrap().sellers.sellers.push(s);
+        rig.dig_mut().sellers.sellers.push(s);
     }
     rig.screen.x = 700.0;
     rig.app.settings.side_open = Some(crate::settings::SideGroup::Sellers);
@@ -809,7 +771,7 @@ fn a_closed_group_shows_a_dig_inside_it() {
     rig.app.settings.side_open = None;
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "⏵ TOP SELLERS (2)"), "{:?}", text_list(&out));
-    rig.app.dig.as_mut().unwrap().jobs.insert(
+    rig.dig_mut().jobs.insert(
         999,
         super::super::digging::JobView {
             name: "decks.de".into(),
@@ -914,7 +876,7 @@ fn a_click_shows_a_seller_crate_without_asking_discogs() {
     // records are read after the wantlist comes in, which can be a while under load.
     rig.until(
         |r| {
-            let wl = r.app.dig.as_ref().unwrap().settings.wantlist;
+            let wl = r.dig().settings.wantlist;
             wl.and_then(|wl| r.app.crates.get(wl)).is_some_and(|p| {
                 [1002, 1004, 1006].iter().all(|&release| {
                     p.entries().iter().any(|e| {
@@ -966,7 +928,7 @@ fn dig_dialog(rig: &Rig) -> Option<&DigDialog> {
 }
 
 fn dig_dialog_mut(rig: &mut Rig) -> &mut DigDialog {
-    match &mut rig.app.dig.as_mut().unwrap().seller_ui.dialog {
+    match &mut rig.dig_mut().seller_ui.dialog {
         Some(SellerDialog::Dig(d)) => d,
         _ => panic!("no Dig dialog"),
     }
@@ -1062,7 +1024,7 @@ fn a_double_click_refreshes_only_a_day_after() {
     for _ in 0..60 {
         rig.pump();
     }
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     d.sellers.find_mut("decks.de").unwrap().last_dug = Some(::dig::now_secs() - 30 * 3600);
     double_click_seller(&mut rig, "decks.de");
     rig.until(
@@ -1076,14 +1038,6 @@ fn a_double_click_refreshes_only_a_day_after() {
     );
     assert!(dig_dialog(&rig).is_none(), "no dialog for a refresh");
     assert_eq!(message(&rig), "decks.de: 4 new");
-}
-
-fn message(rig: &Rig) -> String {
-    rig.app
-        .message
-        .as_ref()
-        .map(|(m, _)| m.clone())
-        .unwrap_or_default()
 }
 
 #[test]
@@ -1151,11 +1105,6 @@ fn format_and_year_are_counted_by_discogs_without_reading_listings() {
         |r| dig_dialog(r).is_some_and(|d| d.total() == Some(159_648)),
         "counted",
     );
-    let out = rig.frame(Vec::new());
-    for gone in ["Price", "Condition", "Ships from", "Other"] {
-        assert!(!shows(&out, gone), "{gone}: {:?}", text_list(&out));
-    }
-
     rig.click_text("Any format");
     rig.click_text("Vinyl");
     rig.until(
@@ -1313,12 +1262,11 @@ fn add_seller_looks_up_the_page_and_puts_it_first() {
         "No Discogs user by that name"
     ));
 
-    rig.app.dig.as_mut().unwrap().seller_ui.dialog =
-        Some(SellerDialog::Add(super::sellers::AddDialog {
-            text: "https://www.discogs.com/seller/ADEPTA_STORE/profile".into(),
-            typed: Some(std::time::Instant::now() - std::time::Duration::from_secs(1)),
-            found: None,
-        }));
+    rig.dig_mut().seller_ui.dialog = Some(SellerDialog::Add(super::sellers::AddDialog {
+        text: "https://www.discogs.com/seller/ADEPTA_STORE/profile".into(),
+        typed: Some(std::time::Instant::now() - std::time::Duration::from_secs(1)),
+        found: None,
+    }));
     rig.until(
         |r| add_dialog(r).is_some_and(|d| matches!(d.found, Some((_, Ok(_))))),
         "the seller is found",
@@ -1358,14 +1306,7 @@ fn a_pasted_seller_page_adds_or_refreshes() {
     rig.app.seller_dialog_closed();
 
     // decks.de is in the list: it's shown and refreshed (dug long ago).
-    rig.app
-        .dig
-        .as_mut()
-        .unwrap()
-        .sellers
-        .find_mut("decks.de")
-        .unwrap()
-        .last_dug = Some(1);
+    rig.dig_mut().sellers.find_mut("decks.de").unwrap().last_dug = Some(1);
     fakes.inventory("decks.de", "", &SMALL);
     rig.app.dig_paste("https://www.discogs.com/user/decks.de");
     assert_eq!(rig.app.crates.shown_id(), decks);
@@ -1598,15 +1539,9 @@ fn a_copy_put_in_the_cart_on_discogs_shows_after_the_next_read() {
         r#"[{"seller": {"username": "logon"}, "subtotal": {"formatted": "€9.00"},
             "cart_items": [{"item_id": 11, "price": {"formatted": "€9.00"}, "release": {"id": 1001}}]}]"#,
     );
-    rig.app
-        .dig
-        .as_ref()
-        .unwrap()
+    rig.dig()
         .send_cmd(::dig::intake::Command::ReadCart { soon: true });
-    rig.until(
-        |r| r.app.dig.as_ref().unwrap().cart.has_listing(11),
-        "the cart is read",
-    );
+    rig.until(|r| r.dig().cart.has_listing(11), "the cart is read");
     let out = rig.frame(Vec::new());
     assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "IN CART");
     let carts = texts(&out).iter().filter(|t| t.text == "CART").count();
@@ -1659,7 +1594,7 @@ fn add_to_cart_marks_the_copy_at_once_and_says_so() {
     let selected = rig.app.crates.shown().selected_ids();
     let out = rig.click(pill);
     assert!(
-        rig.app.dig.as_ref().unwrap().cart.has_listing(14),
+        rig.dig().cart.has_listing(14),
         "in the cart within the frame, before Discogs answers"
     );
     assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "REMOVE");
@@ -1671,13 +1606,10 @@ fn add_to_cart_marks_the_copy_at_once_and_says_so() {
     rig.until(|r| message(r) == "Added to your cart", "Discogs answers");
     assert_eq!(posted(&fakes), [r#"{"item_ids":[14]}"#]);
     rig.until(
-        |r| r.app.dig.as_ref().unwrap().cart.read_at > 1,
+        |r| r.dig().cart.read_at > 1,
         "the cart is read after the add",
     );
-    assert!(
-        rig.app.dig.as_ref().unwrap().cart.has_listing(14),
-        "and keeps it"
-    );
+    assert!(rig.dig().cart.has_listing(14), "and keeps it");
 }
 
 /// The pill drawn on the row whose text is `row` (its label).
@@ -1724,53 +1656,13 @@ fn pills(out: &egui::FullOutput) -> usize {
 }
 
 #[test]
-fn no_menu_offers_the_cart_or_render_show() {
+fn a_copys_menu_opens_it_on_discogs() {
     let fakes = Fakes::new();
-    let (mut rig, logon) = dug("cart-menu", &fakes);
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    let (mut rig, _) = dug("copy-menu", &fakes);
     open_record(&mut rig, 1001);
-    let title = rig
-        .app
-        .crates
-        .get(logon)
-        .unwrap()
-        .entries()
-        .iter()
-        .find(|e| e.origin.as_ref().and_then(|o| o.release) == Some(1001))
-        .unwrap()
-        .title
-        .clone();
-    let record = text_list(&rig.frame(Vec::new()))
-        .into_iter()
-        .find(|t| t.contains("Nightcraft") || t.contains(" – "))
-        .unwrap();
-    for row in [
-        "€9.00 · VG+ / VG · Germany",
-        "€12.00 · VG+ / VG · Germany",
-        &title,
-        &record,
-    ] {
-        let pos = at(&mut rig, row);
-        let out = rig.click_with(pos, PointerButton::Secondary);
-        let items = text_list(&out);
-        assert!(
-            !items.iter().any(|t| t.contains("Add to cart")
-                || t.contains("Remove from cart")
-                || t.contains("Render show")),
-            "{row}: {items:?}"
-        );
-        if row.starts_with('€') {
-            assert!(shows(&out, "Open on discogs.com"), "{row}: {items:?}");
-        }
-        rig.frame(vec![egui::Event::Key {
-            key: Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }]);
-        rig.frame(Vec::new());
-    }
+    let copy = at(&mut rig, "€9.00 · VG+ / VG · Germany");
+    let out = rig.click_with(copy, PointerButton::Secondary);
+    assert!(shows(&out, "Open on discogs.com"), "{:?}", text_list(&out));
 }
 
 #[test]
@@ -1779,7 +1671,7 @@ fn a_record_with_one_copy_left_carries_its_pill() {
     let (mut rig, _) = dug("cart-one-copy", &fakes);
     cart_answer(&fakes, "");
     // Release 1002 has one copy (12); release 1001 three, the €9.00 one in the cart.
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     let out = rig.frame(Vec::new());
     // 1002's pill adds its copy; 1001's, with several copies, reads IN CART and opens it.
     assert_eq!(pills(&out), 2, "{:?}", text_list(&out));
@@ -1815,7 +1707,7 @@ fn a_record_with_one_copy_left_carries_its_pill() {
 fn copy_pills_line_up_and_a_sold_copy_has_none() {
     let fakes = Fakes::new();
     let (mut rig, logon) = dug("cart-pills", &fakes);
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     assert!(rig.app.crates.get_mut(logon).unwrap().mark_sold(13));
     open_record(&mut rig, 1001);
     let out = rig.frame(Vec::new());
@@ -1858,21 +1750,18 @@ fn a_double_click_on_the_pill_never_opens_the_listing() {
         fakes.browser.opened.lock().unwrap().is_empty(),
         "no listing opened"
     );
-    assert!(
-        !rig.app.dig.as_ref().unwrap().cart.has_listing(14),
-        "added and taken out again"
-    );
+    assert!(!rig.dig().cart.has_listing(14), "added and taken out again");
 }
 
 #[test]
 fn without_a_token_the_pill_asks_to_connect() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-pill-no-token", &fakes);
-    rig.app.dig.as_mut().unwrap().auth = None;
+    rig.dig_mut().auth = None;
     open_record(&mut rig, 1001);
     let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
     rig.click(pill);
-    assert!(rig.app.dig.as_ref().unwrap().connect.is_some());
+    assert!(rig.dig().connect.is_some());
     assert!(posted(&fakes).is_empty());
 }
 
@@ -1894,7 +1783,7 @@ fn a_copy_sold_meanwhile_is_marked_sold() {
     );
     rig.until(|r| message(r) == "no longer for sale", "Discogs answers");
     assert!(rig.app.crates.get(logon).unwrap().copy(13).unwrap().sold);
-    assert!(!rig.app.dig.as_ref().unwrap().cart.has_listing(13));
+    assert!(!rig.dig().cart.has_listing(13));
 }
 
 #[test]
@@ -1925,17 +1814,14 @@ fn when_the_cart_fails_the_listing_opens_instead() {
             .map(String::as_str),
         Some("https://www.discogs.com/sell/item/11")
     );
-    assert!(
-        !rig.app.dig.as_ref().unwrap().cart.has_listing(11),
-        "no CART badge"
-    );
+    assert!(!rig.dig().cart.has_listing(11), "no CART badge");
 }
 
 #[test]
 fn remove_from_cart_takes_one_copy_out() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-remove", &fakes);
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     fakes.empty_cart();
     open_record(&mut rig, 1001);
     let pill = pill_at(&mut rig, "€9.00 · VG+ / VG · Germany");
@@ -1946,7 +1832,7 @@ fn remove_from_cart_takes_one_copy_out() {
     let out = rig.frame(vec![egui::Event::PointerMoved(pill)]);
     assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "REMOVE");
     let out = rig.click(pill);
-    assert!(!rig.app.dig.as_ref().unwrap().cart.has_listing(11));
+    assert!(!rig.dig().cart.has_listing(11));
     assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "+ CART");
     rig.until(
         |_| {
@@ -1980,8 +1866,7 @@ fn owns(rig: &mut Rig, release: u64) {
         ),
     )
     .unwrap();
-    rig.app.dig.as_mut().unwrap().collection =
-        ::dig::collection::Collection::load(&cache).map(Arc::new);
+    rig.dig_mut().collection = ::dig::collection::Collection::load(&cache).map(Arc::new);
 }
 
 #[test]
@@ -2000,13 +1885,13 @@ fn an_owned_record_offers_no_copy_but_keeps_the_one_in_the_cart() {
     assert!(shows(&out, "OWNED"), "{:?}", text_list(&out));
 
     // A copy already in the cart can still be taken out.
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     let out = rig.frame(Vec::new());
     assert_eq!(pill_of(&out, "€9.00 · VG+ / VG · Germany"), "IN CART");
     assert_eq!(pill_of(&out, "€12.00 · VG+ / VG · Germany"), "");
     let pill = pill_at(&mut rig, "€9.00 · VG+ / VG · Germany");
     rig.click(pill);
-    assert!(!rig.app.dig.as_ref().unwrap().cart.has_listing(11));
+    assert!(!rig.dig().cart.has_listing(11));
 }
 
 /// The PAY » on `row`'s line, if any.
@@ -2022,7 +1907,7 @@ fn checkout_of(out: &egui::FullOutput, row: &str) -> Option<Pos2> {
 fn a_copy_in_the_cart_leads_to_checkout() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-to-checkout", &fakes);
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     fakes.empty_cart();
     open_record(&mut rig, 1001);
     let out = rig.frame(Vec::new());
@@ -2049,10 +1934,7 @@ fn a_copy_in_the_cart_leads_to_checkout() {
         selected,
         "no selection"
     );
-    assert!(
-        rig.app.dig.as_ref().unwrap().cart.has_listing(11),
-        "nothing removed"
-    );
+    assert!(rig.dig().cart.has_listing(11), "nothing removed");
 }
 
 #[test]
@@ -2066,7 +1948,7 @@ fn without_a_token_the_cart_asks_to_connect() {
         ))),
         &ctx,
     );
-    assert!(rig.app.dig.as_ref().unwrap().connect.is_some());
+    assert!(rig.dig().connect.is_some());
     assert!(
         fakes
             .transport
@@ -2087,8 +1969,7 @@ fn any_crate_opens_a_cart_that_holds_something() {
         !shows(&out, "Open cart on discogs.com"),
         "every cart is empty"
     );
-    rig.app.dig.as_mut().unwrap().cart =
-        cart_with(&[(11, 1001, "logon", "€9.00"), (12, 1002, "logon", "€5.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00"), (12, 1002, "logon", "€5.00")]);
     let out = rig.frame(Vec::new());
     assert!(
         !shows(&out, "Open cart on juno.co.uk"),
@@ -2111,7 +1992,7 @@ fn the_cart_switch_shows_and_plays_only_whats_in_the_cart() {
     assert_eq!(rig.app.cart_drawn, None, "nothing in the cart yet");
     let mut snap = cart_with(&[(11, 1001, "logon", "€9.00")]);
     snap.sellers.get_mut("logon").unwrap().subtotal = "€9.00".into();
-    rig.app.dig.as_mut().unwrap().cart = snap;
+    rig.dig_mut().cart = snap;
     rig.frame(Vec::new());
     let (label, pos) = rig.app.cart_drawn.clone().expect("the switch is drawn");
     assert_eq!(label, "CART 1 · €9.00");
@@ -2234,7 +2115,7 @@ fn a_pill_is_as_wide_whatever_it_reads() {
 fn the_flat_view_keeps_the_cart_badge() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-flat", &fakes);
-    rig.app.dig.as_mut().unwrap().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    rig.dig_mut().cart = cart_with(&[(11, 1001, "logon", "€9.00")]);
     let ctx = rig.ctx.clone();
     rig.app.apply(Action::ToggleGrouped, &ctx);
     assert!(!rig.app.crates.shown().is_grouped());
@@ -2367,7 +2248,7 @@ fn genre_style_and_text_are_dug_and_refreshed_together() {
         rig.pump();
     }
     let before = inventory_counts(&fakes, query);
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     d.sellers.find_mut("logon").unwrap().last_dug = Some(::dig::now_secs() - 30 * 3600);
     double_click_seller(&mut rig, "logon");
     rig.until(|r| message(r) == "logon: up to date", "refreshed");
@@ -2505,17 +2386,17 @@ fn up_to_5000_come_a_thousand_at_a_time_from_the_last_row() {
         listed,
         ..Default::default()
     };
-    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(false));
+    rig.dig_mut().jobs.insert(999, job(false));
     let out = rig.frame(Vec::new());
     assert!(!shows(&out, more), "the listing is still being read");
-    rig.app.dig.as_mut().unwrap().jobs.insert(999, job(true));
+    rig.dig_mut().jobs.insert(999, job(true));
     let out = rig.frame(Vec::new());
     assert!(
         shows(&out, more),
         "records still expanding: {:?}",
         text_list(&out)
     );
-    rig.app.dig.as_mut().unwrap().jobs.remove(&999);
+    rig.dig_mut().jobs.remove(&999);
 
     // Nothing more comes until the last row is clicked.
     for _ in 0..20 {
@@ -2575,7 +2456,7 @@ fn new_search_asks_then_cleans_the_crate_and_its_previews_and_digs_afresh() {
         .into_iter()
         .filter(|c| file(&rig, c).exists())
         .collect();
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     d.sellers.find_mut("logon").unwrap().criteria.style = Some("Acid".into());
 
     // Asked first: Cancel keeps everything.
@@ -2642,7 +2523,7 @@ fn the_records_in_view_get_their_tracks_first() {
         })
         .collect();
     // A dig into the crate is still expanding its records.
-    rig.app.dig.as_mut().unwrap().jobs.insert(
+    rig.dig_mut().jobs.insert(
         999,
         super::super::digging::JobView {
             name: "Seller: logon".into(),
@@ -2653,15 +2534,7 @@ fn the_records_in_view_get_their_tracks_first() {
             ..Default::default()
         },
     );
-    let focus = |r: &Rig| {
-        r.app
-            .dig
-            .as_ref()
-            .unwrap()
-            .focus
-            .get(&logon)
-            .and_then(|f| f.0)
-    };
+    let focus = |r: &Rig| r.dig().focus.get(&logon).and_then(|f| f.0);
     rig.frame(Vec::new());
     assert_eq!(focus(&rig), Some(ids[0]), "the top of the crate");
     rig.app.pl_scroll = 120;

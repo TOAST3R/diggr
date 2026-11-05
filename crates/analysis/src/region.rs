@@ -353,7 +353,8 @@ mod tests {
     #[test]
     fn memory_is_bounded_on_a_long_mix() {
         let one = synth::standard_track(126.0);
-        let parts: Vec<synth::Part> = (0..5).flat_map(|_| one.clone()).collect(); // ≈ 14 min
+        // ≈ 5.6 min: three times the window held, which is enough to see it slide.
+        let parts: Vec<synth::Part> = (0..2).flat_map(|_| one.clone()).collect();
         let s = synth::render(&parts, SR, 4);
         let (r, max_frames) = stream(&s.samples, UPDATE_EVERY_SECS);
         let limit = ((FINAL_LAG_BARS * 4.0 * 60.0 / 126.0 + CONTEXT_SECS + 2.0 * UPDATE_EVERY_SECS)
@@ -369,7 +370,7 @@ mod tests {
             .iter()
             .filter(|x| x.kind == SectionKind::Drop)
             .count();
-        assert_eq!(drops, 10);
+        assert_eq!(drops, 4);
         let drop_labels: std::collections::BTreeSet<u8> = r
             .latest()
             .sections

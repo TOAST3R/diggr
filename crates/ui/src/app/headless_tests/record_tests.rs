@@ -382,10 +382,11 @@ fn every_character_the_ui_draws_has_a_glyph() {
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().flatten() {
             let p = e.path();
+            if p.file_stem().is_some_and(|s| s == "headless_tests") {
+                continue;
+            }
             if p.is_dir() {
-                if !p.ends_with("headless_tests") {
-                    sources(&p, out);
-                }
+                sources(&p, out);
             } else if p.extension().is_some_and(|x| x == "rs") {
                 out.push(p);
             }

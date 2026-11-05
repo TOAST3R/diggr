@@ -1,7 +1,7 @@
 //! The collection's Insights window, headless: Open Insights on the collection crate only,
 //! bars that filter the collection, a dear record shown, and label loyalty with Follow.
 
-use super::seller_tests::{Fakes, rig, with_token};
+use super::seller_tests::{Fakes, rig};
 use super::*;
 use crate::playlist::{ForSale, Origin, WaitKind};
 
@@ -140,10 +140,7 @@ fn a_top_label_says_its_total_and_follows() {
     let out = open_insights(&mut rig);
     assert!(shows(&out, "2 of …"), "asking: {:?}", text_list(&out));
     // The intake's answer for Lowtide Tapes (its release 1001 names it, id 12345).
-    rig.app
-        .dig
-        .as_mut()
-        .unwrap()
+    rig.dig_mut()
         .label_totals
         .insert("Lowtide Tapes".into(), (12345, 61));
     let out = rig.frame(Vec::new());

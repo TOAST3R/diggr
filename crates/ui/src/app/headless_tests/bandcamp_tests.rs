@@ -7,12 +7,8 @@ use crate::playlist::{ClipSource, EntryStatus, UnavailableKind, WaitKind};
 use ::dig::bandcamp::{self, BandcampAlbum, BandcampTrack, Listing};
 use ::dig::bridge::{BridgeCommand, Mode};
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
-use ::dig::discogs::transport::FakeTransport;
 use ::dig::jobs::Filters;
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 
 const ROOT: &str = "https://analogicalforce.bandcamp.com";
 const ALBUM: &str = "https://analogicalforce.bandcamp.com/album/af070-the-ooze-ep";
@@ -65,43 +61,13 @@ impl Fakes {
     }
 
     fn setup(&self, dir: &Path) -> DigSetup {
-        let f = self.fetcher.clone();
-        let finder: Finder = Arc::new(move |_| {
-            let v = f.version()?;
-            Some((f.clone() as Arc<dyn Fetcher>, v))
-        });
-        DigSetup {
-            transport: Arc::new(FakeTransport::with_fixtures(format!(
-                "{}/../dig/tests/fixtures/discogs",
-                env!("CARGO_MANIFEST_DIR")
-            ))),
-            images: FakeImages::new(Ok(test_jpeg(300, 300))),
-            clock: Arc::new(RealClock::default()),
-            finder,
-            opener: dig::preview::scheduler::system_opener(),
-            samples: self.fetcher.clone(),
-            browser: self.browser.clone(),
-            cache_root: Some(dir.join("cache")),
-            bridge: BridgeSetup::Off,
-            tools: None,
-            guided_ytdlp: false,
-            welcome: false,
-            consumer: None,
-        }
+        fake_dig(dir, discogs_fixtures(), &self.fetcher, self.browser.clone())
     }
 }
 
 fn rig(name: &str, fakes: &Fakes) -> Rig {
     let f = fakes.clone();
     Rig::with_dig(name, Vec::new(), |_| {}, move |dir| Some(f.setup(dir)))
-}
-
-fn message(rig: &Rig) -> String {
-    rig.app
-        .message
-        .as_ref()
-        .map(|(m, _)| m.clone())
-        .unwrap_or_default()
 }
 
 /// A Discogs track entry in crate `c`, from release AF070, in `status`.
@@ -130,11 +96,7 @@ fn discogs_entry(rig: &mut Rig, c: CrateId, title: &str, clip: &str, status: Ent
 }
 
 fn entries(rig: &Rig, c: CrateId) -> Vec<(String, Option<ClipSource>, EntryStatus)> {
-    rig.app
-        .crates
-        .get(c)
-        .unwrap()
-        .entries()
+    rig.entries(c)
         .iter()
         .map(|e| {
             (
@@ -225,17 +187,10 @@ fn an_album_skips_what_plays_fixes_what_failed_and_adds_what_is_missing() {
     assert_eq!(got[1].1, Some(ClipSource::YouTube), "left alone");
     assert_eq!(got[2].0, "Bonus", "added after the AF070 tracks");
     rig.until(
-        |r| {
-            r.app.crates.get(PLAYLIST).unwrap().entries()[0]
-                .status
-                .is_playable()
-        },
+        |r| r.entries(PLAYLIST)[0].status.is_playable(),
         "the fixed track plays",
     );
-    let o = rig.app.crates.get(PLAYLIST).unwrap().entries()[0]
-        .origin
-        .clone()
-        .unwrap();
+    let o = rig.entries(PLAYLIST)[0].origin.clone().unwrap();
     assert_eq!(o.release, Some(7070), "its Discogs origin stays");
     assert_eq!(o.youtube_clip, "OOZEclip001");
 }
@@ -259,7 +214,7 @@ fn a_label_from_the_browser_is_followed_and_refreshed_with_new_albums_only() {
     assert!(rig.app.crates.is_label(c) && rig.app.crates.is_locked(c));
     assert_eq!(rig.app.crates.shown_id(), shown, "the shown crate stays");
     reading_done(&mut rig, c);
-    assert_eq!(rig.app.crates.get(c).unwrap().len(), 4);
+    assert_eq!(rig.entries(c).len(), 4);
     assert_eq!(message(&rig), "Label: Analogical Force: 2 new records");
     assert_eq!(fakes.fetcher.pages_read().len(), 3);
     // Sent again: a refresh reading only what's new.
@@ -310,7 +265,7 @@ fn a_bandcamp_label_merges_into_the_discogs_label_of_the_same_name() {
     );
     assert_eq!(rig.app.crates.labels().count(), 1);
     reading_done(&mut rig, c);
-    assert_eq!(rig.app.crates.get(c).unwrap().len(), 4);
+    assert_eq!(rig.entries(c).len(), 4);
 }
 
 #[test]
@@ -372,20 +327,12 @@ fn rows_show_their_source_and_an_entry_switches_between_them() {
     let menu = text_list(&rig.frame(Vec::new()));
     assert!(menu.iter().any(|t| t == "Open on Bandcamp"), "{menu:?}");
     rig.click_text("Play from YouTube");
-    let o = || {
-        rig.app.crates.get(PLAYLIST).unwrap().entries()[0]
-            .origin
-            .clone()
-            .unwrap()
-    };
+    let o = || rig.entries(PLAYLIST)[0].origin.clone().unwrap();
     assert_eq!(o().clip.as_deref(), Some("OOZEclip001"));
     assert_eq!(o().source(), Some(ClipSource::YouTube));
     rig.click_with(row, PointerButton::Secondary);
     rig.click_text("Play from Bandcamp");
-    let o = rig.app.crates.get(PLAYLIST).unwrap().entries()[0]
-        .origin
-        .clone()
-        .unwrap();
+    let o = rig.entries(PLAYLIST)[0].origin.clone().unwrap();
     assert_eq!(o.clip.as_deref(), Some("bc.3020153053"));
     rig.click_with(row, PointerButton::Secondary);
     rig.click_text("Open on Bandcamp");
@@ -406,10 +353,7 @@ fn a_bandcamp_only_entry_has_no_discogs_items() {
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Add to wantlist (Y)"), "shown, disabled");
     rig.click_text("Add to wantlist (Y)");
-    assert!(
-        rig.app.dig.as_ref().unwrap().memory.wanted.is_empty(),
-        "nothing wanted"
-    );
+    assert!(rig.dig().memory.wanted.is_empty(), "nothing wanted");
 }
 
 #[test]
@@ -500,7 +444,7 @@ fn a_discogs_record_takes_over_the_bandcamp_tracks_instead_of_doubling_them() {
     let c = crate_with(&mut rig, "Dig");
     rig.app.dig_paste(&album);
     reading_done(&mut rig, c);
-    assert_eq!(rig.app.crates.get(c).unwrap().len(), 2);
+    assert_eq!(rig.entries(c).len(), 2);
     rig.app.dig_paste(RELEASE);
     rig.until(
         |r| {
@@ -609,5 +553,5 @@ fn a_guessed_bandcamp_that_does_not_exist_is_asked_once() {
         [format!("{LOWTIDE}/music")],
         "one listing for both, then never again"
     );
-    assert_eq!(rig.app.crates.get(c).unwrap().len(), 3, "nothing added");
+    assert_eq!(rig.entries(c).len(), 3, "nothing added");
 }

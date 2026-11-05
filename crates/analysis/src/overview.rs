@@ -710,17 +710,18 @@ mod tests {
 
     #[test]
     fn two_hour_mix_fits_in_16_mb() {
-        let frames = 2 * 3600 * SR as u64;
+        // The levels grow with the length and the spectral part is bounded for any length
+        // (`spectral::tests`), so 12 minutes tell what 2 hours cost.
         let mut b = OverviewBuilder::new(SR);
         let chunk = vec![0.1f32; 2 * SR as usize * 10];
-        let mut pushed = 0;
-        while pushed < frames {
+        for _ in 0..12 * 6 {
             b.push(&chunk);
-            pushed += chunk.len() as u64 / 2;
         }
         let o = b.finish();
-        assert!(o.bytes() <= 16 << 20, "{} bytes", o.bytes());
-        assert!((o.seconds() - 7200.0).abs() < 1.0);
+        assert!((o.seconds() - 720.0).abs() < 1.0);
+        let spectral = o.spectral.as_ref().map_or(0, |s| s.bytes());
+        let two_hours = (o.bytes() - spectral) * 10 + (2 << 20) + (64 << 10);
+        assert!(two_hours <= 16 << 20, "{two_hours} bytes");
     }
 
     #[test]
