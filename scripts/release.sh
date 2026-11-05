@@ -2,7 +2,7 @@
 # Publishes the macOS disk image (scripts/make-dmg.sh), the Linux tarball (scripts/make-linux.sh)
 # and the Windows zip (scripts/make-windows.sh) as GitHub Release v<version>, with one SHA256SUMS
 # for all three, after checking the tree is clean, the version isn't tagged yet, all three files
-# exist and the image is signed.
+# exist, the Discogs keys are there (scripts/discogs-keys.sh) and the image is signed.
 #
 # Usage: scripts/release.sh [--unsigned] [--prerelease] [--notes-file FILE] [--dry-run]
 #   --unsigned    publish dist/Diggr-<version>-unsigned.dmg (the normal case), with the macOS
@@ -30,6 +30,10 @@ while (($#)); do
     shift
 done
 fail() { echo "release: $*" >&2; exit 1; }
+
+# The builds must have had the Discogs keys, or the release has no Connect with Discogs.
+source scripts/discogs-keys.sh
+((DISCOGS_KEYS)) || fail "no Discogs consumer key and secret (Keychain diggr-discogs-key and diggr-discogs-secret); rebuild once they are there."
 
 [[ -z "$(git status --porcelain)" ]] || fail "the working tree isn't clean; commit or stash first."
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "$TAG already exists; bump the version in apps/native/Cargo.toml."

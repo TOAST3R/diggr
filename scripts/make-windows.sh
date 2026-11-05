@@ -6,7 +6,8 @@
 # CRT fetched once) for x86_64-pc-windows-msvc, with the C runtime linked in (.cargo/config.toml).
 # Then the exe is checked: it must be a GUI program (no console window), and every DLL it imports
 # must be one Windows provides, so a Windows 10 without the Visual C++ Redistributable runs it.
-# The zip must be at most 25 MB.
+# The zip must be at most 25 MB. The Discogs consumer key and secret (Connect with Discogs) come
+# from scripts/discogs-keys.sh.
 #
 # Needs: `cargo install cargo-xwin --locked`, `brew install llvm lld`,
 # `rustup target add x86_64-pc-windows-msvc`.
@@ -26,6 +27,8 @@ EXE=target/$TARGET/release/diggr.exe
 FORBIDDEN='^(vcruntime|msvcp|ucrtbase|vcomp|concrt)'
 
 echo "Windows x86_64 build of $NAME $VERSION."
+source scripts/discogs-keys.sh
+discogs_keys_say
 [[ "${1:-}" == "--dry-run" ]] && { echo "Dry run: would write $ZIP."; exit 0; }
 
 for prefix in llvm lld; do

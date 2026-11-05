@@ -49,6 +49,7 @@ impl Fakes {
             tools: None,
             guided_ytdlp: false,
             welcome: false,
+            consumer: None,
         }
     }
 
@@ -465,7 +466,7 @@ fn the_seller_hint_fits_the_list() {
     let mp = rig.app.crates.find("Seller: Melting Pot · Madrid").unwrap();
     for token in [false, true] {
         if token {
-            rig.app.dig.as_mut().unwrap().token = Some("tok".into());
+            rig.app.dig.as_mut().unwrap().auth = Some("tok".into());
         }
         for line in read_hint(rig.app.seller_hint(mp).unwrap()) {
             assert!(line.chars().all(|c| def.glyph(c).is_some()), "{line}");
@@ -1866,7 +1867,7 @@ fn a_double_click_on_the_pill_never_opens_the_listing() {
 fn without_a_token_the_pill_asks_to_connect() {
     let fakes = Fakes::new();
     let (mut rig, _) = dug("cart-pill-no-token", &fakes);
-    rig.app.dig.as_mut().unwrap().token = None;
+    rig.app.dig.as_mut().unwrap().auth = None;
     open_record(&mut rig, 1001);
     let pill = pill_at(&mut rig, "€12.00 · VG+ / VG · Germany");
     rig.click(pill);

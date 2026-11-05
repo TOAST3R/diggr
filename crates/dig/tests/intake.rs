@@ -8,7 +8,7 @@ use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client};
 use dig::discogs::matching::{Planned, TrackEntry};
 use dig::discogs::model::RecordKey::{self, Master, Release};
-use dig::discogs::transport::{FakeTransport, Fault, Method};
+use dig::discogs::transport::{Auth, FakeTransport, Fault, Method};
 use dig::discogs::url::parse;
 use dig::intake::{Command, Event, Intake, Outcome};
 use dig::jobs::Filters;
@@ -27,7 +27,7 @@ fn intake(t: &Arc<FakeTransport>, token: bool, config: Option<std::path::PathBuf
     let client = Client::new(
         t.clone(),
         Arc::new(FakeClock::default()),
-        token.then(|| "tok".to_owned()),
+        token.then(|| Auth::Token("tok".into())),
         DiskCache::default(),
     );
     Intake::new(client, config).with_now(|| 1_790_000_000)
@@ -438,7 +438,7 @@ fn a_rejected_token_carries_on_without_one() {
     );
     assert_eq!(records(&ev).len(), 1);
     let last = t.log().last().unwrap().clone();
-    assert!(last.0.token.is_none(), "later requests go without it");
+    assert!(last.0.auth.is_none(), "later requests go without it");
 }
 
 fn wantlist_result(ev: &[Event]) -> Result<bool, ApiError> {
@@ -516,7 +516,7 @@ fn collect_adds_one_copy_to_uncategorized_with_its_pressing() {
     let client = Client::new(
         t.clone(),
         Arc::new(FakeClock::default()),
-        Some("tok".to_owned()),
+        Auth::token("tok"),
         DiskCache::new(Some(dir.path())),
     );
     let mut i = Intake::new(client, None).with_now(|| 1_790_000_000);
@@ -736,7 +736,7 @@ fn a_token_is_checked_before_it_is_used() {
     i.handle(Command::CheckToken("good".into()));
     let ev = i.take_events();
     assert!(
-        matches!(&ev[0], Event::TokenChecked(tok, Ok(id)) if tok == "good" && id.username == "digger")
+        matches!(&ev[0], Event::TokenChecked(tok, Ok(id)) if *tok == Auth::Token("good".into()) && id.username == "digger")
     );
     t.route("/oauth/identity", 401, "{}");
     i.handle(Command::CheckToken("bad".into()));
@@ -745,6 +745,92 @@ fn a_token_is_checked_before_it_is_used() {
         &ev[0],
         Event::TokenChecked(_, Err(ApiError::TokenRejected))
     ));
+}
+
+#[test]
+fn connect_with_discogs_ends_in_a_checked_account() {
+    use dig::discogs::oauth::{self, Consumer, Credentials};
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        oauth::REQUEST_TOKEN,
+        200,
+        "oauth_token=rt&oauth_token_secret=rs&oauth_callback_confirmed=true",
+    );
+    t.route_for(
+        Method::Post,
+        oauth::ACCESS_TOKEN,
+        200,
+        "oauth_token=at&oauth_token_secret=as",
+    );
+    let consumer = Consumer {
+        key: "ck".into(),
+        secret: "cs".into(),
+    };
+    let mut i = intake(&t, false, None);
+    i.handle(Command::ConnectStart {
+        consumer: consumer.clone(),
+        port: 47811,
+    });
+    assert_eq!(
+        i.take_events(),
+        vec![Event::ConnectAuthorize {
+            request_token: "rt".into(),
+            url: "https://www.discogs.com/oauth/authorize?oauth_token=rt".into(),
+        }]
+    );
+    i.handle(Command::ConnectFinish {
+        verifier: "V3rif".into(),
+    });
+    let ev = i.take_events();
+    let account = Auth::OAuth(Credentials::account(consumer, "at".into(), "as".into()));
+    assert!(
+        matches!(&ev[0], Event::TokenChecked(a, Ok(id)) if *a == account && id.username == "digger"),
+        "{ev:?}"
+    );
+    // Later requests are signed for the account.
+    let last = t.log().last().unwrap().clone();
+    assert_eq!(last.0.auth, Some(account));
+    // A second Finish (a stray answer) does nothing: the request token is used up.
+    i.handle(Command::ConnectFinish {
+        verifier: "again".into(),
+    });
+    assert!(i.take_events().is_empty());
+}
+
+#[test]
+fn a_cancelled_or_refused_connection_connects_nothing() {
+    use dig::discogs::oauth::{self, Consumer};
+    let t = Arc::new(FakeTransport::with_fixtures(fixtures()));
+    t.route(
+        oauth::REQUEST_TOKEN,
+        200,
+        "oauth_token=rt&oauth_token_secret=rs",
+    );
+    let consumer = Consumer {
+        key: "ck".into(),
+        secret: "cs".into(),
+    };
+    let mut i = intake(&t, false, None);
+    i.handle(Command::ConnectStart {
+        consumer: consumer.clone(),
+        port: 47811,
+    });
+    i.take_events();
+    i.handle(Command::ConnectCancel);
+    i.handle(Command::ConnectFinish {
+        verifier: "V".into(),
+    });
+    assert!(i.take_events().is_empty(), "cancelled: nothing to finish");
+    t.route(oauth::REQUEST_TOKEN, 401, "Invalid consumer.");
+    i.handle(Command::ConnectStart { consumer, port: 1 });
+    assert_eq!(
+        i.take_events(),
+        vec![Event::ConnectFailed(ApiError::TokenRejected)]
+    );
+    assert!(
+        t.log().iter().all(|(r, _)| r.path != "/oauth/identity"),
+        "no account was checked"
+    );
 }
 
 #[test]
@@ -768,7 +854,9 @@ fn a_real_release_expands() {
     let client = Client::new(
         Arc::new(dig::discogs::transport::UreqTransport::default()),
         Arc::new(dig::clock::RealClock::default()),
-        std::env::var("DIGGR_DISCOGS_TOKEN").ok(),
+        std::env::var("DIGGR_DISCOGS_TOKEN")
+            .ok()
+            .and_then(|t| Auth::token(&t)),
         DiskCache::default(),
     );
     let mut i = Intake::new(client, None);
@@ -1278,7 +1366,7 @@ fn a_labels_total_costs_one_request_and_is_kept_a_week() {
         let client = Client::new(
             t.clone(),
             Arc::new(FakeClock::default()),
-            Some("tok".to_owned()),
+            Auth::token("tok"),
             DiskCache::new(Some(dir.path())),
         );
         Intake::new(client, None).with_now(now)

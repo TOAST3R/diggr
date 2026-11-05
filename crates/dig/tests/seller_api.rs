@@ -7,14 +7,17 @@ use std::sync::Arc;
 use dig::discogs::cache::DiskCache;
 use dig::discogs::client::Client;
 use dig::discogs::seller::{self, Criteria};
-use dig::discogs::{cart, transport::UreqTransport};
+use dig::discogs::{
+    cart,
+    transport::{Auth, UreqTransport},
+};
 
 fn client() -> Client {
     let token = std::env::var("DIGGR_DISCOGS_TOKEN").expect("DIGGR_DISCOGS_TOKEN set");
     Client::new(
         Arc::new(UreqTransport::default()),
         Arc::new(dig::clock::RealClock::default()),
-        Some(token),
+        Auth::token(&token),
         DiskCache::default(),
     )
 }

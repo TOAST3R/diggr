@@ -75,6 +75,15 @@ fn state(done: bool, declined: bool) -> State {
     }
 }
 
+/// The Discogs step's button: Connect with Discogs, or Connect… to the token field.
+fn connect_label(d: &Dig) -> &'static str {
+    if d.setup.consumer.is_some() {
+        "Connect with Discogs"
+    } else {
+        "Connect…"
+    }
+}
+
 impl Dig {
     /// A step's state, or `None` for a step this setup doesn't have (Previews outside the
     /// guided setup, the browser without the bridge) or can't tell yet (yt-dlp being looked for).
@@ -90,10 +99,7 @@ impl Dig {
                     YtDlpState::Found { .. } => Some(State::Done),
                 }
             }
-            Step::Discogs => Some(state(
-                self.token.is_some(),
-                self.settings.welcome.no_discogs,
-            )),
+            Step::Discogs => Some(state(self.auth.is_some(), self.settings.welcome.no_discogs)),
             Step::Browser => {
                 if self.setup.bridge == BridgeSetup::Off {
                     return None;
@@ -241,6 +247,7 @@ impl DiggrApp {
         let page_error = d.welcome.page_error.clone();
         let show_at_launch = d.settings.welcome.at_launch;
         let shared = d.bridge_shared.clone();
+        let connect_label = connect_label(d);
         let mut acts = Vec::new();
         egui::Modal::new(egui::Id::new("welcome")).show(ctx, |ui| {
             ui.set_max_width(440.0);
@@ -314,7 +321,7 @@ impl DiggrApp {
                                     }
                                 });
                                 ui.horizontal(|ui| {
-                                    if ui.button("Connect…").clicked() {
+                                    if ui.button(connect_label).clicked() {
                                         acts.push(Act::Connect);
                                     }
                                     if ui.button("I don't have an account").clicked() {
@@ -422,10 +429,9 @@ impl DiggrApp {
                 if let Some(d) = &mut self.dig {
                     d.welcome.resume = back;
                 }
-                self.dig_open_dialog();
-                if let Some(dialog) = self.dig.as_mut().and_then(|d| d.dialog.as_mut()) {
-                    dialog.focus_token = 3;
-                }
+                // Connect with Discogs, shown waiting in Options ▸ Discogs…; without it (a
+                // build without the app's keys), the token field.
+                self.dig_connect_or_token();
                 return;
             }
             Act::NoDiscogs(no) => {

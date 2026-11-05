@@ -11,6 +11,11 @@
 //! records of the page the user has open (the app can't read those stores itself), up to
 //! 1 MiB, each checked by its store's module.
 //!
+//! One route takes no key: `/discogs`, where the diggr.es callback page forwards Discogs'
+//! answer to Connect with Discogs (`discogs-oauth`). It answers only while a connection waits,
+//! only for that connection's request token, once ([`oauth::CallbackSlot`]); anything else is a
+//! 404. It is a page the browser shows, not JSON.
+//!
 //! Every request is answered on the bridge thread without waiting for the UI or Discogs: a
 //! send is checked, answered `202` at once, and handed to the UI as a [`BridgeCommand`]; the
 //! crates and status come from a [`Snapshot`] the UI keeps up to date. The one request held
@@ -35,6 +40,7 @@ use crate::bandcamp::{self, BandcampKind, BandcampPage, NameMatch};
 use crate::carts::{self, CartQueue, CartResult, ResultBody};
 use crate::collection::{Collection, Owned};
 use crate::discogs::cache::{DiskCache, Kind};
+use crate::discogs::oauth::{self, CallbackSlot};
 use crate::discogs::url::{self, Page, PageKind};
 use crate::jobs::Filters;
 use crate::juno;
@@ -189,6 +195,8 @@ pub struct Shared {
     pub cart: Mutex<CartQueue>,
     /// How long a cart wait is held open, in ms ([`carts::HOLD`]; shorter in tests).
     pub cart_hold_ms: std::sync::atomic::AtomicU64,
+    /// Connect with Discogs' answer, when one is awaited (`/discogs`).
+    pub discogs_callback: Arc<CallbackSlot>,
 }
 
 impl Shared {
@@ -206,6 +214,7 @@ impl Shared {
             cache: DiskCache::new(cache_root),
             cart: Mutex::new(CartQueue::default()),
             cart_hold_ms: std::sync::atomic::AtomicU64::new(carts::HOLD.as_millis() as u64),
+            discogs_callback: Arc::new(CallbackSlot::default()),
         })
     }
 
@@ -289,6 +298,100 @@ fn respond(req: tiny_http::Request, status: u16, body: &Value) {
     );
 }
 
+/// A page for the browser (the callback's answer).
+fn respond_html(req: tiny_http::Request, status: u16, html: &str) {
+    let ct = tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+        .expect("valid header");
+    let nostore = tiny_http::Header::from_bytes("Cache-Control", "no-store").expect("valid header");
+    let _ = req.respond(
+        tiny_http::Response::from_string(html)
+            .with_status_code(status)
+            .with_header(ct)
+            .with_header(nostore),
+    );
+}
+
+/// The callback route: `GET /discogs?…`, addressed to this computer, answered from `slot`.
+/// `None` when the request is for another route.
+pub fn callback_page(
+    req: &tiny_http::Request,
+    slot: &CallbackSlot,
+    port: u16,
+    now: Instant,
+) -> Option<oauth::CallbackPage> {
+    let (path, query) = req.url().split_once('?').unwrap_or((req.url(), ""));
+    if path != oauth::CALLBACK_PATH {
+        return None;
+    }
+    let get = *req.method() == tiny_http::Method::Get;
+    if !get || !oauth::host_ok(header(req, "Host"), port) {
+        return Some(oauth::CallbackPage::NotFound);
+    }
+    Some(slot.handle(query, now))
+}
+
+/// Connect with Discogs' own address, for when the bridge isn't running (off, or its port
+/// taken): `127.0.0.1` on a free port, serving only `/discogs` with the bridge's rules. It
+/// lives as long as the connection waits: dropping it stops it, and it stops on its own after
+/// [`oauth::WAIT`] in any case.
+pub struct CallbackListener {
+    server: Arc<tiny_http::Server>,
+    port: u16,
+    stop: Arc<AtomicBool>,
+}
+
+impl CallbackListener {
+    pub fn start(
+        spawner: &dyn Spawner,
+        slot: Arc<CallbackSlot>,
+        wake: impl Fn() + Send + 'static,
+    ) -> Result<Self, String> {
+        let server = tiny_http::Server::http(("127.0.0.1", 0))
+            .map_err(|e| format!("Could not listen for Discogs: {e}"))?;
+        let server = Arc::new(server);
+        let port = server
+            .server_addr()
+            .to_ip()
+            .map(|a| a.port())
+            .ok_or("Could not listen for Discogs")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (s, stopped) = (server.clone(), stop.clone());
+        let until = Instant::now() + oauth::WAIT + Duration::from_secs(5);
+        spawner
+            .spawn(
+                "dig-discogs-callback",
+                Priority::Low,
+                Box::new(move || {
+                    while !stopped.load(Ordering::Relaxed) && Instant::now() < until {
+                        match s.recv_timeout(TICK) {
+                            Ok(Some(req)) => {
+                                let page = callback_page(&req, &slot, port, Instant::now())
+                                    .unwrap_or(oauth::CallbackPage::NotFound);
+                                respond_html(req, page.status(), page.html());
+                                wake();
+                            }
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
+                    }
+                }),
+            )
+            .map_err(|e| format!("Could not listen for Discogs: {e:?}"))?;
+        Ok(Self { server, port, stop })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for CallbackListener {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.server.unblock();
+    }
+}
+
 fn serve(
     server: &tiny_http::Server,
     shared: &Shared,
@@ -306,6 +409,14 @@ fn serve(
     };
     while !stop.load(Ordering::Relaxed) {
         match server.recv_timeout(TICK) {
+            Ok(Some(req))
+                if let Some(page) =
+                    callback_page(&req, &shared.discogs_callback, port, Instant::now()) =>
+            {
+                respond_html(req, page.status(), page.html());
+                // The UI takes the answer from the slot on its next frame.
+                wake();
+            }
             Ok(Some(mut req)) => {
                 let (status, body, cmd) = answer(&mut req, shared, port);
                 // Queued before the answer goes out, so the UI never learns of a send after

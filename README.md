@@ -60,6 +60,35 @@ If you get `zsh: command not found: cargo`, repeat step 3. To make it permanent,
 `echo 'source "$HOME/.cargo/env"' >> ~/.zshrc`. Other platforms and details are under
 [Setup](#setup), and everything the window can do is under [Try it](#try-it).
 
+### Connect with Discogs in a build from source
+
+**Connect with Discogs** (Options ▸ Discogs…) signs in with Diggr's own Discogs app keys, a
+consumer key and secret. They are never in the repository: release builds get them from the
+maintainer's Keychain. A plain `cargo run` has no keys, so the dialog offers only a personal
+token ("No token: pages still work…"). Everything else works the same.
+
+If you have the keys (from discogs.com ▸ Settings ▸ Developers, for the registered "Diggr"
+app, or your own app registered there with the callback `https://diggr.es/discogs/callback`),
+store them once in the macOS Keychain:
+
+```sh
+security add-generic-password -a "$USER" -s diggr-discogs-key -w      # asks for the consumer key
+security add-generic-password -a "$USER" -s diggr-discogs-secret -w   # asks for the consumer secret
+```
+
+Then build with them:
+
+```sh
+source scripts/discogs-keys.sh && cargo run --release -p diggr
+```
+
+`scripts/discogs-keys.sh` exports `DISCOGS_CONSUMER_KEY` and `DISCOGS_CONSUMER_SECRET`, from the
+environment if they're already set, otherwise from the Keychain items `diggr-discogs-key` and
+`diggr-discogs-secret`, and prints whether it found them (never their values). On Linux or
+Windows, set the two variables yourself before `cargo run`. Cargo rebuilds when they change, so
+switching between a build with keys and one without needs no clean. Tests, clippy and the wasm
+check never need the keys: tests use fake ones.
+
 ## Setup
 
 ### 1. Prerequisites
@@ -516,10 +545,21 @@ ahead of what plays. Other pasted text is ignored.
 - **Setup (Options ▸ Discogs…):**
   - Pages work without an account, at Discogs' lower rate limit (25 requests a minute
     instead of 60).
-  - For the wantlist and the full rate, paste a personal access token (discogs.com ▸
+  - For the wantlist and the full rate, connect your account. **Connect with Discogs** opens
+    Discogs in your browser; click **Authorize** there and the dialog says "Connected as
+    ‹you›". Discogs sends the browser to <https://diggr.es/discogs/callback>, a static page
+    that hands the answer to Diggr on 127.0.0.1 (the browser bridge, or a one-time address
+    on a free port when the bridge is off; it answers only the one connection it waits for,
+    once). The wait shows **Cancel** and ends after 5 minutes; closing the dialog cancels it
+    too. Every request is then signed for your account (OAuth 1.0a). The Connect to Discogs
+    dialog and the setup panel's Discogs step start the same thing. Builds made from source
+    don't have Diggr's Discogs app keys, so they have no Connect with Discogs, only the token.
+  - Or **Use a personal token instead**: paste a personal access token (discogs.com ▸
     Settings ▸ Developers, <https://www.discogs.com/settings/developers>, **Generate new
     token**; the dialog's **Open that page** goes there). It's checked before it's saved, is
     readable only by you, and is shown only by its last 4 characters.
+  - Either way the credentials are kept only in the config folder's `dig/`, readable only by
+    you and never logged; connecting one way removes the other, and **Disconnect** removes both.
   - Previews need [yt-dlp](https://github.com/yt-dlp/yt-dlp). Yours is used when there is one
     (`brew install yt-dlp`, your package manager, or a path in the dialog if it isn't on the
     `PATH`), and the app never updates it; if clips keep failing, try `yt-dlp -U`. On a Mac or
@@ -1314,7 +1354,8 @@ version still opens it); the Playlist crate is now the one that counts.
 
 Digging keeps its state in the config folder's `dig/`: `settings.ron` (filters, cache size,
 yt-dlp path, the Wantlist crate, whether the Connect to Discogs dialog was turned off), `token`
-(readable only by you), `memory.ron` (wanted records, passed tracks, and wantlist changes still
+(a personal token) or `oauth` (an account connected with Discogs: its access token and secret),
+readable only by you, `memory.ron` (wanted records, passed tracks, and wantlist changes still
 to be sent, with their retries), `jobs.ron` (sends still in progress), `bandcamp.ron` (the
 Bandcamp albums each label crate has read, the labels you kept separate, and the imported fan's
 collection and wishlist items with what Discogs said about each, and the last import's report), `sellers.ron` (Top
@@ -1367,6 +1408,14 @@ already has. `--dry-run` only says which build it would make.
   and `spctl` must accept both. It needs a paid Apple Developer account. No secret is kept in
   the repository.
 
+All three build scripts take Diggr's Discogs consumer key and secret (for Connect with Discogs)
+from `scripts/discogs-keys.sh`: `DISCOGS_CONSUMER_KEY` and `DISCOGS_CONSUMER_SECRET` if set,
+otherwise the macOS Keychain items `diggr-discogs-key` and `diggr-discogs-secret`. They are
+built in with `option_env!` (`make-linux.sh` passes them into its container by name, never on a
+command line), and each script says whether it found them; a build without them only offers
+the personal token. `release.sh` stops when they are missing. To store them in the Keychain, see
+[Connect with Discogs in a build from source](#connect-with-discogs-in-a-build-from-source).
+
 `make-linux.sh` builds `diggr` on the Mac, in an x86_64 Debian 11 Docker container
 (`rust:<toolchain>-bullseye`, or `LINUX_IMAGE`), so it runs on glibc 2.31 and later. Crates are
 fetched on the host first and the container builds offline, so a TLS-intercepting proxy
@@ -1409,7 +1458,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1052 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1095 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1507,7 +1556,10 @@ What's covered:
   - focus-first expansion;
   - jobs resumed after a restart;
   - offline and back;
-  - token checks, wantlist changes, collection adds (one copy, and a checked retry that never
+  - token checks, Connect with Discogs (the request and access token exchange against a fake
+    Discogs, a refusal, a malformed answer, the PLAINTEXT header with its encoding and a fresh
+    nonce, no credential in `Debug` output, `dig/oauth` and `dig/token` exclusive), wantlist
+    changes, collection adds (one copy, and a checked retry that never
     adds a second), and wanted records found in the collection after a sync;
   - albums and covers from the cache with no request, and covers: fetched once, shrunk,
     paced to 4 a second, only from Discogs' and Bandcamp's image hosts, a stale address looked up again.
@@ -1516,7 +1568,9 @@ What's covered:
   pairing (expiry, single use, lockout after 5 wrong codes), keys and Forget browsers, refusals
   by host, origin, preflight, size, unknown fields and other addresses (look-alike Bandcamp hosts
   too), Bandcamp albums and labels (added, merged or refreshed), no
-  `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, a
+  `Access-Control-*` header on any answer, the crates and status snapshot, a taken port, the
+  `/discogs` callback (nothing waiting, a wrong token, the right one twice, a Deny, a foreign
+  Host header, and the one-time listener when the bridge is off), a
   send answered in under 100 ms while Discogs is slow, and the `diggr://show` URL a seller's
   answer carries only from inside the app bundle.
 
@@ -1562,6 +1616,10 @@ What's covered:
   - `Y`, `N` and `I` with and without a token;
   - the entry menu;
   - Options ▸ Discogs… checking a token;
+  - Connect with Discogs through the bridge and through the one-time address (the browser
+    opened at Authorize, the account saved and its requests signed, the address closed after),
+    Cancel, a Deny, the 5 minutes running out and a refusal saving nothing, and the Connect to
+    Discogs dialog and the setup step starting it;
   - "needs yt-dlp", and on a Mac the download question: accepting it installs yt-dlp and starts
     the previews, Not now isn't asked again and Options ▸ Discogs… still offers the download, a
     checksum failure is said while entries keep waiting, and the user's own yt-dlp shows as

@@ -235,7 +235,7 @@ impl DiggrApp {
             return;
         };
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() {
+        if d.auth.is_none() {
             return self
                 .notify("Add a Discogs token (Options › Discogs…) to find tracks on Discogs");
         }

@@ -58,6 +58,7 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
                 tools: None,
                 guided_ytdlp: false,
                 welcome: false,
+                consumer: None,
             })
         },
     );

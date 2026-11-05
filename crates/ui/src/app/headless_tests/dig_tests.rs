@@ -59,6 +59,7 @@ impl Fakes {
             tools: None,
             guided_ytdlp: false,
             welcome: false,
+            consumer: None,
         }
     }
 
@@ -5153,7 +5154,7 @@ fn connect_opens_options_with_the_token_field_then_comes_back_for_the_rest() {
     // Connected there, and the dialog closed: the panel is back for the extension.
     {
         let d = rig.app.dig.as_mut().unwrap();
-        d.token = Some("tok".into());
+        d.auth = Some("tok".into());
         d.dialog = None;
     }
     rig.until(welcome_shows, "the panel comes back");
@@ -5294,4 +5295,336 @@ fn a_pasted_store_page_points_to_the_extension_once() {
         message(&rig),
         "Juno pages are sent from the browser extension"
     );
+}
+
+// ---- Connect with Discogs (`discogs-oauth`) -------------------------------------------------
+
+const REQUEST_TOKEN: &str = "oauth_token=rt&oauth_token_secret=rs&oauth_callback_confirmed=true";
+
+/// A build with the app's Discogs keys (fake ones), and Discogs answering every OAuth step.
+fn oauth_rig(name: &str, fakes: &Fakes, bridge: BridgeSetup) -> Rig {
+    fakes
+        .transport
+        .route(::dig::discogs::oauth::REQUEST_TOKEN, 200, REQUEST_TOKEN);
+    fakes.transport.route_for(
+        Method::Post,
+        ::dig::discogs::oauth::ACCESS_TOKEN,
+        200,
+        "oauth_token=at&oauth_token_secret=as",
+    );
+    let f = fakes.clone();
+    let mut rig = Rig::with_dig(
+        name,
+        Vec::new(),
+        |_| {},
+        move |dir| {
+            Some(DigSetup {
+                bridge,
+                consumer: Some(::dig::discogs::oauth::Consumer {
+                    key: "ck".into(),
+                    secret: "cs".into(),
+                }),
+                ..f.setup(dir)
+            })
+        },
+    );
+    rig.until(
+        |r| r.app.dig.as_ref().is_some_and(|d| d.started()),
+        "the workers start",
+    );
+    rig
+}
+
+/// What the diggr.es callback page does: a navigation to the app's address.
+fn navigate(port: u16, query: &str) -> u16 {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let req = format!(
+        "GET /discogs?{query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out.split(' ').nth(1).unwrap().parse().unwrap()
+}
+
+fn open_discogs_dialog(rig: &mut Rig) {
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::Dig(DigAction::OpenDialog), &ctx);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connect with Discogs"),
+        "the dialog leads with Connect with Discogs",
+    );
+}
+
+/// Waits until the browser was sent to Discogs' Authorize page.
+fn until_authorizing(rig: &mut Rig, fakes: &Fakes) {
+    rig.until(
+        |_| {
+            fakes
+                .browser
+                .opened
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|u| u == "https://www.discogs.com/oauth/authorize?oauth_token=rt")
+        },
+        "the browser opens at Discogs' Authorize page",
+    );
+    // An earlier attempt's page is in the list too: wait until this one's address is armed.
+    rig.until(
+        |r| {
+            r.app
+                .dig
+                .as_ref()
+                .and_then(|d| d.connecting.as_ref())
+                .is_some_and(|c| c.authorizing())
+        },
+        "the address answers for the request token",
+    );
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Waiting for Discogs in your browser…"),
+        "the dialog waits",
+    );
+}
+
+/// The `oauth_callback` the request token was asked with.
+fn callback_port(fakes: &Fakes) -> u16 {
+    let log = fakes.transport.log();
+    let (req, _) = log
+        .iter()
+        .rev()
+        .find(|(r, _)| r.path == ::dig::discogs::oauth::REQUEST_TOKEN)
+        .expect("a request token was asked for");
+    let authz = req
+        .headers()
+        .into_iter()
+        .find(|(k, _)| *k == "Authorization")
+        .unwrap()
+        .1;
+    let at = authz
+        .find("port%3D")
+        .expect("the callback carries the port")
+        + 7;
+    authz[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn connect_with_discogs_through_a_one_time_address_when_the_bridge_is_off() {
+    let fakes = Fakes::new();
+    let mut rig = oauth_rig("dig-oauth-listener", &fakes, BridgeSetup::Off);
+    open_discogs_dialog(&mut rig);
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    assert!(shows(
+        &rig.frame(Vec::new()),
+        "If your browser says it can't reach 127.0.0.1, make sure Diggr is open and click \
+         Connect with Discogs again."
+    ));
+    let port = callback_port(&fakes);
+    let listener = rig
+        .app
+        .dig
+        .as_ref()
+        .and_then(|d| d.connecting.as_ref())
+        .and_then(|c| c.listener_port());
+    assert_eq!(
+        listener,
+        Some(port),
+        "the callback names the one-time address"
+    );
+
+    assert_eq!(navigate(port, "oauth_token=other&oauth_verifier=V"), 404);
+    assert_eq!(navigate(port, "oauth_token=rt&oauth_verifier=V3rif"), 200);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connected as digger"),
+        "the account shows",
+    );
+    let config = rig.dir.join("config");
+    assert!(config.join("dig/oauth").exists());
+    assert!(!config.join("dig/token").exists());
+    assert!(matches!(
+        rig.app.dig.as_ref().unwrap().auth,
+        Some(::dig::discogs::transport::Auth::OAuth(_))
+    ));
+    // The access token was asked for with the verifier, and the account checked with it.
+    let log = fakes.transport.log();
+    let authz = |path: &str| {
+        log.iter()
+            .find(|(r, _)| r.path == path)
+            .map(|(r, _)| {
+                r.headers()
+                    .into_iter()
+                    .find(|(k, _)| *k == "Authorization")
+                    .unwrap()
+                    .1
+            })
+            .unwrap()
+    };
+    assert!(authz(::dig::discogs::oauth::ACCESS_TOKEN).contains("oauth_verifier=\"V3rif\""));
+    assert!(authz("/oauth/identity").contains("oauth_token=\"at\""));
+    // The address no longer answers.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(Instant::now() < deadline, "the one-time address stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = rig.frame(Vec::new());
+    assert!(
+        !text_list(&out)
+            .iter()
+            .any(|t| t.contains("Waiting for Discogs"))
+    );
+    assert!(shows(&out, "Disconnect"));
+}
+
+#[test]
+fn connect_with_discogs_comes_back_through_the_bridge() {
+    let fakes = Fakes::new();
+    let mut rig = oauth_rig("dig-oauth-bridge", &fakes, BridgeSetup::Port(0));
+    open_discogs_dialog(&mut rig);
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    let port = bridge_port(&rig);
+    assert_eq!(
+        callback_port(&fakes),
+        port,
+        "the callback names the bridge's port"
+    );
+    assert!(
+        rig.app
+            .dig
+            .as_ref()
+            .and_then(|d| d.connecting.as_ref())
+            .is_some_and(|c| c.listener_port().is_none()),
+        "no second address"
+    );
+    assert_eq!(navigate(port, "oauth_token=rt&oauth_verifier=V3rif"), 200);
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Connected as digger"),
+        "the account shows",
+    );
+    assert_eq!(
+        navigate(port, "oauth_token=rt&oauth_verifier=V3rif"),
+        404,
+        "answered once"
+    );
+    // Disconnect removes it.
+    rig.click_text("Disconnect");
+    rig.frame(Vec::new());
+    assert!(rig.app.dig.as_ref().unwrap().auth.is_none());
+    assert!(!rig.dir.join("config/dig/oauth").exists());
+}
+
+#[test]
+fn cancel_a_deny_the_wait_and_a_refusal_connect_nothing() {
+    let fakes = Fakes::new();
+    let mut rig = oauth_rig("dig-oauth-stops", &fakes, BridgeSetup::Port(0));
+    let port = bridge_port(&rig);
+    open_discogs_dialog(&mut rig);
+    let connecting = |r: &Rig| r.app.dig.as_ref().unwrap().connecting.is_some();
+
+    // Cancel: the address stops answering.
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    rig.click_text("Cancel");
+    rig.frame(Vec::new());
+    assert!(!connecting(&rig));
+    assert_eq!(navigate(port, "oauth_token=rt&oauth_verifier=V"), 404);
+
+    // A Deny forwarded to the app ends the wait.
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    assert_eq!(navigate(port, "denied=rt"), 200);
+    rig.until(
+        |r| {
+            shows(
+                &r.frame(Vec::new()),
+                "You didn't allow Diggr on Discogs; nothing was connected",
+            )
+        },
+        "the dialog says so",
+    );
+    assert!(!connecting(&rig));
+
+    // 5 minutes without an answer.
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    if let Some(c) = rig.app.dig.as_mut().unwrap().connecting.as_mut() {
+        c.until = Instant::now();
+    }
+    rig.until(
+        |r| {
+            texts(&r.frame(Vec::new()))
+                .iter()
+                .any(|t| t.text.starts_with("Discogs didn't answer in 5 minutes"))
+        },
+        "the dialog says Discogs didn't answer",
+    );
+    assert!(!connecting(&rig));
+    assert_eq!(navigate(port, "oauth_token=rt&oauth_verifier=V"), 404);
+
+    // Discogs refuses the request token.
+    fakes
+        .transport
+        .route(::dig::discogs::oauth::REQUEST_TOKEN, 401, "");
+    rig.click_text("Connect with Discogs");
+    rig.until(
+        |r| {
+            shows(
+                &r.frame(Vec::new()),
+                "Discogs refused the connection; nothing was saved",
+            )
+        },
+        "the dialog says Discogs refused",
+    );
+    assert!(!connecting(&rig));
+    assert!(rig.app.dig.as_ref().unwrap().auth.is_none());
+    assert!(!rig.dir.join("config/dig/oauth").exists());
+}
+
+#[test]
+fn the_connect_dialog_and_the_setup_step_use_connect_with_discogs() {
+    let fakes = Fakes::new();
+    let mut rig = oauth_rig("dig-oauth-dialogs", &fakes, BridgeSetup::Off);
+    let c = play_release(&mut rig);
+    let first = rig.ids(c)[0];
+    rig.app.dig_act(c, DigAction::Collect(vec![first]));
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Use a personal token instead"),
+        "the Connect to Discogs dialog shows",
+    );
+    assert!(!shows(
+        &rig.frame(Vec::new()),
+        "3. Paste it in Options › Discogs…"
+    ));
+    rig.click_text("Connect with Discogs");
+    until_authorizing(&mut rig, &fakes);
+    assert!(rig.app.dig.as_ref().unwrap().connect.is_none());
+    // Closing Options ▸ Discogs… stops waiting.
+    rig.app.dig.as_mut().unwrap().dialog = None;
+    let port = callback_port(&fakes);
+    rig.app.dig_act(c, DigAction::Collect(vec![first]));
+    rig.until(
+        |r| shows(&r.frame(Vec::new()), "Use a personal token instead"),
+        "the Connect to Discogs dialog shows again",
+    );
+    // "Use a personal token instead": the token field, focused.
+    rig.click_text("Use a personal token instead");
+    for _ in 0..5 {
+        rig.frame(Vec::new());
+    }
+    assert!(rig.ctx.text_edit_focused(), "with the token field focused");
+    assert!(shows(&rig.frame(Vec::new()), "Check and save"));
+    assert!(rig.app.dig.as_ref().unwrap().connecting.is_none());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(Instant::now() < deadline, "the one-time address stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

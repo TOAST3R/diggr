@@ -503,7 +503,7 @@ impl DiggrApp {
         let Some(mem) = d.bandcamp.memory.fan.as_ref() else {
             return;
         };
-        if d.token.is_none() {
+        if d.auth.is_none() {
             return self.fan_finish(false);
         }
         let mut finds = Vec::new();
