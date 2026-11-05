@@ -151,6 +151,8 @@ pub struct RecordInfo {
     pub for_sale: Option<ForSale>,
     /// The record's thumbnail address (empty when unknown).
     pub cover: String,
+    /// The record's large cover address (empty when unknown).
+    pub cover_large: String,
     /// Its styles, comma-separated (empty when unknown).
     pub styles: String,
     /// Its formats, vinyl first (empty when unknown).
@@ -170,6 +172,7 @@ impl RecordInfo {
             year: r.year,
             for_sale: r.for_sale.clone(),
             cover: r.cover.clone(),
+            cover_large: r.cover_large.clone(),
             styles: r.styles.join(", "),
             formats: r.formats.clone(),
         }
@@ -191,6 +194,7 @@ impl RecordInfo {
             year: l.year,
             for_sale: None,
             cover: l.cover.clone(),
+            cover_large: l.cover_large.clone(),
             styles: String::new(),
             formats: l.formats(),
         }
@@ -270,9 +274,9 @@ pub enum Event {
     /// Cached details for a crate's records (see [`Command::Backfill`]); uncached ones are
     /// left out.
     Backfill(u64, Vec<RecordInfo>),
-    /// A record's cover address from fresh data (empty when it has no image any more, or the
-    /// data couldn't be fetched).
-    Cover(RecordKey, String),
+    /// A record's cover address from fresh data, then its large cover's (empty when it has no
+    /// image any more, or the data couldn't be fetched).
+    Cover(RecordKey, String, String),
     /// A wantlist change: `Ok(true)` if the app changed the wantlist, `Ok(false)` if the
     /// release was already there.
     Wantlist {
@@ -584,21 +588,21 @@ impl Intake {
             Command::RefreshCover(key) => {
                 let now = (self.now)();
                 self.ensure_identity();
-                let cover = match expand::fresh_cover(&mut self.client, key, now) {
+                let (cover, large) = match expand::fresh_cover(&mut self.client, key, now) {
                     Ok(r) => {
                         self.online();
                         if let (Some(release), Some(fs)) = (r.release, r.for_sale.clone()) {
                             self.events.push(Event::ForSale(release, fs));
                         }
-                        r.cover
+                        (r.cover, r.cover_large)
                     }
                     Err(ApiError::Offline) => {
                         self.went_offline();
-                        String::new()
+                        Default::default()
                     }
-                    Err(_) => String::new(),
+                    Err(_) => Default::default(),
                 };
-                self.events.push(Event::Cover(key, cover));
+                self.events.push(Event::Cover(key, cover, large));
             }
             Command::FirstSellers => self.first_sellers = true,
             Command::CountSeller { seller, query } => {

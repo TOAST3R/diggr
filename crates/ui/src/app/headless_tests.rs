@@ -894,6 +894,593 @@ fn hovering_an_entry_shows_everything_known_about_it() {
     }
 }
 
+/// Frames over `at` until `text` shows (tooltips take a frame or two to appear).
+fn hover_until(rig: &mut Rig, at: Pos2, text: &str) -> egui::FullOutput {
+    let mut out = rig.frame(vec![Event::PointerMoved(at)]);
+    for _ in 0..10 {
+        if shows(&out, text) {
+            break;
+        }
+        out = rig.frame(vec![Event::PointerMoved(at)]);
+    }
+    out
+}
+
+#[test]
+fn a_track_under_an_open_record_leaves_the_record_facts_to_its_card() {
+    let mut rig = Rig::new("tooltip-open-record", Vec::new(), |_| {});
+    rig.ctx.global_style_mut(|s| {
+        s.interaction.tooltip_delay = 0.0;
+        s.interaction.tooltip_grace_time = 0.0;
+    });
+    for (side, title) in [("A1", "Glasshouse"), ("A2", "Tidepool")] {
+        rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            title,
+            None,
+            Some(Origin {
+                release: Some(12),
+                album: "Glasshouse EP".into(),
+                label: "Lowtide Tapes".into(),
+                catno: "LT-012".into(),
+                position: side.into(),
+                ..Default::default()
+            }),
+            "queued",
+        );
+    }
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    rig.app.apply(
+        Action::ToggleRecord(crate::playlist::AlbumKey::Release(12)),
+        &ctx,
+    );
+    // The record row takes two rows; its first track is the third.
+    let at = rig.row(2);
+    let out = hover_until(&mut rig, at, "A1");
+    assert!(shows(&out, "A1"), "{:?}", text_list(&out));
+    for t in ["Lowtide Tapes", "LT-012", "Glasshouse EP"] {
+        assert!(!shows(&out, t), "{t} is the card's: {:?}", text_list(&out));
+    }
+}
+
+/// A grouped crate of "Glasshouse EP" (three tracks, release 12, playable), the single
+/// "Lowlight" (release 13) and "Undertow EP" (two tracks, release 14), tooltips at once.
+/// Record rows take two rows: 0, 2 and 4.
+fn card_rig(name: &str) -> Rig {
+    let mut rig = Rig::new(name, Vec::new(), |_| {});
+    // Tall, so the card (centred) sits below the rows the tests click.
+    rig.screen = vec2(480.0, 900.0);
+    rig.ctx.global_style_mut(|s| {
+        s.interaction.tooltip_delay = 0.0;
+        s.interaction.tooltip_grace_time = 0.0;
+    });
+    let tracks = [
+        (12, "A1", "Tidepool", "Glasshouse EP"),
+        (12, "A2", "Undertow", "Glasshouse EP"),
+        (12, "B1", "Ripple", "Glasshouse EP"),
+        (13, "A", "Lowlight", "Lowlight"),
+        (14, "A", "Shoal", "Undertow EP"),
+        (14, "B", "Reef", "Undertow EP"),
+    ];
+    for (release, side, title, album) in tracks {
+        let id = rig.app.crates.shown_mut().add_waiting(
+            "Nightcraft",
+            title,
+            None,
+            Some(Origin {
+                release: Some(release),
+                album: album.into(),
+                artist: "Nightcraft".into(),
+                label: "Lowtide Tapes".into(),
+                catno: format!("LT-0{release}"),
+                year: Some(1994),
+                styles: "Deep House, Minimal".into(),
+                position: side.into(),
+                ..Default::default()
+            }),
+            "queued",
+        );
+        // Each its own file, so the app tells them apart as playback moves on.
+        let file = match side {
+            "A1" => "tone.flac",
+            "A2" => "tone.wav",
+            _ => "tone.ogg",
+        };
+        if release == 12 {
+            let t = TrackRef::new(fixture(file).to_string_lossy());
+            rig.app.set_audio(PLAYLIST, id, t);
+        }
+    }
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    rig.frame(Vec::new());
+    rig
+}
+
+/// Enough frames (egui's clock moves 1/60 s a frame here) that the next click isn't the second
+/// of a double-click, which plays.
+fn past_double_click(rig: &mut Rig) {
+    for _ in 0..20 {
+        rig.frame(Vec::new());
+    }
+}
+
+/// Repeat off (the rig plays with repeat one), so playback moves on as tracks end.
+fn repeat_off(rig: &mut Rig) {
+    let ctx = rig.ctx.clone();
+    while rig.app.settings.repeat != Repeat::Off {
+        rig.app.apply(Action::Repeat, &ctx);
+    }
+}
+
+/// The pressing line the card of release `n` shows.
+fn pressing(n: u64) -> String {
+    format!("Lowtide Tapes · LT-0{n} · 1994")
+}
+
+fn card_on(rig: &Rig) -> Option<AlbumKey> {
+    rig.app.card.as_ref().map(|c| c.key.clone())
+}
+
+/// The ⏵/⏸ on the card's line for `title`.
+fn card_button(out: &egui::FullOutput, title: &str) -> Pos2 {
+    let all = texts(out);
+    let line = all
+        .iter()
+        .find(|t| t.text == title)
+        .unwrap_or_else(|| panic!("{title:?} not on the card: {:?}", text_list(out)))
+        .rect;
+    all.iter()
+        .filter(|t| t.text == "⏵" || t.text == "⏸")
+        .find(|t| (t.rect.center().y - line.center().y).abs() < 3.0 && t.rect.right() < line.left())
+        .unwrap_or_else(|| panic!("no play button on {title:?}"))
+        .rect
+        .center()
+}
+
+#[test]
+fn every_card_is_the_same_height_whatever_its_record_holds() {
+    let height = |n: usize| {
+        let mut rig = Rig::new(&format!("record-card-lines-{n}"), Vec::new(), |_| {});
+        rig.screen.y = 800.0;
+        for i in 0..n {
+            rig.app.crates.shown_mut().add_waiting(
+                "Nightcraft",
+                format!("T{i}"),
+                None,
+                Some(Origin {
+                    release: Some(12),
+                    album: "Glasshouse EP".into(),
+                    position: format!("A{i}"),
+                    ..Default::default()
+                }),
+                "queued",
+            );
+        }
+        let ctx = rig.ctx.clone();
+        rig.app.apply(Action::ToggleGrouped, &ctx);
+        rig.frame(Vec::new());
+        rig.click(rig.row(0));
+        rig.frame(Vec::new());
+        rig.app.card_rect.expect("the card").height()
+    };
+    let eight = height(8);
+    for n in [1, 3, 14] {
+        let h = height(n);
+        assert!((h - eight).abs() < 0.5, "{n} tracks: {h} vs {eight}");
+    }
+}
+
+#[test]
+fn hovering_a_record_row_shows_no_card() {
+    let mut rig = card_rig("record-card-hover");
+    let at = rig.row(0);
+    let mut out = rig.frame(vec![Event::PointerMoved(at)]);
+    for _ in 0..10 {
+        out = rig.frame(vec![Event::PointerMoved(at)]);
+    }
+    assert!(!shows(&out, &pressing(12)), "{:?}", text_list(&out));
+    assert!(!shows(&out, "Side"), "nor a tooltip");
+    assert_eq!(card_on(&rig), None);
+}
+
+#[test]
+fn a_click_on_a_record_row_opens_its_card() {
+    let mut rig = card_rig("record-card-click");
+    rig.click(rig.row(0));
+    let out = rig.frame(Vec::new());
+    for t in [
+        "Nightcraft",
+        "Glasshouse EP",
+        pressing(12).as_str(),
+        "Deep House",
+        "Minimal",
+        "A1",
+        "Tidepool",
+        "B1",
+        "Ripple",
+    ] {
+        assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
+    }
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(12)));
+    assert_eq!(
+        rig.app.crates.shown().selected_ids().len(),
+        3,
+        "the record is selected"
+    );
+    // While it's open, nothing outside it takes the pointer: another record row's click
+    // does nothing.
+    rig.click(rig.row(2));
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(12)),
+        "the card stays on its record"
+    );
+    assert_eq!(
+        rig.app.crates.shown().selected_ids().len(),
+        3,
+        "the click didn't reach the row"
+    );
+    // × closes it; then the single, a record of one entry, has its card too.
+    rig.click_text("×");
+    assert_eq!(card_on(&rig), None);
+    past_double_click(&mut rig);
+    rig.click(rig.row(2));
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, &pressing(13)), "{:?}", text_list(&out));
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(13)));
+}
+
+#[test]
+fn a_shift_or_cmd_click_only_selects() {
+    let mut rig = card_rig("record-card-mods");
+    rig.click_with_mods(rig.row(0), Modifiers::SHIFT);
+    assert_eq!(card_on(&rig), None);
+    rig.click_with_mods(rig.row(4), Modifiers::COMMAND);
+    assert_eq!(card_on(&rig), None);
+    assert_eq!(
+        rig.app.crates.shown().selected_ids().len(),
+        5,
+        "both records"
+    );
+}
+
+#[test]
+fn the_card_closes_when_its_record_goes() {
+    let mut rig = card_rig("record-card-gone");
+    let ctx = rig.ctx.clone();
+    rig.click(rig.row(0));
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    rig.frame(Vec::new());
+    assert_eq!(card_on(&rig), None, "ungrouped");
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    rig.frame(Vec::new());
+    rig.click(rig.row(2));
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(13)));
+    rig.app.apply(Action::RemoveSelected, &ctx);
+    rig.frame(Vec::new());
+    assert_eq!(card_on(&rig), None, "removed");
+}
+
+#[test]
+fn only_the_card_takes_the_pointer_and_esc_or_its_x_close_it() {
+    let mut rig = card_rig("record-card-close");
+    rig.click(rig.row(0));
+    rig.key(Key::Escape, Modifiers::NONE);
+    assert_eq!(card_on(&rig), None);
+    assert_eq!(
+        rig.app.crates.shown().selected_ids().len(),
+        3,
+        "selection kept"
+    );
+    past_double_click(&mut rig);
+    rig.click(rig.row(0));
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(12)));
+    // The player band, above the playlist: dimmed, it takes nothing, and the card stays.
+    rig.click(pos2(PL_LEFT + 20.0, 20.0));
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(12)),
+        "outside: nothing"
+    );
+    // A wheel over the list doesn't scroll it.
+    rig.set_rows(4);
+    rig.frame(Vec::new());
+    let over = rig.row(1);
+    rig.frame(vec![
+        Event::PointerMoved(over),
+        Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    for _ in 0..30 {
+        rig.frame(vec![Event::PointerMoved(over)]);
+    }
+    assert_eq!(rig.app.pl_scroll, 0, "the list didn't scroll");
+    // A click inside the card (its pressing line) keeps it open.
+    let out = rig.frame(Vec::new());
+    let line = texts(&out)
+        .into_iter()
+        .find(|t| t.text == pressing(12))
+        .expect("the pressing line")
+        .rect;
+    rig.click(line.center());
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(12)), "inside");
+    rig.click_text("×");
+    assert_eq!(card_on(&rig), None, "× closes it");
+}
+
+#[test]
+fn the_card_is_centred_whichever_row_opened_it_and_its_x_closes_it() {
+    let mut rig = card_rig("record-card-centre");
+    rig.click(rig.row(0));
+    rig.frame(Vec::new());
+    let centre = rig.ctx.content_rect().center();
+    let first = rig.app.card_rect.expect("open").center();
+    rig.click_text("×");
+    assert_eq!(card_on(&rig), None, "× closes it");
+    assert_eq!(
+        rig.app.crates.shown().selected_ids().len(),
+        3,
+        "selection kept"
+    );
+    rig.click(rig.row(4));
+    rig.frame(Vec::new());
+    let last = rig.app.card_rect.expect("open").center();
+    for c in [first, last] {
+        assert!((c - centre).length() < 1.0, "{c:?} vs {centre:?}");
+    }
+}
+
+#[test]
+fn the_cards_bar_seeks_the_playing_track_of_its_record() {
+    let mut rig = card_rig("record-card-seek");
+    let a1 = rig.app.crates.shown().entries()[0].id;
+    rig.app.apply(Action::PlayEntry(a1), &rig.ctx.clone());
+    // Its length read: the bar needs it.
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing
+                && r.app
+                    .now_playing_names()
+                    .is_some_and(|(_, _, d)| d.is_some())
+        },
+        "A1 plays, its length known",
+    );
+    rig.click(rig.row(0));
+    let out = rig.frame(Vec::new());
+    let all = texts(&out);
+    let time = all
+        .iter()
+        .find(|t| t.text.ends_with("/ 0:02"))
+        .unwrap_or_else(|| panic!("the bar's time: {:?}", text_list(&out)))
+        .rect;
+    let side = all.iter().find(|t| t.text == "A1").expect("A1").rect;
+    // The bar runs from the tracklist's left to the time's box, on the time's line.
+    let left = side.left() - 16.0 + 2.0;
+    let right = time.right() - 62.0;
+    rig.click(pos2((left + right) / 2.0, time.center().y));
+    rig.until(
+        |r| (r.app.position.seconds() - 1.0).abs() < 0.25,
+        "seeked to the middle of the 2 s track",
+    );
+    assert_eq!(rig.app.crates.shown().current(), Some(a1), "the same track");
+    // Another record's card: an empty bar, no time, no seeking.
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    let out = rig.frame(Vec::new());
+    assert!(
+        !text_list(&out).iter().any(|t| t.contains(" / ")),
+        "{:?}",
+        text_list(&out)
+    );
+}
+
+#[test]
+fn the_card_follows_playback_into_the_next_record() {
+    let mut rig = card_rig("record-card-follow");
+    let ids = rig.ids(PLAYLIST);
+    let t = TrackRef::new(fixture("tone.mp3").to_string_lossy());
+    rig.app.set_audio(PLAYLIST, ids[3], t);
+    // B1, the record's last track, plays with its card open.
+    rig.app.apply(Action::PlayEntry(ids[2]), &rig.ctx.clone());
+    rig.until(|r| r.app.position.state == PlayState::Playing, "B1 plays");
+    repeat_off(&mut rig);
+    rig.click(rig.row(0));
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(12)));
+    rig.until(
+        |r| r.app.crates.shown().current() == Some(ids[3]),
+        "the next record's track plays",
+    );
+    rig.frame(Vec::new());
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(13)),
+        "the card followed"
+    );
+    assert_eq!(rig.app.crates.shown().selected_ids(), [ids[3]]);
+    assert!(
+        rig.app
+            .card
+            .as_ref()
+            .and_then(|c| c.moved)
+            .is_some_and(|(_, d)| d == 1),
+        "it slides in from the right"
+    );
+}
+
+#[test]
+fn a_card_on_another_record_stays_while_playback_moves_on() {
+    let mut rig = card_rig("record-card-stay");
+    let ids = rig.ids(PLAYLIST);
+    rig.app.apply(Action::PlayEntry(ids[0]), &rig.ctx.clone());
+    rig.until(|r| r.app.position.state == PlayState::Playing, "A1 plays");
+    repeat_off(&mut rig);
+    rig.click(rig.row(4));
+    rig.until(
+        |r| r.app.crates.shown().current() == Some(ids[1]),
+        "A2 plays",
+    );
+    rig.frame(Vec::new());
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(14)), "it stays");
+}
+
+#[test]
+fn stepping_slides_the_next_record_in_from_the_right() {
+    let mut rig = card_rig("record-card-slide");
+    rig.click(rig.row(0));
+    rig.frame(Vec::new());
+    let before = rig.app.card_rect.expect("open");
+    assert_eq!(
+        rig.app.card.as_ref().unwrap().moved,
+        None,
+        "opened: no slide"
+    );
+    rig.click_text("›");
+    let moved = rig.app.card.as_ref().unwrap().moved;
+    assert!(moved.is_some_and(|(_, d)| d == 1), "{moved:?}");
+    rig.frame(Vec::new());
+    let after = rig.app.card_rect.expect("open");
+    assert!(
+        (after.center() - before.center()).length() < 0.5
+            && (after.size() - before.size()).length() < 0.5,
+        "the card itself doesn't move or resize: {before:?} {after:?}"
+    );
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    let moved = rig.app.card.as_ref().unwrap().moved;
+    assert!(moved.is_some_and(|(_, d)| d == -1), "back: from the left");
+}
+
+#[test]
+fn the_card_plays_pauses_and_resumes_its_tracks() {
+    let mut rig = card_rig("record-card-play");
+    rig.click(rig.row(0));
+    let out = rig.frame(Vec::new());
+    rig.click(card_button(&out, "Undertow"));
+    let a2 = rig.app.crates.shown().entries()[1].id;
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing && r.app.crates.shown().current() == Some(a2)
+        },
+        "A2 plays",
+    );
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(12)),
+        "the card stays open"
+    );
+    let out = rig.frame(Vec::new());
+    let pause = card_button(&out, "Undertow");
+    assert!(
+        texts(&out)
+            .iter()
+            .any(|t| t.text == "⏸" && t.rect.contains(pause)),
+        "A2's line shows ⏸"
+    );
+    rig.click(pause);
+    rig.until(|r| r.app.position.state == PlayState::Paused, "paused");
+    let out = rig.frame(Vec::new());
+    rig.click(card_button(&out, "Undertow"));
+    rig.until(|r| r.app.position.state == PlayState::Playing, "resumed");
+    assert_eq!(rig.app.crates.shown().current(), Some(a2));
+}
+
+#[test]
+fn a_track_not_downloaded_yet_plays_from_the_card_and_one_with_no_clip_has_no_button() {
+    let mut rig = card_rig("record-card-arm");
+    let ids = rig.ids(PLAYLIST);
+    rig.app
+        .crates
+        .shown_mut()
+        .entries_mut()
+        .nth(5)
+        .unwrap()
+        .status = EntryStatus::Unavailable(crate::playlist::UnavailableKind::NoClip);
+    rig.frame(Vec::new());
+    rig.click(rig.row(4));
+    let out = rig.frame(Vec::new());
+    assert!(
+        shows(&out, "queued"),
+        "how its audio is coming: {:?}",
+        text_list(&out)
+    );
+    rig.click(card_button(&out, "Shoal"));
+    assert_eq!(
+        rig.app.armed,
+        Some((PLAYLIST, ids[4])),
+        "fetched first, played on arrival"
+    );
+    let out = rig.frame(Vec::new());
+    assert!(shows(&out, "next"), "{:?}", text_list(&out));
+    let reef = texts(&out)
+        .into_iter()
+        .find(|t| t.text == "Reef")
+        .expect("Reef")
+        .rect;
+    assert!(
+        !texts(&out).iter().any(|t| (t.text == "⏵" || t.text == "⏸")
+            && (t.rect.center().y - reef.center().y).abs() < 3.0),
+        "no button on a track with no clip"
+    );
+}
+
+#[test]
+fn the_card_steps_through_records_with_its_arrows_and_the_keys() {
+    let mut rig = card_rig("record-card-step");
+    rig.click(rig.row(0));
+    rig.click_text("›");
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(13)));
+    let p = rig.app.crates.shown();
+    assert_eq!(
+        p.selected_ids(),
+        [p.entries()[3].id],
+        "the next record is selected"
+    );
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(14)));
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(14)),
+        "the last record: nothing"
+    );
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(12)));
+    rig.key(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(
+        card_on(&rig),
+        Some(AlbumKey::Release(12)),
+        "the first: nothing"
+    );
+    // Closed, → is the list's again: it doesn't step a card.
+    rig.key(Key::Escape, Modifiers::NONE);
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(card_on(&rig), None);
+}
+
+#[test]
+fn stepping_scrolls_the_list_to_the_record_and_never_changes_what_plays() {
+    let mut rig = card_rig("record-card-scroll");
+    // Room for two record rows: the third is out of view.
+    rig.set_rows(4);
+    rig.frame(Vec::new());
+    let a1 = rig.app.crates.shown().entries()[0].id;
+    rig.app.apply(Action::PlayEntry(a1), &rig.ctx.clone());
+    rig.until(|r| r.app.position.state == PlayState::Playing, "A1 plays");
+    rig.click(rig.row(0));
+    assert_eq!(rig.app.pl_scroll, 0);
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    rig.key(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(card_on(&rig), Some(AlbumKey::Release(14)));
+    assert_eq!(rig.app.pl_scroll, 1, "scrolled by one record");
+    assert_eq!(rig.app.crates.shown().current(), Some(a1), "A1 plays on");
+    assert_eq!(rig.app.position.state, PlayState::Playing);
+}
+
 #[test]
 fn the_title_line_keeps_an_origin_entrys_own_names() {
     let mut rig = Rig::new("origin-title", Vec::new(), |_| {});

@@ -2,7 +2,9 @@
 
 ## Purpose
 Every entry knows the album it belongs to (a Discogs release, or a local file's album tag), so a whole record can be seen, selected or removed in one move, and its cover shown on hover without slowing digging.
+
 ## Requirements
+
 ### Requirement: Album on entries
 Each entry SHALL carry the name of the album it belongs to, when known:
 - an entry from a Discogs release SHALL carry the release's title;
@@ -67,23 +69,23 @@ Both items SHALL be disabled when the album has only the clicked entry, and abse
 - **THEN** Remove album and Select album are shown disabled
 
 ### Requirement: Cover on hover
-The tooltip of a Discogs entry SHALL show its record's cover at 96 points, beside the details, when the record has an image on Discogs. The cover SHALL be fetched by a background worker, only for an entry the pointer has rested on for 250 ms or for a record row in view in a grouped crate (see `record-view`), and SHALL be kept on disk in the cache folder so it is fetched only once. Record rows in view SHALL be fetched from the top down, at most 40 waiting at a time, and a rested hover SHALL go first. A cover already on disk SHALL be loaded without waiting for the pace. While the cover isn't loaded, the tooltip SHALL keep the cover's space empty, and SHALL show the cover as soon as it arrives. Covers SHALL NOT be fetched from the Discogs API host, SHALL NOT use the API's request budget, and SHALL be fetched one at a time, at most 4 per second. A cover that couldn't be fetched SHALL NOT be tried again before the next launch. Fetching covers SHALL NOT affect playback.
+A record's cover SHALL be shown on its record row and in its record card (see `record-view` and `record-card`), when the record has an image. Entry tooltips SHALL NOT show a cover. The thumbnail (at most 150 pixels) SHALL be fetched by a background worker, only for the record whose card is open or for a record row in view in a grouped crate, and SHALL be kept on disk in the cache folder so it is fetched only once. Record rows in view SHALL be fetched from the top down, at most 40 waiting at a time, and the open card's record SHALL go first. A cover already on disk SHALL be loaded without waiting for the pace. While the cover isn't loaded, the row and the card SHALL keep the cover's space empty, and SHALL show the cover as soon as it arrives. Covers SHALL NOT be fetched from the Discogs API host, SHALL NOT use the API's request budget, and SHALL be fetched one at a time, at most 4 per second. A cover that couldn't be fetched SHALL NOT be tried again before the next launch. Fetching covers SHALL NOT affect playback.
 
 #### Scenario: First hover
-- **WHEN** the pointer rests on an entry whose cover isn't cached
-- **THEN** the tooltip appears at once with an empty cover space, and the cover appears in it when it arrives
+- **WHEN** the user opens the card of a record whose cover isn't cached
+- **THEN** the card appears at once with an empty cover space, and the cover appears in it when it arrives
 
 #### Scenario: Cached
-- **WHEN** the pointer rests on an entry whose cover was fetched in an earlier session
+- **WHEN** the user opens the card of a record whose cover was fetched in an earlier session
 - **THEN** the cover is shown with no request to the network
 
 #### Scenario: Sweeping the list
-- **WHEN** in a flat crate, the pointer moves down 40 rows without resting, and stops on row 41
-- **THEN** only row 41's cover is fetched
+- **WHEN** in a flat crate, the pointer moves down 40 rows and stops on row 41
+- **THEN** no cover is fetched and the tooltip shows none
 
 #### Scenario: No image
-- **WHEN** the record has no image on Discogs, or the entry is a local file
-- **THEN** the tooltip shows no cover space
+- **WHEN** the record has no image on Discogs, or it is a local album
+- **THEN** its row and its card show the record icon
 
 #### Scenario: Playback unaffected
 - **WHEN** covers are fetched while a track plays
@@ -94,8 +96,8 @@ The tooltip of a Discogs entry SHALL show its record's cover at 96 points, besid
 - **THEN** those 12 covers are fetched from the top row down, at most 4 per second, and records scrolled past without stopping are not fetched once out of view
 
 #### Scenario: Hover goes first
-- **WHEN** covers of rows in view are being fetched and the pointer rests on another entry for 250 ms
-- **THEN** that entry's cover is fetched next
+- **WHEN** covers of rows in view are being fetched and the user opens the card of a record further down
+- **THEN** that record's cover is fetched next
 
 ### Requirement: Record artist on entries
 Each entry from Discogs SHALL carry its record's credited artist, as Discogs shows it for the release (or the master, or the listing): "Various" for a compilation, joined names for a shared credit. Every entry of a record SHALL carry the same record artist, whatever its own track credit. The record artist SHALL be saved with the crate and SHALL survive reordering, sending to another crate and restarting. For a Discogs entry saved without a record artist, showing its crate SHALL fill it from the cached release or master data, and SHALL NOT make any request to do so. The entry's own artist (the track's credit) SHALL NOT change.
@@ -107,4 +109,3 @@ Each entry from Discogs SHALL carry its record's credited artist, as Discogs sho
 #### Scenario: Older crate
 - **WHEN** a crate saved before record artists existed is shown, and its releases' data is in the disk cache
 - **THEN** its entries carry their record artists, and no request is sent to Discogs
-

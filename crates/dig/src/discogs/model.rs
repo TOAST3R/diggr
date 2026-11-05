@@ -37,6 +37,9 @@ pub struct Listed {
     /// A small cover image's address, when the listing gives one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cover: String,
+    /// The large cover image's address, when the listing gives one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cover_large: String,
 }
 
 impl Listed {
@@ -52,6 +55,7 @@ impl Listed {
             old_vinyl: None,
             role: Role::Main,
             cover: String::new(),
+            cover_large: String::new(),
         }
     }
 
@@ -117,6 +121,8 @@ pub struct Record {
     pub for_sale: Option<ForSale>,
     /// The 150 px thumbnail's address (empty when the record has no image).
     pub cover: String,
+    /// The full-size image's address (empty when the record has no image).
+    pub cover_large: String,
     /// Its Discogs styles ("Deep House", "Minimal"), else its genres.
     pub styles: Vec<String>,
 }
@@ -404,11 +410,20 @@ fn first_label(labels: &Value) -> (String, String) {
 
 /// The primary image's 150 px thumbnail from an `images` array, else the first image's.
 pub fn cover(images: &Value) -> String {
+    image_uri(images, "uri150")
+}
+
+/// The same image at full size (the record card's large cover).
+pub fn cover_large(images: &Value) -> String {
+    image_uri(images, "uri")
+}
+
+fn image_uri(images: &Value, field: &str) -> String {
     let list = images.as_array().map(Vec::as_slice).unwrap_or_default();
     list.iter()
         .find(|i| i["type"].as_str() == Some("primary"))
         .or_else(|| list.first())
-        .and_then(|i| i["uri150"].as_str())
+        .and_then(|i| i[field].as_str())
         .map(thumb)
         .unwrap_or_default()
 }
@@ -471,6 +486,7 @@ impl Record {
                 fetched_at,
             }),
             cover: cover(&v["images"]),
+            cover_large: cover_large(&v["images"]),
             styles: styles(v),
         })
     }
@@ -501,6 +517,10 @@ impl Record {
                 .filter(|c| !c.is_empty())
                 .or_else(|| main.map(|m| m.cover.clone()))
                 .unwrap_or_default(),
+            cover_large: Some(cover_large(&v["images"]))
+                .filter(|c| !c.is_empty())
+                .or_else(|| main.map(|m| m.cover_large.clone()))
+                .unwrap_or_default(),
             styles: Some(styles(v))
                 .filter(|s| !s.is_empty())
                 .or_else(|| main.map(|m| m.styles.clone()))
@@ -530,6 +550,7 @@ pub fn listed_from_listing(item: &Value) -> Option<Listed> {
             _ => Role::Main,
         },
         cover: thumb(item["thumb"].as_str().unwrap_or("")),
+        cover_large: String::new(),
     })
 }
 
@@ -549,6 +570,7 @@ pub fn listed_from_want(item: &Value) -> Option<Listed> {
         old_vinyl: None,
         role: Role::Main,
         cover: thumb(b["thumb"].as_str().unwrap_or("")),
+        cover_large: thumb(b["cover_image"].as_str().unwrap_or("")),
     })
 }
 
@@ -760,6 +782,38 @@ mod tests {
             listed_from_list_item(&list).unwrap().cover,
             "https://i.discogs.com/l.jpg"
         );
+    }
+
+    #[test]
+    fn records_and_wants_carry_their_large_cover_and_listings_none() {
+        let images = json!([
+            {"type": "secondary", "uri": "https://i.discogs.com/back.jpg", "uri150": "https://i.discogs.com/back-150.jpg"},
+            {"type": "primary", "uri": "https://i.discogs.com/front.jpg", "uri150": "https://i.discogs.com/front-150.jpg"}
+        ]);
+        let release = json!({"id": 1, "title": "EP", "images": images});
+        let main = Record::from_release(&release, "EUR", 0).unwrap();
+        assert_eq!(main.cover, "https://i.discogs.com/front-150.jpg");
+        assert_eq!(main.cover_large, "https://i.discogs.com/front.jpg");
+        let bare = json!({"id": 9, "title": "EP"});
+        assert_eq!(
+            Record::from_master(&bare, Some(&main)).unwrap().cover_large,
+            "https://i.discogs.com/front.jpg",
+            "a master without images takes its main release's"
+        );
+        let want = json!({"id": 6, "basic_information": {
+            "thumb": "https://i.discogs.com/w-150.jpg",
+            "cover_image": "https://i.discogs.com/w.jpg"
+        }});
+        assert_eq!(
+            listed_from_want(&want).unwrap().cover_large,
+            "https://i.discogs.com/w.jpg"
+        );
+        let spacer = json!({"id": 6, "basic_information": {
+            "cover_image": "https://st.discogs.com/images/spacer.gif"
+        }});
+        assert_eq!(listed_from_want(&spacer).unwrap().cover_large, "");
+        let item = json!({"id": 5, "thumb": "https://i.discogs.com/t.jpg"});
+        assert_eq!(listed_from_listing(&item).unwrap().cover_large, "");
     }
 
     #[test]

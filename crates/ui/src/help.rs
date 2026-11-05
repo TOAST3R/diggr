@@ -98,6 +98,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Right / Left (playlist focused, grouped)",
                 "open / close the record under the cursor",
             ),
+            (
+                "Right / Left, Esc (record card open)",
+                "next / previous record, close the card",
+            ),
             ("Delete / Backspace", "remove selected entries"),
             ("Cmd+O / Cmd+A", "add files / select all"),
             ("Cmd+F", "search the crate (Esc: clear the search)"),
@@ -156,6 +160,12 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "TOP SELLERS (sidebar): click / double-click a seller",
                 "show its crate / dig it (once a day refreshes it); right-click: Add seller…, \
                  Refresh, Narrow down, Remove",
+            ),
+            (
+                "Record row (grouped): click",
+                "open its record card (× or Esc closes it): play each track, even one not \
+                 downloaded yet, want or cart the record, ‹ › for the next records; Shift- or \
+                 Cmd-click only selects",
             ),
             (
                 "Copy (open record, seller crate): + CART / IN CART",

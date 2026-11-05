@@ -2,7 +2,9 @@
 
 ## Purpose
 Gets a playable preview of each clip just before it is needed, using a yt-dlp that the user installs, and prepares it (sections, drops, waveform) so every preview can be navigated from its first second.
+
 ## Requirements
+
 ### Requirement: yt-dlp
 The app SHALL use a yt-dlp installed by the user when there is one: at the path set in OPT ▸ Discogs…, on the PATH, or in the usual install folders. On macOS, on Linux x86_64 and on Windows x86_64, when none is found, the app SHALL manage its own copy:
 - On macOS it SHALL be yt-dlp's official folder build (`yt-dlp_macos.zip`: the program with its libraries already unpacked beside it), unpacked whole into its own folder of `tools/`, never the one-file `yt-dlp_macos`. On Linux x86_64 it SHALL be yt-dlp's official build for that system (`yt-dlp_linux`). The first time previews are needed, it SHALL ask once whether to download yt-dlp, saying its size. Declining SHALL leave entries waiting, and the download SHALL stay available in OPT ▸ Discogs….
@@ -77,7 +79,7 @@ OPT ▸ Discogs… SHALL show the version in use and whether it is the user's or
 - **THEN** downloads start within 30 s, without restarting the app
 
 ### Requirement: Download ahead
-The app SHALL keep previews ready for the playing entry and the next 3 entries in its crate's play order. When playback is stopped, it SHALL do the same for the shown crate's current entry (its first entry when it has none) and the 3 after it. An armed entry SHALL be downloaded first. No other preview SHALL be downloaded, except those of a label crate the user asked to download in full (see `label-crates`), which come after all of these. At most 2 downloads SHALL run at once, audio only, and each entry being downloaded SHALL show its progress (for example "downloading 40%").
+The app SHALL keep previews ready for the playing entry and the next 3 entries in its crate's play order. When playback is stopped, it SHALL do the same for the shown crate's current entry (its first entry when it has none) and the 3 after it. An armed entry SHALL be downloaded first. While a record card is open, its record's previews SHALL come right after the armed and playing entries' and before the next 3 (see `record-card`). No other preview SHALL be downloaded, except those of a label crate the user asked to download in full (see `label-crates`), which come after all of these. At most 2 downloads SHALL run at once, audio only, and each entry being downloaded SHALL show its progress (for example "downloading 40%").
 
 #### Scenario: Three ahead
 - **WHEN** entry 3 of a 50-entry crate is playing
@@ -90,6 +92,10 @@ The app SHALL keep previews ready for the playing entry and the next 3 entries i
 #### Scenario: Play from nothing
 - **WHEN** a label is sent with Play while nothing is playing
 - **THEN** the previews of the new crate's first 4 entries are downloaded, and the first entry plays as soon as its preview is ready
+
+#### Scenario: An open record card
+- **WHEN** entry 3 plays and the user opens the card of a record of 4 tracks further down
+- **THEN** entry 3's preview and the record's 4 come before entries 4 to 6, two at a time
 
 ### Requirement: Safe invocation
 yt-dlp SHALL only be given one of:
@@ -239,4 +245,3 @@ When yt-dlp's error for a download, a search or a Bandcamp read, or a Juno sampl
 #### Scenario: A missing video is still a failure
 - **WHEN** yt-dlp fails a download with "HTTP Error 404" or "Video unavailable"
 - **THEN** it counts as a failed try, and after two the track is "clip failed"
-

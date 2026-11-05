@@ -3,6 +3,7 @@
 
 use super::digging::BridgeAction;
 use super::*;
+use crate::playlist::AlbumKey;
 use crate::playlist::WaitKind;
 use ::dig::browser::{FakeBrowser, sell_url};
 use ::dig::cover::{FakeImages, test_jpeg};
@@ -1450,30 +1451,118 @@ fn has_cover(rig: &Rig, release: u64) -> bool {
 }
 
 #[test]
-fn resting_on_an_entry_shows_its_cover_fetched_once() {
+fn in_a_flat_crate_resting_on_an_entry_fetches_no_cover() {
     let fakes = Fakes::new();
-    let mut rig = rig("dig-cover", &fakes, |_| {});
-    let urls = cover_crate(&mut rig);
-    rig.frame(vec![Event::PointerMoved(rig.row(2))]);
-    rig.frame(Vec::new());
-    assert_eq!(fakes.images.count(), 0, "nothing before the pointer rests");
-    rig.until(|r| has_cover(r, 102), "the cover arrives");
-    assert_eq!(fakes.images.log(), [urls[2].clone()]);
-    assert!(
-        rig.dir.join("cache/covers/release-102.png").exists(),
-        "kept on disk"
-    );
-    // Away and back: drawn from memory, no second fetch.
-    rig.frame(vec![Event::PointerMoved(rig.row(4))]);
-    rig.frame(vec![Event::PointerMoved(rig.row(2))]);
+    let mut rig = rig("dig-cover-flat", &fakes, |_| {});
+    cover_crate(&mut rig);
+    // Sweep down, then rest on the last row: the cover is the record card's, and a flat
+    // crate shows none.
+    for row in 0..5 {
+        rig.frame(vec![Event::PointerMoved(rig.row(row))]);
+    }
     std::thread::sleep(super::super::covers::REST);
-    rig.frame(Vec::new());
-    assert!(has_cover(&rig, 102));
-    assert!(
-        fakes.images.log().iter().all(|u| *u != urls[4]),
-        "row 5 wasn't rested on"
+    for _ in 0..5 {
+        rig.frame(Vec::new());
+    }
+    assert_eq!(fakes.images.count(), 0, "{:?}", fakes.images.log());
+    assert!(!has_cover(&rig, 104));
+}
+
+#[test]
+fn the_open_card_loads_its_large_cover_where_stepping_stops() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-cover-large", &fakes, |_| {});
+    cover_crate(&mut rig);
+    for e in rig.app.crates.shown_mut().entries_mut() {
+        let o = e.origin.as_mut().unwrap();
+        o.cover_large = o.cover.replace(".jpeg", "-full.jpeg");
+    }
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    // No card open: the rows in view fetch their thumbnails, never a large cover, even with the
+    // pointer resting on a record row.
+    rig.frame(vec![Event::PointerMoved(rig.row(0))]);
+    std::thread::sleep(super::super::covers::REST);
+    rig.until(|r| has_cover(r, 100), "the first row's thumbnail");
+    for _ in 0..5 {
+        rig.frame(Vec::new());
+    }
+    let large = |f: &Fakes| -> Vec<String> {
+        f.images
+            .log()
+            .into_iter()
+            .filter(|u| u.contains("-full"))
+            .collect()
+    };
+    assert!(large(&fakes).is_empty(), "{:?}", fakes.images.log());
+    // Open the first record's card, then step quickly to the last: only it gets its large
+    // cover.
+    rig.click(rig.row(0));
+    for _ in 0..5 {
+        rig.key(Key::ArrowRight, Modifiers::NONE);
+    }
+    std::thread::sleep(super::super::covers::REST);
+    rig.until(
+        |r| r.dig().covers.has_large(RecordKey::Release(105)),
+        "the last record's large cover",
     );
-    assert_eq!(fakes.images.count(), 1);
+    assert_eq!(large(&fakes), ["https://i.discogs.com/cover-5-full.jpeg"]);
+    assert!(
+        rig.dir.join("cache/covers/large/release-105.png").exists(),
+        "kept on disk apart"
+    );
+}
+
+#[test]
+fn an_open_card_fetches_its_record_right_after_the_current_track() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-card-horizon", &fakes, |_| {});
+    let clip = |i: u64| format!("CARDclip{i:03}");
+    let p = rig.app.crates.shown_mut();
+    for i in 0..6u64 {
+        let origin = Origin {
+            release: Some(100 + i),
+            album: format!("Album {i}"),
+            clip: Some(clip(i)),
+            ..Default::default()
+        };
+        let source = Some(::dig::preview::fetcher::clip_url(&clip(i)));
+        p.add_waiting(
+            "Nightcraft",
+            format!("Track {i}"),
+            source,
+            Some(origin),
+            "queued",
+        );
+    }
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
+    rig.until(|r| !r.dig().horizon().is_empty(), "previews are asked for");
+    let plain: Vec<String> = (0..4).map(clip).collect();
+    assert_eq!(
+        rig.dig().horizon(),
+        plain,
+        "nothing open: the current entry and 3 after"
+    );
+    // The last record's card: its track comes right after the current one.
+    rig.app
+        .apply(Action::OpenCard(AlbumKey::Release(105)), &ctx);
+    rig.frame(Vec::new());
+    assert_eq!(
+        rig.dig().horizon(),
+        [clip(0), clip(5), clip(1), clip(2), clip(3)]
+    );
+    // Stepped back: the new record's instead.
+    rig.app.apply(Action::CardStep(-1), &ctx);
+    rig.frame(Vec::new());
+    assert_eq!(
+        rig.dig().horizon(),
+        [clip(0), clip(4), clip(1), clip(2), clip(3)]
+    );
+    // Closed: the plain window again.
+    rig.app.apply(Action::CloseCard, &ctx);
+    rig.frame(Vec::new());
+    assert_eq!(rig.dig().horizon(), plain);
 }
 
 #[test]
@@ -1504,18 +1593,6 @@ fn grouped_record_rows_in_view_load_their_covers_top_first() {
 }
 
 #[test]
-fn sweeping_down_the_list_fetches_only_where_the_pointer_stops() {
-    let fakes = Fakes::new();
-    let mut rig = rig("dig-cover-sweep", &fakes, |_| {});
-    let urls = cover_crate(&mut rig);
-    for row in 0..5 {
-        rig.frame(vec![Event::PointerMoved(rig.row(row))]);
-    }
-    rig.until(|r| has_cover(r, 104), "the last row's cover arrives");
-    assert_eq!(fakes.images.log(), [urls[4].clone()]);
-}
-
-#[test]
 fn a_cover_whose_address_is_gone_is_looked_up_once_more() {
     let fakes = Fakes::new();
     fakes.images.route(
@@ -1532,6 +1609,9 @@ fn a_cover_whose_address_is_gone_is_looked_up_once_more() {
         ..Default::default()
     };
     p.add_waiting("Nightcraft", "Glasshouse", None, Some(origin), "queued");
+    // Grouped: its record row in view asks for its cover.
+    let ctx = rig.ctx.clone();
+    rig.app.apply(Action::ToggleGrouped, &ctx);
     rig.frame(vec![Event::PointerMoved(rig.row(0))]);
     let fresh = "https://i.discogs.com/fake/R-1001-front-150.jpeg";
     rig.until(
@@ -3205,6 +3285,7 @@ fn af_info(release: u64, format: Format) -> RecordInfo {
         year: Some(2025),
         for_sale: None,
         cover: String::new(),
+        cover_large: String::new(),
         styles: "Electro".into(),
         formats: vec![format],
     }
@@ -3695,6 +3776,7 @@ fn mezzanine() -> Record {
         clips: vec![teardrop.clone(), teardrop],
         for_sale: None,
         cover: String::new(),
+        cover_large: String::new(),
         styles: Vec::new(),
     }
 }
@@ -3711,6 +3793,7 @@ fn record_info(r: &Record) -> RecordInfo {
         year: r.year,
         for_sale: None,
         cover: String::new(),
+        cover_large: String::new(),
         styles: String::new(),
         formats: r.formats.clone(),
     }
