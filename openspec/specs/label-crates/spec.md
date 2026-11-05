@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change label-crates. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Label crates
 The app SHALL keep one crate per followed label, named "Label: ‹name›". The name is the label's Discogs name, or, when only Bandcamp is followed, its Bandcamp name: taken from the page's title sent by the extension, else the `‹name›.bandcamp.com` part.
 
@@ -70,11 +72,11 @@ When it finishes, the main window SHALL say how many records came in from all so
 - **THEN** Refresh label reads only AF071 from Bandcamp, adds its tracks, and counts it in "1 new record"
 
 ### Requirement: Label crate menu
-Right-clicking a label crate, in the sidebar or the title-bar crate menu, SHALL offer exactly, in this order: Delete label…, Export to crate ▸, Refresh label, and Download all tracks. It SHALL NOT offer Rename crate… or Delete crate….
+Right-clicking a label crate, in the sidebar or the title-bar crate menu, SHALL offer exactly, in this order: Delete label…, Export to crate ▸, Refresh label, Download all tracks, and Export M3U… (see the crates' "Export a crate from its menu"). It SHALL NOT offer Rename crate… or Delete crate….
 
 #### Scenario: The menu
 - **WHEN** the user right-clicks "Label: Siesta Records" in the sidebar
-- **THEN** the menu shows Delete label…, Export to crate ▸, Refresh label and Download all tracks, and nothing else
+- **THEN** the menu shows Delete label…, Export to crate ▸, Refresh label, Download all tracks and Export M3U…, and nothing else
 
 ### Requirement: Delete label
 Delete label… SHALL ask for confirmation, then stop following the label and delete its crate, as Delete crate does (playback from that crate stops). Passes SHALL be kept.
@@ -217,4 +219,3 @@ The same check SHALL run when a Discogs label is followed while a Bandcamp-only 
 #### Scenario: Discogs after Bandcamp
 - **WHEN** "Label: Lowtide Tapes" follows only Bandcamp, and the Discogs label Lowtide Tapes is sent from the browser
 - **THEN** the crate follows both, and the Discogs records are merged in without doubling tracks it already holds
-

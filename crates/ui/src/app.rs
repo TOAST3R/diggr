@@ -1330,19 +1330,34 @@ impl DiggrApp {
         }
     }
 
-    fn export_m3u(&mut self) {
+    /// Export M3U… for crate `id`, from the list menu (the shown crate) or the crate's own menu
+    /// (any crate): it isn't shown, and playback and the selection are left alone.
+    fn export_m3u(&mut self, id: CrateId) {
+        if !self.crates.load(id) {
+            return;
+        }
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Playlist", &["m3u8", "m3u"])
-            .set_file_name(format!("{}.m3u8", self.crates.name(self.crates.shown_id())))
+            .set_file_name(format!("{}.m3u8", self.crates.name(id)))
             .save_file()
         else {
             return;
         };
-        let entries = files::m3u_entries(self.crates.shown());
-        match std::fs::write(&path, files::write_m3u(&entries)) {
+        let Some(m3u) = self.m3u_of(id) else { return };
+        match std::fs::write(&path, m3u) {
             Ok(()) => self.notify(format!("Saved {}", path.display())),
             Err(e) => self.notify(format!("Could not save: {e}")),
         }
+    }
+
+    /// Crate `id` as M3U8, loading it if needed (whole, whatever the filter shows); `None` when
+    /// it can't be read.
+    fn m3u_of(&mut self, id: CrateId) -> Option<String> {
+        if !self.crates.load(id) {
+            return None;
+        }
+        let entries = files::m3u_entries(self.crates.get(id)?);
+        Some(files::write_m3u(&entries))
     }
 
     // ---- keyboard ----------------------------------------------------------------------------
@@ -2912,6 +2927,7 @@ impl DiggrApp {
                         actions.push(Action::ClearCrate(c.id));
                         ui.close();
                     }
+                    self.export_item(ui, c.id, actions);
                     ui.label(
                         egui::RichText::new(
                             "Playlist can't be renamed or deleted:\ncommand-line files use it",
@@ -2999,6 +3015,7 @@ impl DiggrApp {
                     actions.push(Action::MoveToLabels(c.id, label));
                     ui.close();
                 }
+                self.export_item(ui, c.id, actions);
                 // The wantlist and collection crates are the account's: never renamed or
                 // deleted here.
                 if c.discogs() {
@@ -3819,8 +3836,32 @@ impl DiggrApp {
             actions.push(Action::ToggleGrouped);
             ui.close();
         }
+        // Adding music, where the crate can take it, and its M3U out of every crate.
+        if !self.crates.is_locked(self.crates.shown_id()) {
+            ui.separator();
+            if ui
+                .button(ADD_FILES)
+                .on_hover_text("Audio files, or M3U/M3U8 playlists")
+                .clicked()
+            {
+                actions.push(Action::AddFiles);
+            }
+            if ui.button("Add folder…").clicked() {
+                actions.push(Action::AddFolder);
+            }
+        }
+        ui.separator();
+        if ui.button("Export M3U…").clicked() {
+            actions.push(Action::ExportM3u(self.crates.shown_id()));
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        for page in self.cart_pages() {
+        let pages = self.cart_pages();
+        #[cfg(not(target_arch = "wasm32"))]
+        if !pages.is_empty() {
+            ui.separator();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for page in pages {
             if ui
                 .button(format!("Open cart on {}", site_of(page)))
                 .clicked()
@@ -5452,15 +5493,18 @@ impl DiggrApp {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if below_click.is_some_and(|p| r.contains(p)) {
-                    actions.push(Action::Dig(match k.to {
-                        HintTo::Url(url) => DigAction::OpenUrl(url.to_owned()),
-                        HintTo::Extension if self.welcome_on() => DigAction::OpenWelcome,
-                        HintTo::Extension => DigAction::OpenBrowserDialog,
-                        HintTo::Discogs => DigAction::OpenWelcome,
-                        HintTo::Seller => DigAction::Seller(
+                    actions.push(match k.to {
+                        HintTo::AddFiles => Action::AddFiles,
+                        HintTo::Url(url) => Action::Dig(DigAction::OpenUrl(url.to_owned())),
+                        HintTo::Extension if self.welcome_on() => {
+                            Action::Dig(DigAction::OpenWelcome)
+                        }
+                        HintTo::Extension => Action::Dig(DigAction::OpenBrowserDialog),
+                        HintTo::Discogs => Action::Dig(DigAction::OpenWelcome),
+                        HintTo::Seller => Action::Dig(DigAction::Seller(
                             crate::app::sellers::SellerAction::Dig(self.crates.shown_id()),
-                        ),
-                    }));
+                        )),
+                    });
                 }
             }
             if let Some(from) = self.pl_drag_from
@@ -5542,25 +5586,8 @@ impl DiggrApp {
                 ..self.skinned(&def, ui, origin)
             };
             draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
-            // + adds to the crate and holds its M3U in and out.
-            let plus = widgets::button(ui, &bsk, "pl_plus", "pl_plus", "pl_plus");
-            egui::Popup::menu(&plus).show(|ui| {
-                if ui.button("Add files…").clicked() {
-                    actions.push(Action::AddFiles);
-                }
-                if ui.button("Add folder…").clicked() {
-                    actions.push(Action::AddFolder);
-                }
-                ui.separator();
-                if ui.button("Import M3U…").clicked() {
-                    actions.push(Action::AddFiles);
-                }
-                if ui.button("Export M3U…").clicked() {
-                    actions.push(Action::ExportM3u);
-                }
-            });
-            plus.on_hover_text("Add · M3U");
-            // The gear: the same Options as a right-click on the player.
+            // The gear: the same Options as a right-click on the player. Adding music and M3U
+            // are in the list menu (a right-click on the list).
             let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
             egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
             opts.on_hover_text("Options");
@@ -5972,6 +5999,21 @@ impl DiggrApp {
                 }
             }
         }
+        self.export_item(ui, c, actions);
+    }
+
+    /// Export M3U… in crate `c`'s own menu: writes that crate, shown or not.
+    fn export_item(&self, ui: &mut Ui, c: CrateId, actions: &mut Vec<Action>) {
+        if ui
+            .add_enabled(
+                !self.crates.is_unreadable(c),
+                egui::Button::new("Export M3U…"),
+            )
+            .clicked()
+        {
+            actions.push(Action::ExportM3u(c));
+            ui.close();
+        }
     }
 
     /// Shows a crate in the window; playback carries on with its own crate.
@@ -6268,7 +6310,7 @@ impl DiggrApp {
             Action::SelectAll => self.crates.shown_mut().select_all(),
             Action::SelectNone => self.crates.shown_mut().select_none(),
             Action::InvertSelection => self.crates.shown_mut().invert_selection(),
-            Action::ExportM3u => self.export_m3u(),
+            Action::ExportM3u(id) => self.export_m3u(id),
             Action::ShowCrate(id) => self.show_crate(id),
             Action::DeleteLabel(id) => self.confirm_delete = Some(id),
             Action::ExportLabel(from, Some(to)) => self.export_label(from, to),
@@ -6491,7 +6533,8 @@ enum Action {
     SelectAll,
     SelectNone,
     InvertSelection,
-    ExportM3u,
+    /// Export M3U… of this crate (the shown one, or any from its own menu).
+    ExportM3u(CrateId),
     ShowCrate(CrateId),
     NewCrate,
     /// Rename or delete a crate (from the crate menu or the sidebar).
@@ -7351,6 +7394,13 @@ const PASTE_MODIFIER: &str = if cfg!(target_os = "macos") {
     "CTRL"
 };
 
+/// The list menu's Add files…, with the shortcut that does the same.
+const ADD_FILES: &str = if cfg!(target_os = "macos") {
+    "Add files… (Cmd+O)"
+} else {
+    "Add files… (Ctrl+O)"
+};
+
 /// A line of the empty crate's hint: text, or links side by side.
 #[derive(Debug, Clone, PartialEq)]
 enum HintLine {
@@ -7378,6 +7428,8 @@ enum HintTo {
     Discogs,
     /// The shown seller crate's double-click: count and dig it (or connect Discogs first).
     Seller,
+    /// Add files…, to the shown crate.
+    AddFiles,
 }
 
 /// A store name in its own colour (made readable on the list), opening its home page; or the
@@ -7470,6 +7522,7 @@ fn store_hint(modifier: &str, links: SetupLinks) -> Vec<HintLine> {
         lines.push(link("CONNECT YOUR DISCOGS", HintTo::Discogs));
     }
     lines.push(HintLine::Text(String::new()));
+    lines.push(link("ADD FILES FROM YOUR COMPUTER", HintTo::AddFiles));
     lines.push(HintLine::Text("OR DROP FILES · PRESS H FOR HELP".into()));
     lines
 }
@@ -9261,6 +9314,24 @@ mod headless_tests {
     }
 
     #[test]
+    fn a_crate_that_isnt_shown_exports_without_being_shown() {
+        let mut rig = Rig::new("export-other", Vec::new(), |_| {});
+        let friday = rig.crate_with("Friday", &["tone.mp3", "tone.ogg"]);
+        let other = rig.crate_with("Lowtide Tapes", &["tone.wav"]);
+        rig.app.apply(Action::ShowCrate(other), &rig.ctx.clone());
+        rig.app.crates.shown_mut().select_all();
+        let selected = rig.app.crates.shown().selected_ids();
+        let m3u = rig.app.m3u_of(friday).expect("Friday reads");
+        assert!(
+            m3u.contains("tone.mp3") && m3u.contains("tone.ogg"),
+            "{m3u}"
+        );
+        assert!(!m3u.contains("tone.wav"), "only Friday's entries");
+        assert_eq!(rig.app.crates.shown_id(), other, "the shown crate stays");
+        assert_eq!(rig.app.crates.shown().selected_ids(), selected);
+    }
+
+    #[test]
     fn starting_a_track_in_another_crate_retargets_next_and_previous() {
         let mut rig = Rig::new("retarget", Vec::new(), |_| {});
         rig.app
@@ -10436,6 +10507,19 @@ mod headless_tests {
         assert_eq!(rig.app.crates.shown_id(), keepers);
         assert!(shows(&rig.frame(Vec::new()), "•"), "the shown crate's dot");
 
+        // Every crate's menu exports it; the Playlist crate's, beside Clear crate.
+        rig.click_with(side_row(0), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        for t in ["Clear crate", "Export M3U…"] {
+            assert!(shows(&out, t), "Playlist: {t}: {:?}", text_list(&out));
+        }
+        rig.key(Key::Escape, Modifiers::NONE);
+        rig.click_with(side_row(2), PointerButton::Secondary);
+        let out = rig.frame(Vec::new());
+        assert!(shows(&out, "Export M3U…"), "{:?}", text_list(&out));
+        assert_eq!(rig.app.crates.shown_id(), keepers, "the menu shows nothing");
+        rig.key(Key::Escape, Modifiers::NONE);
+
         // Right-click: Rename… opens the name dialog for that crate.
         rig.click_with(side_row(2), PointerButton::Secondary);
         rig.click_text("Rename crate…");
@@ -10713,7 +10797,7 @@ mod headless_tests {
         )
     }
 
-    /// The centre of footer button `name` (`pl_plus`, `pl_opts`).
+    /// The centre of footer button `name` (`pl_opts`, the gear).
     fn footer_button(rig: &Rig, name: &str) -> Pos2 {
         let r = rig.app.def.at(name);
         let bottom = PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0;
@@ -10724,7 +10808,7 @@ mod headless_tests {
     }
 
     #[test]
-    fn the_footer_has_an_add_and_a_gear_and_the_list_has_the_crate_menu() {
+    fn the_footer_has_only_the_gear_and_the_list_has_the_crate_menu() {
         let mut rig = Rig::new("footer", Vec::new(), |_| {});
         let ids = rig.fill_playlist(3);
         set_tempos(&mut rig, &[128, 122, 140]);
@@ -10733,14 +10817,8 @@ mod headless_tests {
             rig.app.def.sprite("pl_add").w == 0 && rig.app.def.sprite("pl_menu").w == 0,
             "no ADD/REM/SEL/MISC/OPT or ≡ any more"
         );
-
-        rig.click(footer_button(&rig, "pl_plus"));
-        let out = rig.frame(Vec::new());
-        for t in ["Add files…", "Add folder…", "Import M3U…", "Export M3U…"] {
-            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
-        }
-        assert!(!shows(&out, "Discogs…"), "no app setting in it");
-        rig.click(footer_button(&rig, "pl_plus"));
+        assert_eq!(rig.app.def.sprite("pl_plus").w, 0, "and no + any more");
+        assert_eq!(rig.app.def.at("pl_opts").x, 11, "the gear comes first");
 
         // A right-click below the rows opens the crate's menu.
         rig.click_with(below_rows(&rig), PointerButton::Secondary);
@@ -10753,9 +10831,13 @@ mod headless_tests {
             "Clear crate",
             "Sort",
             "Group by record",
+            ADD_FILES,
+            "Add folder…",
+            "Export M3U…",
         ] {
             assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
         }
+        assert!(!shows(&out, "Import M3U…"), "Add files… opens playlists");
         assert!(!shows(&out, "Play"), "not a row's menu");
         assert!(!shows(&out, "Show all tempos"), "the filter bar clears it");
         let before = rig.app.crates.shown().selected_ids().len();
@@ -10765,6 +10847,10 @@ mod headless_tests {
         // A row's menu ends with the same items under Crate ▸.
         rig.click_with(rig.row(0), PointerButton::Secondary);
         rig.click_text("Crate");
+        let out = rig.frame(Vec::new());
+        for t in [ADD_FILES, "Add folder…", "Export M3U…"] {
+            assert!(shows(&out, t), "Crate ▸ {t}: {:?}", text_list(&out));
+        }
         rig.click_text("Sort");
         rig.click_text("BPM");
         assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
@@ -10911,9 +10997,10 @@ mod headless_tests {
 
         rig.click_with(below_rows(&rig), PointerButton::Secondary);
         let out = rig.frame(Vec::new());
-        for t in ["Remove selected", "Clear crate"] {
+        for t in ["Remove selected", "Clear crate", ADD_FILES, "Add folder…"] {
             assert!(!shows(&out, t), "{t} in a locked crate");
         }
+        assert!(shows(&out, "Export M3U…"), "every crate exports");
         rig.click_text("Sort");
         rig.click_text("BPM");
         assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");

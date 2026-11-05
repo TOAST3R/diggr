@@ -159,7 +159,9 @@ playlist focused, they move a cursor through the list (Shift extends the selecti
 and Home/End jump), and Enter plays the entry under it.
 
 - **Add music:** drag files or folders onto the window (folders are scanned recursively; `.m3u`
-  playlists are expanded), use **+** in the playlist's footer, or press Cmd+O. These add to the crate on screen.
+  playlists are expanded), choose **Add files…** or **Add folder…** in the list menu (right-click
+  below the last row), or press Cmd+O. Add files… also opens `.m3u`/`.m3u8` playlists. These add
+  to the crate on screen.
   An empty crate says how to fill it: paste a link from **Discogs** or **Bandcamp** (Cmd+V),
   or send pages from **Juno**, **Bleep**, **Beatport** and **Traxsource** with the browser
   extension. Each store's name, in its own colour, opens its site; **Set up the extension**
@@ -201,12 +203,13 @@ and Home/End jump), and Enter plays the entry under it.
     a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
     and the title bar's crate menu does the same job.
 - **Playlist window:**
-  - **The footer:** **+** adds files or a folder and imports or exports an M3U playlist; the
-    gear ⚙ opens **Options** (size, spectrogram, Discogs…, Browser…). The "selected/total" time sits on the right, beside the grip.
+  - **The footer:** the gear ⚙ opens **Options** (size, spectrogram, Discogs…, Browser…). The
+    "selected/total" time sits on the right, beside the grip.
     **The list menu** is a right-click below the last row (or **Crate ▸** at the end of a
     row's right-click): select all / none / invert, remove selected, clear the crate, **Sort
-    ▸**, Group by record, and Open cart on discogs.com (in a seller crate, or anywhere while
-    your Discogs cart holds a copy) or on juno.co.uk or bleep.com while that basket holds
+    ▸**, Group by record, **Add files…** (Cmd+O) and **Add folder…** (in crates you can edit),
+    **Export M3U…**, and Open cart on discogs.com (in a seller crate, or anywhere while your
+    Discogs cart holds a copy) or on juno.co.uk or bleep.com while that basket holds
     something;
   - **The filter bar**, under the title bar, holds everything that narrows the crate on
     screen: the search field, the BPM filter, the record filters and the CART switch. It is
@@ -303,8 +306,9 @@ and Home/End jump), and Enter plays the entry under it.
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
     previous one was on screen;
-  - **+ ▸ Import M3U…** and **+ ▸ Export M3U…** read and write M3U/M3U8 (of the crate on
-    screen).
+  - **Add files…** reads M3U/M3U8 playlists, and **Export M3U…** writes one: from the list menu
+    for the crate on screen, or from any crate's right-click in the sidebar (or the title bar's
+    crate menu) for that crate, without showing it.
   - Entries can wait for their audio or be unavailable. Both are dimmed, with an icon where the
     duration goes: a hollow dot (listed), a clock (queued), a bar that fills as it downloads, a
     warning sign (needs yt-dlp), or a barred circle (no clip, the clip failed, not found by
@@ -1489,7 +1493,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1098 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1099 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

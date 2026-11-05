@@ -635,6 +635,9 @@ fn an_empty_crate_links_the_stores_and_the_extension() {
     rig.app.show_crate(c);
     // Tall enough for the stores.
     rig.set_rows(20);
+    // A crate that takes files offers Add files… there too (clicking it opens the file
+    // dialog, which a headless test can't).
+    assert!(hint_link(&mut rig, "ADD FILES FROM YOUR COMPUTER").is_some());
     let at = hint_link(&mut rig, "BANDCAMP").expect("the Bandcamp link");
     rig.click(at.center());
     assert_eq!(

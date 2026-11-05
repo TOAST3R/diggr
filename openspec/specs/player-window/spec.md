@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change classic-ui. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Time display
 The mini player SHALL show the current time in an LCD-style display derived from the playback clock, toggling between elapsed and remaining on click.
 
@@ -66,7 +68,7 @@ The mini player SHALL be the player: 275 skin pixels wide at the left of the ban
 
 #### Scenario: No Eject
 - **WHEN** the mini player is drawn
-- **THEN** it has no open (Eject) button, and ⌘O, the footer's ADD and drag-and-drop still add files to the shown crate
+- **THEN** it has no open (Eject) button, and ⌘O, the list menu's Add files… and drag-and-drop still add files to the shown crate
 
 ### Requirement: Keyboard shortcuts
 The system SHALL support Space (play or pause: from stopped or paused it plays, while playing it pauses), Shift+Space (stop), Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s; with the playlist focused in a grouped crate, close or open the record under the cursor instead, see `record-view`), ↑/↓ (volume while the player has focus; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page). Space and Shift+Space SHALL work whichever of the player and the playlist has focus, and SHALL NOT activate a focused button.
@@ -244,4 +246,3 @@ Wherever a requirement says the main window says, shows or names something (a me
 #### Scenario: A send from the browser
 - **WHEN** a label is sent from the browser while the window is full screen
 - **THEN** its message shows over the top left of the window, on the mini player
-

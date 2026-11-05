@@ -177,8 +177,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "open its listing / Open on discogs.com",
             ),
             (
-                "Footer: + / ☰",
-                "add files, a folder or an M3U / select, remove, clear, sort, export",
+                "List: right-click below the rows",
+                "add files (or an M3U) or a folder, export an M3U, select, remove, clear, sort",
             ),
             (
                 "Footer CART n · subtotal (seller crate)",

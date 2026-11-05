@@ -17,6 +17,14 @@ sentences. `## Unreleased` collects entries until a release renames it.
   up and working shows in green: your account, your collection, yt-dlp and your paired browsers.
   Discogs turns away a computer whose clock is wrong, so if yours is off Diggr says by how much and where to set it right.
 
+### Changed
+
+- **Fewer buttons under the playlist.** The + button is gone: right-click below the last track
+  for Add files…, Add folder… and Export M3U…, next to Select all and Sort. Add files… opens
+  M3U playlists too, and any crate's right-click in the sidebar exports it without opening it.
+  An empty crate now has an Add files from your computer link, and Cmd+O and dropping files
+  work as before.
+
 ### Fixed
 
 - **Previews work on a Mac again.** The yt-dlp Diggr downloads for you now starts in about a
