@@ -476,7 +476,7 @@ impl DiggrApp {
             text(&["DIGGING ITS RECORDS FOR SALE"])
         } else if s.last_dug.is_some() {
             text(&["NO RECORDS FOR SALE", "MATCHED THE LAST DIG"])
-        } else if d.token.is_none() {
+        } else if d.auth.is_none() {
             let mut v = start();
             v.extend(text(&["", "NEEDS A FREE DISCOGS TOKEN"]));
             v

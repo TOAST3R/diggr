@@ -6,6 +6,8 @@
 # the hardened runtime, notarized and stapled (needs a paid Apple account). Without them, the
 # normal case, the app is signed ad hoc and the image is named …-unsigned.dmg.
 #
+# The Discogs consumer key and secret (Connect with Discogs) come from scripts/discogs-keys.sh.
+#
 # Usage: scripts/make-dmg.sh [--dry-run]   (--dry-run only says which path it would take)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,6 +29,8 @@ else
     [[ -z "${NOTARY_PROFILE:-}" ]] && missing+=(NOTARY_PROFILE)
     echo "Unsigned build of $NAME $VERSION (${missing[*]} not set)."
 fi
+source scripts/discogs-keys.sh
+discogs_keys_say
 [[ "${1:-}" == "--dry-run" ]] && { echo "Dry run: would write $APP and $DMG."; exit 0; }
 
 # Fails the build unless Apple accepted the submission (notarytool exits 0 for "Invalid" too).

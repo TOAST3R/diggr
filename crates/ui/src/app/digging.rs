@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use audio::PlayState;
 use dig::bandcamp::fan::FanList;
 use dig::bridge::{
-    self, BridgeCommand, BridgeHandle, CrateState, Mode, Pairing, SendState, Shared, Snapshot,
+    self, BridgeCommand, BridgeHandle, CallbackListener, CrateState, Mode, Pairing, SendState,
+    Shared, Snapshot,
 };
 use dig::browser::{Browser, SystemBrowser, record_url, sell_url};
 use dig::clock::{Clock, RealClock};
@@ -30,7 +31,8 @@ use dig::discogs::cart::CartSnapshot;
 use dig::discogs::client::{ApiError, Client, Identity};
 use dig::discogs::matching::{ClipEntry, Planned, TrackEntry};
 use dig::discogs::model::{Format, RecordKey};
-use dig::discogs::transport::{Transport, UreqTransport};
+use dig::discogs::oauth::{self, CallbackAnswer, CallbackSlot, Consumer};
+use dig::discogs::transport::{Auth, Transport, UreqTransport};
 use dig::discogs::url::{self, Page, Refused};
 use dig::intake::{Command, Discarded, Event, Intake, IntakeHandle, JobRef, Outcome, RecordInfo};
 use dig::jobs::{Filters, JobId};
@@ -130,6 +132,9 @@ pub struct DigSetup {
     /// The setup panel (`welcome-setup`) opens at launch while a step is open (off in the
     /// tests that don't test it).
     pub welcome: bool,
+    /// The app's Discogs key and secret (built into release builds); without them there is no
+    /// Connect with Discogs, only a personal token.
+    pub consumer: Option<Consumer>,
 }
 
 /// Whether the browser bridge runs, and on which port.
@@ -158,6 +163,7 @@ impl DigSetup {
             tools: dig::tools::MANAGED.then(|| Arc::new(GitHub::default()) as _),
             guided_ytdlp: cfg!(windows),
             welcome: true,
+            consumer: Consumer::built_in(),
         }
     }
 }
@@ -301,6 +307,72 @@ impl DigDialog {
     }
 }
 
+/// The personal token field, Check and save, and where to get one (Options ▸ Discogs…).
+fn token_ui(
+    ui: &mut egui::Ui,
+    dialog: &mut DigDialog,
+    commands: &mut Vec<Command>,
+    open_token_page: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut dialog.token)
+                .password(true)
+                .hint_text("Personal access token")
+                .desired_width(200.0),
+        );
+        if dialog.focus_token > 0 {
+            field.request_focus();
+            if field.has_focus() {
+                dialog.focus_token -= 1;
+            }
+        }
+        let can = !dialog.token.trim().is_empty() && !dialog.checking;
+        if ui
+            .add_enabled(can, egui::Button::new("Check and save"))
+            .clicked()
+        {
+            dialog.checking = true;
+            dialog.check = None;
+            commands.push(Command::CheckToken(dialog.token.trim().to_owned()));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Get one at discogs.com › Settings › Developers:");
+        if ui.button("Open that page").clicked() {
+            *open_token_page = true;
+        }
+    });
+}
+
+/// Connect with Discogs under way (`discogs-oauth`): listening for the browser's answer.
+pub(super) struct Connecting {
+    /// Where the answer arrives: the bridge's, or the one-time listener's.
+    slot: Arc<CallbackSlot>,
+    /// The one-time address, when the bridge isn't running (dropping it stops it).
+    listener: Option<CallbackListener>,
+    /// When the wait ends without an answer.
+    pub(super) until: Instant,
+    /// Discogs gave a request token and the browser was opened at its Authorize page.
+    authorizing: bool,
+    /// The browser came back: the verifier is being exchanged and the account checked.
+    finishing: bool,
+}
+
+impl Connecting {
+    /// The port the answer is expected on (for tests).
+    #[cfg(test)]
+    pub(super) fn listener_port(&self) -> Option<u16> {
+        self.listener.as_ref().map(CallbackListener::port)
+    }
+
+    /// The address answers for the request token, and the browser was sent to Authorize.
+    #[cfg(test)]
+    pub(super) fn authorizing(&self) -> bool {
+        self.authorizing
+    }
+}
+
 /// The Connect to Discogs dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectDialog {
@@ -336,7 +408,8 @@ pub(super) struct Dig {
     pub(super) config: Option<PathBuf>,
     pub(super) settings: DigSettings,
     pub(super) memory: DigMemory,
-    pub(super) token: Option<String>,
+    /// The Discogs account: a personal token or one connected with Discogs.
+    pub(super) auth: Option<Auth>,
     identity: Option<Identity>,
     intake: Option<IntakeHandle>,
     previews: Option<PreviewHandle>,
@@ -457,6 +530,8 @@ pub(super) struct Dig {
     pub(super) connect: Option<ConnectDialog>,
     /// "Add a Discogs token…" was said this session.
     token_hint_shown: bool,
+    /// Connect with Discogs, while it waits for the browser.
+    pub(super) connecting: Option<Connecting>,
     /// Record covers for entry tooltips.
     pub(super) covers: CoverCache,
     /// Top Sellers (`sellers.ron`).
@@ -473,6 +548,10 @@ pub(super) struct Dig {
 
 /// Where a Discogs personal access token is generated ("Generate new token").
 pub const TOKEN_PAGE: &str = "https://www.discogs.com/settings/developers";
+
+/// What is connected and working (the Discogs account, a synced collection, a paired browser):
+/// a green that reads on the light and the dark theme.
+const CONNECTED: egui::Color32 = egui::Color32::from_rgb(60, 160, 80);
 
 /// A failed collection sync is tried again after this long (when still needed).
 const COLLECTION_RETRY: Duration = Duration::from_secs(3600);
@@ -506,7 +585,9 @@ impl Dig {
             .map(digconf::load_settings)
             .unwrap_or_default();
         let memory = config.as_deref().map(DigMemory::load).unwrap_or_default();
-        let token = config.as_deref().and_then(digconf::load_token);
+        let auth = config
+            .as_deref()
+            .and_then(|c| digconf::load_auth(c, setup.consumer.as_ref()));
         let sellers = config.as_deref().map(SellerList::load).unwrap_or_default();
         let friends = config
             .as_deref()
@@ -538,7 +619,7 @@ impl Dig {
             config,
             settings,
             memory,
-            token,
+            auth,
             identity: None,
             intake: None,
             previews: None,
@@ -601,6 +682,7 @@ impl Dig {
             collection_tried: None,
             connect: None,
             token_hint_shown: false,
+            connecting: None,
             covers: CoverCache::default(),
             bridge_dialog: None,
             wake,
@@ -608,7 +690,16 @@ impl Dig {
     }
 
     pub(super) fn has_token(&self) -> bool {
-        self.token.is_some()
+        self.auth.is_some()
+    }
+
+    /// Stops Connect with Discogs (Cancel, a Deny, the wait ran out, an error): the address
+    /// stops answering and the worker forgets the request token.
+    fn connect_stop(&mut self) {
+        if let Some(c) = self.connecting.take() {
+            c.slot.cancel();
+            self.send(Command::ConnectCancel);
+        }
     }
 
     pub(super) fn save_friends(&self) -> Option<String> {
@@ -642,7 +733,7 @@ impl Dig {
 
     /// With a token: the first Top Sellers list (once ever) and the cart, behind other work.
     fn read_account_lists(&self) {
-        if self.token.is_none() {
+        if self.auth.is_none() {
             return;
         }
         if !self.sellers.seeded {
@@ -753,7 +844,7 @@ impl Dig {
         let client = Client::new(
             self.setup.transport.clone(),
             self.setup.clock.clone(),
-            self.token.clone(),
+            self.auth.clone(),
             DiskCache::new(self.setup.cache_root.as_deref()),
         );
         let wake = self.wake.clone();
@@ -921,7 +1012,7 @@ impl Dig {
 
     /// Whether the entry's record is in the user's collection (only with a token).
     pub(super) fn owned(&self, e: &Entry) -> Option<Owned> {
-        self.token.as_ref()?;
+        self.auth.as_ref()?;
         let o = e.origin.as_ref()?;
         self.collection.as_ref()?.owned(o.release, o.master)
     }
@@ -932,14 +1023,14 @@ impl Dig {
     /// Returns a hint to show once per session when there is something to mark but no
     /// token to know the collection with.
     fn maybe_sync_collection(&mut self, wanted: bool) -> Option<String> {
-        if wanted && self.token.is_none() && !self.token_hint_shown {
+        if wanted && self.auth.is_none() && !self.token_hint_shown {
             self.token_hint_shown = true;
             return Some(
                 "Add a Discogs token (Options › Discogs…) to mark the records you already own"
                     .into(),
             );
         }
-        if !wanted || self.token.is_none() || self.collection_syncing {
+        if !wanted || self.auth.is_none() || self.collection_syncing {
             return None;
         }
         if self
@@ -962,7 +1053,7 @@ impl Dig {
 
     /// Syncs now (Options ▸ Discogs… ▸ Refresh collection): only what changed since the cache.
     pub(super) fn sync_collection(&mut self) {
-        if self.token.is_none() || self.collection_syncing {
+        if self.auth.is_none() || self.collection_syncing {
             return;
         }
         self.collection_syncing = true;
@@ -1013,17 +1104,18 @@ impl Dig {
     /// Hands the bridge the current collection, for the browser's owned check.
     fn share_collection(&self) {
         if let Some(s) = &self.bridge_shared {
-            let c = self.token.as_ref().and(self.collection.clone());
+            let c = self.auth.as_ref().and(self.collection.clone());
             s.collection.store(Arc::new(c));
             s.has_token
-                .store(self.token.is_some(), std::sync::atomic::Ordering::Relaxed);
+                .store(self.auth.is_some(), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     /// Options ▸ Discogs…: "1,234 records, updated 2 h ago", or why there is none.
-    fn collection_line(&self) -> String {
-        if self.token.is_none() {
-            return "Needs a token".into();
+    /// The collection's line in Options ▸ Discogs…, and whether it is in sync (shown green).
+    fn collection_line(&self) -> (String, bool) {
+        if self.auth.is_none() {
+            return ("Needs a token".into(), false);
         }
         let mut line = match &self.collection {
             Some(c) => format!(
@@ -1039,7 +1131,10 @@ impl Dig {
         } else if let Some(e) = &self.collection_error {
             line += &format!(" · last sync failed: {e}");
         }
-        line
+        let synced = self.collection.is_some()
+            && !self.collection_syncing
+            && self.collection_error.is_none();
+        (line, synced)
     }
 
     /// Wanted, passed, and how its wantlist or collection change is going, for a row.
@@ -2160,6 +2255,7 @@ impl DiggrApp {
         }
         self.dig_migrate_keepers();
         self.dig_connect_wantlist();
+        self.dig_connect_poll();
         let Some(d) = &mut self.dig else { return };
         for id in [self.crates.shown_id(), self.crates.playing_id()] {
             if d.active.insert(id) {
@@ -2631,7 +2727,24 @@ impl DiggrApp {
                 }
                 Err(e) => self.notify(e.message()),
             },
-            Event::TokenChecked(token, result) => self.dig_token_checked(token, result),
+            Event::TokenChecked(auth, result) => self.dig_token_checked(auth, result),
+            Event::ConnectAuthorize { request_token, url } => {
+                self.dig_connect_authorize(&request_token, &url)
+            }
+            Event::ConnectFailed(e) => {
+                let msg = match e {
+                    ApiError::TokenRejected => {
+                        "Discogs refused the connection; nothing was saved".to_owned()
+                    }
+                    ApiError::Offline => {
+                        "Discogs can't be reached; nothing was saved. Try again later".to_owned()
+                    }
+                    e => e.message(),
+                };
+                if self.dig.as_ref().is_some_and(|d| d.connecting.is_some()) {
+                    self.dig_connect_failed(msg);
+                }
+            }
             Event::Friends(result) => self.dig_friends(result),
             Event::FriendProgress {
                 target,
@@ -3700,7 +3813,7 @@ impl DiggrApp {
     /// Sends the collection removals that are due.
     fn dig_retry_discards(&mut self) {
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() || !d.started() || d.memory.discards.is_empty() {
+        if d.auth.is_none() || !d.started() || d.memory.discards.is_empty() {
             return;
         }
         for release in d.memory.discards_due(now_secs()) {
@@ -3712,7 +3825,7 @@ impl DiggrApp {
 
     pub(super) fn dig_retry_wantlist(&mut self) {
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() || !d.started() || d.memory.wantlist_pending.is_empty() {
+        if d.auth.is_none() || !d.started() || d.memory.wantlist_pending.is_empty() {
             return;
         }
         for (release, op) in d.memory.due(now_secs()) {
@@ -3905,7 +4018,7 @@ impl DiggrApp {
                     self.fan_refresh(FanList::Collection);
                 }
                 let Some(d) = &mut self.dig else { return };
-                if d.token.is_none() {
+                if d.auth.is_none() {
                     return self.dig_needs_account();
                 }
                 if d.refreshing_collection {
@@ -3940,7 +4053,7 @@ impl DiggrApp {
                     self.fan_refresh(FanList::Wishlist);
                 }
                 let Some(d) = &mut self.dig else { return };
-                if d.token.is_none() {
+                if d.auth.is_none() {
                     return self.dig_needs_account();
                 }
                 if d.refreshing_wantlist || d.settings.wantlist.is_none() {
@@ -3976,7 +4089,7 @@ impl DiggrApp {
         actions: &mut Vec<Action>,
     ) {
         let fan = self.fan_imported();
-        let Some(d) = self.dig.as_ref().filter(|d| d.token.is_some() || fan) else {
+        let Some(d) = self.dig.as_ref().filter(|d| d.auth.is_some() || fan) else {
             return;
         };
         let (label, running, action) = if c.wantlist {
@@ -4123,7 +4236,7 @@ impl DiggrApp {
             return Ok(id);
         }
         let user = d
-            .token
+            .auth
             .as_ref()
             .and(d.identity.as_ref())
             .map(|i| i.username.clone());
@@ -4270,7 +4383,7 @@ impl DiggrApp {
             let Some(d) = &mut self.dig else { return };
             for (r, _) in &added {
                 d.memory.wanted.insert(*r);
-                if d.token.is_some() {
+                if d.auth.is_some() {
                     d.memory.queue_want(*r, WantOp::Add);
                 }
             }
@@ -4280,7 +4393,7 @@ impl DiggrApp {
             self.flash(Verdict::Wanted, added.len());
         }
         let Some(d) = &mut self.dig else { return };
-        let anon = d.token.is_none();
+        let anon = d.auth.is_none();
         let text = if records.len() == 1 {
             match (added.first(), owned.first()) {
                 (Some((_, e)), _)
@@ -4353,7 +4466,7 @@ impl DiggrApp {
     fn dig_forget_wanted(&mut self, releases: &HashSet<u64>) {
         let Some(d) = &mut self.dig else { return };
         for &r in releases {
-            if d.memory.wanted.remove(&r) && d.token.is_some() {
+            if d.memory.wanted.remove(&r) && d.auth.is_some() {
                 d.memory.queue_want(r, WantOp::Remove);
             }
         }
@@ -4401,7 +4514,7 @@ impl DiggrApp {
     /// a retry that first asks Discogs whether the add went through).
     fn dig_collect(&mut self, c: CrateId, ids: &[EntryId], check: bool) {
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() {
+        if d.auth.is_none() {
             if d.no_discogs() {
                 return self.notify(NEEDS_ACCOUNT);
             }
@@ -4666,7 +4779,7 @@ impl DiggrApp {
     fn dig_connect_wantlist(&mut self) {
         let shown = self.crates.shown_id();
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() || !d.started() {
+        if d.auth.is_none() || !d.started() {
             return;
         }
         // Something to follow (wanted records, changes waiting, the crate on screen), and no
@@ -4868,7 +4981,7 @@ impl DiggrApp {
     pub(super) fn dig_before_remove(&mut self, ids: &[EntryId]) {
         let c = self.crates.shown_id();
         let Some(d) = &self.dig else { return };
-        if d.token.is_some() || d.settings.wantlist != Some(c) {
+        if d.auth.is_some() || d.settings.wantlist != Some(c) {
             return;
         }
         let p = self.crates.shown();
@@ -5016,7 +5129,7 @@ impl DiggrApp {
         }
         // The collection crate: one record at a time comes out, one copy, after a question.
         if collection
-            && d.token.is_some()
+            && d.auth.is_some()
             && records.len() <= 1
             && let Some(r) = release_of(e)
         {
@@ -5094,18 +5207,149 @@ impl DiggrApp {
         d.preview(PreviewCommand::CheckProgram);
     }
 
-    pub(super) fn dig_token_checked(&mut self, token: String, result: Result<Identity, ApiError>) {
+    /// Connect… from the Connect to Discogs dialog or the setup panel: Options ▸ Discogs…
+    /// opens and Connect with Discogs starts in it; a build without the app's keys puts the
+    /// keyboard in the token field instead.
+    pub(super) fn dig_connect_or_token(&mut self) {
+        self.dig_open_dialog();
+        let oauth = self
+            .dig
+            .as_ref()
+            .is_some_and(|d| d.setup.consumer.is_some());
+        if oauth {
+            self.dig_connect_start();
+        } else {
+            self.dig_focus_token();
+        }
+    }
+
+    /// Options ▸ Discogs… with the keyboard in the token field ("Use a personal token instead").
+    fn dig_focus_token(&mut self) {
+        if let Some(dialog) = self.dig.as_mut().and_then(|d| d.dialog.as_mut()) {
+            dialog.focus_token = 3;
+        }
+    }
+
+    /// Connect with Discogs: listens for the answer first (on the bridge, or on a one-time
+    /// address when the bridge isn't running), then asks Discogs for a request token for that
+    /// port; the browser opens once it is there ([`Self::dig_connect_authorize`]).
+    pub(super) fn dig_connect_start(&mut self) {
         let Some(d) = &mut self.dig else { return };
+        let Some(consumer) = d.setup.consumer.clone() else {
+            return;
+        };
+        d.connect_stop();
+        if let Some(dialog) = &mut d.dialog {
+            dialog.check = None;
+        }
+        let bridge = d
+            .bridge_port()
+            .zip(d.bridge_shared.as_ref().map(|s| s.discogs_callback.clone()));
+        let (slot, listener, port) = match bridge {
+            Some((port, slot)) => (slot, None, port),
+            None => {
+                let slot = Arc::new(CallbackSlot::default());
+                let wake = d.wake.clone();
+                match CallbackListener::start(&*d.spawner, slot.clone(), move || {
+                    wake.request_repaint()
+                }) {
+                    Ok(l) => {
+                        let port = l.port();
+                        (slot, Some(l), port)
+                    }
+                    Err(e) => {
+                        self.dig_connect_failed(e);
+                        return;
+                    }
+                }
+            }
+        };
+        d.connecting = Some(Connecting {
+            slot,
+            listener,
+            until: Instant::now() + oauth::WAIT,
+            authorizing: false,
+            finishing: false,
+        });
+        d.send(Command::ConnectStart { consumer, port });
+    }
+
+    /// Discogs gave a request token: the address answers for it, and the browser opens at
+    /// Discogs' Authorize page.
+    fn dig_connect_authorize(&mut self, request_token: &str, url: &str) {
+        let Some(d) = &mut self.dig else { return };
+        let Some(c) = &mut d.connecting else {
+            // Cancelled while Discogs was asked.
+            d.send(Command::ConnectCancel);
+            return;
+        };
+        c.slot.wait_for(request_token, c.until);
+        c.authorizing = true;
+        if let Err(e) = d.setup.browser.open(url) {
+            self.dig_connect_failed(format!("Could not open the browser: {e}"));
+        }
+    }
+
+    /// Each frame while connecting: the browser's answer, or the wait running out.
+    fn dig_connect_poll(&mut self) {
+        let Some(d) = &mut self.dig else { return };
+        let Some(c) = &mut d.connecting else { return };
+        if c.finishing {
+            return;
+        }
+        if d.dialog.is_none() {
+            // Options ▸ Discogs… was closed: the wait and its Cancel are shown only there.
+            d.connect_stop();
+            return;
+        }
+        match c.slot.take() {
+            Some(CallbackAnswer::Verifier(verifier)) => {
+                c.finishing = true;
+                c.listener = None;
+                d.send(Command::ConnectFinish { verifier });
+            }
+            Some(CallbackAnswer::Denied) => {
+                self.dig_connect_failed("You didn't allow Diggr on Discogs; nothing was connected");
+            }
+            None if Instant::now() >= c.until => {
+                self.dig_connect_failed(
+                    "Discogs didn't answer in 5 minutes; nothing was saved. Click Connect with \
+                     Discogs to try again",
+                );
+            }
+            // The wait running out needs a frame even when nothing else happens.
+            None => d.wake.request_repaint_after(Duration::from_secs(1)),
+        }
+    }
+
+    /// Connect with Discogs stopped: why, in Options ▸ Discogs… (or the main window).
+    fn dig_connect_failed(&mut self, why: impl Into<String>) {
+        let Some(d) = &mut self.dig else { return };
+        d.connect_stop();
+        let why = why.into();
+        match &mut d.dialog {
+            Some(dialog) => dialog.check = Some(Err(why)),
+            None => self.notify(why),
+        }
+    }
+
+    pub(super) fn dig_token_checked(&mut self, auth: Auth, result: Result<Identity, ApiError>) {
+        let Some(d) = &mut self.dig else { return };
+        let oauth = matches!(auth, Auth::OAuth(_));
+        if oauth {
+            // Connect with Discogs is over, either way.
+            d.connect_stop();
+        }
         let outcome = match result {
             Ok(id) => {
                 let saved = d
                     .config
                     .as_deref()
-                    .map(|c| digconf::save_token(c, Some(&token)));
+                    .map(|c| digconf::save_auth(c, Some(&auth)));
                 if let Some(Err(e)) = saved {
-                    Err(format!("Could not save the token: {e}"))
+                    Err(format!("Could not save the account: {e}"))
                 } else {
-                    d.token = Some(token);
+                    d.auth = Some(auth);
                     let name = id.username.clone();
                     d.identity = Some(id);
                     d.connected = None;
@@ -5113,6 +5357,9 @@ impl DiggrApp {
                     d.read_account_lists();
                     Ok(name)
                 }
+            }
+            Err(ApiError::TokenRejected) if oauth => {
+                Err("Discogs refused the connection; nothing was saved".into())
             }
             Err(ApiError::TokenRejected) => {
                 Err("Discogs rejected the token; it wasn't saved".into())
@@ -5144,13 +5391,19 @@ impl DiggrApp {
         }
     }
 
-    /// "Connect to Discogs": what a token gives, and how to get one.
+    /// "Connect to Discogs": what an account gives, and Connect with Discogs (or, in a build
+    /// without the app's keys, how to get a token).
     fn dig_connect_ui(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.dig.as_ref().and_then(|d| d.connect.clone()) else {
             return;
         };
+        let oauth = self
+            .dig
+            .as_ref()
+            .is_some_and(|d| d.setup.consumer.is_some());
         let mut dismiss = false;
         let (mut close, mut connect, mut open_page) = (false, false, false);
+        let mut use_token = false;
         egui::Modal::new(egui::Id::new("connect-discogs")).show(ctx, |ui| {
             ui.set_max_width(380.0);
             ui.strong("Connect to Discogs");
@@ -5162,14 +5415,16 @@ impl DiggrApp {
                  add records to your wantlist or collection while you dig, and see at a glance \
                  what you already own. It only takes connecting your account:",
             );
-            ui.horizontal(|ui| {
-                ui.label("1. Open your Discogs developer settings");
-                if ui.button("Open ⬈").clicked() {
-                    open_page = true;
-                }
-            });
-            ui.label("2. Click \"Generate new token\" and copy it");
-            ui.label("3. Paste it in Options › Discogs…");
+            if !oauth {
+                ui.horizontal(|ui| {
+                    ui.label("1. Open your Discogs developer settings");
+                    if ui.button("Open ⬈").clicked() {
+                        open_page = true;
+                    }
+                });
+                ui.label("2. Click \"Generate new token\" and copy it");
+                ui.label("3. Paste it in Options › Discogs…");
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 if dialog.from_wantlist {
@@ -5178,10 +5433,18 @@ impl DiggrApp {
                 if ui.button("Later").clicked() {
                     close = true;
                 }
-                if ui.button("Connect…").clicked() {
+                let label = if oauth {
+                    "Connect with Discogs"
+                } else {
+                    "Connect…"
+                };
+                if ui.button(label).clicked() {
                     connect = true;
                 }
             });
+            if oauth && ui.small_button("Use a personal token instead").clicked() {
+                use_token = true;
+            }
         });
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             close = true;
@@ -5199,14 +5462,14 @@ impl DiggrApp {
             let e = d.save_settings();
             d.connect = None;
             self.dig_notify(e);
-        } else if close || connect {
+        } else if close || connect || use_token {
             d.connect = None;
         }
         if connect {
+            self.dig_connect_or_token();
+        } else if use_token {
             self.dig_open_dialog();
-            if let Some(dialog) = self.dig.as_mut().and_then(|d| d.dialog.as_mut()) {
-                dialog.focus_token = 3;
-            }
+            self.dig_focus_token();
         }
     }
 
@@ -5406,16 +5669,18 @@ impl DiggrApp {
         self.dig_ask_ytdlp_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };
-        let collection_line = d.collection_line();
+        let (collection_line, collection_synced) = d.collection_line();
         let collection_syncing = d.collection_syncing;
         let Some(dialog) = &mut d.dialog else { return };
         let mut open = true;
         let mut commands: Vec<Command> = Vec::new();
         let mut preview_cmds: Vec<PreviewCommand> = Vec::new();
         let mut remove_token = false;
+        let (mut connect_start, mut connect_cancel) = (false, false);
         let mut settings_changed = false;
         let mut refresh_collection = false;
         let mut open_token_page = false;
+        let mut open_why = false;
         egui::Window::new("Discogs")
             .id(egui::Id::new("dig-dialog"))
             .collapsible(false)
@@ -5424,70 +5689,99 @@ impl DiggrApp {
             .show(ctx, |ui| {
                 ui.set_max_width(360.0);
                 ui.strong("Account");
-                match (&d.token, &d.identity) {
-                    (Some(t), Some(id)) => {
-                        ui.label(format!(
-                            "Connected as {} ({})",
-                            id.username,
-                            digconf::masked(t)
-                        ));
+                let oauth = d.setup.consumer.is_some();
+                // Connected reads green, so it's plain there is nothing more to do.
+                let connected = |ui: &mut egui::Ui, text: String| {
+                    ui.colored_label(CONNECTED, text);
+                };
+                match (&d.auth, &d.identity) {
+                    (Some(Auth::Token(t)), Some(id)) => connected(
+                        ui,
+                        format!("Connected as {} ({})", id.username, digconf::masked(t)),
+                    ),
+                    (Some(Auth::OAuth(_)), Some(id)) => {
+                        connected(ui, format!("Connected as {}", id.username))
                     }
-                    (Some(t), None) => {
-                        ui.label(format!("Token {}", digconf::masked(t)));
+                    (Some(Auth::Token(t)), None) => {
+                        connected(ui, format!("Token {}", digconf::masked(t)))
                     }
+                    (Some(Auth::OAuth(_)), None) => connected(ui, "Connected with Discogs".into()),
                     (None, _) => {
-                        ui.label("No token: pages still work, at Discogs' lower rate limit");
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut dialog.token)
-                            .password(true)
-                            .hint_text("Personal access token")
-                            .desired_width(200.0),
-                    );
-                    if dialog.focus_token > 0 {
-                        field.request_focus();
-                        if field.has_focus() {
-                            dialog.focus_token -= 1;
+                        ui.label(if oauth {
+                            "Not connected: pages still work, at Discogs' lower rate limit"
+                        } else {
+                            "No token: pages still work, at Discogs' lower rate limit"
+                        });
+                        if ui.link("Why connect?").clicked() {
+                            open_why = true;
                         }
                     }
-                    let can = !dialog.token.trim().is_empty() && !dialog.checking;
-                    if ui
-                        .add_enabled(can, egui::Button::new("Check and save"))
-                        .clicked()
-                    {
-                        dialog.checking = true;
-                        dialog.check = None;
-                        commands.push(Command::CheckToken(dialog.token.trim().to_owned()));
+                }
+                if oauth {
+                    match &d.connecting {
+                        Some(c) => {
+                            ui.horizontal(|ui| {
+                                ui.label(if c.finishing {
+                                    "Connecting…"
+                                } else {
+                                    "Waiting for Discogs in your browser…"
+                                });
+                                if ui.button("Cancel").clicked() {
+                                    connect_cancel = true;
+                                }
+                            });
+                            if c.authorizing && !c.finishing {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "If your browser says it can't reach 127.0.0.1, make \
+                                         sure Diggr is open and click Connect with Discogs again.",
+                                    )
+                                    .small(),
+                                );
+                            }
+                        }
+                        None if d.auth.is_some() => {}
+                        None => {
+                            let can = !dialog.checking;
+                            if ui
+                                .add_enabled(can, egui::Button::new("Connect with Discogs"))
+                                .clicked()
+                            {
+                                connect_start = true;
+                            }
+                        }
                     }
-                });
-                if d.token.is_some() && ui.button("Remove token").clicked() {
+                }
+                if d.auth.is_some() && ui.button("Disconnect").clicked() {
                     remove_token = true;
                 }
                 if dialog.checking {
                     ui.label("Checking…");
                 }
-                match &dialog.check {
-                    Some(Ok(name)) => {
-                        ui.label(format!("Connected as {name}"));
-                    }
-                    Some(Err(e)) => {
-                        ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
-                    }
-                    None => {}
+                // A success shows in the green line above; only an error needs saying here.
+                if let Some(Err(e)) = &dialog.check {
+                    ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Get one at discogs.com › Settings › Developers:");
-                    if ui.button("Open that page").clicked() {
-                        open_token_page = true;
-                    }
-                });
+                if oauth {
+                    let focus = dialog.focus_token > 0;
+                    egui::CollapsingHeader::new("Use a personal token instead")
+                        .id_salt("dig-token")
+                        .open(focus.then_some(true))
+                        .show(ui, |ui| {
+                            token_ui(ui, dialog, &mut commands, &mut open_token_page)
+                        });
+                } else {
+                    token_ui(ui, dialog, &mut commands, &mut open_token_page);
+                }
 
                 ui.separator();
                 ui.strong("Collection");
-                ui.label(&collection_line);
-                if d.token.is_some()
+                if collection_synced {
+                    ui.colored_label(CONNECTED, &collection_line);
+                } else {
+                    ui.label(&collection_line);
+                }
+                if d.auth.is_some()
                     && ui
                         .add_enabled(!collection_syncing, egui::Button::new("Refresh collection"))
                         .on_hover_text("Fetches only what changed since the last sync")
@@ -5510,7 +5804,7 @@ impl DiggrApp {
                             } else {
                                 "installed by you"
                             };
-                            ui.label(format!("yt-dlp {version} ({whose})"))
+                            ui.colored_label(CONNECTED, format!("yt-dlp {version} ({whose})"))
                         }
                         (YtDlpState::Missing, _) if can_download => ui.label("yt-dlp not found"),
                         (YtDlpState::Missing, _) => {
@@ -5572,15 +5866,21 @@ impl DiggrApp {
             });
         if !open {
             d.dialog = None;
+            // Nothing waits for the browser behind a closed window.
+            connect_cancel = true;
+        }
+        if connect_cancel {
+            d.connect_stop();
         }
         if remove_token {
+            d.connect_stop();
             if let Some(c) = d.config.as_deref() {
-                let _ = digconf::save_token(c, None);
+                let _ = digconf::save_auth(c, None);
             }
-            d.token = None;
+            d.auth = None;
             d.identity = None;
             d.connected = None;
-            commands.push(Command::SetToken(None));
+            commands.push(Command::SetAuth(None));
             d.share_collection();
             // Unconnected, the wantlist crate is one of the user's own again.
             if let Some(wl) = d.settings.wantlist {
@@ -5606,6 +5906,16 @@ impl DiggrApp {
                 .as_ref()
                 .and_then(|d| d.setup.browser.open(TOKEN_PAGE).err());
             self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
+        }
+        if open_why {
+            let err = self
+                .dig
+                .as_ref()
+                .and_then(|d| d.setup.browser.open(super::welcome::DISCOGS_WHY).err());
+            self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
+        }
+        if connect_start {
+            self.dig_connect_start();
         }
     }
 
@@ -5722,17 +6032,23 @@ impl DiggrApp {
                 }
                 ui.label("Enter this code in the extension's options.");
                 if dialog.paired {
-                    ui.label("A browser was paired.");
+                    ui.colored_label(CONNECTED, "A browser was paired.");
                 }
 
                 ui.separator();
                 let n = pairing.paired();
                 drop(pairing);
-                ui.label(match n {
+                let line = match n {
                     0 => "No paired browsers".to_owned(),
                     1 => "1 paired browser".to_owned(),
                     n => format!("{n} paired browsers"),
-                });
+                };
+                // Paired reads green, as a connected Discogs account does.
+                if n > 0 {
+                    ui.colored_label(CONNECTED, line);
+                } else {
+                    ui.label(line);
+                }
                 if ui
                     .add_enabled(n > 0, egui::Button::new("Forget browsers"))
                     .clicked()

@@ -21,8 +21,9 @@ use crate::discogs::client::{ApiError, Client, Identity, path_segment};
 use crate::discogs::expand::{self, PER_PAGE};
 use crate::discogs::matching::{self, RecordPlan};
 use crate::discogs::model::{ForSale, Format, Listed, Record, RecordKey, Role};
+use crate::discogs::oauth::{self, Consumer, RequestToken};
 use crate::discogs::seller::{self, Ranked};
-use crate::discogs::transport::Method;
+use crate::discogs::transport::{Auth, Method};
 use crate::discogs::url::{Page, PageKind};
 use crate::friends;
 use crate::jobs::{Filters, Job, JobId, Jobs};
@@ -49,10 +50,18 @@ pub enum Command {
     Focus { target: u64, order: Vec<RecordKey> },
     /// Fresh marketplace numbers for a release (its track started and they are a day old).
     Refresh(u64),
-    /// A saved token (or none) to use from now on.
-    SetToken(Option<String>),
-    /// Check a token before it is saved; the current one stays in use.
+    /// Saved credentials (or none) to use from now on.
+    SetAuth(Option<Auth>),
+    /// Check a personal token before it is saved; the current credentials stay in use.
     CheckToken(String),
+    /// Connect with Discogs: ask for a request token whose Authorize comes back to the app on
+    /// `port` (answered with [`Event::ConnectAuthorize`] or [`Event::ConnectFailed`]).
+    ConnectStart { consumer: Consumer, port: u16 },
+    /// The verifier the browser brought back: exchanged for the account's credentials, then
+    /// checked like a token ([`Event::TokenChecked`]).
+    ConnectFinish { verifier: String },
+    /// Stop a connection (Cancel, a Deny, the wait ran out): its request token is forgotten.
+    ConnectCancel,
     /// Add a release to the user's wantlist (unless it is already there).
     Want(u64),
     /// Take a release off the user's wantlist, whoever added it.
@@ -225,7 +234,16 @@ pub enum Event {
     ForSale(u64, ForSale),
     /// The saved token's account, or why it can't be used.
     Identity(Result<Identity, ApiError>),
-    TokenChecked(String, Result<Identity, ApiError>),
+    /// Credentials checked before they are saved: a personal token, or an account connected
+    /// with Discogs.
+    TokenChecked(Auth, Result<Identity, ApiError>),
+    /// Connect with Discogs: the request token is there; the user authorizes at `url`.
+    ConnectAuthorize {
+        request_token: String,
+        url: String,
+    },
+    /// Connect with Discogs stopped before Authorize (Discogs refused, can't be reached).
+    ConnectFailed(ApiError),
     /// A collection sync finished: the up-to-date collection, or why not (the previous one
     /// stays in use).
     Collection(Result<Box<Collection>, ApiError>),
@@ -325,6 +343,9 @@ pub struct Intake {
     active: HashSet<JobId>,
     focus: Option<u64>,
     identity_checked: bool,
+    /// Connect with Discogs, waiting for the browser: the request token and its secret, which
+    /// never leave this worker.
+    connecting: Option<(Consumer, RequestToken)>,
     /// The user's wantlist this session: release → its master release, when known.
     wants: Option<HashMap<u64, Option<u64>>>,
     offline: bool,
@@ -363,6 +384,7 @@ impl Intake {
             active: HashSet::new(),
             focus: None,
             identity_checked: false,
+            connecting: None,
             wants: None,
             offline: false,
             last_save: None,
@@ -459,24 +481,40 @@ impl Intake {
                     Err(_) => {}
                 }
             }
-            Command::SetToken(token) => {
-                self.client.set_token(token);
+            Command::SetAuth(auth) => {
+                self.client.set_auth(auth);
                 self.identity_checked = false;
                 self.wants = None;
             }
-            Command::CheckToken(token) => {
-                let saved = self.client.token().map(str::to_owned);
-                self.client.set_token(Some(token.clone()));
-                let result = self.client.check_identity();
-                if result.is_ok() {
-                    self.identity_checked = true;
-                    self.wants = None;
-                } else {
-                    self.client.set_token(saved);
-                    self.identity_checked = false;
+            Command::CheckToken(token) => match Auth::token(&token) {
+                Some(auth) => self.check_auth(auth),
+                None => self.events.push(Event::TokenChecked(
+                    Auth::Token(token),
+                    Err(ApiError::TokenRejected),
+                )),
+            },
+            Command::ConnectStart { consumer, port } => {
+                self.connecting = None;
+                match self.client.request_token(&consumer, &oauth::callback(port)) {
+                    Ok(rt) => {
+                        self.events.push(Event::ConnectAuthorize {
+                            request_token: rt.token.clone(),
+                            url: oauth::authorize_url(&rt.token),
+                        });
+                        self.connecting = Some((consumer, rt));
+                    }
+                    Err(e) => self.events.push(Event::ConnectFailed(e)),
                 }
-                self.events.push(Event::TokenChecked(token, result));
             }
+            Command::ConnectFinish { verifier } => {
+                if let Some((consumer, rt)) = self.connecting.take() {
+                    match self.client.access_token(&consumer, &rt, &verifier) {
+                        Ok(c) => self.check_auth(Auth::OAuth(c)),
+                        Err(e) => self.events.push(Event::ConnectFailed(e)),
+                    }
+                }
+            }
+            Command::ConnectCancel => self.connecting = None,
             Command::Want(release) => self.wantlist(release, true),
             Command::Unwant(release) => self.wantlist(release, false),
             Command::Collect { release, check } => {
@@ -966,9 +1004,25 @@ impl Intake {
         Ok(())
     }
 
+    /// Checks credentials with Discogs before they are saved: on success they are used from now
+    /// on, otherwise the current ones stay.
+    fn check_auth(&mut self, auth: Auth) {
+        let saved = self.client.auth().cloned();
+        self.client.set_auth(Some(auth.clone()));
+        let result = self.client.check_identity();
+        if result.is_ok() {
+            self.identity_checked = true;
+            self.wants = None;
+        } else {
+            self.client.set_auth(saved);
+            self.identity_checked = false;
+        }
+        self.events.push(Event::TokenChecked(auth, result));
+    }
+
     /// With a token, the account's currency is needed before any price is asked for.
     fn ensure_identity(&mut self) {
-        if self.identity_checked || self.client.token().is_none() {
+        if self.identity_checked || !self.client.has_account() {
             return;
         }
         match self.client.check_identity() {
@@ -980,7 +1034,7 @@ impl Intake {
             Err(e) => {
                 // A bad token: carry on as without one, at the lower limit, and say so.
                 self.identity_checked = true;
-                self.client.set_token(None);
+                self.client.set_auth(None);
                 self.events.push(Event::Identity(Err(e)));
             }
         }
@@ -1002,7 +1056,7 @@ impl Intake {
 
     /// The account's username, for a change to it (a token is needed).
     fn user(&mut self) -> Result<String, ApiError> {
-        if self.client.token().is_none() {
+        if !self.client.has_account() {
             return Err(ApiError::TokenNeeded);
         }
         let user = self.client.ensure_identity()?.username;

@@ -1324,3 +1324,120 @@ fn a_youtube_or_soundcloud_mix_page_is_sent_by_its_address() {
     }
     assert!(r.bridge.poll().is_empty());
 }
+
+/// What the browser sends when the diggr.es callback page forwards to the bridge: a top-level
+/// navigation, no Origin, no key.
+fn navigate(r: &Rig, path: &str, host: &str) -> (u16, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", r.bridge.port())).unwrap();
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let status = out.split(' ').nth(1).unwrap().parse().unwrap();
+    (status, out)
+}
+
+#[test]
+fn the_discogs_callback_is_answered_once_for_its_request_token() {
+    let r = rig("discogs-callback");
+    let host = r.host();
+    let ok = "/discogs?oauth_token=rt&oauth_verifier=V3rif";
+    assert_eq!(navigate(&r, ok, &host).0, 404, "no connection waiting");
+    assert_eq!(r.shared.discogs_callback.take(), None);
+
+    let slot = &r.shared.discogs_callback;
+    slot.wait_for("rt", Instant::now() + Duration::from_secs(300));
+    assert_eq!(
+        navigate(&r, "/discogs?oauth_token=other&oauth_verifier=V", &host).0,
+        404,
+        "another request token"
+    );
+    let foreign = format!("evil.example:{}", r.bridge.port());
+    assert_eq!(navigate(&r, ok, &foreign).0, 404, "a foreign Host header");
+    assert_eq!(slot.take(), None, "still waiting");
+
+    let (status, page) = navigate(&r, ok, &host);
+    assert_eq!(status, 200);
+    assert!(page.contains("Diggr is connected"), "{page}");
+    assert!(
+        page.to_ascii_lowercase()
+            .contains("content-type: text/html")
+    );
+    assert_eq!(
+        slot.take(),
+        Some(dig::discogs::oauth::CallbackAnswer::Verifier(
+            "V3rif".into()
+        ))
+    );
+    assert_eq!(navigate(&r, ok, &host).0, 404, "only once");
+    // The rest of the bridge still wants its key.
+    assert_eq!(r.call("GET", "/v1/crates", None, "").status, 401);
+}
+
+#[test]
+fn a_deny_on_the_callback_ends_the_wait() {
+    let r = rig("discogs-deny");
+    let host = r.host();
+    let slot = &r.shared.discogs_callback;
+    slot.wait_for("rt", Instant::now() + Duration::from_secs(300));
+    let (status, page) = navigate(&r, "/discogs?denied=rt", &host);
+    assert_eq!(status, 200);
+    assert!(page.contains("wasn't allowed"), "{page}");
+    assert_eq!(
+        slot.take(),
+        Some(dig::discogs::oauth::CallbackAnswer::Denied)
+    );
+    assert_eq!(
+        navigate(&r, "/discogs?oauth_token=rt&oauth_verifier=V", &host).0,
+        404,
+        "the wait is over"
+    );
+}
+
+#[test]
+fn without_the_bridge_a_one_time_listener_takes_the_callback() {
+    use dig::bridge::CallbackListener;
+    use dig::discogs::oauth::{CallbackAnswer, CallbackSlot};
+    let slot = Arc::new(CallbackSlot::default());
+    let (tx, rx) = channel();
+    let l = CallbackListener::start(&NativeSpawner, slot.clone(), move || {
+        let _ = tx.send(());
+    })
+    .unwrap();
+    let port = l.port();
+    assert_ne!(port, 0);
+    let get = |path: &str, host: &str| -> (u16, String) {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        (out.split(' ').nth(1).unwrap().parse().unwrap(), out)
+    };
+    let host = format!("127.0.0.1:{port}");
+    slot.wait_for("rt", Instant::now() + Duration::from_secs(300));
+    assert_eq!(get("/v1/hello", &host).0, 404, "only /discogs");
+    assert_eq!(
+        get(
+            "/discogs?oauth_token=rt&oauth_verifier=V",
+            &format!("evil.example:{port}")
+        )
+        .0,
+        404
+    );
+    let (status, page) = get("/discogs?oauth_token=rt&oauth_verifier=V", &host);
+    assert_eq!(status, 200);
+    assert!(page.contains("Diggr is connected"));
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("the UI is woken");
+    assert_eq!(slot.take(), Some(CallbackAnswer::Verifier("V".into())));
+    drop(l);
+    // Once dropped, the address no longer answers.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(Instant::now() < deadline, "the listener stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

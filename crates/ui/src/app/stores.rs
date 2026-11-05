@@ -545,7 +545,7 @@ impl DiggrApp {
     /// Records never looked up are looked up on Discogs (with a token), behind other work.
     fn store_find(&mut self, records: &[StoreRecord]) {
         let Some(d) = &mut self.dig else { return };
-        if d.token.is_none() {
+        if d.auth.is_none() {
             return;
         }
         let mut finds = Vec::new();

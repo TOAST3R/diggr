@@ -124,7 +124,7 @@ pub fn path(w: &Wanted) -> String {
 
 /// Looks `w` up on Discogs (one request; a token is needed).
 pub fn find_release(client: &mut Client, w: &Wanted) -> Result<DiscogsMatch, ApiError> {
-    if client.token().is_none() {
+    if !client.has_account() {
         return Err(ApiError::TokenNeeded);
     }
     Ok(pick(&client.get_json(&path(w))?, w))

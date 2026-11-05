@@ -7,7 +7,7 @@ use dig::discogs::cache::DiskCache;
 use dig::discogs::client::{ApiError, Client};
 use dig::discogs::expand::{listing, page_name, record};
 use dig::discogs::model::{RecordKey, Role};
-use dig::discogs::transport::FakeTransport;
+use dig::discogs::transport::{Auth, FakeTransport};
 use dig::discogs::url::parse;
 
 const NOW: u64 = 1_790_000_000;
@@ -21,7 +21,7 @@ fn client(token: bool, cache: Option<&std::path::Path>) -> (Client, Arc<FakeTran
     let mut c = Client::new(
         t.clone(),
         Arc::new(FakeClock::default()),
-        token.then(|| "tok".to_owned()),
+        token.then(|| Auth::Token("tok".into())),
         DiskCache::new(cache),
     );
     if token {

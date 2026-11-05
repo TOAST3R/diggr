@@ -6,7 +6,8 @@
 # runs offline, so no HTTPS is needed from inside the container (TLS-intercepting proxies break
 # it); apt uses Debian's plain-HTTP archive, where Debian 11's packages went at its end of life.
 # Then the binary is checked: no glibc symbol newer than 2.31, and `diggr --help` must run in a
-# bare Debian 11 with only ALSA installed.
+# bare Debian 11 with only ALSA installed. The Discogs consumer key and secret (Connect with
+# Discogs) come from scripts/discogs-keys.sh.
 #
 # Usage: scripts/make-linux.sh [--dry-run]   (--dry-run only says what it would build)
 #   LINUX_IMAGE overrides the build image (default rust:<host toolchain major.minor>-bullseye).
@@ -25,6 +26,11 @@ CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
 APT_ARCHIVE='sed -i "s|deb.debian.org|archive.debian.org|" /etc/apt/sources.list && apt-get -o Acquire::Check-Valid-Until=false update -qq'
 
 echo "Linux x86_64 build of $NAME $VERSION in $IMAGE."
+source scripts/discogs-keys.sh
+discogs_keys_say
+# Passed into the container by name, so the values never appear on a command line.
+KEYS=()
+((DISCOGS_KEYS)) && KEYS=(-e DISCOGS_CONSUMER_KEY -e DISCOGS_CONSUMER_SECRET)
 [[ "${1:-}" == "--dry-run" ]] && { echo "Dry run: would write $TARBALL."; exit 0; }
 docker info >/dev/null 2>&1 || { echo "Docker isn't running; start Docker Desktop." >&2; exit 1; }
 
@@ -38,7 +44,7 @@ docker run --rm --platform linux/amd64 \
     -v "$CARGO_HOME/registry:/usr/local/cargo/registry" \
     -v "$CARGO_HOME/git:/usr/local/cargo/git" \
     -e CARGO_TARGET_DIR=target/linux-x86_64 -e CARGO_PROFILE_RELEASE_STRIP=symbols \
-    -e DIR="$DIR" -e TARBALL="$TARBALL" -e GLIBC_MAX="$GLIBC_MAX" \
+    -e DIR="$DIR" -e TARBALL="$TARBALL" -e GLIBC_MAX="$GLIBC_MAX" ${KEYS[@]+"${KEYS[@]}"} \
     "$IMAGE" bash -euo pipefail -c "$APT_ARCHIVE"'
         apt-get install -y -qq --no-install-recommends pkg-config libasound2-dev desktop-file-utils >/dev/null
         cargo build --release --locked --offline -p diggr

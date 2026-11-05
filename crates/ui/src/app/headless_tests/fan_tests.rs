@@ -229,6 +229,7 @@ impl Fakes {
             tools: None,
             guided_ytdlp: false,
             welcome: false,
+            consumer: None,
         }
     }
 

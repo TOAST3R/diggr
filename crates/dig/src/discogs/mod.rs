@@ -7,6 +7,7 @@ pub mod client;
 pub mod expand;
 pub mod matching;
 pub mod model;
+pub mod oauth;
 pub mod ratelimit;
 pub mod search;
 pub mod seller;

@@ -1,9 +1,10 @@
 //! HTTP to Discogs behind a trait, so every test runs offline against recorded JSON.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub const API: &str = "https://api.discogs.com";
 pub const USER_AGENT: &str = concat!(
@@ -21,22 +22,54 @@ pub enum Method {
     Post,
 }
 
+/// What a request is sent as: a personal access token, or an account connected with Discogs
+/// (OAuth). `Debug` never shows either.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Auth {
+    Token(String),
+    OAuth(super::oauth::Credentials),
+}
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Auth::Token(_) => write!(f, "Auth::Token(••••)"),
+            Auth::OAuth(_) => write!(f, "Auth::OAuth(••••)"),
+        }
+    }
+}
+
+/// A personal token (as tests and the token field write it).
+impl From<&str> for Auth {
+    fn from(t: &str) -> Self {
+        Auth::Token(t.to_owned())
+    }
+}
+
+impl Auth {
+    /// A personal token, unless it is blank.
+    pub fn token(t: &str) -> Option<Self> {
+        let t = t.trim();
+        (!t.is_empty()).then(|| Auth::Token(t.to_owned()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub method: Method,
     /// Path and query, e.g. `/labels/1/releases?page=2&per_page=100`.
     pub path: String,
-    pub token: Option<String>,
+    pub auth: Option<Auth>,
     /// A JSON body (the cart's POST); `None` sends an empty one.
     pub body: Option<String>,
 }
 
 impl Request {
-    pub fn get(path: impl Into<String>, token: Option<&str>) -> Self {
+    pub fn get(path: impl Into<String>, auth: Option<&Auth>) -> Self {
         Self {
             method: Method::Get,
             path: path.into(),
-            token: token.map(str::to_owned),
+            auth: auth.cloned(),
             body: None,
         }
     }
@@ -47,8 +80,21 @@ impl Request {
             ("User-Agent", USER_AGENT.to_owned()),
             ("Accept", ACCEPT.to_owned()),
         ];
-        if let Some(t) = &self.token {
-            h.push(("Authorization", format!("Discogs token={t}")));
+        match &self.auth {
+            Some(Auth::Token(t)) => h.push(("Authorization", format!("Discogs token={t}"))),
+            Some(Auth::OAuth(c)) => {
+                let header =
+                    super::oauth::header(c, &super::oauth::nonce(), super::oauth::timestamp());
+                h.push(("Authorization", header));
+                if !c.params.is_empty() && self.body.is_none() {
+                    // An exchange step (request or access token), as Discogs documents it.
+                    h.push((
+                        "Content-Type",
+                        "application/x-www-form-urlencoded".to_owned(),
+                    ));
+                }
+            }
+            None => {}
         }
         if self.body.is_some() {
             h.push(("Content-Type", "application/json".to_owned()));
@@ -62,6 +108,9 @@ pub struct Response {
     pub status: u16,
     /// `X-Discogs-Ratelimit-Remaining`, when sent.
     pub remaining: Option<u32>,
+    /// The `Date` header: Discogs's clock, which tells a wrong clock here from a refused key
+    /// when a signed request gets a 401.
+    pub date: Option<SystemTime>,
     pub body: String,
 }
 
@@ -135,6 +184,11 @@ impl Transport for UreqTransport {
             .get("X-Discogs-Ratelimit-Remaining")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok());
+        let date = resp
+            .headers()
+            .get("Date")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| httpdate::parse_http_date(v).ok());
         let body = resp
             .into_body()
             .read_to_string()
@@ -142,6 +196,7 @@ impl Transport for UreqTransport {
         Ok(Response {
             status,
             remaining,
+            date,
             body,
         })
     }
@@ -174,6 +229,7 @@ pub struct FakeTransport {
     slow: Mutex<Vec<(String, Duration)>>,
     offline: std::sync::atomic::AtomicBool,
     remaining: Mutex<Option<u32>>,
+    date: Mutex<Option<SystemTime>>,
     log: Mutex<Vec<Logged>>,
     instances: std::sync::atomic::AtomicU64,
 }
@@ -234,6 +290,11 @@ impl FakeTransport {
         *self.remaining.lock().unwrap() = n;
     }
 
+    /// The `Date` header sent with every answer (none by default).
+    pub fn set_date(&self, date: Option<SystemTime>) {
+        *self.date.lock().unwrap() = date;
+    }
+
     /// Requests seen, with their headers, oldest first.
     pub fn log(&self) -> Vec<Logged> {
         self.log.lock().unwrap().clone()
@@ -269,6 +330,7 @@ impl Transport for FakeTransport {
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(NetError("offline".into()));
         }
+        let date = *self.date.lock().unwrap();
         let fault = self.faults.lock().unwrap().pop_front();
         match fault {
             Some(Fault::Network) => return Err(NetError("connection reset".into())),
@@ -276,6 +338,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status: s,
                     remaining: *self.remaining.lock().unwrap(),
+                    date,
                     body: String::new(),
                 });
             }
@@ -289,6 +352,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status,
                     remaining,
+                    date,
                     body,
                 });
             }
@@ -302,6 +366,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status: 201,
                     remaining,
+                    date,
                     body: format!(r#"{{"instance_id": {}}}"#, 900_001 + n),
                 });
             }
@@ -310,6 +375,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status,
                     remaining,
+                    date,
                     body: String::new(),
                 });
             }
@@ -324,6 +390,7 @@ impl Transport for FakeTransport {
         Ok(Response {
             status,
             remaining,
+            date,
             body,
         })
     }
@@ -337,7 +404,7 @@ mod tests {
     fn requests_carry_user_agent_accept_and_token() {
         let t = FakeTransport::new();
         t.route("/releases/1", 200, "{}");
-        t.call(&Request::get("/releases/1", Some("s3cret")))
+        t.call(&Request::get("/releases/1", Auth::token("s3cret").as_ref()))
             .unwrap();
         t.call(&Request::get("/releases/1", None)).unwrap();
         let log = t.log();
@@ -360,6 +427,40 @@ mod tests {
         );
         assert_eq!(header(1, "Authorization"), None, "no token, no header");
         assert!(header(1, "User-Agent").is_some());
+    }
+
+    #[test]
+    fn a_connected_account_signs_every_request_with_a_fresh_nonce() {
+        use super::super::oauth::{Consumer, Credentials};
+        let consumer = Consumer {
+            key: "ck".into(),
+            secret: "cs".into(),
+        };
+        let auth = Auth::OAuth(Credentials::account(consumer, "at".into(), "as".into()));
+        let req = Request::get("/oauth/identity", Some(&auth));
+        let authz = |h: Vec<(&'static str, String)>| {
+            h.into_iter()
+                .find(|(k, _)| *k == "Authorization")
+                .map(|(_, v)| v)
+                .unwrap()
+        };
+        let (a, b) = (authz(req.headers()), authz(req.headers()));
+        for h in [&a, &b] {
+            assert!(h.starts_with("OAuth oauth_consumer_key=\"ck\""), "{h}");
+            assert!(h.contains("oauth_signature=\"cs&as\""), "{h}");
+            assert!(h.contains("oauth_token=\"at\""), "{h}");
+        }
+        assert_ne!(a, b, "a new nonce for each request");
+        assert!(
+            !req.headers().iter().any(|(k, _)| *k == "Content-Type"),
+            "a plain signed GET has no content type"
+        );
+        let shown = format!("{req:?}");
+        assert!(
+            !shown.contains("\"as\"") && !shown.contains("\"at\""),
+            "{shown}"
+        );
+        assert!(!format!("{:?}", Auth::token("s3cret")).contains("s3cret"));
     }
 
     #[test]
@@ -392,7 +493,7 @@ mod tests {
             t.call(&Request {
                 method: Method::Post,
                 path: p.into(),
-                token: Some("tok".into()),
+                auth: Auth::token("tok"),
                 body: None,
             })
             .unwrap()
@@ -414,7 +515,7 @@ mod tests {
         let req = Request {
             method: Method::Post,
             path: "/cart/items".into(),
-            token: Some("tok".into()),
+            auth: Auth::token("tok"),
             body: Some(r#"{"item_ids":[7]}"#.into()),
         };
         let r = t.call(&req).unwrap();

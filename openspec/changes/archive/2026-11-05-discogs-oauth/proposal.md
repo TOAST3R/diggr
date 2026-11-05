@@ -9,15 +9,16 @@ can open Discogs in the browser, the user clicks Authorize, and the app is conne
 
 - **Connect with Discogs**: a button in Options ▸ Discogs…, in the Connect to Discogs dialog and
   in the setup panel's Discogs step (`welcome-setup`). It asks Discogs for a request token,
-  opens the authorization page in the default browser, receives the answer on a one-time local
-  address (`http://127.0.0.1:‹port›/discogs`), and exchanges it for an access token and secret.
+  opens the authorization page in the default browser, and receives the answer through the
+  callback page `https://diggr.es/discogs/callback`, which forwards it to the bridge on
+  127.0.0.1 (or to a one-time local listener when the bridge is off). It exchanges it for an access token and secret.
   The username shows as with a personal token.
 - **Every Discogs request is signed** with OAuth 1.0a when the account was connected this way;
   a personal token still works as today and stays available as "Use a personal token instead".
 - **Stored like the token**: the access token and secret in the config folder, readable only by
   the user, never shown or logged; Disconnect deletes them.
 - **The app is registered with Discogs** as "Diggr" (a maintainer step): its consumer key and
-  secret are built into the app.
+  secret are built into release builds from the maintainer's Keychain, never committed.
 
 ## Capabilities
 
@@ -37,7 +38,9 @@ can open Discogs in the browser, the user clicks Authorize, and the app is conne
   credentials; `headers()` signs (PLAINTEXT over HTTPS, if Discogs accepts it, see design).
 - `crates/dig/src/discogs/`: the three-step OAuth exchange; `crates/dig/src/config.rs`: storing
   the access token and secret.
-- A one-time listener on 127.0.0.1 for the callback (`tiny_http`, already used by the bridge).
+- `crates/dig/src/bridge/`: a `/discogs` route, without a pairing key, only while a connection waits.
+- `scripts/`: the release scripts read the consumer key and secret from the Keychain.
+- The diggr.es repository: the static callback page (its own change).
 - `crates/ui/src/app/digging.rs`: the Connect with Discogs button, waiting state, errors.
 - No new dependency expected (`getrandom` is there for the nonce).
 - A Discogs developer application registered by the maintainer.

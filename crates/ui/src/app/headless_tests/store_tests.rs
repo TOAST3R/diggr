@@ -64,6 +64,7 @@ fn rig(name: &str, fakes: &Fakes) -> Rig {
                 tools: None,
                 guided_ytdlp: false,
                 welcome: false,
+                consumer: None,
             })
         },
     )

@@ -1,17 +1,23 @@
-//! Dig settings and the Discogs token, in `<config>/dig/`.
+//! Dig settings and the Discogs account, in `<config>/dig/`.
 //!
-//! The token sits alone in `dig/token`, written atomically and readable only by the user
-//! (mode 0600 on Unix; the config folder is per-user on Windows). It is never logged, and the
-//! UI only ever shows its last 4 characters.
+//! A personal token sits alone in `dig/token`; an account connected with Discogs keeps its
+//! access token and secret in `dig/oauth` (two lines). Both are written atomically and readable
+//! only by the user (mode 0600 on Unix; the config folder is per-user on Windows), never
+//! logged, and the UI only ever shows a token's last 4 characters. They are exclusive: saving
+//! one removes the other.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::discogs::oauth::{Consumer, Credentials};
+use crate::discogs::transport::Auth;
+
 pub const DIR: &str = "dig";
 pub const SETTINGS_FILE: &str = "settings.ron";
 pub const TOKEN_FILE: &str = "token";
+pub const OAUTH_FILE: &str = "oauth";
 /// Preview cache limit when nothing else is set.
 pub const DEFAULT_CACHE_GB: f32 = 10.0;
 
@@ -121,10 +127,53 @@ pub fn save_token(config: &Path, token: Option<&str>) -> std::io::Result<()> {
     let path = dir(config).join(TOKEN_FILE);
     match token.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => write_atomic(&path, t.as_bytes(), true),
-        None => match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        },
+        None => remove(&path),
+    }
+}
+
+fn remove(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// The saved account: one connected with Discogs (when this build can sign for it, with
+/// `consumer`), else a personal token. A broken `dig/oauth` counts as none.
+pub fn load_auth(config: &Path, consumer: Option<&Consumer>) -> Option<Auth> {
+    let oauth = consumer.and_then(|c| {
+        let text = std::fs::read_to_string(dir(config).join(OAUTH_FILE)).ok()?;
+        let mut lines = text.lines().map(str::trim);
+        let (token, secret) = (lines.next()?, lines.next()?);
+        (!token.is_empty() && !secret.is_empty()).then(|| {
+            Auth::OAuth(Credentials::account(
+                c.clone(),
+                token.to_owned(),
+                secret.to_owned(),
+            ))
+        })
+    });
+    oauth.or_else(|| load_token(config).map(Auth::Token))
+}
+
+/// Saves the account (one way removes the other's file), or removes both with `None`
+/// (Disconnect).
+pub fn save_auth(config: &Path, auth: Option<&Auth>) -> std::io::Result<()> {
+    let oauth = dir(config).join(OAUTH_FILE);
+    match auth {
+        Some(Auth::Token(t)) => {
+            save_token(config, Some(t))?;
+            remove(&oauth)
+        }
+        Some(Auth::OAuth(c)) => {
+            let token = c.token.as_deref().unwrap_or_default();
+            write_atomic(&oauth, format!("{token}\n{}\n", c.secret).as_bytes(), true)?;
+            save_token(config, None)
+        }
+        None => {
+            save_token(config, None)?;
+            remove(&oauth)
+        }
     }
 }
 
@@ -254,5 +303,61 @@ mod tests {
         save_token(&d, None).unwrap();
         assert_eq!(load_token(&d), None);
         save_token(&d, None).unwrap();
+    }
+
+    #[test]
+    fn one_account_at_a_time_private_and_failing_soft() {
+        let d = crate::test_dir("config-oauth");
+        let consumer = Consumer {
+            key: "ck".into(),
+            secret: "cs".into(),
+        };
+        let account = Auth::OAuth(Credentials::account(
+            consumer.clone(),
+            "at".into(),
+            "as".into(),
+        ));
+        assert_eq!(load_auth(&d, Some(&consumer)), None);
+        save_auth(&d, Some(&Auth::Token("tok".into()))).unwrap();
+        assert_eq!(
+            load_auth(&d, Some(&consumer)),
+            Some(Auth::Token("tok".into()))
+        );
+
+        // Connecting with Discogs replaces the token.
+        save_auth(&d, Some(&account)).unwrap();
+        assert_eq!(load_auth(&d, Some(&consumer)), Some(account.clone()));
+        assert!(!d.join("dig/token").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(d.join("dig/oauth"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A build that can't sign (no consumer) can't use it.
+        assert_eq!(load_auth(&d, None), None);
+
+        // A token replaces the connection.
+        save_auth(&d, Some(&Auth::Token("tok2".into()))).unwrap();
+        assert!(!d.join("dig/oauth").exists());
+        assert_eq!(
+            load_auth(&d, Some(&consumer)),
+            Some(Auth::Token("tok2".into()))
+        );
+
+        // Disconnect removes both.
+        save_auth(&d, Some(&account)).unwrap();
+        std::fs::write(d.join("dig/token"), "stale").unwrap();
+        save_auth(&d, None).unwrap();
+        assert!(!d.join("dig/oauth").exists() && !d.join("dig/token").exists());
+        assert_eq!(load_auth(&d, Some(&consumer)), None);
+
+        // A broken file is no account.
+        std::fs::write(d.join("dig/oauth"), "only-one-line").unwrap();
+        assert_eq!(load_auth(&d, Some(&consumer)), None);
+        save_auth(&d, None).unwrap();
     }
 }

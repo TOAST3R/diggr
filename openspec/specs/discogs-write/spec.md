@@ -2,7 +2,9 @@
 
 ## Purpose
 Changes the user's Discogs account from the player: records go on the wantlist while digging and into the collection once bought, nothing owned stays wanted, the wantlist and collection crates follow Discogs, and every change either goes through or says why, without ever adding a copy twice or touching playback.
+
 ## Requirements
+
 ### Requirement: Add to wantlist
 Add to wantlist SHALL act on a record: the Discogs release of the entry, or its master's main release. It SHALL:
 - mark the release wanted, so every entry of it, in every crate, shows ★;
@@ -129,23 +131,23 @@ Records in both SHALL be left as they are. While Refresh wantlist runs, a "Refre
 - **THEN** the crate is unchanged, and the main window says the refresh failed because Discogs is offline
 
 ### Requirement: Connect to Discogs
-Add to wantlist without a Discogs token SHALL still mark the record wanted and add it to the wantlist crate. It SHALL then open a dialog saying, in substance, that if the user has a collection on Discogs they can keep it up to date from here, and that it only takes connecting their account. The dialog SHALL give the steps: open the Discogs developer settings, with a link that opens `https://www.discogs.com/settings/developers` in the default browser; generate a token and copy it; paste it in Options ▸ Discogs…. It SHALL offer Connect…, which opens Options ▸ Discogs… with the token field focused, Later, and "Don't show this again". After "Don't show this again", or while the Discogs setup step is Declined (see `welcome-setup`), Add to wantlist without a token SHALL show a one-line message in the main window instead. Add to collection without a token SHALL open the dialog every time, without that option, unless the Discogs setup step is Declined, in which case it SHALL show the one-line message. While the dialog is open, no other shortcut SHALL act.
+Add to wantlist without a Discogs account SHALL still mark the record wanted and add it to the wantlist crate. It SHALL then open a dialog saying, in substance, that if the user has a collection on Discogs they can keep it up to date from here, and that it only takes connecting their account. The dialog SHALL offer Connect with Discogs, which starts the connection described in `discogs-intake` ("Discogs account"), Later, and "Don't show this again"; a smaller "Use a personal token instead" SHALL open Options ▸ Discogs… with the token field focused. After "Don't show this again", or while the Discogs setup step is Declined (see `welcome-setup`), Add to wantlist without an account SHALL show a one-line message in the main window instead. Add to collection without an account SHALL open the dialog every time, without that option, unless the Discogs setup step is Declined, in which case it SHALL show the one-line message. While the dialog is open, no other shortcut SHALL act.
 
 #### Scenario: First time without a token
-- **WHEN** the user presses Y on a Discogs track with no token set
-- **THEN** the record is in the wantlist crate, and the dialog explains how to connect, with a link to the Discogs developer settings
+- **WHEN** the user presses Y on a Discogs track with no account connected
+- **THEN** the record is in the wantlist crate, and the dialog offers Connect with Discogs
 
 #### Scenario: Not again
 - **WHEN** the user ticked "Don't show this again" and presses Y on another track
-- **THEN** the record is added to the wantlist crate, no dialog opens, and the main window says a Discogs token (Options ▸ Discogs…) would also add it to the Discogs wantlist
+- **THEN** the record is added to the wantlist crate, no dialog opens, and the main window says connecting Discogs (Options ▸ Discogs…) would also add it to the Discogs wantlist
 
 #### Scenario: No account
 - **WHEN** the user declined the Discogs setup step and presses Y on a track
 - **THEN** the record is added to the wantlist crate, no dialog opens, and the main window shows the one-line message
 
 #### Scenario: Connect from the dialog
-- **WHEN** the user clicks Connect…
-- **THEN** Options ▸ Discogs… opens with the token field focused
+- **WHEN** the user clicks Connect with Discogs and authorizes in the browser
+- **THEN** the dialog closes, and the wantlist change is sent to Discogs
 
 ### Requirement: Wantlist changes end
 A wantlist change that Discogs can't take SHALL be kept and retried:
@@ -229,4 +231,3 @@ When Discogs no longer has a copy of the release, the removal SHALL count as don
 #### Scenario: Offline
 - **WHEN** the user confirms a removal while Discogs is unreachable
 - **THEN** the entry shows that the removal is pending, and the copy is removed within one minute of Discogs answering again
-

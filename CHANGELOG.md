@@ -11,6 +11,11 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **A short setup when you open Diggr.** It shows what your Discogs account and the browser
   extension add, connects the one and installs the other in a click or two, and stops asking
   about anything you say you don't have. Open it again any time from OPT ▸ Set up Diggr….
+- **Connect with Discogs.** Click Connect with Discogs, then Authorize in your browser, and your
+  account is connected: no developer settings, no token to copy. A personal token still works
+  under "Use a personal token instead", and Disconnect forgets either one. What's set
+  up and working shows in green: your account, your collection, yt-dlp and your paired browsers.
+  Discogs turns away a computer whose clock is wrong, so if yours is off Diggr says by how much and where to set it right.
 
 ### Fixed
 
