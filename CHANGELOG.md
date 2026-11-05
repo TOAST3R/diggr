@@ -24,6 +24,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
   M3U playlists too, and any crate's right-click in the sidebar exports it without opening it.
   An empty crate now has an Add files from your computer link, and Cmd+O and dropping files
   work as before.
+- **Size on the zoom keys.** Cmd+= switches Diggr to double size and Cmd+− (or Cmd+0) back to
+  classic size, and the pixels stay crisp at both. Options now holds just Discogs…, Browser…
+  and Set up Diggr…. The spectrogram is on the player's spectrum button and S, as before.
 
 ### Fixed
 

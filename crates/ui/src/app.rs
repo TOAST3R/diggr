@@ -247,6 +247,9 @@ impl DiggrApp {
         let presets = store.as_ref().map(Store::load_presets).unwrap_or_default();
         let mut crates = store.as_ref().map_or_else(Crates::in_memory, Crates::open);
 
+        // Cmd+= / Cmd+− / Cmd+0 are the size keys (1× or 2×). egui's own keyboard zoom would
+        // scale the pixel skin by fractions and blur it.
+        egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         // Open the audio device in the background: the window must not wait for it.
         let (tx, rx) = std::sync::mpsc::channel();
         let factory = ctx.engine;
@@ -1485,6 +1488,10 @@ impl DiggrApp {
         match key {
             Key::W if !mods.command => self.apply(Action::ToggleWaveform, ctx),
             Key::S if !mods.command => self.spectro_open = !self.spectro_open,
+            // The size, on the keys every app zooms with: "+" has its own key on many
+            // European layouts and "=" is shifted, so both mean double size.
+            Key::Equals | Key::Plus if mods.command => self.apply(Action::SetScale(2), ctx),
+            Key::Minus | Key::Num0 if mods.command => self.apply(Action::SetScale(1), ctx),
             // After a click on a crate in the sidebar, Delete deletes that crate (asking first
             // when it has entries); otherwise it removes the selected entries.
             Key::Delete | Key::Backspace => match self.side_crate.take() {
@@ -2139,6 +2146,9 @@ impl DiggrApp {
     /// The Options menu on a right-click (or Control-click on a Mac) in `rect`, which sits
     /// under the section's controls so they keep their own clicks.
     fn options_menu(&self, ui: &mut Ui, rect: Rect, id: &str, actions: &mut Vec<Action>) {
+        if !self.has_options() {
+            return;
+        }
         let resp = ui
             .interact(rect, Id::new(id), Sense::click())
             .on_hover_text("Right-click for options");
@@ -2159,24 +2169,22 @@ impl DiggrApp {
             .show(|ui| self.options_items(ui, actions));
     }
 
-    /// The Options menu's items, for the right-click and the footer's gear alike.
+    /// Whether the Options menu has anything to offer: only digging (accounts, the browser,
+    /// setup) puts items in it, and an empty menu doesn't open.
+    fn has_options(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.dig.is_some();
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// The Options menu's items, for the right-click and the footer's gear alike: accounts and
+    /// setup. The size is on Cmd+= / Cmd+− / Cmd+0 and the spectrogram on the player's button.
     fn options_items(&self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let label = if self.settings.scale >= 2 {
-            "Classic size (1×)"
-        } else {
-            "Double size (2×)"
-        };
-        if ui.button(label).clicked() {
-            actions.push(Action::ToggleScale);
-            ui.close();
-        }
-        if ui.button("Spectrogram (S)").clicked() {
-            actions.push(Action::ToggleSpectrogram);
-            ui.close();
-        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (ui, actions);
         #[cfg(not(target_arch = "wasm32"))]
         if self.dig.is_some() {
-            ui.separator();
             if ui.button("Discogs…").clicked() {
                 actions.push(Action::Dig(DigAction::OpenDialog));
                 ui.close();
@@ -5588,9 +5596,12 @@ impl DiggrApp {
             draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
             // The gear: the same Options as a right-click on the player. Adding music and M3U
             // are in the list menu (a right-click on the list).
-            let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
-            egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
-            opts.on_hover_text("Options");
+            // Without anything in the menu, the gear's slot stays empty.
+            if self.has_options() {
+                let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
+                egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
+                opts.on_hover_text("Options");
+            }
 
             // "selected/total" time, classic style, right-aligned beside the grip.
             let (total, t_unknown) = self.crates.shown().total_duration();
@@ -6141,9 +6152,12 @@ impl DiggrApp {
             }
             Action::ToggleSpectrogram => self.spectro_open = !self.spectro_open,
             Action::OpenInsights => self.insights_open = true,
-            Action::ToggleScale => {
-                self.settings.scale = if self.settings.scale >= 2 { 1 } else { 2 };
-                self.mark_settings();
+            Action::SetScale(scale) => {
+                let scale = scale.clamp(1, 2);
+                if self.settings.scale != scale {
+                    self.settings.scale = scale;
+                    self.mark_settings();
+                }
             }
             Action::SavePreset => self.name_dialog = Some(NameDialog::new(NameFor::Preset, "")),
             Action::DeletePreset(name) => {
@@ -6517,7 +6531,8 @@ enum Action {
     /// The EQ window.
     ToggleEq,
     ToggleRemaining,
-    ToggleScale,
+    /// The size: 1 (classic) or 2 (double).
+    SetScale(u8),
     ToggleSpectrogram,
     /// Open Insights, on the collection crate.
     OpenInsights,
@@ -9991,9 +10006,9 @@ mod headless_tests {
         // A click on the time shows what remains.
         rig.click(pos2(40.0, 15.0));
         assert!(rig.app.settings.time_remaining);
-        // A right-click on its title line opens the options.
+        // The Options menu no longer offers the spectrogram: its button and S do.
         rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
-        assert!(shows(&rig.frame(Vec::new()), "Spectrogram (S)"));
+        assert!(!shows(&rig.frame(Vec::new()), "Spectrogram (S)"));
     }
 
     #[test]
@@ -10854,31 +10869,54 @@ mod headless_tests {
         rig.click_text("Sort");
         rig.click_text("BPM");
         assert_eq!(rig.ids(PLAYLIST), [ids[1], ids[0], ids[2]], "sorted by BPM");
-
-        rig.click(footer_button(&rig, "pl_opts"));
-        let out = rig.frame(Vec::new());
-        for t in ["Double size (2×)", "Spectrogram (S)"] {
-            assert!(shows(&out, t), "{t}: {:?}", text_list(&out));
-        }
-        rig.click_text("Spectrogram (S)");
-        assert!(rig.app.spectro_open, "the gear's items act");
     }
 
     #[test]
-    fn a_right_click_on_the_mini_player_opens_the_options() {
+    fn without_digging_there_are_no_options_to_open() {
         let mut rig = Rig::new("options", Vec::new(), |_| {});
-        // The title line: no control there.
-        rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
-        let out = rig.frame(Vec::new());
-        assert!(shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
-        rig.click_text("Spectrogram (S)");
-        assert!(rig.app.spectro_open, "Spectrogram works from Options");
-        rig.app.spectro_open = false;
+        // The title line: no control there, and nothing in the menu without digging.
+        let out = rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
+        let out2 = rig.frame(Vec::new());
+        for t in ["Double size (2×)", "Classic size (1×)", "Spectrogram (S)"] {
+            assert!(!shows(&out, t) && !shows(&out2, t), "{t}");
+        }
+        assert!(!egui::Popup::is_any_open(&rig.ctx), "no menu opens");
+        // The gear isn't there to click: its slot is empty and opens nothing.
+        rig.click(footer_button(&rig, "pl_opts"));
+        rig.frame(Vec::new());
+        assert!(!egui::Popup::is_any_open(&rig.ctx), "no menu opens");
+        assert!(!rig.app.spectro_open);
+    }
 
-        // The volume slider keeps its own right-click.
-        rig.click_with(pos2(141.0, 42.0), PointerButton::Secondary);
-        let out = rig.frame(Vec::new());
-        assert!(!shows(&out, "Double size (2×)"), "{:?}", text_list(&out));
+    #[test]
+    fn cmd_plus_minus_and_zero_set_the_size() {
+        let mut rig = Rig::new("size-keys", vec![fixture("tone.flac")], |_| {});
+        rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+        assert_eq!(rig.app.settings.scale, 1);
+        rig.key(Key::Equals, Modifiers::COMMAND);
+        assert_eq!(rig.app.settings.scale, 2, "Cmd+= is double size");
+        rig.app.settings_dirty = None;
+        rig.key(Key::Plus, Modifiers::COMMAND);
+        assert_eq!(rig.app.settings.scale, 2, "never past 2×");
+        assert!(
+            rig.app.settings_dirty.is_none(),
+            "the same size isn't saved again"
+        );
+        assert_eq!(rig.ctx.zoom_factor(), 1.0, "egui's own zoom stays off");
+        rig.key(Key::Minus, Modifiers::COMMAND);
+        assert_eq!(rig.app.settings.scale, 1, "Cmd+− is classic size");
+        assert!(rig.app.settings_dirty.is_some(), "and it is saved");
+        rig.key(Key::Plus, Modifiers::COMMAND);
+        rig.key(Key::Num0, Modifiers::COMMAND);
+        assert_eq!(rig.app.settings.scale, 1, "Cmd+0 is classic size");
+        // Without Cmd they are no size keys.
+        rig.key(Key::Equals, Modifiers::NONE);
+        assert_eq!(rig.app.settings.scale, 1);
+        assert_eq!(
+            rig.app.position.state,
+            PlayState::Playing,
+            "playback goes on"
+        );
     }
 
     #[test]

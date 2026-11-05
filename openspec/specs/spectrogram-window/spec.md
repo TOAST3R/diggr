@@ -2,13 +2,19 @@
 
 ## Purpose
 TBD - created by archiving change spectrogram-window. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Open the spectrogram
-Pressing `S`, clicking the mini player's spectrum button, or choosing Spectrogram in the Options menu, SHALL open a separate, resizable spectrogram window for the current track; pressing S or the spectrum button again, or closing the window, SHALL close it. Its size and mode SHALL persist, and the shortcuts help SHALL list `S`.
+Pressing `S` or clicking the mini player's spectrum button SHALL open a separate, resizable spectrogram window for the current track; pressing S or the spectrum button again, or closing the window, SHALL close it. Its size and mode SHALL persist, and the shortcuts help SHALL list `S`.
 
 #### Scenario: Open and close
 - **WHEN** the user presses S while a track plays
 - **THEN** a spectrogram window for that track opens, and pressing S again closes it
+
+#### Scenario: Spectrum button
+- **WHEN** the user clicks the mini player's spectrum button, then clicks it again
+- **THEN** the spectrogram window opens, then closes
 
 ### Requirement: Track, detail and live modes
 The window SHALL offer a whole-track mode with the playhead, a detail mode for zoomed ranges computed at full resolution, and a live mode showing a scrolling waterfall of the audible sound.
@@ -48,4 +54,3 @@ The spectrogram window SHALL repaint only while playing (at the display rate in 
 #### Scenario: Track mode, paused
 - **WHEN** the window is in track mode and playback is paused with no input
 - **THEN** the window does not repaint
-

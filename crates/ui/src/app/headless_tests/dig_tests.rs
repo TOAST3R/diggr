@@ -1654,7 +1654,7 @@ fn options_on_the_main_window_open_the_discogs_dialog() {
     let mut rig = rig("dig-options", &fakes, |_| {});
     rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Browser…"), "{:?}", text_list(&out));
+    assert_only_dig_options(&out);
     rig.click_text("Discogs…");
     assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
 }
@@ -1665,9 +1665,25 @@ fn the_footer_gear_opens_the_discogs_dialog() {
     let mut rig = rig("dig-gear", &fakes, |_| {});
     rig.click(footer_button(&rig, "pl_opts"));
     let out = rig.frame(Vec::new());
-    assert!(shows(&out, "Browser…"), "{:?}", text_list(&out));
+    assert_only_dig_options(&out);
     rig.click_text("Discogs…");
     assert!(rig.app.dig.as_ref().unwrap().dialog.is_some());
+}
+
+/// The Options menu holds accounts and setup: the size is on Cmd+= / Cmd+− / Cmd+0 and the
+/// spectrogram on the player's button.
+fn assert_only_dig_options(out: &egui::FullOutput) {
+    let texts = text_list(out);
+    for t in ["Discogs…", "Browser…"] {
+        assert!(shows(out, t), "{t}: {texts:?}");
+    }
+    assert!(
+        texts.iter().any(|t| t.starts_with("Set up Diggr…")),
+        "{texts:?}"
+    );
+    for t in ["Double size (2×)", "Classic size (1×)", "Spectrogram (S)"] {
+        assert!(!shows(out, t), "{t} is no longer in Options: {texts:?}");
+    }
 }
 
 // ---- the wantlist and the collection, from the player ------------------------------------
