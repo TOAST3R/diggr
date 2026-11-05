@@ -174,6 +174,10 @@ pub struct Origin {
     /// The address of the record's cover thumbnail.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub cover: String,
+    /// The address of the record's large cover (the record card's), when the record's data
+    /// gave one; empty for crates saved before it was kept, and for seller listings.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cover_large: String,
     /// The record's Discogs styles, comma-separated ("Deep House, Minimal").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub styles: String,
@@ -2163,6 +2167,24 @@ mod tests {
                 .contains("bpm"),
             "an unknown tempo isn't written"
         );
+    }
+
+    #[test]
+    fn a_large_cover_address_is_saved_and_older_crates_load_without_one() {
+        let old = "(page:\"p\",release:Some(7),cover:\"https://i.discogs.com/t.jpeg\",album:\"A\")";
+        let o: Origin = ron::from_str(old).unwrap();
+        assert_eq!(o.cover_large, "");
+        assert_eq!(o.album, "A", "the rest kept");
+        assert!(
+            !ron::to_string(&o).unwrap().contains("cover_large"),
+            "empty isn't written"
+        );
+        let o = Origin {
+            cover_large: "https://i.discogs.com/full.jpeg".into(),
+            ..o
+        };
+        let back: Origin = ron::from_str(&ron::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back.cover_large, "https://i.discogs.com/full.jpeg");
     }
 
     fn cursor_at(p: &Playlist) -> Option<usize> {

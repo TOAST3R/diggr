@@ -392,6 +392,7 @@ mod tests {
             for_sale: None,
             styles: Vec::new(),
             cover: String::new(),
+            cover_large: String::new(),
         }
     }
 

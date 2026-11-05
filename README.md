@@ -301,8 +301,25 @@ and Home/End jump), and Enter plays the entry under it.
     Turning it on gathers each record's tracks together, like a sort, so what plays next is
     what you see; tracks added later join their record. Each crate remembers its choice; your
     Discogs wantlist and collection crates start grouped. Covers load for the record rows in
-    view, top first, from the same cache as the tooltips; under a BPM filter a record says how
-    many of its tracks match ("2 of 4 tracks");
+    view, top first; under a BPM filter a record says how many of its tracks match ("2 of 4
+    tracks"). Click a record row to open its **record card** in the middle of the window, over the rest of
+    it dimmed (only the card answers the mouse until you close it with its × or Esc; Shift- and
+    Cmd-clicks only select). Its tracks start downloading as soon as it opens, right after the
+    playing one, two at a time. It shows its cover beside the artist and album, label · catalog number · year · format, its
+    styles as pills, and its tracklist (side, title and BPM; always eight lines tall, so every card is the same
+    size, scrolling past that), with a thin position bar under it to seek the record's playing
+    track. ⏵ / ⏸ on
+    each track plays, pauses and resumes it, and works on a track not downloaded yet too: its
+    preview is fetched first and plays as soon as it lands (its line shows "queued", "40%" and
+    then "next"), and a track not found or whose clip failed is tried again. Along the bottom
+    are the record row's buttons, + WANT / WANTED, + CART / IN CART with » to check out, N COPIES
+    in a seller crate, and the OWNED and SOLD badges, with what's for sale and, while its tracks
+    are searched, how many it holds ("11 tracks · 1 clip · 10 to search"). **‹ ›** beside the
+    artist, or `←` `→` while the card is open, step to the previous and next record, selecting
+    it and scrolling the list to it; what plays carries on. When the record's last track ends
+    and the next record starts, the card goes with it. Each move slides the new record in from
+    its side. The card is drawn in the skin's
+    colours and doubles at 2×;
   - scrolling over the list works anywhere on it, and slow two-finger trackpad scrolling adds
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
@@ -319,14 +336,19 @@ and Home/End jump), and Enter plays the entry under it.
     audio arrives. Double-clicking a "clip failed" or "not found" entry, in any crate, tries
     it again first and arms it; a "no clip" one only says why. Only files that can't be opened
     are drawn in red.
-  - Hover an entry to see everything known about it: its full name, album, label, catalog
-    number, side, year, BPM, duration, status, wanted or passed (and how a wantlist or
-    collection change is going), and what's for sale (with how
-    long ago that was fetched). A local file shows its path. A Discogs entry also shows its
-    record's cover once the pointer has rested on it for a moment. Covers come from Discogs'
-    image host (not the API, so they don't slow digging down), one at a time, and are kept in
-    the cache's `covers/`, so each is fetched once. Crates dug before albums were shown get
-    their albums and covers from the cache when they're shown, without asking Discogs.
+  - Hover an entry to see everything known about it, as text: its full name, side, BPM, key,
+    duration, status, where its audio comes from, wanted or passed (and how a wantlist or
+    collection change is going), owned or in a cart. In a flat crate it also shows the album,
+    label, catalog number, year and what's for sale (with how long ago that was fetched); under
+    an open record those are the record card's. A local file shows its path. Covers come from
+    Discogs' and Bandcamp's image hosts (not the API, so they don't slow digging down), one at a
+    time, at most four a second, and are kept in the cache's `covers/`, so each is fetched once.
+    A record card shows the thumbnail at once, scaled up, and swaps in the large cover (up to
+    600 px, kept in `covers/large/`) once the card has shown the record for a moment.
+    Large covers come with records read from your collection, wantlist or a release page; seller
+    listings, and crates dug before this, keep the thumbnail until their records are read again.
+    Crates dug before albums were shown get their albums and covers from the cache when they're
+    shown, without asking Discogs.
   - Right-click an entry for **Play** (or **Arm**, when it's waiting), **Remove**, **Remove
     album (N tracks)**, **Select album**, **Send to crate**, and for a Discogs entry **Add to
     wantlist** (or **Remove from wantlist**), **Add to collection**, Pass, Open for-sale page,
@@ -474,7 +496,7 @@ ahead of what plays. Other pasted text is ignored.
   is tried again after a week), so a track is searched once, whichever release, page or crate
   it comes from. A full-album upload (its title says "full album", or it is the record's only
   video and matches no track) is held back while the tracks are searched, and comes in after
-  them if one is not found. A grouped record's tooltip counts what it holds ("11 tracks · 1
+  them if one is not found. A grouped record's card counts what it holds ("11 tracks · 1
   clip · 10 to search"). Sending a record again adds nothing twice. A record with neither
   clips nor a tracklist is still one "no clip" entry.
 - **Entries appear at once:** each listed record waits, dimmed, until its details arrive
@@ -484,7 +506,7 @@ ahead of what plays. Other pasted text is ignored.
   ("12 of 250 releases").
 - **Previews:** the playing entry and the next 3 download two at a time, with progress where
   the duration goes. While stopped, it's the current entry of the crate on screen and the next
-  3. Each downloaded preview is analyzed and its waveform built before it plays, so section
+  3. An open record card's tracks come right after the playing entry's. Each downloaded preview is analyzed and its waveform built before it plays, so section
   jumps and loops work from its first second. A label's **Download all tracks** fetches the
   rest behind these (see [Labels](#labels)).
 - **Verdicts on the playing track:** `Y` adds its record to your wantlist: all its tracks go
@@ -1495,7 +1517,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1095 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1131 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

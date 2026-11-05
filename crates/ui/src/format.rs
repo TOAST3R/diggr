@@ -171,9 +171,20 @@ pub fn seller_record_line(
         total,
         listed,
     );
+    let Some(part) = copies_part(copies) else {
+        return line;
+    };
+    line.push_str(" · ");
+    line.push_str(&part);
+    line
+}
+
+/// A seller's copies of a record: "3 copies €9.00–€18.00", "1 copy €9.00", or "sold" when none
+/// is left; `None` with no copies.
+fn copies_part(copies: &[&crate::playlist::SaleCopy]) -> Option<String> {
     let unsold: Vec<&&crate::playlist::SaleCopy> = copies.iter().filter(|c| !c.sold).collect();
-    let part = match unsold.as_slice() {
-        [] if copies.is_empty() => return line,
+    Some(match unsold.as_slice() {
+        [] if copies.is_empty() => return None,
         [] => "sold".to_owned(),
         [c] => format!("1 copy {}", price(c.cents, &c.currency)),
         cs => {
@@ -186,10 +197,7 @@ pub fn seller_record_line(
                 format!("{} copies {}–{}", cs.len(), price(lo, cur), price(hi, cur))
             }
         }
-    };
-    line.push_str(" · ");
-    line.push_str(&part);
-    line
+    })
 }
 
 /// The warning before an owned record's in-cart tooltip, from which pressing is owned
@@ -290,12 +298,213 @@ pub fn record_counts<'a>(
     Some(parts.join(" · "))
 }
 
-/// Everything known about an entry, for its tooltip, as (label, value) lines. Nothing unknown
-/// is listed. `now` is seconds since the Unix epoch (for the for-sale snapshot's age).
+/// A record card's text (see [`record_details`]): built for the open card's record, drawn by
+/// the app.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordCard {
+    pub artist: String,
+    pub album: String,
+    /// Label · catalog number · year · formats, what's known of them.
+    pub pressing: String,
+    /// Its styles (else its genres), one pill each.
+    pub styles: Vec<String>,
+    /// Every shown entry (the card scrolls past 8).
+    pub tracks: Vec<CardTrack>,
+    /// WANTED, OWNED, IN CART, SOLD, as they apply.
+    pub marks: Vec<&'static str>,
+    /// The for-sale snapshot and its age, or a seller's copies.
+    pub sale: Option<String>,
+    /// "11 tracks · 1 clip · 10 to search" (see [`record_counts`]).
+    pub counts: Option<String>,
+}
+
+impl RecordCard {
+    /// The status strip has something to show.
+    pub fn has_strip(&self) -> bool {
+        !self.marks.is_empty() || self.sale.is_some() || self.counts.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardTrack {
+    pub id: crate::playlist::EntryId,
+    pub side: String,
+    /// The title, after the track's artist when that isn't the record's.
+    pub title: String,
+    pub bpm: Option<u16>,
+    pub state: CardTrackState,
+    /// How its audio is coming, where the tempo goes: "queued", "40%", "search", "next" once
+    /// armed; "failed", "not found" for one to try again.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardTrackState {
+    Normal,
+    /// Waiting for its audio: its play button fetches it first and plays it on arrival.
+    Dim,
+    /// Its clip failed or its search found nothing: its play button tries again.
+    Retry,
+    /// Nothing to try (no clip, already in the crate): no play button.
+    Unavailable,
+    Playing,
+    Paused,
+}
+
+/// A record's card from its shown entries (crate order, at least one), the first entry's dig
+/// marks, a seller's copies of it (empty outside a seller crate), the entry playing in it
+/// (paused or not), the armed entry, and `now` in Unix seconds.
+pub fn record_details(
+    members: &[&crate::playlist::Entry],
+    marks: &DigMarks,
+    copies: &[&crate::playlist::SaleCopy],
+    playing: Option<(crate::playlist::EntryId, bool)>,
+    armed: Option<crate::playlist::EntryId>,
+    now: u64,
+) -> RecordCard {
+    use crate::playlist::{EntryStatus, UnavailableKind, WaitKind};
+    let Some(first) = members.first() else {
+        return RecordCard::default();
+    };
+    let o = first.origin.as_ref();
+    // The record's own credit ("Various" for a compilation), else its first track's.
+    let artist = match o.map(|o| o.artist.trim()) {
+        Some(a) if !a.is_empty() => a,
+        _ => first.artist.trim(),
+    };
+    let album = match first.album().trim() {
+        "" => first.title.trim(),
+        a => a,
+    };
+    let pressing = o.map_or_else(String::new, |o| {
+        let catno = o.catno.trim();
+        let catno = if catno.eq_ignore_ascii_case("none") {
+            ""
+        } else {
+            catno
+        };
+        let year = o.year.map(|y| y.to_string()).unwrap_or_default();
+        [o.label.trim(), catno, year.as_str(), o.formats.trim()]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    });
+    let styles = o.map_or_else(Vec::new, |o| {
+        o.styles
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+    let tracks = members
+        .iter()
+        .map(|e| {
+            let own = e.artist.trim();
+            let title = if own.is_empty() || own.eq_ignore_ascii_case(artist) {
+                e.title.trim().to_owned()
+            } else {
+                format!("{own}: {}", e.title.trim())
+            };
+            let state = match playing {
+                Some((id, paused)) if id == e.id => {
+                    if paused {
+                        CardTrackState::Paused
+                    } else {
+                        CardTrackState::Playing
+                    }
+                }
+                _ => match &e.status {
+                    EntryStatus::Unavailable(
+                        UnavailableKind::ClipFailed | UnavailableKind::NotFound,
+                    ) => CardTrackState::Retry,
+                    EntryStatus::Unavailable(_) => CardTrackState::Unavailable,
+                    EntryStatus::Waiting(_) => CardTrackState::Dim,
+                    _ => CardTrackState::Normal,
+                },
+            };
+            let note = match &e.status {
+                _ if armed == Some(e.id) => Some("next".to_owned()),
+                EntryStatus::Waiting(w) => match w {
+                    WaitKind::Listed => Some("listed".to_owned()),
+                    WaitKind::Queued => Some("queued".to_owned()),
+                    WaitKind::Downloading(p) => Some(format!("{p}%")),
+                    WaitKind::NeedsYtDlp | WaitKind::PreparingYtDlp => Some("yt-dlp".to_owned()),
+                    WaitKind::Search => Some("search".to_owned()),
+                    WaitKind::Other(_) => None,
+                },
+                EntryStatus::Unavailable(UnavailableKind::ClipFailed) => Some("failed".to_owned()),
+                EntryStatus::Unavailable(UnavailableKind::NotFound) => Some("not found".to_owned()),
+                _ => None,
+            };
+            CardTrack {
+                id: e.id,
+                side: e
+                    .origin
+                    .as_ref()
+                    .map(|o| o.position.trim().to_owned())
+                    .unwrap_or_default(),
+                title,
+                bpm: e.bpm,
+                state,
+                note,
+            }
+        })
+        .collect();
+    let all_sold = !copies.is_empty() && copies.iter().all(|c| c.sold);
+    let marks_on = [
+        (marks.wanted, "WANTED"),
+        (marks.owned.is_some(), "OWNED"),
+        (marks.cart.is_some(), "IN CART"),
+        (all_sold, "SOLD"),
+    ];
+    let sale = copies_part(copies).or_else(|| {
+        let fs = o?.for_sale.as_ref()?;
+        let what = match (fs.count, fs.lowest_cents) {
+            (0, _) => "none for sale".to_owned(),
+            (n, Some(c)) => format!("{n} for sale from {}", price(c, &fs.currency)),
+            (n, None) => format!("{n} for sale"),
+        };
+        Some(format!(
+            "{what} · fetched {}",
+            ago(now.saturating_sub(fs.fetched_at))
+        ))
+    });
+    RecordCard {
+        artist: artist.to_owned(),
+        album: album.to_owned(),
+        pressing,
+        styles,
+        tracks,
+        marks: marks_on
+            .into_iter()
+            .filter_map(|(on, m)| on.then_some(m))
+            .collect(),
+        sale,
+        counts: record_counts(members.iter().copied()),
+    }
+}
+
+/// Everything known about an entry, for its tooltip, as (label, value) lines (with the record's
+/// facts: see [`track_details`]).
 pub fn entry_details(
     e: &crate::playlist::Entry,
     marks: DigMarks,
     now: u64,
+) -> Vec<(&'static str, String)> {
+    track_details(e, marks, now, true)
+}
+
+/// A track's tooltip, as (label, value) lines. Nothing unknown is listed. `with_record`: also
+/// the record's facts (album, style, label, catalog number, year, for sale), for a row with no
+/// record row above it to show them; a local file always keeps its album. `now` is seconds
+/// since the Unix epoch (for the for-sale snapshot's age).
+pub fn track_details(
+    e: &crate::playlist::Entry,
+    marks: DigMarks,
+    now: u64,
+    with_record: bool,
 ) -> Vec<(&'static str, String)> {
     let mut out = vec![("", e.row_name())];
     let mut add = |label: &'static str, value: &str| {
@@ -303,13 +512,21 @@ pub fn entry_details(
             out.push((label, value.trim().to_owned()));
         }
     };
-    add("Album", e.album());
-    add("Style", e.origin.as_ref().map_or("", |o| o.styles.as_str()));
+    if with_record || e.origin.is_none() {
+        add("Album", e.album());
+    }
+    if with_record {
+        add("Style", e.origin.as_ref().map_or("", |o| o.styles.as_str()));
+    }
     if let Some(o) = &e.origin {
-        add("Label", &o.label);
-        add("Cat#", &o.catno);
+        if with_record {
+            add("Label", &o.label);
+            add("Cat#", &o.catno);
+        }
         add("Side", &o.position);
-        add("Year", &o.year.map(|y| y.to_string()).unwrap_or_default());
+        if with_record {
+            add("Year", &o.year.map(|y| y.to_string()).unwrap_or_default());
+        }
     }
     // A store's tempo says so until the analyser has its own.
     let store = e.origin.as_ref().and_then(|o| {
@@ -400,7 +617,12 @@ pub fn entry_details(
     for (store, note) in &marks.stores {
         add(store, note);
     }
-    if let Some(fs) = e.origin.as_ref().and_then(|o| o.for_sale.as_ref()) {
+    if let Some(fs) = e
+        .origin
+        .as_ref()
+        .and_then(|o| o.for_sale.as_ref())
+        .filter(|_| with_record)
+    {
         let what = match (fs.count, fs.lowest_cents) {
             (0, _) => "none".to_owned(),
             (n, Some(c)) => format!("{n} from {}", price(c, &fs.currency)),
@@ -810,6 +1032,241 @@ mod tests {
         l.album = "Geogaddi".into();
         let d = entry_details(&l, DigMarks::default(), now);
         assert_eq!(d[1], ("Album", "Geogaddi".to_owned()), "and its album tag");
+        let d = track_details(&l, DigMarks::default(), now, false);
+        assert_eq!(
+            d[1],
+            ("Album", "Geogaddi".to_owned()),
+            "kept under an open record too"
+        );
+    }
+
+    #[test]
+    fn under_an_open_record_a_track_leaves_the_record_facts_to_its_card() {
+        use crate::playlist::{ForSale, Origin, Playlist};
+        let mut p = Playlist::default();
+        let id = p.add_waiting(
+            "Nightcraft",
+            "Glasshouse",
+            None,
+            Some(Origin {
+                album: "Glasshouse EP".into(),
+                label: "Lowtide Tapes".into(),
+                catno: "LT-012".into(),
+                position: "A1".into(),
+                year: Some(1994),
+                styles: "Deep House".into(),
+                for_sale: Some(ForSale {
+                    count: 6,
+                    lowest_cents: Some(900),
+                    currency: "EUR".into(),
+                    fetched_at: 0,
+                }),
+                ..Default::default()
+            }),
+            "queued",
+        );
+        let mut e = p.get(id).unwrap().clone();
+        e.bpm = Some(124);
+        let labels: Vec<&str> = track_details(&e, DigMarks::default(), 0, false)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(labels, ["", "Side", "Tempo", "Status"]);
+    }
+
+    fn glasshouse(p: &mut crate::playlist::Playlist, tracks: &[(&str, &str, Option<u16>)]) {
+        use crate::playlist::Origin;
+        for &(side, title, bpm) in tracks {
+            let id = p.add_waiting(
+                "Nightcraft",
+                title,
+                None,
+                Some(Origin {
+                    album: "Glasshouse EP".into(),
+                    artist: "Nightcraft".into(),
+                    label: "Lowtide Tapes".into(),
+                    catno: "LT-012".into(),
+                    year: Some(1994),
+                    formats: "Vinyl".into(),
+                    styles: "Deep House, Minimal".into(),
+                    position: side.into(),
+                    ..Default::default()
+                }),
+                "queued",
+            );
+            let e = p.entries_mut().find(|e| e.id == id).unwrap();
+            e.bpm = bpm;
+            e.status = crate::playlist::EntryStatus::Ready;
+        }
+    }
+
+    #[test]
+    fn a_record_card_names_the_record_its_pressing_and_its_tracks() {
+        let mut p = crate::playlist::Playlist::default();
+        glasshouse(
+            &mut p,
+            &[
+                ("A1", "Tidepool", Some(124)),
+                ("A2", "Lowlight", None),
+                ("B1", "Undertow", Some(122)),
+            ],
+        );
+        let members: Vec<_> = p.entries().iter().collect();
+        let playing = Some((members[1].id, false));
+        let c = record_details(&members, &DigMarks::default(), &[], playing, None, 0);
+        assert_eq!(c.artist, "Nightcraft");
+        assert_eq!(c.album, "Glasshouse EP");
+        assert_eq!(c.pressing, "Lowtide Tapes · LT-012 · 1994 · Vinyl");
+        assert_eq!(c.styles, ["Deep House", "Minimal"]);
+        let lines: Vec<_> = c
+            .tracks
+            .iter()
+            .map(|t| (t.side.as_str(), t.title.as_str(), t.bpm, t.state))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("A1", "Tidepool", Some(124), CardTrackState::Normal),
+                ("A2", "Lowlight", None, CardTrackState::Playing),
+                ("B1", "Undertow", Some(122), CardTrackState::Normal),
+            ]
+        );
+        assert!(!c.has_strip(), "nothing known to buy or mark");
+    }
+
+    #[test]
+    fn a_long_record_lists_every_track() {
+        let mut p = crate::playlist::Playlist::default();
+        let titles: Vec<String> = (1..=14).map(|i| format!("T{i}")).collect();
+        let tracks: Vec<_> = titles.iter().map(|t| ("A", t.as_str(), None)).collect();
+        glasshouse(&mut p, &tracks);
+        p.entries_mut().nth(2).unwrap().status =
+            crate::playlist::EntryStatus::Waiting(crate::playlist::WaitKind::Search);
+        let members: Vec<_> = p.entries().iter().collect();
+        let c = record_details(&members, &DigMarks::default(), &[], None, None, 0);
+        assert_eq!(c.tracks.len(), 14, "the card scrolls past 8");
+        assert_eq!(c.tracks[2].state, CardTrackState::Dim, "still to search");
+        p.entries_mut().nth(3).unwrap().status =
+            crate::playlist::EntryStatus::Unavailable(crate::playlist::UnavailableKind::NotFound);
+        let members: Vec<_> = p.entries().iter().collect();
+        let c = record_details(&members, &DigMarks::default(), &[], None, None, 0);
+        assert_eq!(
+            c.tracks[3].state,
+            CardTrackState::Retry,
+            "not found: try again"
+        );
+        assert_eq!(c.tracks[3].note.as_deref(), Some("not found"));
+        assert_eq!(c.tracks[2].note.as_deref(), Some("search"));
+        assert_eq!(c.tracks[0].note, None, "ready: its tempo goes there");
+        {
+            let mut it = p.entries_mut();
+            it.nth(4).unwrap().status =
+                crate::playlist::EntryStatus::Unavailable(crate::playlist::UnavailableKind::NoClip);
+            it.next().unwrap().status =
+                crate::playlist::EntryStatus::Waiting(crate::playlist::WaitKind::Downloading(40));
+            it.next().unwrap().status =
+                crate::playlist::EntryStatus::Waiting(crate::playlist::WaitKind::Queued);
+        }
+        let members: Vec<_> = p.entries().iter().collect();
+        let armed = Some(members[6].id);
+        let c = record_details(&members, &DigMarks::default(), &[], None, armed, 0);
+        assert_eq!(
+            c.tracks[4].state,
+            CardTrackState::Unavailable,
+            "no clip: nothing to try"
+        );
+        assert_eq!(c.tracks[5].note.as_deref(), Some("40%"));
+        assert_eq!(c.tracks[6].note.as_deref(), Some("next"), "armed");
+        assert_eq!(c.tracks[6].state, CardTrackState::Dim);
+    }
+
+    #[test]
+    fn a_compilation_card_credits_various_and_names_each_track_artist() {
+        use crate::playlist::{Origin, Playlist};
+        let mut p = Playlist::default();
+        let o = Origin {
+            album: "Night Moves".into(),
+            artist: "Various".into(),
+            ..Default::default()
+        };
+        p.add_waiting("Lumen", "Halo", None, Some(o), "queued");
+        let members: Vec<_> = p.entries().iter().collect();
+        let c = record_details(&members, &DigMarks::default(), &[], None, None, 0);
+        assert_eq!(c.artist, "Various");
+        assert_eq!(c.tracks[0].title, "Lumen: Halo");
+        assert_eq!(
+            c.tracks[0].state,
+            CardTrackState::Dim,
+            "waiting for its audio"
+        );
+    }
+
+    #[test]
+    fn a_record_card_strip_shows_marks_sale_and_counts() {
+        use crate::playlist::{ForSale, SaleCopy};
+        let now = 1_800_000_000;
+        let mut p = crate::playlist::Playlist::default();
+        glasshouse(&mut p, &[("A1", "Tidepool", None)]);
+        p.entries_mut()
+            .next()
+            .unwrap()
+            .origin
+            .as_mut()
+            .unwrap()
+            .for_sale = Some(ForSale {
+            count: 6,
+            lowest_cents: Some(900),
+            currency: "EUR".into(),
+            fetched_at: now - 3 * 3600,
+        });
+        let members: Vec<_> = p.entries().iter().collect();
+        let marks = DigMarks {
+            wanted: true,
+            ..Default::default()
+        };
+        let c = record_details(&members, &marks, &[], None, None, now);
+        assert_eq!(c.marks, ["WANTED"]);
+        assert_eq!(
+            c.sale.as_deref(),
+            Some("6 for sale from €9.00 · fetched 3 h ago")
+        );
+        assert_eq!(c.counts, None, "no track searched for");
+        let copy = |cents, sold| SaleCopy {
+            cents,
+            currency: "EUR".into(),
+            sold,
+            ..Default::default()
+        };
+        let copies = [copy(900, false), copy(1200, false), copy(1800, false)];
+        let refs: Vec<_> = copies.iter().collect();
+        let c = record_details(&members, &marks, &refs, None, None, now);
+        assert_eq!(c.sale.as_deref(), Some("3 copies €9.00–€18.00"));
+        let gone = [copy(900, true)];
+        let refs: Vec<_> = gone.iter().collect();
+        let c = record_details(&members, &DigMarks::default(), &refs, None, None, now);
+        assert_eq!(c.marks, ["SOLD"]);
+        assert_eq!(c.sale.as_deref(), Some("sold"));
+    }
+
+    #[test]
+    fn a_local_album_card_has_no_pressing_pills_or_strip() {
+        use platform::TrackRef;
+        let mut p = crate::playlist::Playlist::default();
+        let id = p.add([TrackRef::new("/music/boc/01.flac")])[0].0;
+        let e = p.entries_mut().find(|e| e.id == id).unwrap();
+        e.artist = "Boards of Canada".into();
+        e.title = "Music Is Math".into();
+        e.album = "Geogaddi".into();
+        let members: Vec<_> = p.entries().iter().collect();
+        let c = record_details(&members, &DigMarks::default(), &[], None, None, 0);
+        assert_eq!(
+            (c.artist.as_str(), c.album.as_str()),
+            ("Boards of Canada", "Geogaddi")
+        );
+        assert_eq!(c.pressing, "");
+        assert!(c.styles.is_empty());
+        assert!(!c.has_strip());
+        assert_eq!(c.tracks[0].title, "Music Is Math");
     }
 
     #[test]

@@ -147,6 +147,8 @@ fn a_record_opens_with_its_mark_or_the_arrows_and_space_leaves_it() {
     // → and ← on the cursor's record row, with the playlist focused.
     rig.app.focus = Focus::Playlist;
     rig.click(record_at(0));
+    // The click opened its card; closed, the arrows are the list's again.
+    rig.key(Key::Escape, Modifiers::NONE);
     rig.key(Key::ArrowRight, Modifiers::NONE);
     assert_eq!(rig.app.pl_list().len(), 4);
     rig.key(Key::ArrowLeft, Modifiers::NONE);
@@ -176,11 +178,14 @@ fn a_record_row_selects_plays_and_removes_its_whole_record() {
     group(&mut rig);
     rig.click(record_at(0));
     assert_eq!(rig.app.crates.shown().selected_ids(), &ids[..3]);
+    // The click opened its card, over the rows below: closed, they're in reach.
+    rig.key(Key::Escape, Modifiers::NONE);
     // Cmd-click on the other record adds it.
     rig.click_with_mods(record_at(2), Modifiers::COMMAND);
     assert_eq!(rig.app.crates.shown().selected_ids().len(), 4);
     // The menu acts on the record; Remove album isn't there (the row is the album).
     rig.click(record_at(0));
+    rig.key(Key::Escape, Modifiers::NONE);
     rig.click_with(record_at(0), PointerButton::Secondary);
     let out = rig.frame(Vec::new());
     assert!(shows(&out, "Remove"), "{:?}", text_list(&out));

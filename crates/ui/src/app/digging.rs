@@ -1429,6 +1429,10 @@ fn backfill(p: &mut Playlist, infos: &[RecordInfo]) -> bool {
             o.cover = info.cover.clone();
             changed = true;
         }
+        if o.cover_large.is_empty() && !info.cover_large.is_empty() {
+            o.cover_large = info.cover_large.clone();
+            changed = true;
+        }
         if o.styles.is_empty() && !info.styles.is_empty() {
             o.styles = info.styles.clone();
             changed = true;
@@ -1467,6 +1471,7 @@ fn origin(page: &str, info: &RecordInfo) -> Origin {
         for_sale: for_sale(&info.for_sale),
         album: info.title.clone(),
         cover: info.cover.clone(),
+        cover_large: info.cover_large.clone(),
         styles: info.styles.clone(),
         artist: info.artist.clone(),
         formats: formats_text(&info.formats),
@@ -2768,7 +2773,7 @@ impl DiggrApp {
             }
             // The bridge reads the item's release from the disk cache the lookup filled.
             Event::ShopItem(..) => {}
-            Event::Cover(key, url) => {
+            Event::Cover(key, url, large) => {
                 let mut changed = false;
                 for c in self.crates.loaded_ids() {
                     let Some(p) = self.crates.get_mut(c) else {
@@ -2779,9 +2784,10 @@ impl DiggrApp {
                         if let Some(o) = e.origin.as_mut()
                             && record_key(o) == Some(key)
                             && !url.is_empty()
-                            && o.cover != url
+                            && (o.cover != url || o.cover_large != large)
                         {
                             o.cover = url.clone();
+                            o.cover_large = large.clone();
                             touched = true;
                         }
                     }
@@ -3565,8 +3571,9 @@ impl DiggrApp {
                 .is_some_and(|d| !d.analyzed.contains(&e.track) && !d.asked.contains(&e.track))
     }
 
-    /// The previews to have ready: the armed entry, then from the playing entry (or the shown
-    /// crate's current one when stopped) the next few of the play order. Also what to prepare.
+    /// The previews to have ready: the armed entry, the playing entry (or the shown crate's
+    /// current one when stopped), the open record card's tracks, then the next few of the play
+    /// order. Also what to prepare.
     fn dig_horizon(&mut self) {
         let playing = self.position.state != PlayState::Stopped;
         let cid = if playing {
@@ -3596,12 +3603,35 @@ impl DiggrApp {
             .and_then(|(c, id)| self.crates.get(c)?.get(id))
             .and_then(clip_of)
             .map(str::to_owned);
-        let wanted = scheduler::horizon(&clips, at, armed.as_deref());
+        // The open card's record: fetched right after the armed and playing tracks, so what
+        // the card offers to play is ready (see `record-card`).
+        let card: Vec<&Entry> = self
+            .card_record()
+            .map(|(_, rec, _, _)| {
+                let shown = self.crates.shown();
+                rec.members.iter().map(|&i| &shown.entries()[i]).collect()
+            })
+            .unwrap_or_default();
+        let mut wanted: Vec<String> = Vec::new();
+        let head = armed.iter().chain(clips.get(at).into_iter().flatten());
+        let card_clips = card.iter().filter_map(|e| clip_of(e).map(str::to_owned));
+        for c in head
+            .cloned()
+            .chain(card_clips)
+            .chain(scheduler::horizon(&clips, at, None))
+        {
+            if !wanted.contains(&c) {
+                wanted.push(c);
+            }
+        }
         // Tracks of records with no clip, in the same window: searched for, best first.
         // The armed entry first, whichever crate it is in.
         let armed_entry = self.armed.and_then(|(c, id)| self.crates.get(c)?.get(id));
+        let playing_entry = order.get(at).and_then(|&id| p.get(id));
         let searches: Vec<SearchRequest> = armed_entry
             .into_iter()
+            .chain(playing_entry)
+            .chain(card.iter().copied())
             .chain(
                 order
                     .iter()
@@ -6230,6 +6260,7 @@ mod tests {
             year: Some(1996),
             for_sale: None,
             cover: String::new(),
+            cover_large: String::new(),
             styles: "Deep House".into(),
             formats: vec![Format::Vinyl],
         }

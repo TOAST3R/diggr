@@ -878,15 +878,17 @@ fn a_stale_cover_is_looked_up_again_once() {
     i.handle(Command::RefreshCover(Release(1001)));
     let ev = i.take_events();
     let cover = ev.iter().find_map(|e| match e {
-        Event::Cover(k, url) => Some((*k, url.clone())),
+        Event::Cover(k, url, large) => Some((*k, url.clone(), large.clone())),
         _ => None,
     });
     assert_eq!(
         cover,
         Some((
             Release(1001),
-            "https://i.discogs.com/fake/R-1001-front-150.jpeg".to_owned()
-        ))
+            "https://i.discogs.com/fake/R-1001-front-150.jpeg".to_owned(),
+            "https://i.discogs.com/fake/R-1001-front.jpeg".to_owned()
+        )),
+        "the same data refills the large cover's address"
     );
     let releases = t
         .paths()
@@ -899,7 +901,7 @@ fn a_stale_cover_is_looked_up_again_once() {
     assert!(
         i.take_events()
             .iter()
-            .any(|e| matches!(e, Event::Cover(Release(424242), url) if url.is_empty()))
+            .any(|e| matches!(e, Event::Cover(Release(424242), url, _) if url.is_empty()))
     );
 }
 

@@ -240,6 +240,8 @@ pub fn copy_from_listing(item: &Value) -> Option<(Copy, Listed)> {
         old_vinyl: None,
         role: Role::Main,
         cover: thumb(r["thumbnail"].as_str().unwrap_or("")),
+        // A listing gives only its thumbnail.
+        cover_large: String::new(),
     };
     Some((copy, listed))
 }

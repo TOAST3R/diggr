@@ -16,9 +16,19 @@ sentences. `## Unreleased` collects entries until a release renames it.
   under "Use a personal token instead", and Disconnect forgets either one. What's set
   up and working shows in green: your account, your collection, yt-dlp and your paired browsers.
   Discogs turns away a computer whose clock is wrong, so if yours is off Diggr says by how much and where to set it right.
+- **A record card, one click away.** In a grouped crate, click a record and its card opens in
+  the middle of the window: the cover, the label, catalogue number and year, its styles, what's
+  for sale, and its tracklist with BPMs. Its tracks start downloading the moment it opens, so
+  they're ready when you press play, and a slim bar lets you scrub through the one playing.
+  Want it or put it in your cart from the card, and slide to the next or previous record with
+  ‹ › or the arrow keys. When a record finishes, the card slides on to the next one with the
+  music. × or Esc puts it away.
 
 ### Changed
 
+- **Lighter track tooltips.** Hovering a track now shows just its details as text, with no
+  cover. The cover and the record's details are on its record card: press Shift+G to group
+  the crate by record.
 - **Fewer buttons under the playlist.** The + button is gone: right-click below the last track
   for Add files…, Add folder… and Export M3U…, next to Select all and Sort. Add files… opens
   M3U playlists too, and any crate's right-click in the sidebar exports it without opening it.

@@ -30,6 +30,7 @@ use crate::widgets::{self, Skinned, SliderSprites, color};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod bandcamp;
+mod card;
 #[cfg(not(target_arch = "wasm32"))]
 mod covers;
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,6 +127,10 @@ pub struct DiggrApp {
     /// The first row in view (a record row counts as one).
     pl_scroll: usize,
     pl_drag_from: Option<usize>,
+    /// The record card open in a grouped crate (see `app/card.rs`), and the card's rect last
+    /// drawn (a click outside it closes it).
+    card: Option<OpenCard>,
+    card_rect: Option<Rect>,
     /// A record row being dragged: all its entries move.
     pl_drag_block: Option<Vec<EntryId>>,
     /// A track row of an open record being dragged: it moves within that record only.
@@ -347,6 +352,8 @@ impl DiggrApp {
             title_tick: 0.0,
             pl_scroll: 0,
             pl_drag_from: None,
+            card: None,
+            card_rect: None,
             pl_drag_block: None,
             pl_drag_track: None,
             pl_open: HashMap::new(),
@@ -1432,6 +1439,22 @@ impl DiggrApp {
             if self.help && key == Key::Escape {
                 self.help = false;
                 continue;
+            }
+            // While a record card is open, Esc closes it and ← → step through the records (in
+            // place of seeking, or opening and closing records).
+            if self.card.is_some() && !mods.command && !mods.shift {
+                match key {
+                    Key::Escape => {
+                        self.apply(Action::CloseCard, ctx);
+                        continue;
+                    }
+                    Key::ArrowLeft | Key::ArrowRight => {
+                        let step = if key == Key::ArrowLeft { -1 } else { 1 };
+                        self.apply(Action::CardStep(step), ctx);
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             if !self.transport_key(key, mods) {
                 self.window_key(ctx, key, mods);
@@ -2660,7 +2683,8 @@ impl DiggrApp {
         let max = len.saturating_sub(rows);
         let first = self.side_scroll[which].min(max);
         let acc = &mut self.side_scroll_acc[which];
-        let mut first = if ui.rect_contains_pointer(rect) {
+        // An open record card takes the pointer: nothing under it scrolls.
+        let mut first = if ui.rect_contains_pointer(rect) && self.card.is_none() {
             let dy = ui.input(|i| i.smooth_scroll_delta.y);
             scroll_rows(acc, first, max, dy, row_px)
         } else {
@@ -4238,6 +4262,370 @@ impl DiggrApp {
         let _ = (resp, actions);
     }
 
+    /// The open card's record row and the frame's rows around it: (row index, row, whether a
+    /// record comes before it, whether one comes after).
+    fn card_record(&self) -> Option<(usize, records::RecordRow, bool, bool)> {
+        let c = self.card.as_ref()?;
+        let rows = self.pl_list();
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, ListRow::Record(rec) if rec.key == c.key))?;
+        let ListRow::Record(rec) = &rows[at] else {
+            return None;
+        };
+        let is_record = |r: &ListRow| matches!(r, ListRow::Record(_));
+        let prev = rows[..at].iter().any(is_record);
+        let next = rows[at + 1..].iter().any(is_record);
+        Some((at, rec.clone(), prev, next))
+    }
+
+    /// The card's text for record `rec`, from what's in memory.
+    fn card_details(&self, rec: &records::RecordRow) -> format::RecordCard {
+        let shown = self.crates.shown();
+        let members: Vec<&crate::playlist::Entry> =
+            rec.members.iter().map(|&i| &shown.entries()[i]).collect();
+        let copies = match rec.key {
+            AlbumKey::Release(r) => shown.copies_of(r),
+            _ => Vec::new(),
+        };
+        let playing = shown
+            .current()
+            .filter(|_| self.crates.shown_id() == self.crates.playing_id())
+            .filter(|_| self.position.state != PlayState::Stopped)
+            .map(|id| (id, self.position.state == PlayState::Paused));
+        let armed = self
+            .armed
+            .filter(|(c, _)| *c == self.crates.shown_id())
+            .map(|(_, id)| id);
+        format::record_details(
+            &members,
+            &self.dig_marks(members[0]),
+            &copies,
+            playing,
+            armed,
+            unix_now(),
+        )
+    }
+
+    /// Draws the open card centred over the window (which it dims and keeps from the pointer:
+    /// only its × and Esc close it).
+    fn show_card(&mut self, ctx: &egui::Context, scale: f32, actions: &mut Vec<Action>) {
+        let now = ctx.input(|i| i.time);
+        self.card_follow(now);
+        let Some((_, rec, prev, next)) = self.card_record() else {
+            self.card_rect = None;
+            return;
+        };
+        let card = self.card_details(&rec);
+        let (pills, mut pill_actions): (Vec<card::CardPill>, Vec<Option<Action>>) =
+            self.card_pills(&rec).into_iter().unzip();
+        // Only what's in memory: the cover worker reads files and fetches.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (thumb, large) = {
+            let first = self.crates.shown().entries()[rec.members[0]].clone();
+            self.dig
+                .as_mut()
+                .map_or((None, None), |d| d.covers.card_slot(ctx, &first))
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (thumb, large) = (None, None);
+        // The bar follows the record's track that plays (or is paused).
+        let shown = self.crates.shown();
+        let progress = shown
+            .current()
+            .filter(|_| self.crates.shown_id() == self.crates.playing_id())
+            .filter(|_| self.position.state != PlayState::Stopped)
+            .filter(|id| rec.members.iter().any(|&i| shown.entries()[i].id == *id))
+            .and_then(|id| {
+                let total = self
+                    .now_playing_names()
+                    .and_then(|(_, _, d)| d)
+                    .or_else(|| shown.get(id).and_then(|e| e.duration))?;
+                Some((self.position.seconds(), total))
+            });
+        let slide = self
+            .card
+            .as_ref()
+            .and_then(|c| c.moved)
+            .map(|(at, dir)| ((now - at) as f32, dir))
+            .filter(|(t, _)| *t < card::SLIDE);
+        let view = card::Card {
+            card: &card,
+            image: card::pick(thumb, large),
+            prev,
+            next,
+            pills,
+            progress,
+            slide,
+        };
+        let (rect, clicked) = card::show(ctx, &view, &self.def.colors, scale);
+        self.card_rect = Some(rect);
+        for a in clicked {
+            let action = match a {
+                card::CardAction::Play(id) => Some(Action::PlayEntry(id)),
+                card::CardAction::Resume => Some(Action::Play),
+                card::CardAction::Pause => Some(Action::Pause),
+                card::CardAction::Step(step) => Some(Action::CardStep(step)),
+                card::CardAction::Close => Some(Action::CloseCard),
+                card::CardAction::Seek(t) => Some(Action::Seek(t)),
+                card::CardAction::Pill(i) => pill_actions.get_mut(i).and_then(Option::take),
+            };
+            actions.extend(action);
+        }
+    }
+
+    /// The record row's actions, as the card's pills, each with what its click does (`None`: a
+    /// badge). The same choices the record row makes, so the two never disagree.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn card_pills(&self, rec: &records::RecordRow) -> Vec<(card::CardPill, Option<Action>)> {
+        use crate::app::sellers::SellerAction;
+        let mut out = Vec::new();
+        if self.dig.is_none() {
+            return out;
+        }
+        let shown = self.crates.shown();
+        let first = &shown.entries()[rec.members[0]];
+        let ids: Vec<EntryId> = rec.members.iter().map(|&i| shown.entries()[i].id).collect();
+        let marks = self.dig_marks(first);
+        let pill = |label: &str, hover: Option<&str>, tip: String, lit: bool, button: bool| {
+            card::CardPill {
+                label: label.to_owned(),
+                hover_label: hover.map(str::to_owned),
+                tip,
+                lit,
+                button,
+            }
+        };
+        // The wantlist, for a Discogs record.
+        let discogs = first
+            .origin
+            .as_ref()
+            .is_some_and(|o| o.release.is_some() || o.master.is_some());
+        if discogs {
+            out.push(if marks.wanted {
+                (
+                    pill(
+                        "WANTED",
+                        Some("UNWANT"),
+                        "On your wantlist: click to take it off".into(),
+                        true,
+                        true,
+                    ),
+                    Some(Action::Dig(DigAction::Unwant(ids.clone()))),
+                )
+            } else {
+                (
+                    pill(
+                        "+ WANT",
+                        None,
+                        "Add it to your Discogs wantlist".into(),
+                        false,
+                        true,
+                    ),
+                    Some(Action::Dig(DigAction::Want(ids.clone()))),
+                )
+            });
+        }
+        // The cart: a seller's copy (one, or several to pick from), else a store's or Buy.
+        let copies = match rec.key {
+            AlbumKey::Release(r) => shown.copies_of(r),
+            _ => Vec::new(),
+        };
+        let unsold: Vec<_> = copies.iter().filter(|c| !c.sold).collect();
+        let owned = self.owns(first);
+        let store = (unsold.is_empty())
+            .then(|| self.store_pill(first))
+            .flatten()
+            .filter(|p| !(p.buy && marks.cart.is_some()));
+        let mut in_cart_pill = None;
+        match unsold.as_slice() {
+            [c] => {
+                let in_cart = self.copy_in_cart(c.listing);
+                if in_cart || owned.is_none() {
+                    in_cart_pill = Some(in_cart);
+                    let what = format!("{} · {}", format::price(c.cents, &c.currency), c.grades);
+                    out.push(if in_cart {
+                        (
+                            pill(
+                                "IN CART",
+                                Some("REMOVE"),
+                                format!(
+                                    "{}Remove {what} from your cart",
+                                    owned
+                                        .as_deref()
+                                        .map(format::owned_warning)
+                                        .unwrap_or_default()
+                                ),
+                                true,
+                                true,
+                            ),
+                            Some(Action::Dig(DigAction::Seller(SellerAction::CartRemove(
+                                c.listing,
+                            )))),
+                        )
+                    } else {
+                        (
+                            pill(
+                                "+ CART",
+                                None,
+                                format!("Add {what} to your cart"),
+                                false,
+                                true,
+                            ),
+                            Some(Action::Dig(DigAction::Seller(SellerAction::CartAdd(vec![
+                                c.listing,
+                            ])))),
+                        )
+                    });
+                }
+            }
+            [] => {
+                if let Some(p) = store.as_ref().filter(|p| p.in_cart || owned.is_none()) {
+                    in_cart_pill = Some(p.in_cart);
+                    let action = if p.buy {
+                        DigAction::Buy(first.id)
+                    } else {
+                        DigAction::StoreCart(first.id, p.choose.first().map(|(f, _)| f.clone()))
+                    };
+                    let (label, hover) = if p.in_cart {
+                        ("IN CART", Some("REMOVE"))
+                    } else {
+                        ("+ CART", None)
+                    };
+                    out.push((
+                        pill(label, hover, p.tip.clone(), p.in_cart, true),
+                        Some(Action::Dig(action)),
+                    ));
+                }
+            }
+            several => {
+                let tip = if rec.open {
+                    "Its copies are listed below the record".to_owned()
+                } else {
+                    "Open the record in the list to pick a copy".to_owned()
+                };
+                out.push((
+                    pill(
+                        &format!("{} COPIES", several.len()),
+                        None,
+                        tip,
+                        marks.cart.is_some(),
+                        true,
+                    ),
+                    (!rec.open).then(|| Action::ToggleRecord(rec.key.clone())),
+                ));
+            }
+        }
+        let pill_state = in_cart_pill.map(|in_cart| Pill {
+            in_cart,
+            pointer: None,
+        });
+        if let Some(page) = checkout_page(pill_state, marks.cart.is_some(), store.as_ref()) {
+            out.push((
+                pill(
+                    "»",
+                    None,
+                    format!("Check out on {}", site_of(page)),
+                    false,
+                    true,
+                ),
+                Some(Action::Dig(DigAction::Seller(SellerAction::OpenCart(page)))),
+            ));
+        }
+        if let Some(o) = &marks.owned {
+            out.push((
+                pill("OWNED", None, format!("You own {o}"), false, false),
+                None,
+            ));
+        }
+        let sold = (!copies.is_empty() && unsold.is_empty()) || store.is_some_and(|p| p.sold);
+        if sold {
+            out.push((
+                pill("SOLD", None, "Every copy is sold".into(), false, false),
+                None,
+            ));
+        }
+        out
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn card_pills(&self, _: &records::RecordRow) -> Vec<(card::CardPill, Option<Action>)> {
+        Vec::new()
+    }
+
+    /// Steps the card to the previous (-1) or next (1) record: selects it, moves the cursor to
+    /// it and scrolls the list the least that shows it. What plays doesn't change. `now` (egui
+    /// time) starts its slide.
+    fn card_step(&mut self, step: i8, now: f64) {
+        let Some((at, _, _, _)) = self.card_record() else {
+            return;
+        };
+        let rows = self.pl_list();
+        let is_record = |r: &ListRow| matches!(r, ListRow::Record(_));
+        let to = if step < 0 {
+            rows[..at].iter().rposition(is_record)
+        } else {
+            rows[at + 1..]
+                .iter()
+                .position(is_record)
+                .map(|i| at + 1 + i)
+        };
+        if let Some(to) = to {
+            self.card_move_to(to, step, now);
+        }
+    }
+
+    /// Moves the card to the record row `to` of the frame's rows, coming from direction `dir`.
+    fn card_move_to(&mut self, to: usize, dir: i8, now: f64) {
+        let rows = self.pl_list();
+        let Some(ListRow::Record(rec)) = rows.get(to) else {
+            return;
+        };
+        let p = self.crates.shown_mut();
+        let ids: Vec<EntryId> = rec.members.iter().map(|&i| p.entries()[i].id).collect();
+        p.select_only(&ids, ids[0]);
+        self.scroll_into_view(rec.members[0]);
+        if let Some(c) = &mut self.card {
+            c.key = rec.key.clone();
+            c.following = None;
+            c.moved = Some((now, dir));
+        }
+    }
+
+    /// When the track playing last frame was the card's record's and playback has moved on to
+    /// another record (the record ended), the card goes with it.
+    fn card_follow(&mut self, now: f64) {
+        let Some((at, rec, _, _)) = self.card_record() else {
+            return;
+        };
+        let shown = self.crates.shown();
+        let playing = shown
+            .current()
+            .filter(|_| self.crates.shown_id() == self.crates.playing_id())
+            .filter(|_| self.position.state != PlayState::Stopped);
+        let in_record = |id: EntryId| rec.members.iter().any(|&i| shown.entries()[i].id == id);
+        let following = self.card.as_ref().and_then(|c| c.following);
+        let moved_on = playing.filter(|&id| following.is_some_and(|f| f != id) && !in_record(id));
+        let target = moved_on.and_then(|id| {
+            let i = shown.index_of(id)?;
+            let rows = self.pl_list();
+            let r = records::row_of(&rows, i);
+            matches!(rows.get(r), Some(ListRow::Record(_))).then_some(r)
+        });
+        if let Some(to) = target {
+            let dir = if to > at { 1 } else { -1 };
+            self.card_move_to(to, dir, now);
+        }
+        let shown = self.crates.shown();
+        let still = playing.filter(|&id| {
+            self.card_record()
+                .is_some_and(|(_, r, _, _)| r.members.iter().any(|&i| shown.entries()[i].id == id))
+        });
+        if let Some(c) = &mut self.card {
+            c.following = still;
+        }
+    }
+
     /// A record row: its cover, ⏵/⏷, "Artist – Album" with its marks, and a dimmed line with
     /// the pressing, its tracks and what's for sale (or the track playing in it). A click
     /// selects the record, a double-click plays it, ⏵ opens it, and its menu acts on it all; a
@@ -4565,6 +4953,10 @@ impl DiggrApp {
             } else {
                 Action::SelectRecord(ids.clone(), look.mods)
             });
+            // A plain click opens (or closes) its card; with Shift or Cmd it only selects.
+            if !look.mods.shift && !look.mods.command {
+                actions.push(Action::OpenCard(rec.key.clone()));
+            }
         } else if menu_click && !ids.iter().all(|&id| shown.is_selected(id)) {
             // The menu acts on the selection, which becomes the record.
             actions.push(Action::SelectRecord(ids.clone(), ClickMods::default()));
@@ -4752,6 +5144,19 @@ impl DiggrApp {
         let list_rows = self.pl_list();
         let max_start = records::max_start(&list_rows, visible);
         self.pl_scroll = self.pl_scroll.min(max_start);
+        // The card closes once its record isn't shown: another crate, ungrouped, removed or
+        // filtered away.
+        if let Some(c) = &self.card {
+            let shown = c.crate_id == self.crates.shown_id()
+                && self.crates.shown().is_grouped()
+                && list_rows
+                    .iter()
+                    .any(|r| matches!(r, ListRow::Record(rec) if rec.key == c.key));
+            if !shown {
+                self.card = None;
+            }
+        }
+        let card_scale: f32;
         {
             let def = d.clone();
             let sk = self.skinned(&def, ui, origin);
@@ -4810,6 +5215,7 @@ impl DiggrApp {
             });
             let list = sk.rect(l.x as f32, l.y as f32, l.w as f32, list_h);
             sk.fill(list, color(d.colors.pl_bg));
+            card_scale = scale;
 
             // Rows.
             let font = egui::FontId::proportional(9.5 * scale);
@@ -5061,23 +5467,6 @@ impl DiggrApp {
                             self.pl_drag_block = (!rec.single).then(|| {
                                 rec.members.iter().map(|&i| shown.entries()[i].id).collect()
                             });
-                        }
-                        if resp.hovered() && self.pl_drag_from.is_none() {
-                            let mut details =
-                                format::entry_details(first, self.dig_marks(first), unix_now());
-                            if let Some(counts) = format::record_counts(
-                                rec.members.iter().map(|&i| &shown.entries()[i]),
-                            ) {
-                                details.insert(1, ("Record", counts));
-                            }
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let hover = self
-                                .dig
-                                .as_mut()
-                                .and_then(|d| d.covers.slot(ui.ctx(), first));
-                            #[cfg(target_arch = "wasm32")]
-                            let hover = None;
-                            resp.on_hover_ui(move |ui| entry_tooltip(ui, &details, hover));
                         }
                         if self.pl_drag_from.is_some()
                             && self.pl_drag_track.is_none()
@@ -5388,7 +5777,8 @@ impl DiggrApp {
                 let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
-                    let mut details = format::entry_details(e, marks.clone(), unix_now());
+                    // A track under its open record leaves the record's facts to that row's card.
+                    let mut details = format::track_details(e, marks.clone(), unix_now(), !track);
                     if let Some(w) = bpm_wait {
                         details.push(("Tempo", w.label()));
                     }
@@ -5399,12 +5789,7 @@ impl DiggrApp {
                     {
                         *status += &format!(" · waiting for {}", source.name());
                     }
-                    // Only what's in memory: the cover worker reads files and fetches.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let cover = self.dig.as_mut().and_then(|d| d.covers.slot(ui.ctx(), e));
-                    #[cfg(target_arch = "wasm32")]
-                    let cover = None;
-                    resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details, cover));
+                    resp = resp.on_hover_ui(move |ui| entry_tooltip(ui, &details));
                 }
                 let menu_click = opens_context_menu(
                     resp.secondary_clicked(),
@@ -5551,7 +5936,7 @@ impl DiggrApp {
             // Scrolling adds up, so a trackpad's small steps move the list too. The rows sit
             // on top of the list, so "over the list" is where the pointer is, not what egui
             // reports as hovered.
-            if ui.rect_contains_pointer(list) {
+            if ui.rect_contains_pointer(list) && self.card.is_none() {
                 let dy = ui.input(|i| i.smooth_scroll_delta.y);
                 self.pl_scroll = scroll_rows(
                     &mut self.pl_scroll_acc,
@@ -5627,6 +6012,7 @@ impl DiggrApp {
             let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
             bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
         }
+        self.show_card(ui.ctx(), card_scale, &mut actions);
         for a in actions {
             self.apply(a, ui.ctx());
         }
@@ -6181,6 +6567,21 @@ impl DiggrApp {
                 }
                 self.pl_open_rev += 1;
             }
+            Action::OpenCard(key) => {
+                let crate_id = self.crates.shown_id();
+                let same = self
+                    .card
+                    .as_ref()
+                    .is_some_and(|c| c.crate_id == crate_id && c.key == key);
+                self.card = (!same).then_some(OpenCard {
+                    crate_id,
+                    key,
+                    following: None,
+                    moved: None,
+                });
+            }
+            Action::CloseCard => self.card = None,
+            Action::CardStep(step) => self.card_step(step, ctx.input(|i| i.time)),
             Action::SelectRecord(ids, mods) => {
                 self.side_crate = None;
                 let p = self.crates.shown_mut();
@@ -6473,6 +6874,11 @@ enum Action {
     ToggleRecord(AlbumKey),
     /// A click on a record row: these entries, with these modifiers.
     SelectRecord(Vec<EntryId>, ClickMods),
+    /// Opens the record's card, moves it to the record, or closes it when it's on it already.
+    OpenCard(AlbumKey),
+    CloseCard,
+    /// The card's previous (-1) or next (1) record.
+    CardStep(i8),
     /// Plays a record: its first playable track, or arms its first one.
     PlayRecord(Vec<EntryId>),
     /// Moves a record (these entries) before an entry, or to the end.
@@ -6680,6 +7086,19 @@ fn unix_now() -> u64 {
 type RowsKey = (CrateId, u64, bool, u64, Option<(usize, usize)>);
 
 /// How record rows are drawn this frame.
+/// Whose record card is open: a record of a crate, by its album key, so it stays on its
+/// record while rows open, close or come in above it.
+#[derive(Debug, Clone, PartialEq)]
+struct OpenCard {
+    crate_id: CrateId,
+    key: AlbumKey,
+    /// The record's track playing last frame: when playback moves on from it to another
+    /// record, the card follows.
+    following: Option<EntryId>,
+    /// When the card moved to this record (egui time) and which way: its content slides in.
+    moved: Option<(f64, i8)>,
+}
+
 struct RecordLook<'a> {
     colors: &'a crate::skin::Colors,
     font: &'a egui::FontId,
@@ -6695,53 +7114,23 @@ pub enum CoverSlot {
     Waiting,
 }
 
-/// The cover's side in an entry tooltip, in points.
-const TOOLTIP_COVER: f32 = 96.0;
-
-/// An entry's tooltip: its full name, then its cover (when it has one) beside one labelled
-/// line per known detail.
-fn entry_tooltip(ui: &mut Ui, details: &[(&str, String)], cover: Option<CoverSlot>) {
+/// A track's tooltip: its full name, then one labelled line per known detail (text only: the
+/// cover is the record card's).
+fn entry_tooltip(ui: &mut Ui, details: &[(&str, String)]) {
     let mut lines = details.iter();
     if let Some((_, name)) = lines.next() {
         ui.label(egui::RichText::new(name).strong());
     }
-    let grid = |ui: &mut Ui| {
-        egui::Grid::new("entry_details")
-            .num_columns(2)
-            .spacing(vec2(10.0, 2.0))
-            .show(ui, |ui| {
-                for (label, value) in lines {
-                    ui.label(egui::RichText::new(*label).weak());
-                    ui.label(value);
-                    ui.end_row();
-                }
-            });
-    };
-    let Some(cover) = cover else {
-        return grid(ui);
-    };
-    ui.horizontal_top(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(TOOLTIP_COVER), Sense::hover());
-        match cover {
-            CoverSlot::Loaded(tex, size) => {
-                // Fitted into the square, centred, its shape kept.
-                let fit = size * (TOOLTIP_COVER / size.x.max(size.y).max(1.0));
-                let at = Rect::from_center_size(rect.center(), fit);
-                ui.painter().image(
-                    tex,
-                    at,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+    egui::Grid::new("entry_details")
+        .num_columns(2)
+        .spacing(vec2(10.0, 2.0))
+        .show(ui, |ui| {
+            for (label, value) in lines {
+                ui.label(egui::RichText::new(*label).weak());
+                ui.label(value);
+                ui.end_row();
             }
-            CoverSlot::Waiting => {
-                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-                ui.painter()
-                    .rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
-            }
-        }
-        ui.vertical(grid);
-    });
+        });
 }
 
 /// What a playlist row shows where its duration goes.

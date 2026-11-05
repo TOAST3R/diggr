@@ -2552,3 +2552,71 @@ fn the_records_in_view_get_their_tracks_first() {
     rig.frame(Vec::new());
     assert_eq!(focus(&rig), Some(ids[7]), "a selection leads");
 }
+
+/// Where `label` is drawn inside the open record card (after its fade-in).
+fn in_card(rig: &mut Rig, label: &str) -> Option<Pos2> {
+    for _ in 0..10 {
+        rig.frame(Vec::new());
+    }
+    let out = rig.frame(Vec::new());
+    let card = rig.app.card_rect?;
+    texts(&out)
+        .into_iter()
+        .find(|t| t.text == label && card.contains(t.rect.center()))
+        .map(|t| t.rect.center())
+}
+
+#[test]
+fn the_card_carries_the_records_pills_and_they_act_as_on_its_row() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("card-pills", &fakes);
+    cart_answer(&fakes, "");
+    // After the add, Discogs' cart holds the copy.
+    fakes.transport.route(
+        "/cart",
+        200,
+        r#"[{"seller": {"username": "logon"}, "subtotal": {"formatted": "€7.50"},
+            "cart_items": [{"item_id": 12, "price": {"formatted": "€7.50"}, "release": {"id": 1002}}]}]"#,
+    );
+    rig.screen = vec2(600.0, 900.0);
+    let ctx = rig.ctx.clone();
+    // Release 1002 has one copy (12): + CART on its card adds it, and the card stays open.
+    rig.app.apply(
+        Action::OpenCard(crate::playlist::AlbumKey::Release(1002)),
+        &ctx,
+    );
+    let cart = in_card(&mut rig, "+ CART").expect("+ CART on the card");
+    // It's on the wantlist (★ on its row): the card says WANTED.
+    assert!(in_card(&mut rig, "WANTED").is_some(), "and WANTED");
+    rig.click(cart);
+    rig.until(|r| message(r) == "Added to your cart", "Discogs answers");
+    assert_eq!(posted(&fakes), [r#"{"item_ids":[12]}"#]);
+    assert!(rig.app.card.is_some(), "the card stays open");
+    assert!(
+        in_card(&mut rig, "IN CART").is_some() || in_card(&mut rig, "REMOVE").is_some(),
+        "its pill says so"
+    );
+    assert!(in_card(&mut rig, "»").is_some(), "with » to check out");
+    // WANTED asks Discogs to take it off the wantlist.
+    let want = in_card(&mut rig, "WANTED").expect("WANTED");
+    rig.click(want);
+    rig.until(
+        |_| {
+            fakes
+                .transport
+                .log()
+                .iter()
+                .any(|(r, _)| r.method == Method::Delete && r.path.contains("/wants/1002"))
+        },
+        "the wantlist removal",
+    );
+    // Release 1001 has three copies: its card's 3 COPIES opens it in the list.
+    rig.app.apply(
+        Action::OpenCard(crate::playlist::AlbumKey::Release(1001)),
+        &ctx,
+    );
+    let copies = in_card(&mut rig, "3 COPIES").expect("3 COPIES");
+    let opened = rig.app.pl_open_rev;
+    rig.click(copies);
+    assert_eq!(rig.app.pl_open_rev, opened + 1, "the record opened");
+}
