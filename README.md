@@ -149,9 +149,10 @@ on the left, SYNC's turntable beside it while SYNC is on, then the waveform (a s
 the waveform is off) and, in the top-right corner, minimize and close (which quits); the
 playlist fills the rest. Restoring the window keeps the same layout at the smaller size. It's
 drawn from an original pixel-art skin dressed like a DJ's gear (warm graphite panels, an amber
-LCD, title bars with groove lines), at double size by default (switch in **Options**: the gear
-⚙ in the playlist's footer, or right-click the mini player anywhere that isn't a control;
-Options also has the spectrogram, Discogs… and Browser…).
+LCD, title bars with groove lines), at double size by default (`Cmd+=` / `Cmd+−` switch between
+double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the playlist's
+footer, or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
+Set up Diggr….
 
 Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the playlist's
 title bar lights up while it has it. With the player focused, `↑` / `↓` set the volume. With the
@@ -203,7 +204,7 @@ and Home/End jump), and Enter plays the entry under it.
     a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
     and the title bar's crate menu does the same job.
 - **Playlist window:**
-  - **The footer:** the gear ⚙ opens **Options** (size, spectrogram, Discogs…, Browser…). The
+  - **The footer:** the gear ⚙ opens **Options** (Discogs…, Browser…, Set up Diggr…). The
     "selected/total" time sits on the right, beside the grip.
     **The list menu** is a right-click below the last row (or **Crate ▸** at the end of a
     row's right-click): select all / none / invert, remove selected, clear the crate, **Sort
@@ -399,6 +400,7 @@ and Home/End jump), and Enter plays the entry under it.
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | | | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
 | | | | `Cmd+F` | search the crate on screen |
+| | | | `Cmd+=` / `Cmd+−` / `Cmd+0` | double size / classic size / classic size |
 
 On Linux and Windows, `Cmd` is `Ctrl`.
 
@@ -1230,7 +1232,7 @@ ends them.
 
 ### Spectrogram
 
-`S` (or the mini player's spectrum icon, or **Spectrogram (S)** in **Options**) opens a separate, resizable window
+`S` (or the mini player's spectrum icon) opens a separate, resizable window
 with the current track's spectrogram: time runs left to right, frequency goes up on a log scale
 from 20 Hz to the file's Nyquist frequency, and brighter means louder.
 
@@ -1493,7 +1495,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1099 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1100 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

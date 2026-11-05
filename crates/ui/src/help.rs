@@ -77,7 +77,11 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "S",
-                "spectrogram window (also the mini player's spectrum button, or Options)",
+                "spectrogram window (also the mini player's spectrum button)",
+            ),
+            (
+                "Cmd+= / Cmd+− / Cmd+0",
+                "double size / classic size / classic size",
             ),
             ("H or F1", "this help"),
             (
@@ -196,7 +200,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Mini player: right-click",
-                "Options: size, spectrogram, Discogs…, Browser…",
+                "Options: Discogs…, Browser…, Set up Diggr…",
             ),
             (
                 "Mini player's EQ button",
@@ -332,6 +336,7 @@ mod tests {
             "Shift+L",
             "W",
             "S",
+            "Cmd+= / Cmd+− / Cmd+0",
             "H or F1",
             "Cmd+V",
             "Y",
