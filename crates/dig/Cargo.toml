@@ -18,5 +18,10 @@ sha2 = "0.11.0"
 tiny_http = "0.12.0"
 ureq = "3.4.2"
 webbrowser = "1.2.4"
-# Only to unpack the pinned Python and Deno (Windows): deflate, no other compression.
+# Only to unpack the app's yt-dlp folder build (macOS) and the pinned Python and Deno (Windows):
+# deflate, no other compression.
 zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(unix)'.dependencies]
+# Only `killpg`: stopping a helper (yt-dlp) stops every process it started.
+libc = "0.2.189"

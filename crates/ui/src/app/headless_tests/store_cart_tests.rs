@@ -51,6 +51,7 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
                 images: FakeImages::new(Ok(test_jpeg(300, 300))),
                 clock: Arc::new(RealClock::default()),
                 finder,
+                opener: dig::preview::scheduler::system_opener(),
                 samples: f.fetcher.clone(),
                 browser: f.browser.clone(),
                 cache_root: Some(dir.join("cache")),

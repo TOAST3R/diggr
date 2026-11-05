@@ -42,7 +42,8 @@ use dig::preview::clip::Source;
 use dig::preview::fetcher::{clip_url, preview_path};
 use dig::preview::sample::{SampleFetcher, Samples};
 use dig::preview::scheduler::{
-    self, Finder, PreviewCommand, PreviewEvent, PreviewHandle, Tools, system_finder,
+    self, Finder, Opener, PreviewCommand, PreviewEvent, PreviewHandle, Tools, system_finder,
+    system_opener,
 };
 use dig::preview::search::{SearchRequest, lengths_agree};
 use dig::preview::store;
@@ -91,6 +92,16 @@ fn hint_for(macos: bool, windows: bool) -> &'static str {
     }
 }
 
+/// An install of the app's yt-dlp in words: `verb` ("Downloading") with its percent, or, while
+/// its first start runs (macOS), that it is being prepared.
+pub(super) fn ytdlp_progress(verb: &str, p: u8) -> String {
+    if p == dig::tools::PREPARING {
+        "Preparing yt-dlp… (the first start takes up to a minute)".into()
+    } else {
+        format!("{verb} yt-dlp: {p}%")
+    }
+}
+
 /// Whether an entry's preview needs yt-dlp (a store's sample doesn't).
 pub(super) fn needs_ytdlp(e: &Entry) -> bool {
     clip_of(e).is_some_and(|c| !dig::preview::clip::source_of(c).is_sample())
@@ -103,6 +114,8 @@ pub struct DigSetup {
     pub images: Arc<dyn ImageSource>,
     pub clock: Arc<dyn Clock>,
     pub finder: Finder,
+    /// Opens the app's own yt-dlp, found by its recorded version, without starting it.
+    pub opener: Opener,
     /// What downloads Juno samples (plain HTTPS; no yt-dlp).
     pub samples: Arc<dyn SampleFetcher>,
     pub browser: Arc<dyn Browser>,
@@ -142,6 +155,7 @@ impl DigSetup {
             images: Arc::new(UreqImages::default()),
             clock: Arc::new(RealClock::default()),
             finder: system_finder(),
+            opener: system_opener(),
             samples: Arc::new(Samples::default()),
             browser: Arc::new(SystemBrowser),
             cache_root,
@@ -854,6 +868,7 @@ impl Dig {
                         source,
                     }),
                 outdated_check: self.setup.guided_ytdlp,
+                open: self.setup.opener.clone(),
                 ..scheduler::Config::new(
                     self.previews_dir(),
                     self.settings.cache_bytes(),
@@ -967,7 +982,7 @@ impl Dig {
     /// The status line: offline, or the sends in progress.
     pub(super) fn line(&self) -> Option<String> {
         if let Some(p) = self.ytdlp_download {
-            return Some(format!("Downloading yt-dlp: {p}%"));
+            return Some(ytdlp_progress("Downloading", p));
         }
         if self.offline {
             return Some("Discogs offline: waiting for it to answer".into());
@@ -3367,13 +3382,21 @@ impl DiggrApp {
                     d.ytdlp_download = None;
                 }
                 self.dig_mark_waiting(WaitKind::NeedsYtDlp, WaitKind::Queued);
+                self.dig_mark_waiting(WaitKind::PreparingYtDlp, WaitKind::Queued);
             }
             PreviewEvent::YtDlpProgress(p) => {
-                if let Some(d) = &mut self.dig {
-                    d.ytdlp_download = Some(p);
+                let Some(d) = &mut self.dig else { return };
+                d.ytdlp_download = Some(p);
+                // Entries waiting for yt-dlp wait for the copy being installed (also one the
+                // app installs by itself, replacing the one-file copy on macOS).
+                let found = matches!(d.ytdlp, YtDlpState::Found { .. });
+                self.dig_mark_waiting(WaitKind::NeedsYtDlp, WaitKind::PreparingYtDlp);
+                if !found {
+                    self.dig_mark_waiting(WaitKind::Queued, WaitKind::PreparingYtDlp);
                 }
             }
             PreviewEvent::YtDlpFailed(why) => {
+                self.dig_mark_waiting(WaitKind::PreparingYtDlp, WaitKind::NeedsYtDlp);
                 let Some(d) = &mut self.dig else { return };
                 d.ytdlp_download = None;
                 // Guided: said in the question (or the welcome's Previews step) when it is
@@ -3524,7 +3547,7 @@ impl DiggrApp {
 
     /// Whether Analyze BPM can do something for `e`: its audio is on disk (a downloaded
     /// preview or a local file) and its tempo isn't known from a whole-file analysis yet.
-    fn analyzable(&self, e: &Entry) -> bool {
+    pub(super) fn analyzable(&self, e: &Entry) -> bool {
         let store = e.origin.as_ref().is_some_and(|o| o.store_bpm);
         e.status.is_playable()
             && (e.bpm.is_none() || store)
@@ -5017,11 +5040,15 @@ impl DiggrApp {
             .iter()
             .filter_map(|&id| shown.get(id))
             .any(|e| self.analyzable(e));
-        if analyzable
-            && ui
-                .button("Analyze BPM")
-                .on_hover_text("Find the tempo of this audio next")
-                .clicked()
+        // Always there, greyed out when nothing can be analyzed: an item appearing as a
+        // download or an analysis lands would move the ones below it under the pointer.
+        if ui
+            .add_enabled(analyzable, egui::Button::new("Analyze BPM"))
+            .on_hover_text("Find the tempo of this audio next")
+            .on_disabled_hover_text(
+                "Nothing to analyze: no audio downloaded, or its tempo is known",
+            )
+            .clicked()
         {
             actions.push(Action::Dig(DigAction::AnalyzeBpm(ids.clone())));
             ui.close();
@@ -5522,7 +5549,7 @@ impl DiggrApp {
                 return;
             }
             if let Some(p) = installing {
-                ui.strong(format!("Installing yt-dlp: {p}%"));
+                ui.strong(ytdlp_progress("Installing", p));
                 ui.label("Previews start as soon as it's in place.");
                 if ui.button("Hide").clicked() {
                     choice = Some(false);
@@ -5758,7 +5785,7 @@ impl DiggrApp {
                 let mut download = false;
                 ui.horizontal(|ui| {
                     match (&d.ytdlp, d.ytdlp_download) {
-                        (_, Some(p)) => ui.label(format!("Downloading yt-dlp: {p}%")),
+                        (_, Some(p)) => ui.label(ytdlp_progress("Downloading", p)),
                         (YtDlpState::Found { version, managed }, _) => {
                             let whose = if *managed {
                                 "downloaded by the app"

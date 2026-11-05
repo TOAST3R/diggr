@@ -17,7 +17,7 @@
 //! here too, one at a time and at least [`READ_GAP`] apart, as they run the same yt-dlp.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -74,6 +74,13 @@ pub fn horizon(order: &[Option<String>], start: usize, armed: Option<&str>) -> V
 
 /// Finds a fetcher (yt-dlp) for a configured path, with its version.
 pub type Finder = Arc<dyn Fn(Option<&str>) -> Option<(Arc<dyn Fetcher>, String)> + Send + Sync>;
+
+/// A fetcher for the app's own yt-dlp at this path, without starting it (its version is known).
+pub type Opener = Arc<dyn Fn(&Path) -> Arc<dyn Fetcher> + Send + Sync>;
+
+pub fn system_opener() -> Opener {
+    Arc::new(|path| Arc::new(super::fetcher::YtDlp::at(path.to_path_buf())) as Arc<dyn Fetcher>)
+}
 
 pub fn system_finder() -> Finder {
     Arc::new(|configured| {
@@ -248,6 +255,8 @@ pub struct Config {
     pub tools: Option<Tools>,
     /// Treat several clips failing in a row as an outdated yt-dlp (the guided setup, Windows).
     pub outdated_check: bool,
+    /// Opens the app's own copy, found by its recorded version (tests give a fake).
+    pub open: Opener,
 }
 
 /// Where the app keeps its own yt-dlp (`<cache>/tools`), and where releases come from. The
@@ -272,6 +281,7 @@ impl Config {
             samples: Arc::new(Samples::default()),
             tools: None,
             outdated_check: false,
+            open: system_opener(),
         }
     }
 }
@@ -325,6 +335,8 @@ struct Scheduler {
     fetcher: Option<Arc<dyn Fetcher>>,
     /// When yt-dlp was last looked for; `None`: never.
     looked: Option<Instant>,
+    /// The one-file copy was replaced (or that was tried) this session.
+    replaced_legacy: bool,
     said_missing: bool,
     /// The yt-dlp in use is the app's own copy, at `version`.
     managed: bool,
@@ -381,12 +393,26 @@ impl Scheduler {
     fn look(&mut self) {
         self.looked = Some(Instant::now());
         let user = (self.finder)(self.cfg.program.as_deref()).map(|f| (f, false));
-        // The app's own copy only when the user has none.
+        // The app's own copy only when the user has none: found by the version recorded when
+        // it was installed, never started for that (a copy from before versions were recorded
+        // is started, as it was then). The one-file copy the folder build replaces never is.
         let found = user.or_else(|| {
-            let program = tools::program(&self.cfg.tools.as_ref()?.dir);
+            let dir = &self.cfg.tools.as_ref()?.dir;
+            if let Some((program, version)) = tools::installed(dir) {
+                return Some((((self.cfg.open)(&program), version), true));
+            }
+            if tools::legacy(dir).is_some() {
+                return None;
+            }
+            let program = tools::program(dir);
             program.exists().then_some(())?;
             (self.finder)(Some(&program.to_string_lossy())).map(|f| (f, true))
         });
+        // While a copy is being installed, it is announced when it is in place.
+        if found.is_none() && (self.installing || self.replace_legacy()) {
+            self.fetcher = None;
+            return;
+        }
         match found {
             Some(((f, version), managed)) => {
                 if self.fetcher.is_none() || self.said_missing {
@@ -1133,6 +1159,20 @@ impl Scheduler {
 
 impl Scheduler {
     /// Downloads the app's own yt-dlp, once at a time.
+    /// The one-file copy earlier versions installed (macOS) is replaced by the folder build
+    /// without asking again (the user already said yes), once a session: whether that started.
+    fn replace_legacy(&mut self) -> bool {
+        let Some(t) = &self.cfg.tools else {
+            return false;
+        };
+        if self.replaced_legacy || tools::legacy(&t.dir).is_none() {
+            return false;
+        }
+        self.replaced_legacy = true;
+        self.install();
+        self.installing
+    }
+
     fn install(&mut self) {
         let Some(t) = &self.cfg.tools else { return };
         if self.installing {
@@ -1258,6 +1298,7 @@ impl PreviewHandle {
             inbox: tx.clone(),
             fetcher: None,
             looked: None,
+            replaced_legacy: false,
             said_missing: false,
             managed: false,
             version: String::new(),
@@ -1393,6 +1434,7 @@ mod tests {
             inbox: tx,
             fetcher: None,
             looked: None,
+            replaced_legacy: false,
             said_missing: false,
             managed: false,
             version: String::new(),

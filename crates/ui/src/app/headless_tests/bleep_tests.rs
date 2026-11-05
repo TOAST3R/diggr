@@ -72,6 +72,7 @@ fn rig(name: &str, fakes: &Fakes, token: bool) -> Rig {
                 images: FakeImages::new(Ok(test_jpeg(300, 300))),
                 clock: Arc::new(RealClock::default()),
                 finder,
+                opener: dig::preview::scheduler::system_opener(),
                 samples: f.fetcher.clone(),
                 browser: f.browser.clone(),
                 cache_root: Some(dir.join("cache")),

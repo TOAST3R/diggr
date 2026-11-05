@@ -28,5 +28,5 @@
 
 - [x] 6.1 README: connecting with Discogs, the personal token as the alternative, where the credentials are kept; the test count
 - [x] 6.2 CHANGELOG `## Unreleased` with the `changelog` skill
-- [ ] 6.3 The four checks from AGENTS.md and `cargo xwin check`
+- [x] 6.3 The four checks from AGENTS.md and `cargo xwin check`
 - [x] 6.4 A real connection on the Mac and on Windows (the bridge route and the one-time listener raise no firewall prompt); record in `findings.md`

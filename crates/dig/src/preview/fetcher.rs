@@ -30,6 +30,8 @@ pub const BANDCAMP_EXT: &str = "mp3";
 const BANDCAMP_FORMAT: &str = "mp3-128/bestaudio[ext=mp3]";
 /// A Bandcamp page that hasn't been read by then is given up on.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a yt-dlp the user installed has to answer `--version` when it is looked for.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
@@ -219,6 +221,35 @@ impl YtDlp {
         }
     }
 
+    /// `yt-dlp --version`'s first line, if it answers within `limit`; otherwise it is stopped,
+    /// with every process it started.
+    pub fn version_within(&self, limit: Duration) -> Option<String> {
+        let mut child = self
+            .command()
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = Instant::now() + limit;
+        loop {
+            match child.try_wait().ok()? {
+                Some(s) if s.success() => break,
+                Some(_) => return None,
+                None if Instant::now() > deadline => {
+                    proc::stop(&mut child);
+                    return None;
+                }
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        let mut out = String::new();
+        child.stdout.take()?.read_to_string(&mut out).ok()?;
+        let v = out.lines().next()?.trim();
+        (!v.is_empty()).then(|| v.to_owned())
+    }
+
     /// A command for this yt-dlp, its leading arguments already given.
     fn command(&self) -> std::process::Command {
         let mut c = proc::command(&self.program);
@@ -284,8 +315,7 @@ impl YtDlp {
             match child.try_wait() {
                 Ok(Some(s)) => break s,
                 Ok(None) if Instant::now() > deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    proc::stop(&mut child);
                     return Err(FetchError::Failed(format!("{what} timed out")));
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
@@ -373,8 +403,7 @@ impl Fetcher for YtDlp {
                 progress(p);
             }
             if cancel.load(Ordering::Acquire) {
-                let _ = child.kill();
-                let _ = child.wait();
+                proc::stop(&mut child);
                 remove_partial(dir, clip);
                 return Err(FetchError::Cancelled);
             }
@@ -398,31 +427,7 @@ impl Fetcher for YtDlp {
     }
 
     fn version(&self) -> Option<String> {
-        let mut child = self
-            .command()
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match child.try_wait().ok()? {
-                Some(s) if s.success() => break,
-                Some(_) => return None,
-                None if Instant::now() > deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                None => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
-        let mut out = String::new();
-        child.stdout.take()?.read_to_string(&mut out).ok()?;
-        let v = out.lines().next()?.trim();
-        (!v.is_empty()).then(|| v.to_owned())
+        self.version_within(PROBE_TIMEOUT)
     }
 
     fn search(&self, query: &str) -> Result<Vec<SearchResult>, FetchError> {
@@ -1008,6 +1013,44 @@ mod tests {
         // A user's own `yt-dlp.exe` or `yt-dlp_macos` beside them is never taken for the zip app.
         for name in ["yt-dlp.exe", "yt-dlp_macos"] {
             assert!(YtDlp::at(tools.join(name)).lead.is_empty(), "{name}");
+        }
+    }
+
+    /// A yt-dlp that hangs on `--version` after starting a process of its own (as PyInstaller's
+    /// launcher starts Python) is stopped with that process.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_probe_leaves_nothing_running() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_dir("fetch-hung-probe");
+        let pid_file = dir.join("child.pid");
+        let program = dir.join("yt-dlp");
+        let script = format!(
+            "#!/bin/sh\nsleep 30 &\necho $! > '{}'\nsleep 30\n",
+            pid_file.display()
+        );
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        assert_eq!(
+            YtDlp::at(program).version_within(Duration::from_secs(3)),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_secs(8));
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the probe's own process was left running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 

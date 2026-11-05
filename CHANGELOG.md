@@ -15,6 +15,17 @@ sentences. `## Unreleased` collects entries until a release renames it.
   account is connected: no developer settings, no token to copy. A personal token still works
   under "Use a personal token instead", and Disconnect forgets either one.
 
+### Fixed
+
+- **Previews work on a Mac again.** The yt-dlp Diggr downloads for you now starts in about a
+  second instead of never, after a one-time "Preparing yt-dlp…" of up to a minute. If you had
+  the old copy, Diggr swaps it by itself, and a slow yt-dlp can no longer pile up in the
+  background and slow your Mac down. To win back the disk space the old copy wasted, you can
+  delete the `_MEI` folders in your temporary folder.
+- **A track's menu holds still.** Analyze BPM is always in the right-click menu now, greyed
+  out when there's nothing to analyze, so the items below it no longer jump as a preview
+  finishes downloading while you aim for one.
+
 ## 0.1.5 — 2026-11-04
 
 ### Improved

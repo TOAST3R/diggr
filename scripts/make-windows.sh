@@ -2,15 +2,16 @@
 # Builds dist/Diggr-<version>-x86_64-windows.zip on this Mac: Diggr.exe cross-built for Windows 10
 # and later, with a README.txt that gives the first-open steps and the GPL as LICENSE.txt.
 #
-# The exe is built with cargo-xwin (clang-cl and lld from Homebrew's llvm and lld, Microsoft's
+# The exe is built with cargo-xwin (LLVM's clang-cl, lld-link, llvm-lib and llvm-rc, Microsoft's
 # CRT fetched once) for x86_64-pc-windows-msvc, with the C runtime linked in (.cargo/config.toml).
 # Then the exe is checked: it must be a GUI program (no console window), and every DLL it imports
 # must be one Windows provides, so a Windows 10 without the Visual C++ Redistributable runs it.
 # The zip must be at most 25 MB. The Discogs consumer key and secret (Connect with Discogs) come
 # from scripts/discogs-keys.sh.
 #
-# Needs: `cargo install cargo-xwin --locked`, `brew install llvm lld`,
-# `rustup target add x86_64-pc-windows-msvc`.
+# Needs: `cargo install cargo-xwin --locked`, `rustup target add x86_64-pc-windows-msvc`, and
+# LLVM: Homebrew's llvm and lld (`brew install llvm lld`, found without being on the PATH), or,
+# where Homebrew doesn't install (Intel Macs), conda-forge's on the PATH (see README).
 #
 # Usage: scripts/make-windows.sh [--dry-run]   (--dry-run only says what it would build)
 #   LLVM_OBJDUMP overrides the llvm-objdump used for the checks (the tests of this script use it).
@@ -31,14 +32,21 @@ source scripts/discogs-keys.sh
 discogs_keys_say
 [[ "${1:-}" == "--dry-run" ]] && { echo "Dry run: would write $ZIP."; exit 0; }
 
-for prefix in llvm lld; do
-    dir=$(brew --prefix "$prefix" 2>/dev/null) || { echo "Missing: brew install $prefix" >&2; exit 1; }
-    PATH="$dir/bin:$PATH"
-done
+if command -v brew >/dev/null 2>&1; then
+    for prefix in llvm lld; do
+        dir=$(brew --prefix "$prefix" 2>/dev/null) && [[ -d "$dir/bin" ]] && PATH="$dir/bin:$PATH"
+    done
+fi
 export PATH
+for tool in clang-cl lld-link llvm-lib llvm-rc; do
+    command -v "$tool" >/dev/null || {
+        echo "Missing $tool: on Apple Silicon \`brew install llvm lld\`; on Intel, see README, Build a release" >&2
+        exit 1
+    }
+done
 cargo xwin --version >/dev/null 2>&1 || { echo "Missing: cargo install cargo-xwin --locked" >&2; exit 1; }
 OBJDUMP=${LLVM_OBJDUMP:-llvm-objdump}
-command -v "$OBJDUMP" >/dev/null || { echo "Missing llvm-objdump: brew install llvm" >&2; exit 1; }
+command -v "$OBJDUMP" >/dev/null || { echo "Missing llvm-objdump (it comes with LLVM)" >&2; exit 1; }
 rustup target add "$TARGET" >/dev/null 2>&1
 
 echo "==> Building $TARGET"
