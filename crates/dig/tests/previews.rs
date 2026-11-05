@@ -216,13 +216,17 @@ fn missing_yt_dlp_waits_and_downloads_once_installed() {
     ));
 }
 
+/// The paths a test's finder was given (`None`: the user's yt-dlp, looked for on the PATH).
+type Asked = Arc<std::sync::Mutex<Vec<Option<String>>>>;
+
 /// A scheduler whose user has no yt-dlp, and whose own copy (a stand-in script) comes from
-/// `source`; the fake fetcher answers only for the app's copy, once it exists.
-fn start_with_tools(
+/// `source`; the fake fetcher answers for the app's copy, once it exists: opened by its recorded
+/// version, or (a copy without one) found by the finder, which notes every path it is given.
+fn start_tools(
     name: &str,
     fake: &Arc<FakeFetcher>,
     source: &Arc<FakeSource>,
-) -> (PreviewHandle, TestDir) {
+) -> (PreviewHandle, TestDir, Asked) {
     let d = dir(name);
     let mut cfg = Config::new(d.join("previews"), 2_000_000_000, None);
     cfg.recheck = Duration::from_millis(100);
@@ -231,14 +235,28 @@ fn start_with_tools(
         source: source.clone(),
     });
     let f = fake.clone();
+    cfg.open = Arc::new(move |_| f.clone() as Arc<dyn Fetcher>);
+    let asked: Asked = Arc::default();
+    let (f, a) = (fake.clone(), asked.clone());
     let finder: Finder = Arc::new(move |path| {
+        a.lock().unwrap().push(path.map(str::to_owned));
         let found = path.is_some_and(|p| std::path::Path::new(p).exists());
         found.then(|| (f.clone() as Arc<dyn Fetcher>, "2026.08.19".to_owned()))
     });
     (
         PreviewHandle::start(Arc::new(NativeSpawner), cfg, finder, || {}).unwrap(),
         d,
+        asked,
     )
+}
+
+fn start_with_tools(
+    name: &str,
+    fake: &Arc<FakeFetcher>,
+    source: &Arc<FakeSource>,
+) -> (PreviewHandle, TestDir) {
+    let (h, d, _) = start_tools(name, fake, source);
+    (h, d)
 }
 
 const SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
@@ -246,7 +264,7 @@ const SCRIPT: &[u8] = b"#!/bin/sh\necho 2026.08.19\n";
 #[test]
 fn waiting_entries_start_once_the_apps_own_yt_dlp_is_installed() {
     let fake = Arc::new(FakeFetcher::new(fixture()));
-    let source = Arc::new(FakeSource::new("2026.08.19", SCRIPT, true));
+    let source = Arc::new(FakeSource::release("2026.08.19"));
     let (h, d) = start_with_tools("tools-install", &fake, &source);
     want(&h, &[clip(1)]);
     until(&h, |ev| ev.contains(&PreviewEvent::NeedsYtDlp));
@@ -262,6 +280,86 @@ fn waiting_entries_start_once_the_apps_own_yt_dlp_is_installed() {
         managed: true
     }));
     assert!(tools::program(&d.join("tools")).exists());
+}
+
+/// The app's copy is found by the version recorded at install: it is never started for that.
+#[test]
+fn the_apps_copy_is_found_without_being_started() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::release("2026.10.26"));
+    let (h, d, asked) = start_tools("tools-found", &fake, &source);
+    let tools_dir = d.join("tools");
+    tools::install(&*source, &tools_dir, &|_| {}).unwrap();
+    want(&h, &[clip(1)]);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(ev.contains(&PreviewEvent::YtDlp {
+        version: "2026.10.26".into(),
+        managed: true
+    }));
+    let tools_path = tools_dir.to_string_lossy().into_owned();
+    let asked = asked.lock().unwrap().clone();
+    assert!(
+        asked.iter().flatten().all(|p| !p.starts_with(&tools_path)),
+        "the app's copy was started to be found: {asked:?}"
+    );
+}
+
+/// A Mac with the one-file copy an earlier version installed gets the folder build without
+/// being asked, and the one-file copy is never started.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_one_file_copy_is_replaced_by_the_folder_build() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::release("2026.10.26"));
+    let (h, d, asked) = start_tools("tools-legacy", &fake, &source);
+    // Nothing is looked for before the first `Want`.
+    std::fs::create_dir_all(d.join("tools")).unwrap();
+    std::fs::write(d.join("tools/yt-dlp"), SCRIPT).unwrap();
+    want(&h, &[clip(1)]);
+    let ev = until(&h, |ev| done_count(ev) == 1);
+    assert!(
+        !ev.contains(&PreviewEvent::NeedsYtDlp),
+        "never said missing: {ev:?}"
+    );
+    assert!(ev.contains(&PreviewEvent::YtDlpProgress(tools::PREPARING)));
+    assert!(ev.contains(&PreviewEvent::YtDlp {
+        version: "2026.10.26".into(),
+        managed: true
+    }));
+    assert!(
+        !d.join("tools/yt-dlp").exists(),
+        "the one-file copy is gone"
+    );
+    assert!(tools::installed(&d.join("tools")).is_some());
+    let old = d.join("tools/yt-dlp").to_string_lossy().into_owned();
+    assert!(
+        !asked.lock().unwrap().contains(&Some(old)),
+        "the one-file copy was started"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failed_replacement_falls_back_to_asking() {
+    let fake = Arc::new(FakeFetcher::new(fixture()));
+    let source = Arc::new(FakeSource::release("2026.10.26"));
+    source.files.lock().unwrap().remove(tools::ASSET);
+    let (h, d, _) = start_tools("tools-legacy-fail", &fake, &source);
+    std::fs::create_dir_all(d.join("tools")).unwrap();
+    std::fs::write(d.join("tools/yt-dlp"), SCRIPT).unwrap();
+    want(&h, &[clip(1)]);
+    let ev = until(&h, |ev| {
+        ev.iter()
+            .any(|e| matches!(e, PreviewEvent::YtDlpFailed(..)))
+            && ev.contains(&PreviewEvent::NeedsYtDlp)
+    });
+    let failed = ev
+        .iter()
+        .position(|e| matches!(e, PreviewEvent::YtDlpFailed(..)));
+    let missing = ev.iter().position(|e| *e == PreviewEvent::NeedsYtDlp);
+    assert!(failed < missing, "said missing only after the try: {ev:?}");
+    assert!(d.join("tools/yt-dlp").exists(), "kept until replaced");
+    assert!(fake.started().is_empty());
 }
 
 #[test]
@@ -304,26 +402,57 @@ fn the_users_own_yt_dlp_wins_and_is_never_updated() {
     );
 }
 
+/// A user's yt-dlp slower than the recheck never gets a second look started beside the first.
+#[test]
+fn looks_never_pile_up() {
+    use std::sync::atomic::AtomicUsize;
+    let d = dir("one-look");
+    let mut cfg = Config::new(d.to_path_buf(), 2_000_000_000, None);
+    cfg.recheck = Duration::from_millis(50);
+    let (running, most, calls) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (r, m, c) = (running.clone(), most.clone(), calls.clone());
+    let finder: Finder = Arc::new(move |_| {
+        let now = r.fetch_add(1, Ordering::SeqCst) + 1;
+        m.fetch_max(now, Ordering::SeqCst);
+        c.fetch_add(1, Ordering::SeqCst);
+        // Three rechecks' worth, then no yt-dlp.
+        std::thread::sleep(Duration::from_millis(150));
+        r.fetch_sub(1, Ordering::SeqCst);
+        None
+    });
+    let h = PreviewHandle::start(Arc::new(NativeSpawner), cfg, finder, || {}).unwrap();
+    want(&h, &[clip(1)]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while calls.load(Ordering::SeqCst) < 10 {
+        assert!(Instant::now() < deadline, "yt-dlp is looked for again");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(most.load(Ordering::SeqCst), 1, "one look at a time");
+}
+
 #[test]
 fn the_apps_copy_is_updated_while_previews_are_fetched() {
     let fake = Arc::new(FakeFetcher::new(fixture()));
-    let source = Arc::new(FakeSource::new("2026.08.19", SCRIPT, true));
+    let source = Arc::new(FakeSource::release("2026.08.19"));
     let (h, d) = start_with_tools("tools-update", &fake, &source);
-    // An older copy is installed, never checked.
-    std::fs::create_dir_all(d.join("tools")).unwrap();
-    std::fs::write(tools::program(&d.join("tools")), b"old").unwrap();
-    *source.tag.lock().unwrap() = "2099.01.01".into();
+    // An older copy is installed (from before versions were recorded), never checked.
+    let tools_dir = d.join("tools");
+    std::fs::create_dir_all(tools::program(&tools_dir).parent().unwrap()).unwrap();
+    std::fs::write(tools::program(&tools_dir), b"old").unwrap();
+    source.set_tag("2099.01.01");
     want(&h, &[clip(1)]);
     until(&h, |ev| done_count(ev) == 1);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while std::fs::read(tools::program(&d.join("tools"))).unwrap() == b"old" {
+    while tools::installed(&tools_dir).is_none() {
         assert!(Instant::now() < deadline, "the newer release is installed");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(
-        std::fs::read(tools::program(&d.join("tools"))).unwrap(),
-        SCRIPT
-    );
+    assert_eq!(tools::installed(&tools_dir).unwrap().1, "2099.01.01");
+    assert_ne!(std::fs::read(tools::program(&tools_dir)).unwrap(), b"old");
     assert!(d.join("tools/checked").exists());
 }
 

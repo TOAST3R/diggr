@@ -80,6 +80,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"                     # puts cargo on PATH in this shell
 rustup component add clippy rustfmt           # for the lint/format commands below
 rustup target add wasm32-unknown-unknown      # only for the web-portability check
+rustup target add x86_64-pc-windows-msvc      # only for the Windows check (needs the tools in Build a release)
 ```
 
 > **`zsh: command not found: cargo`?** Cargo is installed in `~/.cargo/bin`, but that folder
@@ -524,10 +525,15 @@ ahead of what plays. Other pasted text is ignored.
     (`brew install yt-dlp`, your package manager, or a path in the dialog if it isn't on the
     `PATH`), and the app never updates it; if clips keep failing, try `yt-dlp -U`. On a Mac or
     x86_64 Linux without one, the first preview asks "Previews need yt-dlp, a free downloader
-    (37 MB; 41 MB on Linux). Download it?": the app then fetches yt-dlp's official build for
+    (54 MB; 41 MB on Linux). Download it?": the app then fetches yt-dlp's official build for
     that system, installs it only if its
     SHA-256 matches the one published with the release, keeps it in the cache's `tools/`, and
-    checks for a newer release at most once a day while previews download. **Not now** isn't
+    checks for a newer release at most once a day while previews download. On a Mac that's
+    yt-dlp's folder build (`yt-dlp_macos.zip`, 129 MB unpacked), not the one-file
+    `yt-dlp_macos`, which macOS scans afresh at every start (about 50 s each): the app starts
+    it once while saying "Preparing yt-dlp… (the first start takes up to a minute)", and from
+    then on it starts in about a second. A Mac with the one-file copy an earlier version
+    downloaded gets the folder build by itself, without being asked again. **Not now** isn't
     asked again that session. The dialog shows the version and whether it's "installed by you"
     or "downloaded by the app", with **Download** or **Update now**. Until yt-dlp is there,
     entries say "needs yt-dlp" (elsewhere, install it yourself; it's found within 30 s).
@@ -1331,8 +1337,9 @@ master, catalog number and year), synced as described in [Digging Discogs](#digg
 `cart.ron` is your Discogs cart as last read (listing ids, releases, sellers, prices and
 subtotals), for the CART badges at launch, and `store-carts.ron` the Juno and Bleep baskets
 as the extension last read them (item ids and prices), for IN CART at launch. `tools/` holds the yt-dlp the app downloaded (only when
-you have none), on Windows with `python/` and `js/` (Deno) beside it, and `checked`, the time of
-its last update check.
+you have none): on macOS the folder `yt-dlp_macos/` (its version in `diggr-version` inside),
+elsewhere the file `yt-dlp` (its version in `yt-dlp.diggr-version`), on Windows with `python/`
+and `js/` (Deno) beside it; and `checked`, the time of its last update check.
 
 Other environment variables, mostly for unattended runs and measurements:
 
@@ -1348,7 +1355,7 @@ Other environment variables, mostly for unattended runs and measurements:
 ```sh
 scripts/make-dmg.sh             # dist/Diggr.app and dist/Diggr-<version>[-unsigned].dmg
 scripts/make-linux.sh           # dist/Diggr-<version>-x86_64-linux.tar.gz (needs Docker)
-scripts/make-windows.sh         # dist/Diggr-<version>-x86_64-windows.zip (needs cargo-xwin, llvm, lld)
+scripts/make-windows.sh         # dist/Diggr-<version>-x86_64-windows.zip (needs cargo-xwin and LLVM, see below)
 scripts/release.sh --unsigned --dry-run    # every check, then stops before tagging
 scripts/release.sh --unsigned [--prerelease] [--notes-file NOTES.md]
 ```
@@ -1377,8 +1384,32 @@ the tarball. On Apple Silicon the container runs under emulation, so the first b
 later ones are incremental.
 
 `make-windows.sh` cross-builds `Diggr.exe` for 64-bit Windows 10 and later from the Mac, with
-`cargo-xwin` (`cargo install cargo-xwin --locked`), Homebrew's `llvm` and `lld`
-(`brew install llvm lld`) and the `x86_64-pc-windows-msvc` target (which it adds). The C
+`cargo-xwin` (`cargo install cargo-xwin --locked`), LLVM's `clang-cl`, `lld-link`, `llvm-lib`,
+`llvm-rc` and `llvm-objdump`, and the `x86_64-pc-windows-msvc` target (which it adds). The
+`cargo xwin check` in [Tests](#tests) needs the same tools. Microsoft's CRT and Windows SDK
+headers are downloaded by `cargo-xwin` on first use (accepting Microsoft's license) and cached.
+How to get LLVM depends on the Mac:
+
+- **Apple Silicon:** install [Homebrew](https://brew.sh), then `brew install llvm lld`. Homebrew
+  doesn't put LLVM on the PATH, and the script doesn't need it to: it finds both with
+  `brew --prefix`. For `cargo xwin check` by hand, add them to `~/.zshrc` and open a new terminal:
+  `export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"`.
+- **Intel:** Homebrew no longer installs on Intel Macs, and LLVM's own downloads are Apple
+  Silicon only, so take LLVM from conda-forge with micromamba (one program, no admin password,
+  everything under `~/.local`):
+
+  ```sh
+  mkdir -p ~/.local/bin && cd ~/.local
+  curl -fsSL https://micro.mamba.pm/api/micromamba/osx-64/latest | tar -xj bin/micromamba
+  ~/.local/bin/micromamba create -y -r ~/.local/micromamba -p ~/.local/llvm -c conda-forge \
+      clang=23.1.4 clang-tools=23.1.4 lld=23.1.4 llvm-tools=23.1.4
+  echo 'export PATH="$HOME/.local/llvm/bin:$PATH"' >> ~/.zshrc   # then open a new terminal
+  ```
+
+  To remove it, delete `~/.local/llvm`, `~/.local/micromamba` and `~/.local/bin/micromamba`,
+  and the `export` line from `~/.zshrc`.
+
+Either way, `which clang-cl lld-link llvm-lib llvm-rc` must print four paths. The C
 runtime is linked into the exe (`.cargo/config.toml`), so a Windows without the Visual C++
 Redistributable runs it; the script fails if the exe imports `VCRUNTIME*`, `MSVCP*` or
 `ucrtbase`, or isn't a GUI program (a console exe would open a window behind the player). It
@@ -1409,10 +1440,11 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1052 tests, under a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1068 tests, under a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
+cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc   # Windows still compiles (tools: Build a release)
 ```
 
 Run a single test file or test with `cargo test -p audio --test engine` or
@@ -1535,15 +1567,23 @@ What's covered:
   albums read before), and a Bandcamp limit that leaves YouTube going. `crates/dig` also checks
   Bandcamp addresses, reads yt-dlp's answers from fixtures, and runs a real read and download by
   hand (`--ignored real_bandcamp`). `dig::tools` checks the yt-dlp installer against a fake
-  release: the checksum read for exactly `yt-dlp_macos`, a matching download installed and run,
-  a mismatched one leaving nothing behind, a failed one keeping the old copy, and update checks
-  once a day for newer releases only, or at once when forced; on Windows, the pinned Python
+  release: the checksum read for exactly `yt-dlp_macos.zip`, a matching download installed and
+  run, a mismatched one leaving nothing behind, a failed one keeping the old copy, and update
+  checks once a day for newer releases only, or at once when forced; the macOS folder build
+  unpacked whole, started once and stamped with its release, and refused (the old copy kept,
+  nothing half-installed) when it has no program, says another version, or hangs (stopped with
+  everything it started), the one-file copy it replaces deleted, and the app's copy found by
+  its recorded version (`--ignored real_ytdlp` installs the real release and times its second
+  start); on Windows, the pinned Python
   and Deno each unpacked whole or not at all (a wrong checksum, a missing file, a zip without
   its exe, an entry outside its folder, an older pin replaced), the whole install with its
   progress, and the app's copy started as Python running the zip app with Deno
-  (`--ignored real_pins` checks the real downloads against the pins). The scheduler reports a
-  user's yt-dlp as maybe out of date after three different clips fail in a row, and not when a
-  success comes between. Also
+  (`--ignored real_pins` checks the real downloads against the pins). A helper stopped at its
+  time limit stops with every process it started (`dig::proc`), so a hung yt-dlp leaves
+  nothing running. The scheduler reports a user's yt-dlp as maybe out of date after three
+  different clips fail in a row, and not when a success comes between; finds the app's copy
+  without starting it; never runs two lookups at once; and replaces a Mac's one-file copy
+  with the folder build without asking, falling back to the question if that fails. Also
   covered: the dig memory, and preparing a preview's score and overview behind the gate, its
   progress while a file is analyzed, a track put at the front going right after the one in
   progress, a file that fails being passed while the rest are still prepared, and workers

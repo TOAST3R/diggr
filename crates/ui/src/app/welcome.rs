@@ -263,7 +263,7 @@ impl DiggrApp {
                                     dig::tools::SIZE_MB
                                 ));
                                 if let Some(p) = installing {
-                                    ui.label(format!("Installing yt-dlp: {p}%"));
+                                    ui.label(super::digging::ytdlp_progress("Installing", p));
                                 } else {
                                     if let Some(why) = &error {
                                         ui.label(format!("It couldn't be installed: {why}"));
