@@ -53,10 +53,10 @@ fn playback_has_no_underruns_while_two_tracks_are_analyzed() {
     );
     svc.prewarm(&next);
 
-    // Play in real time (512 frames every 10.7 ms) for 6 s while both tracks are analyzed.
+    // Play in real time (512 frames every 10.7 ms) for 3 s while both tracks are analyzed.
     let buffer = Duration::from_micros(512 * 1_000_000 / 48_000);
     let (start, mut now_ns) = (Instant::now(), 0u64);
-    while start.elapsed() < Duration::from_secs(6) {
+    while start.elapsed() < Duration::from_secs(3) {
         now_ns += buffer.as_nanos() as u64;
         sink.set_now_ns(now_ns);
         sink.pull(

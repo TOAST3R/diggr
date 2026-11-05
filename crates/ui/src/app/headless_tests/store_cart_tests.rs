@@ -7,12 +7,9 @@ use super::*;
 use ::dig::bridge::{BridgeCommand, Mode};
 use ::dig::browser::FakeBrowser;
 use ::dig::carts::{BasketItem, CartAction, CartKind, CartResult, Outcome, ResultBody};
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::transport::FakeTransport;
 use ::dig::jobs::Filters;
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 use ::dig::stores::{Stock, Store, StoreRecord, StoreTrack};
 
 const PRODUCT: &str = "1170462-01";
@@ -41,25 +38,14 @@ fn rig_with(name: &str, cache: impl FnOnce(&Path) + 'static) -> (Rig, Fakes) {
         |_| {},
         move |dir| {
             cache(&dir.join("cache"));
-            let fetcher = f.fetcher.clone();
-            let finder: Finder = Arc::new(move |_| {
-                let v = fetcher.version()?;
-                Some((fetcher.clone() as Arc<dyn Fetcher>, v))
-            });
             Some(DigSetup {
-                transport: Arc::new(FakeTransport::default()),
-                images: FakeImages::new(Ok(test_jpeg(300, 300))),
-                clock: Arc::new(RealClock::default()),
-                finder,
-                opener: dig::preview::scheduler::system_opener(),
-                samples: f.fetcher.clone(),
-                browser: f.browser.clone(),
-                cache_root: Some(dir.join("cache")),
                 bridge: BridgeSetup::Port(0),
-                tools: None,
-                guided_ytdlp: false,
-                welcome: false,
-                consumer: None,
+                ..fake_dig(
+                    dir,
+                    Arc::new(FakeTransport::default()),
+                    &f.fetcher,
+                    f.browser.clone(),
+                )
             })
         },
     );
@@ -108,7 +94,7 @@ fn send(rig: &mut Rig, r: StoreRecord) {
 }
 
 fn first(rig: &Rig) -> crate::playlist::Entry {
-    rig.app.crates.get(PLAYLIST).unwrap().entries()[0].clone()
+    rig.entries(PLAYLIST)[0].clone()
 }
 
 fn pill(rig: &Rig) -> StorePill {
@@ -121,14 +107,6 @@ fn click_pill(rig: &mut Rig, format: Option<&str>) {
     let ctx = rig.ctx.clone();
     let a = DigAction::StoreCart(first(rig).id, format.map(str::to_owned));
     rig.app.apply(Action::Dig(a), &ctx);
-}
-
-fn message(rig: &Rig) -> String {
-    rig.app
-        .message
-        .as_ref()
-        .map(|(m, _)| m.clone())
-        .unwrap_or_default()
 }
 
 /// The fake extension: the next add or remove queued (reads at launch are answered empty).
@@ -150,7 +128,7 @@ fn next_action(rig: &Rig) -> Option<CartAction> {
 
 /// The fake extension answers `a` as `/v1/cart/result` would.
 fn answer(rig: &mut Rig, a: &CartAction, outcome: Outcome, basket: Option<Vec<BasketItem>>) {
-    let shared = rig.app.dig.as_ref().unwrap().bridge_shared.clone().unwrap();
+    let shared = rig.dig().bridge_shared.clone().unwrap();
     let body = ResultBody {
         id: a.id,
         outcome,
@@ -462,7 +440,7 @@ fn chooser(rig: &mut Rig) -> egui::FullOutput {
 }
 
 fn choosing(rig: &Rig) -> bool {
-    rig.app.dig.as_ref().unwrap().stores.buy.is_some()
+    rig.dig().stores.buy.is_some()
 }
 
 #[test]
@@ -545,6 +523,8 @@ fn a_juno_record_linked_to_discogs_chooses_between_them() {
         .as_mut()
         .unwrap()
         .release = Some(555);
+    // The fakes have no preview for it.
+    rig.close_not_found();
     assert!(pill(&rig).buy, "known on two stores");
     buy(&mut rig, id);
     let out = chooser(&mut rig);
@@ -563,7 +543,7 @@ fn a_discogs_record_a_juno_send_linked_gets_the_juno_basket() {
     let (mut rig, _) = rig("buy-linked");
     send(&mut rig, juno());
     // The send's record is linked to release 777 as a Discogs lookup would.
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     let seen = d.stores.memory_mut(Store::Juno).products.get_mut(PRODUCT);
     seen.expect("sent").release = Some(777);
     let id = discogs_entry(&mut rig, Some(777), "");
@@ -647,7 +627,7 @@ fn an_empty_crate_links_the_stores_and_the_extension() {
     assert_eq!(rig.app.crates.shown_id(), c, "the crate stays shown");
     let at = hint_link(&mut rig, "SET UP THE EXTENSION").expect("the extension link");
     rig.click(at.center());
-    assert!(rig.app.dig.as_ref().unwrap().bridge_dialog.is_some());
+    assert!(rig.dig().bridge_dialog.is_some());
 }
 
 #[test]
@@ -663,7 +643,7 @@ fn a_short_empty_crate_keeps_the_four_lines() {
 fn an_empty_crate_links_the_setup_steps_still_open() {
     let (mut rig, _) = rig("hint-setup");
     {
-        let d = rig.app.dig.as_mut().unwrap();
+        let d = rig.dig_mut();
         d.setup.welcome = true;
         // Not at launch here: only the links are looked at.
         d.settings.welcome.at_launch = false;
@@ -675,12 +655,12 @@ fn an_empty_crate_links_the_setup_steps_still_open() {
     assert!(hint_link(&mut rig, "SET UP THE EXTENSION").is_some());
     // Each opens the setup panel.
     rig.click(at.center());
-    assert!(rig.app.dig.as_ref().unwrap().welcome.open);
-    rig.app.dig.as_mut().unwrap().welcome.open = false;
+    assert!(rig.dig().welcome.open);
+    rig.dig_mut().welcome.open = false;
     // A declined step's link is gone.
-    rig.app.dig.as_mut().unwrap().settings.welcome.no_discogs = true;
+    rig.dig_mut().settings.welcome.no_discogs = true;
     assert!(hint_link(&mut rig, "CONNECT YOUR DISCOGS").is_none());
-    rig.app.dig.as_mut().unwrap().settings.welcome.no_browser = true;
+    rig.dig_mut().settings.welcome.no_browser = true;
     assert!(hint_link(&mut rig, "SET UP THE EXTENSION").is_none());
     assert!(hint_link(&mut rig, "BANDCAMP").is_some(), "the stores stay");
 }

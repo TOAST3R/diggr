@@ -7,13 +7,10 @@ use super::*;
 use crate::playlist::{EntryStatus, WaitKind};
 use ::dig::bridge::{BridgeCommand, Mode};
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::search::{Wanted, path};
 use ::dig::discogs::transport::FakeTransport;
 use ::dig::jobs::Filters;
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 use ::dig::preview::search::SearchResult;
 use ::dig::stores::{Store, StoreRecord};
 use serde_json::{Value, json};
@@ -28,10 +25,7 @@ struct Fakes {
 impl Fakes {
     /// Discogs has exactly one "Nightcraft - Glasshouse EP" (release 1001, in the fixtures).
     fn new() -> Self {
-        let transport = Arc::new(FakeTransport::with_fixtures(format!(
-            "{}/../dig/tests/fixtures/discogs",
-            env!("CARGO_MANIFEST_DIR")
-        )));
+        let transport = discogs_fixtures();
         transport.route(
             path(&Wanted::new("Nightcraft", "Glasshouse EP", "LT-012", true)),
             200,
@@ -62,26 +56,12 @@ fn rig(name: &str, fakes: &Fakes, token: bool) -> Rig {
             }
         },
         move |dir| {
-            let fetcher = f.fetcher.clone();
-            let finder: Finder = Arc::new(move |_| {
-                let v = fetcher.version()?;
-                Some((fetcher.clone() as Arc<dyn Fetcher>, v))
-            });
-            Some(DigSetup {
-                transport: f.transport.clone(),
-                images: FakeImages::new(Ok(test_jpeg(300, 300))),
-                clock: Arc::new(RealClock::default()),
-                finder,
-                opener: dig::preview::scheduler::system_opener(),
-                samples: f.fetcher.clone(),
-                browser: f.browser.clone(),
-                cache_root: Some(dir.join("cache")),
-                bridge: BridgeSetup::Off,
-                tools: None,
-                guided_ytdlp: false,
-                welcome: false,
-                consumer: None,
-            })
+            Some(fake_dig(
+                dir,
+                f.transport.clone(),
+                &f.fetcher,
+                f.browser.clone(),
+            ))
         },
     )
 }
@@ -122,7 +102,7 @@ fn send(rig: &mut Rig, records: Vec<StoreRecord>) {
 }
 
 fn says(rig: &Rig, i: usize, label: &str) -> String {
-    let e = &rig.app.crates.get(PLAYLIST).unwrap().entries()[i];
+    let e = &rig.entries(PLAYLIST)[i];
     crate::format::entry_details(e, rig.app.dig_marks(e), 0)
         .into_iter()
         .find(|(l, _)| *l == label)
@@ -167,16 +147,12 @@ fn a_bleep_release_comes_in_searched_with_its_note_and_page() {
         says(&rig, 0, "Bleep")
     );
     rig.until(
-        |r| {
-            r.app.crates.get(PLAYLIST).unwrap().entries()[0]
-                .status
-                .is_playable()
-        },
+        |r| r.entries(PLAYLIST)[0].status.is_playable(),
         "found and downloaded",
     );
     assert_eq!(says(&rig, 0, "Source"), "YouTube (found for Bleep)");
     // Open on Bleep, and pasted Bleep addresses are refused.
-    let id = rig.app.crates.get(PLAYLIST).unwrap().entries()[1].id;
+    let id = rig.entries(PLAYLIST)[1].id;
     let ctx = rig.ctx.clone();
     rig.app
         .apply(Action::Dig(DigAction::OpenStore(id, Store::Bleep)), &ctx);
@@ -192,7 +168,7 @@ fn a_bleep_release_comes_in_searched_with_its_note_and_page() {
         let m = rig.app.message.as_ref().map(|(m, _)| m.clone()).unwrap();
         assert_eq!(m, "Bleep pages are sent from the browser extension");
     }
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 2);
+    assert_eq!(rig.entries(PLAYLIST).len(), 2);
 }
 
 #[test]
@@ -212,11 +188,7 @@ fn a_list_record_stands_as_one_entry_until_discogs_brings_its_tracks() {
     rig.until(
         |r| {
             let titles: Vec<String> = r
-                .app
-                .crates
-                .get(PLAYLIST)
-                .unwrap()
-                .entries()
+                .entries(PLAYLIST)
                 .iter()
                 .map(|e| e.title.clone())
                 .collect();
@@ -279,5 +251,5 @@ fn five_hundred_bleep_records_go_in_quickly() {
         .min()
         .unwrap();
     assert!(best < Duration::from_millis(50), "{best:?}");
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 500);
+    assert_eq!(rig.entries(PLAYLIST).len(), 500);
 }

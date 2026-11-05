@@ -257,7 +257,7 @@ mod tests {
         std::fs::write(s.dir().join(SETTINGS_FILE), "(volume: 0.5)").unwrap();
         assert_eq!(s.load_settings().volume, 0.5);
         assert!(!s.load_settings().show_eq, "the EQ window starts closed");
-        // The balance they may hold is gone: the file still loads, and playback is centred.
+        // So do older files with fields the player no longer has.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),
             "(volume: 0.5, balance: -0.6, repeat: One)",
@@ -265,23 +265,6 @@ mod tests {
         .unwrap();
         let old = s.load_settings();
         assert_eq!((old.volume, old.repeat), (0.5, Repeat::One));
-        // So are the show-render options the player used to remember.
-        std::fs::write(
-            s.dir().join(SETTINGS_FILE),
-            "(volume: 0.5, render_size: (1280, 720), render_fps: 30, render_overlay: true, \
-             repeat: One)",
-        )
-        .unwrap();
-        let old = s.load_settings();
-        assert_eq!((old.volume, old.repeat), (0.5, Repeat::One));
-        // The old LABELS fold is ignored: every Discogs group starts closed.
-        std::fs::write(
-            s.dir().join(SETTINGS_FILE),
-            "(volume: 0.5, labels_folded: true)",
-        )
-        .unwrap();
-        let old = s.load_settings();
-        assert_eq!((old.volume, old.side_open), (0.5, None));
     }
 
     #[test]

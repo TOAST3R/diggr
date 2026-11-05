@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +185,16 @@ pub fn masked(token: &str) -> String {
     format!("••••{tail}")
 }
 
+/// Whether [`write_atomic`] flushes a file to the drive before renaming it into place.
+static FLUSH: AtomicBool = AtomicBool::new(!cfg!(test));
+
+/// Turns [`write_atomic`]'s flush off for the rest of the process. For test suites only: on
+/// macOS a flush is a full drive sync, which made the headless app tests (saving on many frames)
+/// three times slower. Without it a crash could leave an empty file behind.
+pub fn skip_flush_for_tests() {
+    FLUSH.store(false, Ordering::Relaxed);
+}
+
 /// Temp file and rename; `private` makes the file readable only by its owner from the start.
 pub fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     let parent = path.parent().expect("has parent");
@@ -204,7 +215,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
     let _ = private;
     let mut f = opts.open(&tmp)?;
     f.write_all(bytes)?;
-    f.sync_all()?;
+    if FLUSH.load(Ordering::Relaxed) {
+        f.sync_all()?;
+    }
     drop(f);
     std::fs::rename(tmp, path)
 }

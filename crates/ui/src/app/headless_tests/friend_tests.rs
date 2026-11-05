@@ -4,13 +4,10 @@
 
 use super::*;
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::client::ApiError;
 use ::dig::discogs::transport::FakeTransport;
 use ::dig::friends::FriendList;
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 
 #[derive(Clone)]
 struct Fakes {
@@ -21,10 +18,7 @@ struct Fakes {
 impl Fakes {
     fn new() -> Self {
         let f = Self {
-            transport: Arc::new(FakeTransport::with_fixtures(format!(
-                "{}/../dig/tests/fixtures/discogs",
-                env!("CARGO_MANIFEST_DIR")
-            ))),
+            transport: discogs_fixtures(),
             fetcher: Arc::new(FakeFetcher::new(fixture("tone.m4a"))),
         };
         f.transport.route("/cart", 200, "[]");
@@ -37,26 +31,12 @@ impl Fakes {
     }
 
     fn setup(&self, dir: &Path) -> DigSetup {
-        let f = self.fetcher.clone();
-        let finder: Finder = Arc::new(move |_| {
-            let v = f.version()?;
-            Some((f.clone() as Arc<dyn Fetcher>, v))
-        });
-        DigSetup {
-            transport: self.transport.clone(),
-            images: FakeImages::new(Ok(test_jpeg(300, 300))),
-            clock: Arc::new(RealClock::default()),
-            finder,
-            opener: dig::preview::scheduler::system_opener(),
-            samples: self.fetcher.clone(),
-            browser: Arc::new(FakeBrowser::default()),
-            cache_root: Some(dir.join("cache")),
-            bridge: BridgeSetup::Off,
-            tools: None,
-            guided_ytdlp: false,
-            welcome: false,
-            consumer: None,
-        }
+        fake_dig(
+            dir,
+            self.transport.clone(),
+            &self.fetcher,
+            Arc::new(FakeBrowser::default()),
+        )
     }
 
     fn requests(&self, part: &str) -> usize {
@@ -111,35 +91,12 @@ fn rig(name: &str, fakes: &Fakes, tracks: Vec<PathBuf>, prepare: impl FnOnce(&St
     rig
 }
 
-fn with_token(store: &Store) {
-    ::dig::config::save_token(store.dir(), Some("tok")).unwrap();
-}
-
 fn friends(rig: &Rig) -> &FriendList {
-    &rig.app.dig.as_ref().unwrap().friends
+    &rig.dig().friends
 }
 
 fn crate_of(rig: &Rig, user: &str) -> CrateId {
     friends(rig).find(user).expect("a friend").crate_id
-}
-
-/// Where `label` is drawn.
-fn at(rig: &mut Rig, label: &str) -> Pos2 {
-    let out = rig.frame(Vec::new());
-    texts(&out)
-        .into_iter()
-        .find(|t| t.text == label)
-        .unwrap_or_else(|| panic!("{label:?} is not on screen: {:?}", text_list(&out)))
-        .rect
-        .center()
-}
-
-fn message(rig: &Rig) -> String {
-    rig.app
-        .message
-        .as_ref()
-        .map(|(t, _)| t.clone())
-        .unwrap_or_default()
 }
 
 fn releases_in(rig: &Rig, c: CrateId) -> Vec<u64> {
@@ -236,7 +193,7 @@ fn a_list_read_this_week_is_not_read_again() {
         .unwrap();
     });
     rig.until(
-        |r| r.app.dig.as_ref().unwrap().cart.read_at > 0,
+        |r| r.dig().cart.read_at > 0,
         "the account's other lists are read",
     );
     for _ in 0..20 {
@@ -325,7 +282,7 @@ fn refresh_friend_follows_their_collection_and_stop_keeps_what_came() {
         &ctx,
     );
     rig.until(
-        |r| releases_in(r, javi) == [1001, 1002] && !r.app.dig.as_ref().unwrap().has_job_for(javi),
+        |r| releases_in(r, javi) == [1001, 1002] && !r.dig().has_job_for(javi),
         "dug",
     );
     // They sold 1001 and bought 1003.
@@ -341,7 +298,7 @@ fn refresh_friend_follows_their_collection_and_stop_keeps_what_came() {
         "the refresh says so",
     );
     rig.until(
-        |r| releases_in(r, javi) == [1002, 1003] && !r.app.dig.as_ref().unwrap().has_job_for(javi),
+        |r| releases_in(r, javi) == [1002, 1003] && !r.dig().has_job_for(javi),
         "the crate follows",
     );
 

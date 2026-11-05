@@ -7,12 +7,9 @@ use super::*;
 use crate::playlist::{ClipSource, EntryStatus, UnavailableKind, WaitKind};
 use ::dig::bridge::{BridgeCommand, Mode};
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::transport::FakeTransport;
 use ::dig::jobs::Filters;
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 use ::dig::preview::search::SearchResult;
 use ::dig::stores::{Store, StoreRecord};
 use serde_json::{Value, json};
@@ -46,26 +43,12 @@ fn rig(name: &str, fakes: &Fakes) -> Rig {
         Vec::new(),
         |_| {},
         move |dir| {
-            let fetcher = f.fetcher.clone();
-            let finder: Finder = Arc::new(move |_| {
-                let v = fetcher.version()?;
-                Some((fetcher.clone() as Arc<dyn Fetcher>, v))
-            });
-            Some(DigSetup {
-                transport: f.transport.clone(),
-                images: FakeImages::new(Ok(test_jpeg(300, 300))),
-                clock: Arc::new(RealClock::default()),
-                finder,
-                opener: dig::preview::scheduler::system_opener(),
-                samples: f.fetcher.clone(),
-                browser: f.browser.clone(),
-                cache_root: Some(dir.join("cache")),
-                bridge: BridgeSetup::Off,
-                tools: None,
-                guided_ytdlp: false,
-                welcome: false,
-                consumer: None,
-            })
+            Some(fake_dig(
+                dir,
+                f.transport.clone(),
+                &f.fetcher,
+                f.browser.clone(),
+            ))
         },
     )
 }
@@ -112,7 +95,7 @@ fn chart() -> Vec<StoreRecord> {
 }
 
 fn tip(rig: &Rig, i: usize) -> Vec<(&'static str, String)> {
-    let e = &rig.app.crates.get(PLAYLIST).unwrap().entries()[i];
+    let e = &rig.entries(PLAYLIST)[i];
     crate::format::entry_details(e, rig.app.dig_marks(e), 0)
 }
 
@@ -151,11 +134,7 @@ fn a_beatport_chart_comes_in_order_with_bpm_key_and_samples() {
     assert!(says(&t, "Beatport").starts_with("€1.39 (seen "), "{t:?}");
     assert_eq!(ClipSource::Beatport.badge(), "BP");
     rig.until(
-        |r| {
-            r.app.crates.get(PLAYLIST).unwrap().entries()[0]
-                .status
-                .is_playable()
-        },
+        |r| r.entries(PLAYLIST)[0].status.is_playable(),
         "the sample plays",
     );
     assert!(
@@ -164,7 +143,7 @@ fn a_beatport_chart_comes_in_order_with_bpm_key_and_samples() {
             .exists()
     );
     // The analyser's tempo takes over.
-    let key = rig.app.crates.get(PLAYLIST).unwrap().entries()[0].duplicate_key();
+    let key = rig.entries(PLAYLIST)[0].duplicate_key();
     rig.app.crates.get_mut(PLAYLIST).unwrap().set_bpm(&key, 126);
     assert_eq!(says(&tip(&rig, 0), "Tempo"), "126 BPM");
 }
@@ -174,7 +153,7 @@ fn open_on_beatport_and_pasted_store_addresses() {
     let fakes = Fakes::new();
     let mut rig = rig("beatport-open", &fakes);
     send(&mut rig, chart());
-    let id = rig.app.crates.get(PLAYLIST).unwrap().entries()[0].id;
+    let id = rig.entries(PLAYLIST)[0].id;
     let ctx = rig.ctx.clone();
     rig.app
         .apply(Action::Dig(DigAction::OpenStore(id, Store::Beatport)), &ctx);
@@ -193,7 +172,7 @@ fn open_on_beatport_and_pasted_store_addresses() {
             format!("{store} pages are sent from the browser extension")
         );
     }
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 3);
+    assert_eq!(rig.entries(PLAYLIST).len(), 3);
 }
 
 #[test]
@@ -255,11 +234,7 @@ fn a_traxsource_track_is_searched_for_and_keeps_its_store_details() {
     assert_eq!(p.entries()[0].title, "Rain (Extended Mix)");
     assert_eq!(says(&tip(&rig, 0), "Key"), "8A (A minor)");
     rig.until(
-        |r| {
-            r.app.crates.get(PLAYLIST).unwrap().entries()[0]
-                .status
-                .is_playable()
-        },
+        |r| r.entries(PLAYLIST)[0].status.is_playable(),
         "found and downloaded",
     );
     assert_eq!(
@@ -267,7 +242,7 @@ fn a_traxsource_track_is_searched_for_and_keeps_its_store_details() {
         "YouTube (found for Traxsource)"
     );
     // One not found keeps its BPM, key and page.
-    let id = rig.app.crates.get(PLAYLIST).unwrap().entries()[1].id;
+    let id = rig.entries(PLAYLIST)[1].id;
     rig.app
         .crates
         .get_mut(PLAYLIST)
@@ -315,7 +290,7 @@ fn five_hundred_beatport_tracks_go_in_quickly() {
         .min()
         .unwrap();
     assert!(best < Duration::from_millis(50), "{best:?}");
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 500);
+    assert_eq!(rig.entries(PLAYLIST).len(), 500);
 }
 
 #[test]
@@ -351,8 +326,8 @@ fn play_adds_to_the_crate_on_screen_and_plays_the_first_new_track() {
         "the new track plays",
     );
     assert_eq!(rig.app.crates.list().len(), crates, "no crate made");
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().entries().len(), 4);
+    assert_eq!(rig.entries(PLAYLIST).len(), 4);
     // A send adding nothing leaves nothing waiting to play.
     play(&mut rig, chart());
-    assert!(rig.app.dig.as_ref().unwrap().play_when_ready.is_none());
+    assert!(rig.dig().play_when_ready.is_none());
 }

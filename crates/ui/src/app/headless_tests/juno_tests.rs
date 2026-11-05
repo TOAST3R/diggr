@@ -7,14 +7,11 @@ use super::*;
 use crate::playlist::{ClipSource, UnavailableKind, WaitKind};
 use ::dig::bridge::{BridgeCommand, Mode};
 use ::dig::browser::FakeBrowser;
-use ::dig::clock::RealClock;
-use ::dig::cover::{FakeImages, test_jpeg};
 use ::dig::discogs::search::{Wanted, path};
 use ::dig::discogs::transport::FakeTransport;
 use ::dig::jobs::Filters;
 use ::dig::juno::{JunoRecord, JunoTrack, Stock};
-use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
-use ::dig::preview::scheduler::Finder;
+use ::dig::preview::fetcher::FakeFetcher;
 use ::dig::stores::Store;
 
 const PRODUCT: &str = "1178909-01";
@@ -30,10 +27,7 @@ impl Fakes {
     /// Discogs has exactly one "Rontgen (reissue)" (release 123456), two "Aste" and no
     /// "Kiila".
     fn new() -> Self {
-        let transport = Arc::new(FakeTransport::with_fixtures(format!(
-            "{}/../dig/tests/fixtures/discogs",
-            env!("CARGO_MANIFEST_DIR")
-        )));
+        let transport = discogs_fixtures();
         transport.route(
             path(&Wanted::new("0 aka Mika Vainio", "Rontgen (reissue)", "SAHKO 00012", true)),
             200,
@@ -69,26 +63,12 @@ impl Fakes {
     }
 
     fn setup(&self, dir: &Path) -> DigSetup {
-        let f = self.fetcher.clone();
-        let finder: Finder = Arc::new(move |_| {
-            let v = f.version()?;
-            Some((f.clone() as Arc<dyn Fetcher>, v))
-        });
-        DigSetup {
-            transport: self.transport.clone(),
-            images: FakeImages::new(Ok(test_jpeg(300, 300))),
-            clock: Arc::new(RealClock::default()),
-            finder,
-            opener: dig::preview::scheduler::system_opener(),
-            samples: self.fetcher.clone(),
-            browser: self.browser.clone(),
-            cache_root: Some(dir.join("cache")),
-            bridge: BridgeSetup::Off,
-            tools: None,
-            guided_ytdlp: false,
-            welcome: false,
-            consumer: None,
-        }
+        fake_dig(
+            dir,
+            self.transport.clone(),
+            &self.fetcher,
+            self.browser.clone(),
+        )
     }
 
     fn searches(&self) -> usize {
@@ -112,14 +92,6 @@ fn rig(name: &str, fakes: &Fakes, token: bool) -> Rig {
         },
         move |dir| Some(f.setup(dir)),
     )
-}
-
-fn message(rig: &Rig) -> String {
-    rig.app
-        .message
-        .as_ref()
-        .map(|(m, _)| m.clone())
-        .unwrap_or_default()
 }
 
 fn track(side: &str, n: u8, title: &str, secs: u32, sample: &str) -> JunoTrack {
@@ -171,10 +143,7 @@ fn juno_note(rig: &Rig, e: &crate::playlist::Entry) -> Option<String> {
 }
 
 fn origin(rig: &Rig, i: usize) -> Origin {
-    rig.app.crates.get(PLAYLIST).unwrap().entries()[i]
-        .origin
-        .clone()
-        .unwrap()
+    rig.entries(PLAYLIST)[i].origin.clone().unwrap()
 }
 
 /// Lets the intake worker answer (Discogs lookups).
@@ -276,7 +245,7 @@ fn a_track_with_no_preview_gets_the_sample_and_nothing_is_doubled() {
     assert_eq!(o.other_sources(), [ClipSource::YouTube]);
     // Sent again: nothing changes.
     send(&mut rig, vec![rontgen()]);
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 2);
+    assert_eq!(rig.entries(PLAYLIST).len(), 2);
     assert!(
         message(&rig).ends_with("0 added, 0 fixed, 2 skipped"),
         "{}",
@@ -294,7 +263,7 @@ fn a_listing_item_with_one_sample_is_one_entry_named_after_the_record() {
     r.catno = String::new();
     r.tracks = vec![track("", 1, "", 0, "01-01")];
     send(&mut rig, vec![r]);
-    let e = &rig.app.crates.get(PLAYLIST).unwrap().entries()[0];
+    let e = &rig.entries(PLAYLIST)[0];
     assert_eq!(
         (e.artist.as_str(), e.title.as_str(), e.duration),
         ("Two Shell", "Infinite Now", None)
@@ -329,7 +298,7 @@ fn a_500_record_page_is_merged_at_once() {
     let started = std::time::Instant::now();
     send(&mut rig, records);
     let took = started.elapsed();
-    assert_eq!(rig.app.crates.get(PLAYLIST).unwrap().len(), 5_000);
+    assert_eq!(rig.entries(PLAYLIST).len(), 5_000);
     // The 50 ms target is for optimised builds; debug builds of this crate are far slower.
     let limit = if cfg!(debug_assertions) { 2_000 } else { 50 };
     assert!(took.as_millis() < limit, "took {took:?}");
@@ -361,7 +330,7 @@ fn exactly_one_discogs_release_links_the_record_once() {
     send(&mut rig, vec![rontgen(), aste, kiila]);
     rig.until(
         |r| {
-            r.app.crates.get(PLAYLIST).unwrap().entries()[0]
+            r.entries(PLAYLIST)[0]
                 .origin
                 .as_ref()
                 .is_some_and(|o| o.release.is_some())
@@ -375,27 +344,19 @@ fn exactly_one_discogs_release_links_the_record_once() {
     assert_eq!(origin(&rig, 3).release, None, "no release fits Kiila");
     // Y works on the linked record, and says why not on the other.
     let ctx = rig.ctx.clone();
-    let ids: Vec<EntryId> = rig
-        .app
-        .crates
-        .get(PLAYLIST)
-        .unwrap()
-        .entries()
-        .iter()
-        .map(|e| e.id)
-        .collect();
+    let ids: Vec<EntryId> = rig.entries(PLAYLIST).iter().map(|e| e.id).collect();
     rig.app
         .apply(Action::Dig(DigAction::Want(vec![ids[0]])), &ctx);
-    assert!(rig.app.dig.as_ref().unwrap().memory.is_wanted(123456));
+    assert!(rig.dig().memory.is_wanted(123456));
     rig.app
         .apply(Action::Dig(DigAction::Want(vec![ids[2]])), &ctx);
-    let name = rig.app.crates.get(PLAYLIST).unwrap().entries()[2].display_name();
+    let name = rig.entries(PLAYLIST)[2].display_name();
     assert_eq!(message(&rig), format!("{name} isn't linked to Discogs"));
     // Sent again: no lookup, and the link is applied at once.
     send(&mut rig, vec![rontgen()]);
     settle(&mut rig);
     assert_eq!(fakes.searches(), 3);
-    let mem = rig.app.dig.as_ref().unwrap().stores.memory(Store::Juno);
+    let mem = rig.dig().stores.memory(Store::Juno);
     assert_eq!(mem.products[PRODUCT].release, Some(123456));
     assert!(mem.products["1113596-01"].searched);
     assert!(mem.products["1113597-01"].searched);
@@ -445,7 +406,7 @@ fn the_note_shows_on_discogs_entries_of_the_release_and_opens_juno() {
         ["https://www.juno.co.uk/products/0-mika-vainio-rontgen-vinyl/1178909-01/"]
     );
     // A note from 40 days ago may have changed.
-    let d = rig.app.dig.as_mut().unwrap();
+    let d = rig.dig_mut();
     d.stores
         .memory_mut(Store::Juno)
         .products
@@ -516,7 +477,7 @@ fn juno_addresses_are_refused_when_pasted() {
         message(&rig),
         "Juno pages are sent from the browser extension"
     );
-    assert!(rig.app.crates.get(PLAYLIST).unwrap().is_empty());
+    assert!(rig.entries(PLAYLIST).is_empty());
 }
 
 #[test]
@@ -561,13 +522,9 @@ fn enqueue_never_fills_a_crate_the_app_fills_itself() {
         rig.app.show_crate(c);
         assert_eq!(rig.app.enqueue_target(), PLAYLIST);
         send(&mut rig, vec![rontgen()]);
-        assert!(rig.app.crates.get(c).unwrap().is_empty());
+        assert!(rig.entries(c).is_empty());
     }
-    assert_eq!(
-        rig.app.crates.get(PLAYLIST).unwrap().len(),
-        2,
-        "into the Playlist"
-    );
+    assert_eq!(rig.entries(PLAYLIST).len(), 2, "into the Playlist");
     let normal = rig.app.crates.create("Friday").unwrap();
     rig.app.show_crate(normal);
     assert_eq!(rig.app.enqueue_target(), normal);
