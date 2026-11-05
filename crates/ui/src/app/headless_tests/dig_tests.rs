@@ -741,6 +741,18 @@ fn the_discogs_dialog_checks_a_token_before_saving_it() {
         },
         "the dialog shows",
     );
+    // Why connect? opens the page that explains it.
+    rig.click_text("Why connect?");
+    assert_eq!(
+        fakes
+            .browser
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
+        Some(super::welcome::DISCOGS_WHY)
+    );
     let out = rig.frame(Vec::new());
     let field = texts(&out)
         .into_iter()
@@ -5531,6 +5543,16 @@ fn connect_with_discogs_through_a_one_time_address_when_the_bridge_is_off() {
         |r| shows(&r.frame(Vec::new()), "Connected as digger"),
         "the account shows",
     );
+    // Connected: said once, with Disconnect and no Connect with Discogs to click again.
+    let out = rig.frame(Vec::new());
+    let list = text_list(&out);
+    assert_eq!(
+        list.iter().filter(|t| *t == "Connected as digger").count(),
+        1,
+        "{list:?}"
+    );
+    assert!(shows(&out, "Disconnect"));
+    assert!(!shows(&out, "Connect with Discogs"), "{list:?}");
     let config = rig.dir.join("config");
     assert!(config.join("dig/oauth").exists());
     assert!(!config.join("dig/token").exists());
@@ -5672,6 +5694,23 @@ fn cancel_a_deny_the_wait_and_a_refusal_connect_nothing() {
     assert!(!connecting(&rig));
     assert!(rig.app.dig.as_ref().unwrap().auth.is_none());
     assert!(!rig.dir.join("config/dig/oauth").exists());
+
+    // Refused because this computer's clock is 46 minutes slow: the dialog says so.
+    fakes.transport.set_date(Some(
+        std::time::SystemTime::now() + Duration::from_secs(2748),
+    ));
+    rig.click_text("Connect with Discogs");
+    rig.until(
+        |r| {
+            texts(&r.frame(Vec::new())).iter().any(|t| {
+                t.text
+                    .starts_with("This computer's clock is 46 minutes slow")
+            })
+        },
+        "the dialog says the clock is wrong",
+    );
+    assert!(!connecting(&rig));
+    assert!(rig.app.dig.as_ref().unwrap().auth.is_none());
 }
 
 #[test]

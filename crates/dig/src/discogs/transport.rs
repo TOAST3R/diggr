@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub const API: &str = "https://api.discogs.com";
 pub const USER_AGENT: &str = concat!(
@@ -108,6 +108,9 @@ pub struct Response {
     pub status: u16,
     /// `X-Discogs-Ratelimit-Remaining`, when sent.
     pub remaining: Option<u32>,
+    /// The `Date` header: Discogs's clock, which tells a wrong clock here from a refused key
+    /// when a signed request gets a 401.
+    pub date: Option<SystemTime>,
     pub body: String,
 }
 
@@ -181,6 +184,11 @@ impl Transport for UreqTransport {
             .get("X-Discogs-Ratelimit-Remaining")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok());
+        let date = resp
+            .headers()
+            .get("Date")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| httpdate::parse_http_date(v).ok());
         let body = resp
             .into_body()
             .read_to_string()
@@ -188,6 +196,7 @@ impl Transport for UreqTransport {
         Ok(Response {
             status,
             remaining,
+            date,
             body,
         })
     }
@@ -220,6 +229,7 @@ pub struct FakeTransport {
     slow: Mutex<Vec<(String, Duration)>>,
     offline: std::sync::atomic::AtomicBool,
     remaining: Mutex<Option<u32>>,
+    date: Mutex<Option<SystemTime>>,
     log: Mutex<Vec<Logged>>,
     instances: std::sync::atomic::AtomicU64,
 }
@@ -280,6 +290,11 @@ impl FakeTransport {
         *self.remaining.lock().unwrap() = n;
     }
 
+    /// The `Date` header sent with every answer (none by default).
+    pub fn set_date(&self, date: Option<SystemTime>) {
+        *self.date.lock().unwrap() = date;
+    }
+
     /// Requests seen, with their headers, oldest first.
     pub fn log(&self) -> Vec<Logged> {
         self.log.lock().unwrap().clone()
@@ -315,6 +330,7 @@ impl Transport for FakeTransport {
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(NetError("offline".into()));
         }
+        let date = *self.date.lock().unwrap();
         let fault = self.faults.lock().unwrap().pop_front();
         match fault {
             Some(Fault::Network) => return Err(NetError("connection reset".into())),
@@ -322,6 +338,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status: s,
                     remaining: *self.remaining.lock().unwrap(),
+                    date,
                     body: String::new(),
                 });
             }
@@ -335,6 +352,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status,
                     remaining,
+                    date,
                     body,
                 });
             }
@@ -348,6 +366,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status: 201,
                     remaining,
+                    date,
                     body: format!(r#"{{"instance_id": {}}}"#, 900_001 + n),
                 });
             }
@@ -356,6 +375,7 @@ impl Transport for FakeTransport {
                 return Ok(Response {
                     status,
                     remaining,
+                    date,
                     body: String::new(),
                 });
             }
@@ -370,6 +390,7 @@ impl Transport for FakeTransport {
         Ok(Response {
             status,
             remaining,
+            date,
             body,
         })
     }

@@ -164,6 +164,47 @@ pub fn timestamp() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// How far this computer's clock may be from Discogs's before a refused signed request is
+/// blamed on the clock: every OAuth request carries its time, and Discogs refuses one too far
+/// from its own (seen: a Mac 46 minutes slow).
+pub const CLOCK_SLACK: Duration = Duration::from_secs(5 * 60);
+
+/// Seconds this computer's clock is behind Discogs's (`server`, its `Date` header), negative
+/// when ahead; `None` within [`CLOCK_SLACK`] or without a date.
+pub fn clock_off(server: Option<SystemTime>, now: SystemTime) -> Option<i64> {
+    let server = server?;
+    let off = match server.duration_since(now) {
+        Ok(behind) => behind.as_secs() as i64,
+        Err(ahead) => -(ahead.duration().as_secs() as i64),
+    };
+    (off.unsigned_abs() > CLOCK_SLACK.as_secs()).then_some(off)
+}
+
+/// What to tell the user when the clock is `off` seconds behind Discogs (negative: ahead),
+/// with where their system sets the time.
+pub fn clock_message(off: i64) -> String {
+    let n = off.unsigned_abs();
+    let (count, unit) = if n < 2 * 3600 {
+        ((n + 30) / 60, "minute")
+    } else if n < 2 * 86400 {
+        ((n + 1800) / 3600, "hour")
+    } else {
+        ((n + 43200) / 86400, "day")
+    };
+    let s = if count == 1 { "" } else { "s" };
+    let way = if off > 0 { "slow" } else { "fast" };
+    let fix = if cfg!(target_os = "macos") {
+        "turn on Set time and date automatically in System Settings ▸ General ▸ Date & Time"
+    } else if cfg!(windows) {
+        "turn on Set time automatically in Settings ▸ Time & language ▸ Date & time"
+    } else {
+        "set the date and time automatically in your system settings"
+    };
+    format!(
+        "This computer's clock is {count} {unit}{s} {way}, so Discogs refused it; {fix}, then try again"
+    )
+}
+
 /// The callback Discogs is given: diggr.es, with the port the app listens on.
 pub fn callback(port: u16) -> String {
     format!("{CALLBACK}?port={port}")
@@ -445,6 +486,42 @@ mod tests {
         assert_eq!(f["oauth_token_secret"], "x+y z");
         assert_eq!(f["oauth_callback_confirmed"], "true");
         assert_eq!(parse_form("a=%"), HashMap::from([("a".into(), "%".into())]));
+    }
+
+    #[test]
+    fn a_clock_off_by_more_than_the_slack_is_reported() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let at = |s: i64| {
+            Some(if s >= 0 {
+                now + Duration::from_secs(s as u64)
+            } else {
+                now - Duration::from_secs(s.unsigned_abs())
+            })
+        };
+        assert_eq!(clock_off(None, now), None, "no Date header");
+        assert_eq!(clock_off(at(0), now), None);
+        assert_eq!(clock_off(at(300), now), None, "within 5 minutes");
+        assert_eq!(clock_off(at(-300), now), None);
+        assert_eq!(
+            clock_off(at(2748), now),
+            Some(2748),
+            "the Mac 46 minutes slow"
+        );
+        assert_eq!(clock_off(at(-3 * 3600), now), Some(-3 * 3600));
+    }
+
+    #[test]
+    fn the_clock_message_says_how_far_and_which_way() {
+        let m = clock_message(2748);
+        assert!(
+            m.starts_with("This computer's clock is 46 minutes slow, so Discogs refused it; "),
+            "{m}"
+        );
+        assert!(m.ends_with(", then try again"), "{m}");
+        assert!(m.contains("automatically"), "{m}");
+        assert!(clock_message(-60).contains("is 1 minute fast"));
+        assert!(clock_message(3 * 3600).contains("is 3 hours slow"));
+        assert!(clock_message(-400 * 86400).contains("is 400 days fast"));
     }
 
     #[test]

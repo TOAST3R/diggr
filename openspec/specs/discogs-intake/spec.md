@@ -7,7 +7,7 @@ Turns a Discogs page (a release, master release, artist, label, wantlist or list
 
 ### Requirement: Discogs account
 The user SHALL be able to connect a Discogs account in Options ▸ Discogs… in two ways:
-- **Connect with Discogs** (offered first): the app SHALL open Discogs' authorization page in the default browser and receive the user's answer, for at most 5 minutes, through the callback page `https://diggr.es/discogs/callback`, which forwards it to the bridge on this machine; the bridge SHALL accept only the one answer it waits for. Before opening the authorization page, the app SHALL be listening for the answer: on the bridge, or, when the bridge isn't running, on a one-time local address on a free port; it SHALL tell Discogs the port it listens on. The callback page SHALL never hold the app's consumer secret. On Authorize it SHALL obtain an access token and secret, and sign every later Discogs request with them (OAuth 1.0a). Cancel, a refusal or the 5 minutes passing SHALL leave the account unconnected and say why.
+- **Connect with Discogs** (offered first): the app SHALL open Discogs' authorization page in the default browser and receive the user's answer, for at most 5 minutes, through the callback page `https://diggr.es/discogs/callback`, which forwards it to the bridge on this machine; the bridge SHALL accept only the one answer it waits for. Before opening the authorization page, the app SHALL be listening for the answer: on the bridge, or, when the bridge isn't running, on a one-time local address on a free port; it SHALL tell Discogs the port it listens on. The callback page SHALL never hold the app's consumer secret. On Authorize it SHALL obtain an access token and secret, and sign every later Discogs request with them (OAuth 1.0a). Cancel, a refusal or the 5 minutes passing SHALL leave the account unconnected and say why. When Discogs refuses a signed request and its `Date` header is more than 5 minutes from this computer's clock, the app SHALL say the clock is wrong, by how much and which way, and where the system sets the time, instead of saying the account was refused.
 - **A personal access token** ("Use a personal token instead"), as before.
 
 The app SHALL check either with Discogs and show the account's username, or say that it was rejected. Credentials SHALL be stored only in the user's config folder, in files only the user can read, and SHALL never be shown in full or written to a log; connecting one way SHALL remove the other's credentials, and Disconnect SHALL remove both. Without an account, pages SHALL still be expanded, at the unauthenticated rate limit, and actions that need an account (adding to the wantlist, reading a private wantlist) SHALL say that an account is needed.
@@ -19,6 +19,10 @@ The app SHALL check either with Discogs and show the account's username, or say 
 #### Scenario: Not authorized
 - **WHEN** the user closes the browser tab without authorizing, and 5 minutes pass
 - **THEN** the dialog says Discogs didn't answer, the local address no longer answers, and nothing is saved
+
+#### Scenario: Wrong clock
+- **WHEN** this computer's clock is 46 minutes slow and the user clicks Connect with Discogs
+- **THEN** the dialog says the clock is 46 minutes slow and how to set the time automatically, and nothing is saved
 
 #### Scenario: Valid token
 - **WHEN** the user enters a valid personal token

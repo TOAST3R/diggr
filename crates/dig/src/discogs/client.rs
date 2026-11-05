@@ -26,6 +26,9 @@ pub enum ApiError {
     NotFound,
     /// The action needs an account (a token).
     TokenNeeded,
+    /// 401 to a signed request (Connect with Discogs) while this computer's clock is this many
+    /// seconds behind Discogs's (negative: ahead): the request's time is why, not the account.
+    ClockWrong(i64),
     /// Anything else (a 5xx, a body that isn't what we expect).
     Other(String),
 }
@@ -41,6 +44,7 @@ impl ApiError {
             ApiError::TokenNeeded => {
                 "A Discogs token is needed for that (Options ▸ Discogs…)".into()
             }
+            ApiError::ClockWrong(off) => oauth::clock_message(*off),
             ApiError::Other(e) => format!("Discogs error: {e}"),
         }
     }
@@ -260,7 +264,14 @@ impl Client {
                     self.limiter.too_many(self.clock.now());
                 }
                 401 if anonymous => return Err(ApiError::TokenNeeded),
-                401 => return Err(ApiError::TokenRejected),
+                401 => {
+                    let signed = matches!(req.auth, Some(Auth::OAuth(_)));
+                    let now = std::time::SystemTime::now();
+                    return Err(match oauth::clock_off(r.date, now).filter(|_| signed) {
+                        Some(off) => ApiError::ClockWrong(off),
+                        None => ApiError::TokenRejected,
+                    });
+                }
                 403 => return Err(ApiError::Private),
                 404 => return Err(ApiError::NotFound),
                 s => return Err(ApiError::Other(format!("HTTP {s} for {path}"))),
@@ -460,6 +471,38 @@ mod tests {
         };
         assert_eq!(
             c.access_token(&consumer(), &rt, "V"),
+            Err(ApiError::TokenRejected)
+        );
+    }
+
+    #[test]
+    fn a_refused_signed_request_with_a_wrong_clock_blames_the_clock() {
+        use std::time::SystemTime;
+        let t = Arc::new(FakeTransport::new());
+        t.route(oauth::REQUEST_TOKEN, 401, "Invalid timestamp.");
+        t.route("/oauth/identity", 401, "{}");
+        let (mut c, _) = client(&t, None);
+        // Discogs's clock 46 minutes ahead of this one.
+        t.set_date(Some(SystemTime::now() + Duration::from_secs(2748)));
+        let Err(ApiError::ClockWrong(off)) = c.request_token(&consumer(), &oauth::callback(1))
+        else {
+            panic!("the clock is blamed");
+        };
+        assert!((2740..=2760).contains(&off), "{off}");
+        assert!(
+            ApiError::ClockWrong(off)
+                .message()
+                .contains("46 minutes slow")
+        );
+
+        // A personal token carries no time: a 401 is the token, whatever the clock.
+        let (mut token, _) = client(&t, Some("bad"));
+        assert_eq!(token.check_identity(), Err(ApiError::TokenRejected));
+
+        // The clocks agree: the refusal is Discogs's own.
+        t.set_date(Some(SystemTime::now()));
+        assert_eq!(
+            c.request_token(&consumer(), &oauth::callback(1)),
             Err(ApiError::TokenRejected)
         );
     }

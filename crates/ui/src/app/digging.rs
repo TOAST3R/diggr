@@ -549,6 +549,10 @@ pub(super) struct Dig {
 /// Where a Discogs personal access token is generated ("Generate new token").
 pub const TOKEN_PAGE: &str = "https://www.discogs.com/settings/developers";
 
+/// What is connected and working (the Discogs account, a synced collection, a paired browser):
+/// a green that reads on the light and the dark theme.
+const CONNECTED: egui::Color32 = egui::Color32::from_rgb(60, 160, 80);
+
 /// A failed collection sync is tried again after this long (when still needed).
 const COLLECTION_RETRY: Duration = Duration::from_secs(3600);
 
@@ -1108,9 +1112,10 @@ impl Dig {
     }
 
     /// Options ▸ Discogs…: "1,234 records, updated 2 h ago", or why there is none.
-    fn collection_line(&self) -> String {
+    /// The collection's line in Options ▸ Discogs…, and whether it is in sync (shown green).
+    fn collection_line(&self) -> (String, bool) {
         if self.auth.is_none() {
-            return "Needs a token".into();
+            return ("Needs a token".into(), false);
         }
         let mut line = match &self.collection {
             Some(c) => format!(
@@ -1126,7 +1131,10 @@ impl Dig {
         } else if let Some(e) = &self.collection_error {
             line += &format!(" · last sync failed: {e}");
         }
-        line
+        let synced = self.collection.is_some()
+            && !self.collection_syncing
+            && self.collection_error.is_none();
+        (line, synced)
     }
 
     /// Wanted, passed, and how its wantlist or collection change is going, for a row.
@@ -5661,7 +5669,7 @@ impl DiggrApp {
         self.dig_ask_ytdlp_ui(ctx);
         self.seller_dialogs_ui(ctx);
         let Some(d) = &mut self.dig else { return };
-        let collection_line = d.collection_line();
+        let (collection_line, collection_synced) = d.collection_line();
         let collection_syncing = d.collection_syncing;
         let Some(dialog) = &mut d.dialog else { return };
         let mut open = true;
@@ -5672,6 +5680,7 @@ impl DiggrApp {
         let mut settings_changed = false;
         let mut refresh_collection = false;
         let mut open_token_page = false;
+        let mut open_why = false;
         egui::Window::new("Discogs")
             .id(egui::Id::new("dig-dialog"))
             .collapsible(false)
@@ -5681,28 +5690,31 @@ impl DiggrApp {
                 ui.set_max_width(360.0);
                 ui.strong("Account");
                 let oauth = d.setup.consumer.is_some();
+                // Connected reads green, so it's plain there is nothing more to do.
+                let connected = |ui: &mut egui::Ui, text: String| {
+                    ui.colored_label(CONNECTED, text);
+                };
                 match (&d.auth, &d.identity) {
-                    (Some(Auth::Token(t)), Some(id)) => {
-                        ui.label(format!(
-                            "Connected as {} ({})",
-                            id.username,
-                            digconf::masked(t)
-                        ));
-                    }
+                    (Some(Auth::Token(t)), Some(id)) => connected(
+                        ui,
+                        format!("Connected as {} ({})", id.username, digconf::masked(t)),
+                    ),
                     (Some(Auth::OAuth(_)), Some(id)) => {
-                        ui.label(format!("Connected as {}", id.username));
+                        connected(ui, format!("Connected as {}", id.username))
                     }
                     (Some(Auth::Token(t)), None) => {
-                        ui.label(format!("Token {}", digconf::masked(t)));
+                        connected(ui, format!("Token {}", digconf::masked(t)))
                     }
-                    (Some(Auth::OAuth(_)), None) => {
-                        ui.label("Connected with Discogs");
-                    }
-                    (None, _) if oauth => {
-                        ui.label("Not connected: pages still work, at Discogs' lower rate limit");
-                    }
+                    (Some(Auth::OAuth(_)), None) => connected(ui, "Connected with Discogs".into()),
                     (None, _) => {
-                        ui.label("No token: pages still work, at Discogs' lower rate limit");
+                        ui.label(if oauth {
+                            "Not connected: pages still work, at Discogs' lower rate limit"
+                        } else {
+                            "No token: pages still work, at Discogs' lower rate limit"
+                        });
+                        if ui.link("Why connect?").clicked() {
+                            open_why = true;
+                        }
                     }
                 }
                 if oauth {
@@ -5728,6 +5740,7 @@ impl DiggrApp {
                                 );
                             }
                         }
+                        None if d.auth.is_some() => {}
                         None => {
                             let can = !dialog.checking;
                             if ui
@@ -5745,14 +5758,9 @@ impl DiggrApp {
                 if dialog.checking {
                     ui.label("Checking…");
                 }
-                match &dialog.check {
-                    Some(Ok(name)) => {
-                        ui.label(format!("Connected as {name}"));
-                    }
-                    Some(Err(e)) => {
-                        ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
-                    }
-                    None => {}
+                // A success shows in the green line above; only an error needs saying here.
+                if let Some(Err(e)) = &dialog.check {
+                    ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
                 }
                 if oauth {
                     let focus = dialog.focus_token > 0;
@@ -5768,7 +5776,11 @@ impl DiggrApp {
 
                 ui.separator();
                 ui.strong("Collection");
-                ui.label(&collection_line);
+                if collection_synced {
+                    ui.colored_label(CONNECTED, &collection_line);
+                } else {
+                    ui.label(&collection_line);
+                }
                 if d.auth.is_some()
                     && ui
                         .add_enabled(!collection_syncing, egui::Button::new("Refresh collection"))
@@ -5792,7 +5804,7 @@ impl DiggrApp {
                             } else {
                                 "installed by you"
                             };
-                            ui.label(format!("yt-dlp {version} ({whose})"))
+                            ui.colored_label(CONNECTED, format!("yt-dlp {version} ({whose})"))
                         }
                         (YtDlpState::Missing, _) if can_download => ui.label("yt-dlp not found"),
                         (YtDlpState::Missing, _) => {
@@ -5893,6 +5905,13 @@ impl DiggrApp {
                 .dig
                 .as_ref()
                 .and_then(|d| d.setup.browser.open(TOKEN_PAGE).err());
+            self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
+        }
+        if open_why {
+            let err = self
+                .dig
+                .as_ref()
+                .and_then(|d| d.setup.browser.open(super::welcome::DISCOGS_WHY).err());
             self.dig_notify(err.map(|e| format!("Could not open the browser: {e}")));
         }
         if connect_start {
@@ -6013,17 +6032,23 @@ impl DiggrApp {
                 }
                 ui.label("Enter this code in the extension's options.");
                 if dialog.paired {
-                    ui.label("A browser was paired.");
+                    ui.colored_label(CONNECTED, "A browser was paired.");
                 }
 
                 ui.separator();
                 let n = pairing.paired();
                 drop(pairing);
-                ui.label(match n {
+                let line = match n {
                     0 => "No paired browsers".to_owned(),
                     1 => "1 paired browser".to_owned(),
                     n => format!("{n} paired browsers"),
-                });
+                };
+                // Paired reads green, as a connected Discogs account does.
+                if n > 0 {
+                    ui.colored_label(CONNECTED, line);
+                } else {
+                    ui.label(line);
+                }
                 if ui
                     .add_enabled(n > 0, egui::Button::new("Forget browsers"))
                     .clicked()
