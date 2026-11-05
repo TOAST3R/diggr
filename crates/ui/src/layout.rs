@@ -124,9 +124,11 @@ mod tests {
         for name in ["pl_group", "pl_scroll", "pl_info"] {
             assert_eq!(w.at(name).x, d.at(name).x + 125, "{name}");
         }
-        for name in ["pl_plus", "pl_opts"] {
-            assert_eq!(w.at(name), d.at(name), "{name} stays on the left");
-        }
+        assert_eq!(
+            w.at("pl_opts"),
+            d.at("pl_opts"),
+            "the gear stays on the left"
+        );
         assert_eq!(
             playlist_def(&d, 100).pl_width,
             275,

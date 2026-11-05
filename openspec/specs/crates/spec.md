@@ -2,7 +2,9 @@
 
 ## Purpose
 Lets the player hold several named playlists ("crates"), such as one per label being dug, one for the records you keep and a scratch list, and switch between them without interrupting playback.
+
 ## Requirements
+
 ### Requirement: Named crates
 The player SHALL keep any number of named crates, each an ordered list of entries. The playlist window SHALL show one crate at a time, and its title bar SHALL show that crate's name in the skin's font, shortened to fit. Crate names SHALL be 1 to 40 characters long and unique, ignoring case.
 
@@ -61,7 +63,7 @@ Switching the shown crate SHALL NOT interrupt playback. The playing track SHALL 
 - **THEN** that entry plays, and next and previous now follow crate B
 
 ### Requirement: The Playlist crate
-A crate named "Playlist" SHALL always exist. Files given on the command line SHALL replace its contents, and it SHALL then be shown and played. It SHALL be possible to clear it, but not to rename or delete it. Opening files from inside the app SHALL NOT replace any crate. Adding music (ADD, drag-and-drop, Cmd+O, M3U import) SHALL add to the shown crate.
+A crate named "Playlist" SHALL always exist. Files given on the command line SHALL replace its contents, and it SHALL then be shown and played. It SHALL be possible to clear it, but not to rename or delete it. Opening files from inside the app SHALL NOT replace any crate. Adding music (the list menu's Add files… and Add folder…, the empty crate's Add files from your computer, drag-and-drop, Cmd+O, M3U import) SHALL add to the shown crate.
 
 #### Scenario: Opening files leaves other crates alone
 - **WHEN** crate "Lowtide Tapes" is shown and the app is started with two files on the command line
@@ -248,3 +250,17 @@ On the first launch after this change, the Keepers crate (the one recorded in th
 - **WHEN** the app starts after this change with both a Keepers crate and a crate named "Wantlist"
 - **THEN** Keepers keeps its name and becomes the wantlist crate, and "Wantlist" is left as it is
 
+### Requirement: Export a crate from its menu
+Right-clicking any crate, in the sidebar or the title-bar crate menu, SHALL offer Export M3U…, for every kind of crate. It SHALL write that crate as M3U8 (see the playlist's "Persistence and M3U"), whether or not it is the shown crate, and SHALL NOT show it or change playback. The save dialog SHALL propose "‹crate name›.m3u8". A crate that can't be read SHALL offer it disabled.
+
+#### Scenario: Export a crate that isn't shown
+- **WHEN** "Lowtide Tapes" (8 entries) is shown and the user right-clicks "Friday" (5 entries) in the sidebar and chooses Export M3U…
+- **THEN** the save dialog proposes "Friday.m3u8", the file lists Friday's 5 entries, and "Lowtide Tapes" stays shown
+
+#### Scenario: The Playlist crate
+- **WHEN** the user right-clicks the Playlist crate in the sidebar
+- **THEN** the menu offers Clear crate and Export M3U…, and still says why it can't be renamed or deleted
+
+#### Scenario: Playback goes on
+- **WHEN** a track from "Friday" is playing and the user exports "Lowtide Tapes" from its menu
+- **THEN** playback continues without a gap or underrun

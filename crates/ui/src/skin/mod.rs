@@ -184,8 +184,6 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "eq_track",
     "eq_thumb",
     "eq_thumb_p",
-    "pl_plus",
-    "pl_plus_p",
     "pl_opts",
     "pl_opts_p",
     "pl_scroll_thumb",
@@ -219,7 +217,6 @@ pub const REQUIRED_LAYOUT: &[&str] = &[
     "pl_group",
     "pl_list",
     "pl_scroll",
-    "pl_plus",
     "pl_opts",
     "pl_info",
 ];

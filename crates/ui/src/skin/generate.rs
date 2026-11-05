@@ -1009,17 +1009,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     text_button(&mut b, "eq_presets", 44, 12, "PRESETS", false, false);
     text_button(&mut b, "eq_presets_p", 44, 12, "PRESETS", false, true);
-    // The playlist footer's + (add and M3U); the gear is below.
-    for pressed in [false, true] {
-        let n = if pressed { "pl_plus_p" } else { "pl_plus" };
-        b.sprite(n, 18, 18, |c, x, y| {
-            button_face(c, x, y, 18, 18, pressed);
-            let o = pressed as i32;
-            c.fill(x + 5 + o, y + 8 + o, 8, 2, ICON);
-            c.fill(x + 8 + o, y + 5 + o, 2, 8, ICON);
-        });
-    }
-    // The footer's gear: the Options menu.
+    // The playlist footer's one button, the gear: the Options menu. Adding music and M3U are
+    // in the list menu.
     const GEAR: [&str; 10] = [
         "....##....",
         "..#.##.#..",
@@ -1309,8 +1300,7 @@ fn layout() -> BTreeMap<String, R> {
         ("pl_group", R::new(262, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
-        ("pl_plus", R::new(11, 12, 18, 18)),
-        ("pl_opts", R::new(32, 12, 18, 18)),
+        ("pl_opts", R::new(11, 12, 18, 18)),
         // The time readout is right-aligned in `pl_info`.
         ("pl_info", R::new(177, 14, 80, 7)),
     ];

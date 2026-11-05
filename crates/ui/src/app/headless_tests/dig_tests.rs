@@ -2241,7 +2241,12 @@ fn a_label_crates_menu_is_delete_export_refresh() {
     };
     rig.click_with(at, PointerButton::Secondary);
     let items = text_list(&rig.frame(Vec::new()));
-    for want in ["Delete label…", "Export to crate", "Refresh label"] {
+    for want in [
+        "Delete label…",
+        "Export to crate",
+        "Refresh label",
+        "Export M3U…",
+    ] {
         assert!(items.iter().any(|t| t == want), "{want}: {items:?}");
     }
     for gone in ["Rename crate…", "Delete crate…", "Move to Labels"] {
