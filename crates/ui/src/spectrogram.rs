@@ -504,6 +504,8 @@ struct Inner {
     lut_gen: u64,
     detail: Option<Arc<DetailService>>,
     actions: Vec<Action>,
+    /// The content's opacity while the window fades in (see `crate::motion`).
+    opacity: f32,
 }
 
 /// The window and its state, shared between the player and the window's viewport.
@@ -533,6 +535,7 @@ impl SpectrogramWindow {
                 lut_gen: 0,
                 detail,
                 actions: Vec::new(),
+                opacity: 1.0,
             })),
         }
     }
@@ -572,6 +575,11 @@ impl SpectrogramWindow {
         wake
     }
 
+    /// How opaque the window's content is drawn (it fades in as the window opens).
+    pub fn set_opacity(&self, opacity: f32) {
+        self.lock().opacity = opacity;
+    }
+
     pub fn take_actions(&self) -> Vec<Action> {
         std::mem::take(&mut self.lock().actions)
     }
@@ -602,6 +610,10 @@ impl SpectrogramWindow {
         let mut s = self.lock();
         let before = s.actions.len();
         let ctx = ui.ctx().clone();
+        if s.opacity < 1.0 {
+            ui.multiply_opacity(s.opacity);
+            ctx.request_repaint();
+        }
         egui::Frame::NONE
             .fill(Color32::from_rgb(10, 10, 14))
             .inner_margin(6.0)

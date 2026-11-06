@@ -153,8 +153,15 @@ playlist fills the rest. Drag the band anywhere that isn't a control to move the
 drawn from an original pixel-art skin dressed like a DJ's gear (warm graphite panels, an amber
 LCD, title bars with groove lines), at double size by default (`Cmd+=` / `Cmd+−` switch between
 double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the header,
-or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
-Set up Diggr….
+or right-click the mini player anywhere that isn't a control) has Discogs…, Browser…,
+Set up Diggr… and **Reduce motion**.
+
+Menus, windows and panels move as they open and close: a menu fades in and rises into place in
+0.12 s, a dialog (the help, Discogs, the record card…) grows into place in 0.18 s, a filter panel
+slides up in 0.24 s, and the EQ, spectrogram and insights windows fade their content in. Closing
+fades them out a little faster. What you open answers clicks and keys from its first frame and
+what you close stops at once, so the motion never holds you up; the window repaints at the
+display's rate only while something moves. Options ▸ Reduce motion turns it all off.
 
 Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the header
 lights up while the player has it and the playlist's title bar while the playlist does. With the player focused, `↑` / `↓` set the volume (SYNC's tempo while SYNC is on). With the
@@ -1542,7 +1549,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1161 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1180 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1588,6 +1595,12 @@ What's covered:
   never allocates on any path, varispeed, the speed change's crossfade and a platter hold
   included.
 - **`crates/ui`** (unit tests):
+  - motion: easing, transitions that open and close in their times and turn around midway, the
+    spring, each kind's movement, and Reduce motion jumping at once; headless, a context menu
+    rising 4 points in 0.12 s and fading out when closed, a menu item working while the menu
+    still moves, the help growing into place, a closing dialog taking no clicks, a filter panel
+    sliding 12 points, the EQ and separate windows fading in, keys working while something
+    moves, and Reduce motion in the Options menu, kept across launches;
   - playlist selection, reordering and totals;
   - shuffle order, and a play order that skips entries waiting for their audio;
   - the crate search: every word in some field, folded case and accents, the play order

@@ -26,6 +26,10 @@ sentences. `## Unreleased` collects entries until a release renames it.
 - **A hand on the record.** Press and hold the turntable's platter and the record slows to a
   stop, the pitch sinking with it, just like vinyl under your palm. Let go and it spins back up
   and plays on from where it stopped. It works with SYNC on or off.
+- **Everything moves a little now.** Menus rise into place, dialogs and the record card grow in,
+  filter panels slide up, and closing fades them away, all in a fraction of a second. It never
+  slows you down: what opens answers your click at once. Prefer things still? Options ▸ Reduce
+  motion.
 
 ### Changed
 

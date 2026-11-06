@@ -132,8 +132,7 @@ pub struct Card<'a> {
 /// The slide's state `elapsed` seconds in: how far the content still is from its place (1 at
 /// the start, 0 settled) and its opacity. Eased out, so it arrives softly.
 pub fn ease(elapsed: f32) -> (f32, f32) {
-    let t = (elapsed / SLIDE).clamp(0.0, 1.0);
-    let e = 1.0 - (1.0 - t).powi(3);
+    let e = crate::motion::ease_out_cubic(elapsed / SLIDE);
     (1.0 - e, 0.25 + 0.75 * e)
 }
 

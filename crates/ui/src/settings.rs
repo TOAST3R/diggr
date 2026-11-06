@@ -65,6 +65,8 @@ pub struct Settings {
     pub crates_folded: bool,
     /// SYNC: on, its target tempo and range.
     pub sync: crate::sync::SyncSettings,
+    /// Things appear and disappear at once, without motion (see `crate::motion`).
+    pub reduce_motion: bool,
 }
 
 impl Default for Settings {
@@ -85,6 +87,7 @@ impl Default for Settings {
             side_open: None,
             crates_folded: false,
             sync: Default::default(),
+            reduce_motion: false,
         }
     }
 }
@@ -239,6 +242,7 @@ mod tests {
         settings.sync.on = true;
         settings.sync.target = 126;
         settings.sync.wide = true;
+        settings.reduce_motion = true;
         s.save(SETTINGS_FILE, &settings).unwrap();
         assert_eq!(s.load_settings(), settings);
     }
@@ -254,6 +258,7 @@ mod tests {
         std::fs::write(s.dir().join(SETTINGS_FILE), "(volume: 0.5)").unwrap();
         assert_eq!(s.load_settings().volume, 0.5);
         assert!(!s.load_settings().show_eq, "the EQ window starts closed");
+        assert!(!s.load_settings().reduce_motion, "motion starts on");
         // So do older files with fields the player no longer has.
         std::fs::write(
             s.dir().join(SETTINGS_FILE),
