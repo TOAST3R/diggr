@@ -41,14 +41,19 @@ const GROOVE: C = rgb(16, 14, 12);
 const OFF_WHITE: C = rgb(240, 236, 226);
 
 const ATLAS_W: u16 = 512;
-/// The turntable section's height, its platter's centre, its LCD (x, y, w, h), and its pitch
-/// fader's travel (top, length), relative to the section.
-pub const DECK_H: u16 = 104;
-const PLATTER: (i32, i32) = (62, 58);
-const DECK_LCD: (i32, i32, i32, i32) = (132, 18, 76, 46);
-const PITCH_TOP: i32 = 22;
-const PITCH_LEN: i32 = 64;
-const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/'!?&+#%*\"=<>@·€£$¥";
+/// The turntable's content (its width and the band's height), its platter's centre and radius,
+/// its LCD (x, y, w, h), and its pitch fader's travel (top, length), relative to the content.
+/// The panel is a third of the band: the app centres the content and fills the sides.
+pub const DECK_W: u16 = 227;
+pub const DECK_H: u16 = 76;
+const PLATTER: (i32, i32) = (40, 38);
+const PLATTER_R: i32 = 32;
+const DECK_LCD: (i32, i32, i32, i32) = (80, 3, 114, 37);
+const PITCH_TOP: i32 = 8;
+const PITCH_LEN: i32 = 56;
+/// The unlit segments of the big digits: a tenth of the lit ones, so a target reads at a glance.
+const LCD_GHOST: C = rgb(26, 17, 4);
+const FONT_CHARS: &str = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;-_()[]/'!?&+#%*\"=<>@·€£$¥±";
 const GLYPH_W: u16 = 5;
 const GLYPH_H: u16 = 7;
 
@@ -250,6 +255,10 @@ fn glyph_rows(c: char) -> [&'static str; 7] {
         ],
         '¥' => [
             "#...#", ".#.#.", "..#..", "#####", "..#..", "#####", "..#..",
+        ],
+        // The turntable's range: "OWN · OUT OF ±8%".
+        '±' => [
+            "..#..", "..#..", "#####", "..#..", "..#..", ".....", "#####",
         ],
         _ => ["....."; 7],
     }
@@ -504,13 +513,14 @@ pub const PL_TOP_L: u16 = 6;
 pub const PL_TOP_R: u16 = 34;
 /// Heights of the filter bar and of its search field's sunken box.
 pub const PL_FILTER_H: u16 = 16;
+/// The window header's height, and its buttons' size.
+pub const HDR_H: u16 = 15;
+pub const HB: u16 = 11;
 /// The frame under the playlist's last row, as wide as its left edge.
 pub const PL_BOTTOM_EDGE: u16 = 12;
 /// The mini player's volume slider.
 pub const VOLUME_W: u16 = 108;
 
-/// The Options gear on its 9×9 window button.
-const GEAR: [&str; 5] = [".#.#.", "#####", "##.##", "#####", ".#.#."];
 pub const PL_FIELD_H: u16 = 12;
 
 /// One column of a plain title bar (its gradient and top/bottom bevel), to stretch behind text.
@@ -546,7 +556,7 @@ fn seven_seg(c: &mut Canvas, x: i32, y: i32, mask: u8) {
         let col = if mask & (1 << i) != 0 {
             LCD_ON
         } else {
-            LCD_DIM
+            LCD_GHOST
         };
         c.fill(x + sx, y + sy, *w, *h, col);
     }
@@ -587,31 +597,45 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             c.tiny_centered(x + 78 + 18 * i as i32 + 7, y + 105, l, LABEL);
         }
     });
-    // The turntable under the main window while SYNC is on: a platter (the app turns its label
-    // mark and strobe dots), a tonearm, the LCD the app writes the tempo on, and the pitch
-    // fader's groove with its centre detent.
-    b.sprite("deck_bg", 275, DECK_H, |c, x, y| {
-        panel(c, x, y, 275, DECK_H as i32);
-        titlebar(c, x, y, 275, 14, "DIGGR TURNTABLE");
+    // The turntable, always in the band: a platter (the app turns its label mark and strobe
+    // dots), a tonearm, the LCD the app writes the tempo on, the state line's inset, the pitch
+    // meter's scale and the pitch fader's groove with its centre detent. It is DECK_W wide;
+    // `deck_fill` (the panel's column, tiled) and the two edges make up a wider panel.
+    b.sprite("deck_fill", 1, DECK_H, |c, x, y| {
+        c.grad_v(x, y, 1, DECK_H as i32, PANEL_TOP, PANEL_BOT);
+        c.px(x, y, HI);
+        c.px(x, y + DECK_H as i32 - 1, LO);
+    });
+    b.sprite("deck_edge_l", 1, DECK_H, |c, x, y| {
+        c.fill(x, y, 1, DECK_H as i32, HI)
+    });
+    b.sprite("deck_edge_r", 1, DECK_H, |c, x, y| {
+        c.fill(x, y, 1, DECK_H as i32, LO)
+    });
+    b.sprite("deck_bg", DECK_W, DECK_H, |c, x, y| {
+        c.grad_v(x, y, DECK_W as i32, DECK_H as i32, PANEL_TOP, PANEL_BOT);
+        c.fill(x, y, DECK_W as i32, 1, HI);
+        c.fill(x, y + DECK_H as i32 - 1, DECK_W as i32, 1, LO);
         let (cx, cy) = (x + PLATTER.0, y + PLATTER.1);
-        for py in -42..=42 {
-            for px in -42..=42 {
+        let r = PLATTER_R;
+        for py in -r..=r {
+            for px in -r..=r {
                 let d = ((px * px + py * py) as f32).sqrt();
                 let col = match d {
-                    d if d > 41.5 => continue,
-                    d if d > 40.5 => LO,
+                    d if d > r as f32 - 0.5 => continue,
+                    d if d > r as f32 - 1.5 => LO,
                     // The rim the strobe dots run on, lit from the top left.
-                    d if d > 34.5 => mix(BTN_BOT, BTN_LO, (px + py + 60) as f32 / 120.0),
-                    d if d > 33.5 => LO,
+                    d if d > 25.5 => mix(BTN_BOT, BTN_LO, (px + py + 48) as f32 / 96.0),
+                    d if d > 24.5 => LO,
                     // The record: grooves, then the label.
-                    d if d > 12.5 => {
+                    d if d > 10.0 => {
                         if (d as i32) % 3 == 0 {
                             rgb(30, 28, 26)
                         } else {
                             rgb(14, 13, 12)
                         }
                     }
-                    d if d > 11.5 => rgb(40, 36, 32),
+                    d if d > 9.0 => rgb(40, 36, 32),
                     d if d > 1.5 => ACCENT_DIM,
                     _ => OFF_WHITE,
                 };
@@ -619,7 +643,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             }
         }
         // Tonearm: pivot, arm and headshell resting in the grooves.
-        let (pivot_x, pivot_y) = (x + 116, y + 24);
+        let (pivot_x, pivot_y) = (x + 74, y + 10);
         for dy in -4..=4 {
             for dx in -4..=4 {
                 if dx * dx + dy * dy <= 16 {
@@ -628,41 +652,37 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 }
             }
         }
-        for i in 0..52 {
-            let t = i as f32 / 51.0;
+        for i in 0..40 {
+            let t = i as f32 / 39.0;
             let ax = pivot_x as f32 - 4.0 - t * 18.0;
-            let ay = pivot_y as f32 + 4.0 + t * 46.0;
+            let ay = pivot_y as f32 + 4.0 + t * 36.0;
             c.px(ax as i32, ay as i32, BTN_TOP);
             c.px(ax as i32 + 1, ay as i32, BTN_LO);
         }
-        c.fill(pivot_x - 26, pivot_y + 50, 6, 8, BTN_TOP);
-        c.fill(pivot_x - 26, pivot_y + 57, 6, 1, BTN_LO);
-        // LCD.
+        c.fill(pivot_x - 26, pivot_y + 40, 6, 8, BTN_TOP);
+        c.fill(pivot_x - 26, pivot_y + 47, 6, 1, BTN_LO);
+        // LCD, the state line's inset and the pitch meter's scale (centre tick).
         let l = DECK_LCD;
         c.inset(x + l.0, y + l.1, l.2, l.3, LCD_BG);
-        c.text(x + 174, y + 26, "BPM", LCD_DIM);
+        c.text(x + 120, y + 8, "BPM", LCD_DIM);
+        c.inset(x + 80, y + 43, 114, 12, LCD_BG);
+        c.inset(x + 122, y + 21, 64, 9, GROOVE);
+        c.fill(x + 154, y + 21, 1, 9, ACCENT);
         // Pitch fader groove, with a mark every eighth of its travel and the detent at 0.
-        let (gx, top, len) = (x + 251, y + PITCH_TOP, PITCH_LEN);
+        let (gx, top, len) = (x + 210, y + PITCH_TOP, PITCH_LEN);
         c.inset(gx - 3, top - 2, 6, len + 4, GROOVE);
         for k in 0..=8 {
             let ty = top + k * len / 8;
             let (w, col) = if k == 4 { (8, ACCENT) } else { (3, LABEL) };
             c.fill(gx + 5, ty, w, 1, col);
         }
-        c.text(x + 262, y + 15, "+", LABEL);
-        c.text(x + 262, y + PITCH_TOP + PITCH_LEN - 4, "-", LABEL);
-        c.text_centered(x + 251, y + PITCH_TOP + PITCH_LEN + 6, "PITCH", LABEL);
+        c.text(x + 221, y + 1, "+", LABEL);
+        c.text(x + 221, y + PITCH_TOP + PITCH_LEN - 4, "-", LABEL);
     });
     for (name, pressed) in [("pitch_thumb", false), ("pitch_thumb_p", true)] {
         b.sprite(name, 20, 9, |c, x, y| {
             button_face(c, x, y, 20, 9, pressed);
             c.fill(x + 2, y + 4, 16, 1, ACCENT);
-        });
-    }
-    for (state, col) in [("off", LCD_DIM), ("on", LCD_ON)] {
-        b.sprite(&format!("own_tempo_{state}"), 76, 12, |c, x, y| {
-            c.inset(x, y, 76, 12, LCD_BG);
-            c.text_centered(x + 38, y + 3, "OWN TEMPO", col);
         });
     }
     // The playlist stretches sideways: its title and bottom bars are a left cap, a column
@@ -771,9 +791,57 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         c.px(x, y, LO);
     });
 
+    // The window header: a left cap, a grooved column the app tiles, a right cap, a plain
+    // patch the app puts under the caption, and four buttons of its own (help, Options,
+    // minimize, close), 11×11 so they sit centred in it.
+    b.sprite("hdr_l", 2, HDR_H, |c, x, y| {
+        bar_piece(c, x, y, 2, HDR_H as i32, TITLE_BG, TITLE_BG, (true, false));
+    });
+    b.sprite("hdr_fill", 1, HDR_H, |c, x, y| {
+        bar_piece(c, x, y, 1, HDR_H as i32, TITLE_BG, TITLE_BG, (false, false));
+        grooves(c, x, x + 1, y + (HDR_H as i32 - 7) / 2);
+    });
+    b.sprite("hdr_r", 2, HDR_H, |c, x, y| {
+        bar_piece(c, x, y, 2, HDR_H as i32, TITLE_BG, TITLE_BG, (false, true));
+    });
+    b.sprite("hdr_plain", 1, HDR_H, |c, x, y| {
+        title_fill(c, x, y, HDR_H as i32)
+    });
+    const COG: [&str; 7] = [
+        "...#...", ".#.#.#.", "..###..", "###.###", "..###..", ".#.#.#.", "...#...",
+    ];
+    for (name, icon) in [
+        ("hb_help", 0),
+        ("hb_opts", 1),
+        ("hb_min", 2),
+        ("hb_close", 3),
+    ] {
+        for pressed in [false, true] {
+            let n = if pressed {
+                format!("{name}_p")
+            } else {
+                name.to_owned()
+            };
+            b.sprite(&n, HB, HB, |c, x, y| {
+                button_face(c, x, y, HB as i32, HB as i32, pressed);
+                let o = pressed as i32;
+                match icon {
+                    0 => c.text(x + 3 + o, y + 2 + o, "?", ICON),
+                    1 => c.bits(x + 2 + o, y + 2 + o, &COG, ICON),
+                    2 => c.fill(x + 2 + o, y + 7 + o, 7, 1, ICON),
+                    _ => {
+                        for i in 0..7 {
+                            c.px(x + 2 + i + o, y + 2 + i + o, ICON);
+                            c.px(x + 8 - i + o, y + 2 + i + o, ICON);
+                        }
+                    }
+                }
+            });
+        }
+    }
     // ---- title bar buttons ----------------------------------------------------------------
-    // The band's corner: minimize, the Options gear and close.
-    for (name, icon) in [("btn_min", 0), ("btn_opts", 2), ("btn_close", 1)] {
+    // Minimize and close, for the windows with a title bar of their own.
+    for (name, icon) in [("btn_min", 0), ("btn_close", 1)] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -785,8 +853,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
-                } else if icon == 2 {
-                    c.bits(x + 2 + o, y + 2 + o, &GEAR, ICON);
                 } else {
                     for i in 0..5 {
                         c.px(x + 2 + i + o, y + 2 + i + o, ICON);
@@ -1017,9 +1083,25 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- sliders --------------------------------------------------------------------------
-    // The mini player's volume: it fills the button row between the transport and shuffle.
-    b.sprite("volume_track", VOLUME_W, 13, |c, x, y| {
-        c.inset(x, y + 3, VOLUME_W as i32, 7, GROOVE)
+    // The mini player's volume fills the button row, whatever its width: the track is a left
+    // cap, a column the app tiles and a right cap; the fill is stretched over the whole track
+    // and shown up to the thumb.
+    b.sprite("volume_track_l", 2, 13, |c, x, y| {
+        c.fill(x, y + 3, 2, 7, GROOVE);
+        c.fill(x, y + 3, 2, 1, LO);
+        c.fill(x, y + 9, 2, 1, HI);
+        c.fill(x, y + 3, 1, 7, LO);
+    });
+    b.sprite("volume_track_m", 1, 13, |c, x, y| {
+        c.fill(x, y + 3, 1, 7, GROOVE);
+        c.px(x, y + 3, LO);
+        c.px(x, y + 9, HI);
+    });
+    b.sprite("volume_track_r", 2, 13, |c, x, y| {
+        c.fill(x, y + 3, 2, 7, GROOVE);
+        c.fill(x, y + 3, 2, 1, LO);
+        c.fill(x, y + 9, 2, 1, HI);
+        c.fill(x + 1, y + 3, 1, 7, HI);
     });
     b.sprite("volume_fill", VOLUME_W, 13, |c, x, y| {
         c.grad_h(
@@ -1212,19 +1294,18 @@ fn layout() -> BTreeMap<String, R> {
     let mut l: Vec<(&str, R)> = vec![
         // the mini player's volume slider (moved into place by the app)
         ("volume", R::new(107, 57, VOLUME_W, 13)),
-        // turntable (relative to its section)
-        ("deck_titlebar", R::new(0, 0, 275, 14)),
-        ("deck_close", R::new(262, 3, 9, 9)),
-        // The platter's square; the tempo lines on the LCD.
-        ("deck_platter", R::new(21, 17, 83, 83)),
-        ("deck_target", R::new(138, 23, 30, 13)),
-        ("deck_push", R::new(138, 42, 66, 7)),
-        ("deck_record", R::new(138, 53, 66, 7)),
-        ("deck_lamp", R::new(132, 68, 76, 12)),
-        ("deck_range", R::new(132, 86, 30, 13)),
-        ("deck_reset", R::new(166, 86, 42, 13)),
+        // turntable (relative to its content, DECK_W wide)
+        ("deck_platter", R::new(8, 6, 64, 64)),
+        ("deck_target", R::new(84, 5, 30, 13)),
+        ("deck_push", R::new(84, 22, 36, 7)),
+        ("deck_record", R::new(84, 31, 100, 7)),
+        ("deck_meter", R::new(123, 22, 62, 7)),
+        ("deck_state", R::new(80, 43, 114, 12)),
+        ("deck_sync", R::new(80, 58, 30, 12)),
+        ("deck_range", R::new(114, 58, 30, 13)),
+        ("deck_reset", R::new(148, 58, 42, 13)),
         // The fader: its thumb's centre runs from y to y + h.
-        ("deck_pitch", R::new(241, 22, 20, 64)),
+        ("deck_pitch", R::new(200, 8, 20, 56)),
         // equalizer (relative to the EQ section)
         ("eq_titlebar", R::new(0, 0, 275, 14)),
         ("eq_close", R::new(262, 3, 9, 9)),

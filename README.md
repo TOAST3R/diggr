@@ -144,18 +144,20 @@ cargo run --release -p diggr -- ~/Music/album/*.flac  # replaces the Playlist cr
 No music handy? The repo includes short test tones:
 `cargo run --release -p diggr -- crates/audio/tests/fixtures/tone.*`
 
-The window opens full screen, in one layout: a band across the top holds the **mini player**
-on the left, SYNC's turntable beside it while SYNC is on, then the waveform (always shown) and,
-in the top-right corner, minimize, the Options gear and close (which quits); the playlist fills
-the rest. Restoring the window keeps the same layout at the smaller size. It's
+The window opens full screen, in one layout: a **header** across the top (DIGGR, and at its
+right help `?`, the Options gear, minimize and close, which quits; drag it to move the window,
+double-click it to maximize or restore), under it a band, 76 pixels tall, of three panels of a
+third each (from 227 to 360 pixels for the first two, the waveform taking the rest): the **mini
+player**, the **turntable** (always there, with SYNC on it) and the waveform (always shown); the
+playlist fills the rest. Drag the band anywhere that isn't a control to move the window. Restoring the window keeps the same layout at the smaller size. It's
 drawn from an original pixel-art skin dressed like a DJ's gear (warm graphite panels, an amber
 LCD, title bars with groove lines), at double size by default (`Cmd+=` / `Cmd+−` switch between
-double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the top-right
-corner, or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
+double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the header,
+or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
 Set up Diggr….
 
-Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the playlist's
-title bar lights up while it has it. With the player focused, `↑` / `↓` set the volume. With the
+Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the header
+lights up while the player has it and the playlist's title bar while the playlist does. With the player focused, `↑` / `↓` set the volume. With the
 playlist focused, they move a cursor through the list (Shift extends the selection; PgUp/PgDn
 and Home/End jump), and Enter plays the entry under it.
 
@@ -365,18 +367,22 @@ and Home/End jump), and Enter plays the entry under it.
     clicked becomes the selection. While the menu is open, the rest of the entry's album is
     tinted, wherever it is in the crate. An album is a Discogs release (another pressing is
     another album), or local files with the same artist and album tags.
-- **Mini player** (275 pixels wide, at the band's left): the play state, time and title on an
-  LCD line, and under it previous, play, pause, stop, next, volume, shuffle and repeat:
+- **Mini player** (the band's left panel): the play state, time and two lines of title on an
+  LCD (the track, then the record's label, side, year and what's for sale, or a file's album),
+  and under it previous, play, pause, stop, next, volume, shuffle and repeat:
   - click the time to switch between elapsed and remaining;
   - the title line flashes WANTED, PASS, OWNED or UNWANTED for a moment after a verdict;
-  - four buttons at the LCD line's end: **▤** groups the crate on screen by record (lit while
+  - three buttons at the LCD's end: **▤** groups the crate on screen by record (lit while
     grouped), **EQ** opens the equalizer in a window of its own (it stays on top, and its place
-    is remembered), **spectrum** opens the spectrogram window like `S`, and **SYNC** (below);
-    each icon is lit while it's on;
+    is remembered) and **spectrum** opens the spectrogram window like `S`; each icon is lit
+    while it's on;
   - the **shuffle** icon (crossed arrows);
   - the **repeat** icon cycles off → all → one, shown with a small 1 (all gapless);
-  - **SYNC** plays every track at one tempo, the way it will sit in a set. It opens the
-    **turntable** in the band, beside the mini player, set to the playing record's tempo:
+  - there is no balance control: playback is always centred.
+- **Turntable** (the band's middle panel, always there): **SYNC** on it plays every track at one
+  tempo, the way it will sit in a set, set to the playing record's tempo. With SYNC off the deck
+  is dimmed: the platter turns with the speed heard and the digits show the record's own BPM.
+  With SYNC on:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
       record's own tempo (±8%; the **8%/16%** button widens it). Scroll over it, or press
       `Shift+↑` / `Shift+↓` (player focused), for 1 BPM steps; **RESET** goes back to the
@@ -387,16 +393,20 @@ and Home/End jump), and Enter plays the entry under it.
       a gap, and the fader then shows how far each new record is pushed;
     - the platter turns with the speed heard, and its strobe dots stand still while the
       record is locked to the tempo. A track that would need more than the range, or has no
-      BPM yet, plays at its own tempo: **OWN TEMPO** lights, the dots drift, and its row says
+      BPM yet, plays at its own tempo: the dots drift, the lamp goes red, and its row says
       "(own tempo)";
+    - a line says where SYNC stands: **LOCKED +3.3%**, **ANALYZING**, **OWN · OUT OF ±8%**,
+      **OWN · NO BPM**, **SYNC ON** (nothing playing) or **SYNC OFF**. A pitch meter beside
+      the push shows how hard the record is pushed, pinned and red when it's out of range.
+      When a record locks, the platter's rim flashes once, and on a new track the digits count
+      from its own BPM to the tempo;
     - turned on while the playing track's BPM isn't known yet, SYNC waits for it: the tempo
       and record BPM read "?", the track is analysed next, and its BPM becomes the tempo. The
       fader, scrolling, `Shift+↑` / `Shift+↓` and RESET meanwhile say "Analyzing the BPM, wait
       a moment". Another track starting, or no tempo found, ends the wait with the old tempo. A track
       started while SYNC is on reads "REC ?" until its BPM is known, then is fitted to the tempo;
-    - SYNC again, or the turntable's ×, turns it off. The waveform, the BPM shown, section
-      jumps, loops and analysis all stay in the track's own time;
-  - there is no balance control: playback is always centred.
+    - SYNC again turns it off. The waveform, the BPM shown, section jumps, loops and
+      analysis all stay in the track's own time;
 - **Equalizer** (the mini player's EQ icon; drag its title bar to move it, × closes it):
   - **ON** enables it;
   - drag the sliders, or double-click one to reset it to 0 dB;
@@ -1519,7 +1529,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1135 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1145 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1569,8 +1579,10 @@ What's covered:
   - folder scanning and M3U round trip (remote entries exported as their source URL);
   - settings, crate and preset persistence;
   - SYNC: the speed for a BPM (fitted, half and double time, out of range, no BPM) and the
-    "+2.4%" label; headless, SYNC opening the turntable, its pitch fader (top, centre detent,
-    scroll), RESET, 8%/16% and ×, `Shift+↑`, what's heard following, and "(own tempo)" rows;
+    "+2.4%" label and the state line for each state; headless, the always-there turntable
+    (dimmed and inert while off), its SYNC button, pitch fader (top, centre detent, scroll),
+    RESET, 8%/16%, `Shift+↑`, the state line, meter, lock flash and counting digits, what's
+    heard following, and "(own tempo)" rows;
     SYNC turned on before the BPM is known waiting ("?") for the analysed tempo, a track started
     with SYNC on keeping the tempo while its BPM comes, refusing the
     fader meanwhile, and a new track ending the wait;
@@ -1589,8 +1601,9 @@ What's covered:
     headings that stay, the scrollbar, scrolling while dragging onto a crate, a shown crate
     opening its group, the busy mark, and the grouped, scrolling crate menu;
   - the full-screen layout, headless: the mini player's buttons (transport, shuffle, repeat,
-    SYNC, the ▤, EQ and spectrum icons, the time) and that its two rows line up and fit in 275
-    pixels, the verdict flash on its title line, minimize, the Options gear and close (and the
+    the ▤, EQ and spectrum icons, the time) and that its two rows line up and fit from 227 to
+    360 pixels, its second line, the three panels' widths and the band-wide drag, the verdict
+    flash on its title line, minimize, the Options gear and close (and the
     dead gaps between them), the always-on waveform, the playlist's bottom edge and no footer,
     the filter bar's time readout across widths, the column header of a crate without albums,
     the EQ window, Shift+P doing nothing, and old layout settings loading;

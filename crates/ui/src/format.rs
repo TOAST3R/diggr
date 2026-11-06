@@ -116,6 +116,19 @@ pub fn origin_details(o: &crate::playlist::Origin) -> String {
     parts.iter().map(|p| format!(" · {p}")).collect()
 }
 
+/// The player's second line for an entry from a catalogue page: its label, side, year and
+/// for-sale summary, e.g. `Lowtide Tapes · A1 · 1994 · 6 for sale from €9.00`. Parts that
+/// aren't known are left out.
+pub fn origin_line(o: &crate::playlist::Origin) -> String {
+    let rest = origin_details(o);
+    let rest = rest.strip_prefix(" · ").unwrap_or(&rest);
+    match (o.label.trim(), rest) {
+        ("", r) => r.to_owned(),
+        (l, "") => l.to_owned(),
+        (l, r) => format!("{l} · {r}"),
+    }
+}
+
 /// A record row's second line: catalog number, year, tracks ("3 tracks", or "2 of 4 tracks"
 /// under a filter; "tracks coming…" while the record is only listed, its tracklist not read
 /// yet) and the for-sale summary, e.g. `LT-012 · 1994 · 3 tracks · 6 for sale from €9.00`.
@@ -841,6 +854,38 @@ mod tests {
             "4. Crusher-P: Echo (3:50)"
         );
         assert_eq!(title_line(1, "untitled", None), "1. untitled");
+    }
+
+    #[test]
+    fn the_players_second_line_leads_with_the_label() {
+        use crate::playlist::{ForSale, Origin};
+        let o = Origin {
+            label: "Lowtide Tapes".into(),
+            position: "A1".into(),
+            year: Some(1994),
+            for_sale: Some(ForSale {
+                count: 6,
+                lowest_cents: Some(900),
+                currency: "EUR".into(),
+                fetched_at: 0,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            origin_line(&o),
+            "Lowtide Tapes · A1 · 1994 · 6 for sale from €9.00"
+        );
+        let bare = Origin {
+            position: "B2".into(),
+            ..Default::default()
+        };
+        assert_eq!(origin_line(&bare), "B2", "no label: no leading separator");
+        let only = Origin {
+            label: "Lowtide Tapes".into(),
+            ..Default::default()
+        };
+        assert_eq!(origin_line(&only), "Lowtide Tapes");
+        assert_eq!(origin_line(&Origin::default()), "");
     }
 
     #[test]

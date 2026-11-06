@@ -119,8 +119,18 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "btn_min_p",
     "btn_close",
     "btn_close_p",
-    "btn_opts",
-    "btn_opts_p",
+    "hdr_l",
+    "hdr_fill",
+    "hdr_r",
+    "hdr_plain",
+    "hb_help",
+    "hb_help_p",
+    "hb_opts",
+    "hb_opts_p",
+    "hb_min",
+    "hb_min_p",
+    "hb_close",
+    "hb_close_p",
     "prev",
     "prev_p",
     "play",
@@ -156,7 +166,9 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "digit_blank",
     "digit_q",
     "digit_colon",
-    "volume_track",
+    "volume_track_l",
+    "volume_track_m",
+    "volume_track_r",
     "volume_fill",
     "volume_thumb",
     "volume_thumb_p",
@@ -355,12 +367,28 @@ mod tests {
     }
 
     #[test]
+    fn the_unlit_digit_segments_are_far_dimmer_than_the_lit_ones() {
+        let skin = LoadedSkin::default_skin();
+        let one = skin.def.sprite("digit_1");
+        let px = |x: u16, y: u16| {
+            let i = ((one.y + y) as usize * skin.size[0] + (one.x + x) as usize) * 4;
+            let c = &skin.rgba[i..i + 3];
+            0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32
+        };
+        // A 1 lights segments b and c (the right side); a's place, at the top, stays unlit.
+        let (lit, unlit) = (px(7, 3), px(4, 0));
+        assert!(unlit * 4.0 <= lit, "unlit {unlit} against lit {lit}");
+    }
+
+    #[test]
     fn glyph_folding() {
         let def = LoadedSkin::default_skin().def;
         assert_eq!(def.glyph('a'), def.glyph('A'));
         assert_eq!(def.glyph('ñ'), def.glyph('N'));
         assert_eq!(def.glyph('é'), def.glyph('E'));
         assert!(def.glyph('€').is_some(), "for-sale prices");
+        assert!(def.glyph('±').is_some(), "the turntable's range");
+        assert_eq!(fold('±'), '±');
         assert!(def.glyph('·').is_some());
         assert!(def.glyph('₩').is_none());
     }
