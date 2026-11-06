@@ -133,15 +133,15 @@ When a track of the card's record finishes and playback moves on to a track of a
 - **THEN** the card stays on its record
 
 ### Requirement: Stepping transition
-Whenever the card moves to another record (‹ ›, ← →, or following playback), its content SHALL slide in from the side it moves towards (from the right for the next record, from the left for the previous one) while fading in, in about 220 ms, and its size and place SHALL NOT change. The animation SHALL NOT delay stepping again, and SHALL NOT affect playback.
+Whenever the card moves to another record (‹ ›, ← →, or following playback), its text and tracklist SHALL slide in from the side it moves towards (from the right for the next record, from the left for the previous one) while fading in, in about 220 ms, and its cover SHALL flip as `record-sleeve` "Flipping the sleeve" says, in the same 220 ms. The card's size and place SHALL NOT change. The animation SHALL NOT delay stepping again, and SHALL NOT affect playback.
 
 #### Scenario: Next record
 - **WHEN** the user clicks ›
-- **THEN** the next record's content slides in from the right and fades in, and is in place after about 220 ms
+- **THEN** the next record's text slides in from the right and fades in while its cover flips into place, and both are in place after about 220 ms
 
 #### Scenario: Quick steps
 - **WHEN** the user presses → three times within 220 ms
-- **THEN** the card ends on the third record after them, its slide starting again at each step
+- **THEN** the card ends on the third record after them, its slide and flip starting again at each step
 
 ### Requirement: The record card fetches its record
 While a card is open, the previews of its record's tracks SHALL be downloaded, and its tracks with no clip searched for, right after the armed and playing tracks' and before the rest of the playing crate's next ones, two at a time, so a track is usually ready when the user clicks it. Stepping to another record SHALL move this to the new record; tracks of the record left SHALL no longer be fetched unless they are near the playhead. Closing the card SHALL stop it.
@@ -231,7 +231,7 @@ For a Discogs record with tracks waiting to be searched or found by search, the 
 - **THEN** the strip shows no counts
 
 ### Requirement: Record card look
-The card SHALL be drawn in the skin's playlist colours (its background, text, dimmed text and highlight colours) with a one-pixel border in its dimmed text colour, not in the default tooltip style. It SHALL scale with the skin size (1× or 2×). Its cover SHALL be a square of 112 points at 1× on the left, with the text to its right, and the card SHALL be no wider than 420 points at 1×, nor wider than the window.
+The card SHALL be drawn in the skin's playlist colours (its background, text, dimmed text and highlight colours) with a one-pixel border in its dimmed text colour, not in the default tooltip style. It SHALL scale with the skin size (1× or 2×). Its cover SHALL be a square of 112 points at 1× on the left, drawn as a sleeve with its vinyl (see `record-sleeve`), with the text to its right starting 22 points at 1× after the cover, clear of the disc at its furthest out, and the card SHALL be no wider than 420 points at 1×, nor wider than the window.
 
 #### Scenario: Skin colours
 - **WHEN** the card is shown
@@ -241,8 +241,12 @@ The card SHALL be drawn in the skin's playlist colours (its background, text, di
 - **WHEN** the skin is at 2× and the card is shown
 - **THEN** the cover square is 224 points
 
+#### Scenario: Clear of the disc
+- **WHEN** a track of the card's record plays and its disc is 16 points out
+- **THEN** no text or button of the card overlaps the disc
+
 ### Requirement: Record card cover
-The card SHALL show the record's large cover when it is loaded. Until then, or when the record has no large cover, it SHALL show the record's thumbnail scaled to the cover square, and an empty frame while neither is loaded. A record with no image SHALL show a record icon in the square. The large cover SHALL replace the thumbnail as soon as it arrives, without the card moving or changing size.
+The card SHALL show the record's large cover when it is loaded. Until then, or when the record has no large cover, it SHALL show the record's thumbnail scaled to the cover square, and an empty frame while neither is loaded. A record with no image SHALL show a record icon in the square. The large cover SHALL replace the thumbnail as soon as it arrives, without the card moving or changing size. The image SHALL be the sleeve's front: the disc behind it and the stickers on it (see `record-sleeve`) SHALL be drawn with whichever image is shown, and with the empty frame.
 
 #### Scenario: Thumbnail first
 - **WHEN** the card opens for a record whose thumbnail is loaded and whose large cover isn't cached
@@ -255,6 +259,10 @@ The card SHALL show the record's large cover when it is loaded. Until then, or w
 #### Scenario: No image
 - **WHEN** the record has no image
 - **THEN** the card shows the record icon in the square
+
+#### Scenario: Stickers while loading
+- **WHEN** the card opens for a wanted record for sale whose covers are still loading
+- **THEN** the empty frame carries the price and WANTED stickers and the disc's edge
 
 ### Requirement: Large covers
 A large cover SHALL be at most 600 pixels wide and high, fetched by the background cover worker only for the record whose card is open, once the card has shown that record for 250 ms (so stepping quickly fetches only where it stops), never for rows in view. It SHALL be kept on disk in the cache folder apart from thumbnails, so it is fetched only once. A large cover that couldn't be fetched SHALL NOT be tried again before the next launch, and the card SHALL keep the thumbnail.

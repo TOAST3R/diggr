@@ -6,10 +6,17 @@
 //! The text comes ready from [`crate::format::record_details`] and the pills from the app; this
 //! lays them out in an area centred over the window and says what was clicked. The app keeps
 //! which record's card is open, and what each pill does.
+//!
+//! The cover is drawn as a sleeve pulled out of a crate ([`Sleeve`]): its vinyl showing at the
+//! side, a price and a hype sticker on it. The sleeve is only painted: it takes no input, so
+//! nothing a click does depends on it.
 
+use egui::emath::Rot2;
+use egui::epaint::TextShape;
 use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::CoverSlot;
+pub use crate::format::Hype;
 use crate::format::{CardTrackState, RecordCard};
 use crate::playlist::EntryId;
 use crate::skin::Colors;
@@ -28,9 +35,28 @@ const SCRIM: u8 = 150;
 /// Tracklist lines shown before it scrolls.
 pub const LINES: usize = 8;
 const PAD: f32 = 8.0;
-const GAP: f32 = 10.0;
 /// A tracklist line's height at 1×.
 const LINE: f32 = 14.0;
+/// How far the disc's edge shows past the cover at 1×: at rest, and while its record plays.
+pub const DISC_REST: f32 = 6.0;
+pub const DISC_OUT: f32 = 16.0;
+/// Where the text starts after the cover at 1×: clear of the disc at its furthest out.
+pub const TEXT_FROM: f32 = 22.0;
+/// The price sticker's radius at 1×, and its tilt.
+const PRICE_R: f32 = 15.0;
+const PRICE_TILT: f32 = 12.0;
+/// The hype sticker's tilt.
+const HYPE_TILT: f32 = -8.0;
+/// How long the WANTED sticker takes to land, in seconds, and how big it starts.
+pub const SLAP: f32 = 0.15;
+const SLAP_FROM: f32 = 1.25;
+/// How long the cover takes to fly from its row to the card, in seconds.
+pub const FLIGHT: f32 = 0.18;
+/// How far a sleeve tips forward as it flips, in degrees.
+const FLIP_ANGLE: f32 = 80.0;
+/// How much smaller and darker a sleeve behind the one flipping starts.
+const SUNK_SCALE: f32 = 0.06;
+const SUNK_DARK: f32 = 0.4;
 
 /// What the cover square shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,6 +120,8 @@ struct Ink {
     hl: Color32,
     pill: Color32,
     owned: Color32,
+    price: Color32,
+    hype: Color32,
 }
 
 impl Ink {
@@ -110,6 +138,8 @@ impl Ink {
             hl: color(c.pl_current),
             pill: color(c.pl_selected_bg),
             owned: color(c.pl_owned),
+            price: color(c.sticker_price),
+            hype: color(c.sticker_hype),
         }
     }
 }
@@ -127,6 +157,121 @@ pub struct Card<'a> {
     /// Seconds since the card moved to this record, and which way (-1 back, 1 on); `None`
     /// once it has settled.
     pub slide: Option<(f32, i8)>,
+    pub sleeve: Sleeve,
+}
+
+/// The record as a sleeve: what the app worked out for the cover's square.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sleeve {
+    /// The vinyl's label colour (the cover's), `None` while it isn't known.
+    pub tint: Option<Color32>,
+    /// How far the vinyl is out: 0 at rest, 1 while its record plays.
+    pub out: f32,
+    /// The price sticker's text ("€9").
+    pub price: Option<String>,
+    pub hype: Option<Hype>,
+    /// Seconds since the WANTED sticker appeared, while it lands.
+    pub slap: Option<f32>,
+    /// The cover shown before the card moved to this record: it flips away (or back) while
+    /// [`Card::slide`] runs.
+    pub flip: Option<CardImage>,
+    /// Where the cover flies from (its row's thumbnail) and how long since the card opened,
+    /// while it flies.
+    pub flight: Option<(Rect, f32)>,
+}
+
+/// The WANTED sticker's size `t` seconds after it appeared: [`SLAP_FROM`] times its own,
+/// settling to 1 over [`SLAP`].
+pub fn slap_scale(t: f32) -> f32 {
+    SLAP_FROM - (SLAP_FROM - 1.0) * crate::motion::ease_out_cubic(t / SLAP)
+}
+
+/// A picture in `rect` (`uv` of `tex`, tinted `color`) tipped forward by `angle` radians about
+/// its bottom edge, its top coming toward the viewer and down, seen in perspective. A 4 × 4
+/// grid, so egui's flat texturing of each triangle doesn't bend the picture. The bottom edge
+/// stays where it is; the sleeve darkens as it tips.
+pub fn flip_mesh(
+    rect: Rect,
+    tex: egui::TextureId,
+    uv: Rect,
+    angle: f32,
+    color: Color32,
+) -> egui::Mesh {
+    const N: u32 = 4;
+    let mut mesh = egui::Mesh::with_texture(tex);
+    let (sin, cos) = angle.sin_cos();
+    // The viewer's distance: three sides away.
+    let d = 3.0 * rect.height().max(1.0);
+    let c = rect.center();
+    let shade = shaded(color, 1.0 - 0.45 * sin.abs());
+    for j in 0..=N {
+        for i in 0..=N {
+            let (u, v) = (i as f32 / N as f32, j as f32 / N as f32);
+            let x = rect.left() + u * rect.width();
+            let dy = rect.top() + v * rect.height() - rect.bottom();
+            let y = rect.bottom() + dy * cos;
+            // Toward the viewer: things closer look bigger, about the picture's centre.
+            let f = d / (d + dy * sin);
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: pos2(c.x + (x - c.x) * f, c.y + (y - c.y) * f),
+                uv: pos2(uv.left() + u * uv.width(), uv.top() + v * uv.height()),
+                color: shade,
+            });
+        }
+    }
+    for j in 0..N {
+        for i in 0..N {
+            let a = j * (N + 1) + i;
+            let b = a + N + 1;
+            mesh.add_triangle(a, a + 1, b);
+            mesh.add_triangle(a + 1, b + 1, b);
+        }
+    }
+    mesh
+}
+
+/// `c` with its colour times `bright` (its alpha kept).
+fn shaded(c: Color32, bright: f32) -> Color32 {
+    let [r, g, b, a] = c.to_array();
+    let k = |v: u8| (f32::from(v) * bright.clamp(0.0, 1.0)).round() as u8;
+    Color32::from_rgba_premultiplied(k(r), k(g), k(b), a)
+}
+
+/// What a sleeve's face shows in `square`: a texture's part in a rect, tinted; `None` for the
+/// record icon, which has no sleeve.
+fn face(
+    image: CardImage,
+    square: Rect,
+    ink: &Ink,
+) -> Option<(egui::TextureId, Rect, Rect, Color32)> {
+    match image {
+        CardImage::Image(tex, size) => {
+            let fit = size * (square.width() / size.x.max(size.y).max(1.0));
+            let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            Some((
+                tex,
+                full,
+                Rect::from_center_size(square.center(), fit),
+                Color32::WHITE,
+            ))
+        }
+        // An empty sleeve: plain card.
+        CardImage::Waiting => Some((
+            egui::TextureId::default(),
+            Rect::from_min_max(egui::epaint::WHITE_UV, egui::epaint::WHITE_UV),
+            square,
+            ink.pill,
+        )),
+        CardImage::Icon => None,
+    }
+}
+
+/// The disc behind the cover `square`: its centre and radius, its edge showing [`DISC_REST`] to
+/// [`DISC_OUT`] (at the skin's `scale`) past the cover as `out` goes from 0 to 1.
+pub fn disc(square: Rect, out: f32, scale: f32) -> (Pos2, f32) {
+    let r = square.width() * 0.47;
+    let edge = square.right() + (DISC_REST + (DISC_OUT - DISC_REST) * out.clamp(0.0, 1.0)) * scale;
+    (pos2(edge - r, square.center().y), r)
 }
 
 /// The slide's state `elapsed` seconds in: how far the content still is from its place (1 at
@@ -138,13 +283,8 @@ pub fn ease(elapsed: f32) -> (f32, f32) {
 
 /// Shows the card centred over the window at the skin's `scale`, over a dark layer that takes
 /// every click, drag and hover outside it: only the card answers the pointer while it's open.
-/// Returns the card's rect and what was clicked in it.
-pub fn show(
-    ctx: &egui::Context,
-    card: &Card,
-    colors: &Colors,
-    scale: f32,
-) -> (Rect, Vec<CardAction>) {
+/// Returns where the card and its cover are, and what was clicked in it.
+pub fn show(ctx: &egui::Context, card: &Card, colors: &Colors, scale: f32) -> Shown {
     let ink = Ink::of(colors);
     let mut actions = Vec::new();
     let width = width(scale, ctx.content_rect().width());
@@ -178,16 +318,49 @@ pub fn show(
                         dir * off * SLIDE_FROM * scale,
                         0.0,
                     ));
-                    ui.with_visual_transform(shift, |ui| {
-                        ui.set_opacity(opacity);
-                        draw(ui, card, width, &ink, scale, &mut actions);
-                    });
-                });
+                    let square = ui
+                        .with_visual_transform(shift, |ui| {
+                            ui.set_opacity(opacity);
+                            draw(ui, card, width, &ink, scale, &mut actions)
+                        })
+                        .inner;
+                    // The sleeve keeps out of the text's slide: it moves its own way.
+                    draw_sleeve(ui.painter(), square, card, &ink, scale);
+                    square
+                })
+                .inner
         });
-    if card.slide.is_some() {
+    if let Some((from, t)) = card.sleeve.flight {
+        // Pulled out of the crate: the cover flies from its row to the card, above everything,
+        // only painted (no area, so it takes no input).
+        if let Some((tex, uv, to, color)) = face(card.image, resp.inner, &ink) {
+            let p = crate::motion::ease_out_cubic(t / FLIGHT);
+            let at = Rect::from_min_max(from.min.lerp(to.min, p), from.max.lerp(to.max, p));
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                Id::new("record_card_flight"),
+            ))
+            .image(tex, at, uv, color);
+        }
+    }
+    let sl = &card.sleeve;
+    if card.slide.is_some() || sl.slap.is_some() || sl.flight.is_some() {
         ctx.request_repaint();
     }
-    (resp.response.rect, actions)
+    Shown {
+        rect: resp.response.rect,
+        cover: resp.inner,
+        actions,
+    }
+}
+
+/// What [`show`] drew and was asked for.
+pub struct Shown {
+    /// The whole card.
+    pub rect: Rect,
+    /// Its cover square.
+    pub cover: Rect,
+    pub actions: Vec<CardAction>,
 }
 
 /// The card's width inside its frame: [`MAX_W`] at the skin's scale, or the window's width
@@ -196,19 +369,28 @@ pub fn width(scale: f32, window: f32) -> f32 {
     (MAX_W * scale).min(window - 2.0) - 2.0 * PAD * scale
 }
 
-fn draw(ui: &mut Ui, view: &Card, width: f32, ink: &Ink, s: f32, actions: &mut Vec<CardAction>) {
+/// Lays the card out and draws all but the sleeve; returns the cover's square, left empty.
+fn draw(
+    ui: &mut Ui,
+    view: &Card,
+    width: f32,
+    ink: &Ink,
+    s: f32,
+    actions: &mut Vec<CardAction>,
+) -> Rect {
     let card = view.card;
     ui.spacing_mut().item_spacing = Vec2::ZERO;
     let side = COVER * s;
-    let text_w = (width - side - GAP * s).max(60.0 * s);
+    let text_w = (width - side - TEXT_FROM * s).max(60.0 * s);
+    let mut cover = Rect::NOTHING;
     let title = FontId::proportional(15.0 * s);
     let sub = FontId::proportional(12.0 * s);
     let body = FontId::proportional(9.5 * s);
     let small = FontId::proportional(8.5 * s);
     ui.horizontal_top(|ui| {
         let (square, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-        draw_cover(ui.painter(), square, view.image, ink, s);
-        ui.add_space(GAP * s);
+        cover = square;
+        ui.add_space(TEXT_FROM * s);
         ui.vertical(|ui| {
             ui.set_width(text_w);
             header(ui, view, text_w, title, ink, s, actions);
@@ -266,6 +448,168 @@ fn draw(ui: &mut Ui, view: &Card, width: f32, ink: &Ink, s: f32, actions: &mut V
     if card.has_strip() || !view.pills.is_empty() {
         strip(ui, view, &body, &small, ink, s, actions);
     }
+    cover
+}
+
+/// The sleeve in the cover's `square`: the vinyl behind it, the cover (flipping in from the
+/// last record's while the card moves), the stickers on it. Nothing while it's flying in.
+fn draw_sleeve(painter: &egui::Painter, square: Rect, view: &Card, ink: &Ink, s: f32) {
+    let sleeve = &view.sleeve;
+    if sleeve.flight.is_some() {
+        return;
+    }
+    let flip = sleeve.flip.zip(view.slide);
+    if view.image != CardImage::Icon {
+        let (c, r) = disc(square, sleeve.out, s);
+        draw_disc(painter, c, r, sleeve.tint.unwrap_or(ink.pill), ink, s);
+        if flip.is_none() {
+            // The sleeve hides the rest of the disc, whatever shape its picture.
+            painter.rect_filled(square, 0.0, ink.bg);
+        }
+    }
+    let mut alpha = 1.0;
+    match flip {
+        None => draw_cover(painter, square, view.image, ink, s),
+        Some((old, (t, dir))) => {
+            let p = crate::motion::ease_out_cubic(t / SLIDE);
+            alpha = p;
+            let tip = FLIP_ANGLE.to_radians();
+            if dir >= 0 {
+                // On: the old sleeve tips forward and away, the new one rises behind it.
+                sunk(painter, square, view.image, 1.0 - p, 1.0, ink);
+                tipped(painter, square, old, tip * p, 1.0 - p, ink);
+            } else {
+                // Back: the old sleeve sinks, the one before tips up into place.
+                sunk(painter, square, old, p, 1.0 - p, ink);
+                tipped(painter, square, view.image, tip * (1.0 - p), 1.0, ink);
+            }
+        }
+    }
+    if let Some(price) = &sleeve.price {
+        price_sticker(painter, square, price, alpha, ink, s);
+    }
+    if let Some(h) = sleeve.hype {
+        let k = match (h, sleeve.slap) {
+            (Hype::Wanted, Some(t)) => slap_scale(t),
+            _ => 1.0,
+        };
+        hype_sticker(painter, square, h, k, alpha, ink, s);
+    }
+}
+
+/// A sleeve behind the one flipping: `k` of the way sunk (smaller and darker), at `alpha`.
+fn sunk(painter: &egui::Painter, square: Rect, image: CardImage, k: f32, alpha: f32, ink: &Ink) {
+    if let Some((tex, uv, rect, color)) = face(image, square, ink) {
+        let rect = Rect::from_center_size(rect.center(), rect.size() * (1.0 - SUNK_SCALE * k));
+        let color = shaded(color, 1.0 - SUNK_DARK * k).gamma_multiply(alpha);
+        painter.image(tex, rect, uv, color);
+    }
+}
+
+/// A sleeve tipped forward by `angle`, at `alpha`.
+fn tipped(
+    painter: &egui::Painter,
+    square: Rect,
+    image: CardImage,
+    angle: f32,
+    alpha: f32,
+    ink: &Ink,
+) {
+    if let Some((tex, uv, rect, color)) = face(image, square, ink) {
+        painter.add(flip_mesh(rect, tex, uv, angle, color.gamma_multiply(alpha)));
+    }
+}
+
+/// A black disc with a few grooves and a label in `tint`.
+fn draw_disc(painter: &egui::Painter, c: Pos2, r: f32, tint: Color32, ink: &Ink, s: f32) {
+    painter.circle_filled(c, r, Color32::from_rgb(16, 16, 16));
+    let groove = Stroke::new((0.5 * s).max(0.5), Color32::from_gray(44));
+    for k in [0.93, 0.8, 0.67, 0.52] {
+        painter.circle_stroke(c, r * k, groove);
+    }
+    painter.circle_filled(c, r * 0.36, tint);
+    painter.circle_filled(c, r * 0.04, ink.bg);
+}
+
+/// The round price sticker on the cover's top-right corner, tilted.
+fn price_sticker(painter: &egui::Painter, square: Rect, text: &str, alpha: f32, ink: &Ink, s: f32) {
+    let r = PRICE_R * s;
+    let c = pos2(square.right() - r * 0.75, square.top() + r * 0.75);
+    painter.circle_filled(c, r, ink.price.gamma_multiply(alpha));
+    let rim = ink.price.lerp_to_gamma(Color32::BLACK, 0.25);
+    painter.circle_stroke(
+        c,
+        r - 0.5 * s,
+        Stroke::new(s.max(1.0), rim.gamma_multiply(alpha)),
+    );
+    let ink_on = ink.bg.gamma_multiply(alpha);
+    tilted_text(painter, c, text, 10.0 * s, 1.6 * r, PRICE_TILT, ink_on);
+}
+
+/// The hype sticker on the cover's bottom-left corner, tilted, at `k` times its size.
+fn hype_sticker(
+    painter: &egui::Painter,
+    square: Rect,
+    h: Hype,
+    k: f32,
+    alpha: f32,
+    ink: &Ink,
+    s: f32,
+) {
+    let fill = match h {
+        Hype::Owned => ink.owned,
+        Hype::Sold | Hype::Wanted => ink.hype,
+    }
+    .gamma_multiply(alpha);
+    let font = FontId::proportional(8.5 * s * k);
+    let size = painter
+        .layout_no_wrap(h.label().into(), font, ink.bg)
+        .size();
+    let half = vec2(size.x + 8.0 * s * k, size.y + 3.0 * s * k) / 2.0;
+    // Placed by its full size, so a slap grows it about where it lands.
+    let full = vec2(half.x / k, half.y / k);
+    let c = pos2(
+        square.left() + full.x + 3.0 * s,
+        square.bottom() - full.y - 8.0 * s,
+    );
+    let rot = Rot2::from_angle(HYPE_TILT.to_radians());
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        .map(|(x, y)| c + rot * vec2(x * half.x, y * half.y));
+    painter.add(egui::Shape::convex_polygon(
+        corners.to_vec(),
+        fill,
+        Stroke::NONE,
+    ));
+    tilted_text(
+        painter,
+        c,
+        h.label(),
+        8.5 * s * k,
+        f32::INFINITY,
+        HYPE_TILT,
+        ink.bg.gamma_multiply(alpha),
+    );
+}
+
+/// `text` centred on `c`, turned `degrees`, at `size` points or smaller to fit `max_w`.
+fn tilted_text(
+    painter: &egui::Painter,
+    c: Pos2,
+    text: &str,
+    size: f32,
+    max_w: f32,
+    degrees: f32,
+    color: Color32,
+) {
+    let mut galley = painter.layout_no_wrap(text.into(), FontId::proportional(size), color);
+    if galley.size().x > max_w {
+        let fit = size * max_w / galley.size().x;
+        galley = painter.layout_no_wrap(text.into(), FontId::proportional(fit), color);
+    }
+    let angle = degrees.to_radians();
+    // A text shape turns about its top-left corner: start where its centre lands on `c`.
+    let at = c - Rot2::from_angle(angle) * (galley.size() / 2.0);
+    painter.add(TextShape::new(at, galley, color).with_angle(angle));
 }
 
 /// A thin position bar for the record's playing track, with its elapsed and total time: a click
@@ -617,6 +961,7 @@ fn draw_cover(painter: &egui::Painter, square: Rect, image: CardImage, ink: &Ink
             );
         }
         CardImage::Waiting => {
+            painter.rect_filled(square, 2.0 * s, ink.bg);
             painter.rect_stroke(
                 square,
                 2.0 * s,
@@ -687,6 +1032,90 @@ mod tests {
         );
         assert_eq!(ease(SLIDE), (0.0, 1.0), "in place");
         assert_eq!(ease(5.0), (0.0, 1.0));
+    }
+
+    #[test]
+    fn the_disc_shows_6_points_at_rest_and_16_while_its_record_plays() {
+        let edge = |out: f32, s: f32| {
+            let square = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(COVER * s));
+            let (c, r) = disc(square, out, s);
+            assert_eq!(c.y, square.center().y, "centred on the cover's height");
+            assert!(
+                c.x - r > square.left() && c.x < square.right(),
+                "mostly behind the cover"
+            );
+            c.x + r - square.right()
+        };
+        assert!((edge(0.0, 1.0) - 6.0).abs() < 1e-3);
+        assert!((edge(1.0, 1.0) - 16.0).abs() < 1e-3);
+        assert!((edge(0.0, 2.0) - 12.0).abs() < 1e-3, "2×");
+        assert!((edge(1.0, 2.0) - 32.0).abs() < 1e-3);
+        assert!((edge(0.5, 1.0) - 11.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_wanted_sticker_lands_from_a_quarter_bigger() {
+        assert!((slap_scale(0.0) - 1.25).abs() < 1e-6);
+        assert!(slap_scale(SLAP / 2.0) < 1.1, "most of the way soon");
+        assert!((slap_scale(SLAP) - 1.0).abs() < 1e-6);
+    }
+
+    fn corners(m: &egui::Mesh) -> [Pos2; 4] {
+        // Grid of 5 × 5: top-left, top-right, bottom-left, bottom-right.
+        [0, 4, 20, 24].map(|i| m.vertices[i].pos)
+    }
+
+    #[test]
+    fn a_flat_sleeve_is_its_rect() {
+        let r = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(112.0));
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let m = flip_mesh(r, egui::TextureId::default(), uv, 0.0, Color32::WHITE);
+        assert_eq!(m.vertices.len(), 25);
+        assert_eq!(m.indices.len(), 16 * 6);
+        let [tl, tr, bl, br] = corners(&m);
+        for (got, want) in [
+            (tl, r.left_top()),
+            (tr, r.right_top()),
+            (bl, r.left_bottom()),
+            (br, r.right_bottom()),
+        ] {
+            assert!((got - want).length() < 1e-3, "{got:?} {want:?}");
+        }
+    }
+
+    #[test]
+    fn a_tipped_sleeve_comes_forward_about_its_bottom_edge() {
+        let r = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(112.0));
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let m = flip_mesh(
+            r,
+            egui::TextureId::default(),
+            uv,
+            80f32.to_radians(),
+            Color32::WHITE,
+        );
+        let [tl, tr, bl, br] = corners(&m);
+        assert!(
+            (bl - r.left_bottom()).length() < 1e-3,
+            "the bottom stays: {bl:?}"
+        );
+        assert!((br - r.right_bottom()).length() < 1e-3);
+        assert!(tl.y > r.top() + 20.0, "the top comes down: {tl:?}");
+        assert!(tr.x - tl.x > r.width(), "and nearer, wider: {tl:?} {tr:?}");
+        assert!(
+            m.vertices[0].color.r() < 200,
+            "darker as it tips: {:?}",
+            m.vertices[0].color
+        );
+    }
+
+    #[test]
+    fn the_text_starts_clear_of_the_disc() {
+        for s in [1.0, 2.0] {
+            let square = Rect::from_min_size(Pos2::ZERO, Vec2::splat(COVER * s));
+            let (c, r) = disc(square, 1.0, s);
+            assert!(c.x + r < square.right() + TEXT_FROM * s, "{s}×");
+        }
     }
 
     #[test]

@@ -20,9 +20,15 @@ sentences. `## Unreleased` collects entries until a release renames it.
   the middle of the window: the cover, the label, catalogue number and year, its styles, what's
   for sale, and its tracklist with BPMs. Its tracks start downloading the moment it opens, so
   they're ready when you press play, and a slim bar lets you scrub through the one playing.
-  Want it or put it in your cart from the card, and slide to the next or previous record with
-  ‹ › or the arrow keys. When a record finishes, the card slides on to the next one with the
+  Want it or put it in your cart from the card, and flip to the next or previous record with
+  ‹ › or the arrow keys. When a record finishes, the card moves on to the next one with the
   music. × or Esc puts it away.
+- **Every card is a record pulled from the crate.** Click a record and its cover lifts out of
+  the list into the card, with the disc peeking from the sleeve in the cover's colours; play a
+  track and the disc slides further out. The shop's price sticker sits on the corner, and a
+  SOLD, OWNED or WANTED sticker on the other, slapped on the moment you want it. Step through
+  the crate and each sleeve tips forward to show the next one behind it. With Reduce motion on,
+  nothing moves, but the disc and the stickers are still there.
 - **A hand on the record.** Press and hold the turntable's platter and the record slows to a
   stop, the pitch sinking with it, just like vinyl under your palm. Let go and it spins back up
   and plays on from where it stopped. It works with SYNC on or off.

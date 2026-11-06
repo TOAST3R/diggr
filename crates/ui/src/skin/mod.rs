@@ -61,6 +61,20 @@ pub struct Colors {
     /// written before it existed keep their green.
     #[serde(default = "lcd_green")]
     pub lcd: [u8; 3],
+    /// The record card's round price sticker (see `record-sleeve`): a shop's yellow.
+    #[serde(default = "sticker_yellow")]
+    pub sticker_price: [u8; 3],
+    /// The record card's SOLD and WANTED stickers: a sticker red.
+    #[serde(default = "sticker_red")]
+    pub sticker_hype: [u8; 3],
+}
+
+fn sticker_yellow() -> [u8; 3] {
+    [244, 214, 72]
+}
+
+fn sticker_red() -> [u8; 3] {
+    [214, 64, 52]
 }
 
 fn lcd_green() -> [u8; 3] {
@@ -408,6 +422,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.lcd, [0, 236, 0]);
+        assert_eq!(
+            old.sticker_price,
+            [244, 214, 72],
+            "older skins get the stickers"
+        );
+        assert_eq!(old.sticker_hype, [214, 64, 52]);
     }
 
     #[test]
