@@ -5,7 +5,9 @@
 //!
 //! A speed change flushes the ring softly (see [`Control::mark_soft`]): the old audio keeps
 //! playing until the new one is queued, then a 2 ms crossfade joins them, so it is heard within
-//! a buffer or two, with no gap and no click.
+//! a buffer or two, with no gap and no click. Any other flush of audio that was playing (a seek,
+//! a track change) is de-clicked: the old audio fades out over 5 ms and the new fades in over
+//! 5 ms, with the short silence of the new audio loading between them.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -25,6 +27,8 @@ pub const BLOCK_FRAMES: usize = 1024;
 const MAX_RUNS: usize = 16;
 /// The soft flush's crossfade: 2 ms at 48 kHz.
 const FADE_FRAMES: usize = 96;
+/// A seek's or track change's fade-out of the old audio and fade-in of the new: 5 ms at 48 kHz.
+pub const DECLICK_FRAMES: usize = 240;
 
 /// State shared between the control side (engine) and the callback.
 pub struct Control {
@@ -190,6 +194,18 @@ pub struct Renderer {
     fade: Box<[f32]>,
     fade_len: usize,
     fade_pos: usize,
+    /// The current fade's length: [`FADE_FRAMES`] for a soft flush, [`DECLICK_FRAMES`] for a
+    /// de-click.
+    fade_span: usize,
+    /// The fade under way is a de-click: the old audio fades out over silence too.
+    declick: bool,
+    /// The generation the last de-click was for (each flush is de-clicked once).
+    declick_generation: u32,
+    /// The new audio's fade-in: where it starts in the current block, and how far it has got.
+    fade_in_from: Option<usize>,
+    fade_in_pos: usize,
+    /// Audio was heard in the last callback (a flush while paused has nothing to fade out).
+    audible: bool,
     played_generation: u32,
     /// The generation in the clock epoch: a speed change keeps the one it continues.
     epoch_generation: u32,
@@ -219,9 +235,15 @@ impl Renderer {
             gains: (v * l, v * r),
             pos: (0, 0),
             speed: 1.0,
-            fade: vec![0.0; FADE_FRAMES * CHANNELS].into_boxed_slice(),
+            fade: vec![0.0; DECLICK_FRAMES * CHANNELS].into_boxed_slice(),
             fade_len: 0,
             fade_pos: FADE_FRAMES,
+            fade_span: FADE_FRAMES,
+            declick: false,
+            declick_generation: 0,
+            fade_in_from: None,
+            fade_in_pos: DECLICK_FRAMES,
+            audible: false,
             played_generation: 0,
             epoch_generation: 0,
             soft_switch: false,
@@ -283,6 +305,7 @@ impl Renderer {
             if state == PlayState::Stopped {
                 self.pcm.discard_stale(target);
             }
+            self.audible = false;
             out.fill(0.0);
             self.clock.publish(&snap);
             return;
@@ -294,11 +317,19 @@ impl Renderer {
             && self.control.soft_generation.load(Ordering::Acquire) == target
         {
             if self.pcm.has_generation(target) {
-                self.capture_fade(target);
+                self.capture_fade(target, FADE_FRAMES);
                 self.soft_switch = true;
             } else {
                 min_generation = self.played_generation;
             }
+        } else if self.played_generation < target
+            && self.audible
+            && self.declick_generation != target
+        {
+            // A hard flush of audio that was playing: fade the old out instead of cutting it.
+            self.capture_fade(target, DECLICK_FRAMES);
+            self.declick = true;
+            self.declick_generation = target;
         }
 
         let mut done = 0;
@@ -332,6 +363,10 @@ impl Renderer {
                             self.played_generation = run.generation;
                             self.played_splice = run.splice;
                             self.started = false;
+                            if self.declick_generation == run.generation {
+                                self.fade_in_from = Some(filled);
+                                self.fade_in_pos = 0;
+                            }
                             snap.epoch = self.epoch();
                         } else if run.splice != self.played_splice {
                             // A splice without a flush: the new epoch applies from where the
@@ -387,7 +422,12 @@ impl Renderer {
                 }
             }
             self.scratch[filled * CHANNELS..n * CHANNELS].fill(0.0);
-            self.mix_fade(filled);
+            self.fade_in(filled);
+            if self.declick {
+                self.mix_declick(n);
+            } else {
+                self.mix_fade(filled);
+            }
             self.eq.process(&mut self.scratch[..n * CHANNELS]);
             self.lowpass
                 .process(&mut self.scratch[..n * CHANNELS], knob);
@@ -420,16 +460,17 @@ impl Renderer {
             self.started = false;
         }
         snap.starved = !any_audio;
+        self.audible = any_audio;
         self.clock.publish(&snap);
     }
 
-    /// Takes the start of the old audio still queued before `target`'s, to fade out over the
-    /// new audio's first frames.
-    fn capture_fade(&mut self, target: u32) {
+    /// Takes the start of the old audio still queued before `target`'s, to fade out over
+    /// `span` frames.
+    fn capture_fade(&mut self, target: u32, span: usize) {
         self.fade_len = 0;
         self.fade_pos = 0;
-        while self.fade_len < FADE_FRAMES && self.pcm.next_generation().is_some_and(|g| g < target)
-        {
+        self.fade_span = span;
+        while self.fade_len < span && self.pcm.next_generation().is_some_and(|g| g < target) {
             let dst = &mut self.fade[self.fade_len * CHANNELS..];
             match self.pcm.read(self.played_generation, dst) {
                 ReadResult::Audio(run) => self.fade_len += run.frames,
@@ -440,10 +481,10 @@ impl Renderer {
 
     /// Crossfades the captured old audio into the first `filled` frames of the block.
     fn mix_fade(&mut self, filled: usize) {
-        let n = (FADE_FRAMES - self.fade_pos).min(filled);
+        let n = self.fade_span.saturating_sub(self.fade_pos).min(filled);
         for i in 0..n {
             let j = self.fade_pos + i;
-            let w = (j as f32 + 0.5) / FADE_FRAMES as f32 * std::f32::consts::FRAC_PI_2;
+            let w = (j as f32 + 0.5) / self.fade_span as f32 * std::f32::consts::FRAC_PI_2;
             for c in 0..CHANNELS {
                 let old = if j < self.fade_len {
                     self.fade[j * CHANNELS + c]
@@ -455,6 +496,45 @@ impl Renderer {
             }
         }
         self.fade_pos += n;
+    }
+
+    /// A de-click: fades the captured old audio out over the first frames of the block,
+    /// whether the new audio has arrived or not (it fades in by itself, see [`Self::fade_in`]).
+    fn mix_declick(&mut self, frames: usize) {
+        let n = self.fade_span.saturating_sub(self.fade_pos).min(frames);
+        for i in 0..n {
+            let j = self.fade_pos + i;
+            if j >= self.fade_len {
+                break;
+            }
+            let w = (j as f32 + 0.5) / self.fade_span as f32 * std::f32::consts::FRAC_PI_2;
+            for c in 0..CHANNELS {
+                self.scratch[i * CHANNELS + c] += self.fade[j * CHANNELS + c] * w.cos();
+            }
+        }
+        self.fade_pos += n;
+        if self.fade_pos >= self.fade_span {
+            self.declick = false;
+        }
+    }
+
+    /// Fades in the first [`DECLICK_FRAMES`] of audio that replaced a de-clicked flush, from
+    /// where it starts in the block up to `filled`.
+    fn fade_in(&mut self, filled: usize) {
+        let Some(from) = self.fade_in_from else {
+            return;
+        };
+        let mut i = from;
+        while i < filled && self.fade_in_pos < DECLICK_FRAMES {
+            let w = (self.fade_in_pos as f32 + 0.5) / DECLICK_FRAMES as f32
+                * std::f32::consts::FRAC_PI_2;
+            for c in 0..CHANNELS {
+                self.scratch[i * CHANNELS + c] *= w.sin();
+            }
+            self.fade_in_pos += 1;
+            i += 1;
+        }
+        self.fade_in_from = (self.fade_in_pos < DECLICK_FRAMES).then_some(0);
     }
 
     fn note_start_latency(&self, generation: u32, host_ns: u64) {
@@ -598,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_discards_old_generation_and_moves_clock() {
+    fn a_seek_fades_the_old_audio_out_and_the_new_in_and_moves_the_clock() {
         let mut g = rig(2);
         let g1 = g.control.bump_generation();
         g.tx.push(g1, 1, 0, &vec![0.9; 2048 * 2]);
@@ -610,13 +690,41 @@ mod tests {
         let g2 = g.control.bump_generation();
         g.tx.push(g2, 1, 96_000, &vec![0.1; 1024 * 2]);
         g.r.render(&mut out, info(1));
+        // The old 0.9 fades out and the new 0.1 fades in over 5 ms, with no step big enough to
+        // click; after that only the new audio plays.
+        assert!(out[0] > 0.8, "it starts from the old audio: {}", out[0]);
+        let steps = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(steps < 0.01, "no click: a step of {steps}");
         assert!(
-            out.iter().all(|&s| s == 0.1),
-            "no pre-seek audio after the seek"
+            out[DECLICK_FRAMES * 2..].iter().all(|&s| s == 0.1),
+            "no pre-seek audio after the fade"
         );
         let s = g.clock.snapshot();
         assert_eq!(s.frame, 96_000);
         assert_ne!(s.epoch, before);
+    }
+
+    #[test]
+    fn a_seek_while_paused_has_nothing_to_fade() {
+        let mut g = rig(2);
+        let g1 = g.control.bump_generation();
+        g.tx.push(g1, 1, 0, &vec![0.9; 2048 * 2]);
+        g.control.set_state(PlayState::Playing);
+        let mut out = vec![0.0; 512 * 2];
+        g.r.render(&mut out, info(0));
+        g.control.set_state(PlayState::Paused);
+        g.r.render(&mut out, info(1));
+        let g2 = g.control.bump_generation();
+        g.tx.push(g2, 1, 96_000, &vec![0.1; 1024 * 2]);
+        g.control.set_state(PlayState::Playing);
+        g.r.render(&mut out, info(2));
+        assert!(
+            out.iter().all(|&s| s == 0.1),
+            "resumed at the new place, exactly"
+        );
     }
 
     #[test]

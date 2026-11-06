@@ -2025,6 +2025,18 @@ fn the_buttons_fit_in_the_mini_player() {
     for h in [12.0, 13.0] {
         assert!((BUTTON_ROW_Y + h / 2.0 - centre).abs() <= 0.5, "{h}");
     }
+    // The seek bar sits under the transport and inside the band (checked when compiled).
+    const {
+        assert!(
+            SEEK_Y - 2.0 >= TRANSPORT_Y + 18.0,
+            "its hit area starts under the transport"
+        );
+        let seek_h = crate::skin::generate::SEEK_H as f32;
+        assert!(
+            SEEK_Y + seek_h + 1.0 <= crate::layout::BAND_H as f32,
+            "and ends in the band"
+        );
+    }
     // The LCD's rows fit its box and the band.
     assert!(LINE2_Y + 7.0 <= LCD_Y + LCD_H && TRANSPORT_Y + 18.0 <= crate::layout::BAND_H as f32);
 }
@@ -4351,4 +4363,82 @@ fn dragging_the_band_anywhere_that_is_not_a_control_moves_the_window() {
     // And a control keeps its click.
     rig.click(deck_sync(&rig));
     assert!(rig.app.settings.sync.on);
+}
+
+/// A point on the player's seek bar at `fraction` of its travel, in a window `rig.screen.x` wide.
+fn seek_at(rig: &Rig, fraction: f32) -> Pos2 {
+    let w = crate::layout::band_panels(rig.screen.x).player.1 as f32;
+    let thumb = rig.app.def.sprite("seek_thumb").w as f32;
+    let travel = w - 8.0 - thumb;
+    pos2(
+        4.0 + thumb / 2.0 + fraction * travel,
+        BAND_TOP + SEEK_Y + 3.0,
+    )
+}
+
+#[test]
+fn the_seek_bar_follows_playback_and_seeks_on_release() {
+    let mut rig = Rig::new("seek-bar", vec![fixture("tone.flac")], |_| {});
+    rig.ctx.global_style_mut(|s| {
+        s.interaction.tooltip_delay = 0.0;
+        s.interaction.tooltip_grace_time = 0.0;
+    });
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing
+                && r.app
+                    .now_playing
+                    .as_ref()
+                    .is_some_and(|i| i.duration_secs.is_some())
+        },
+        "playing, its length known",
+    );
+    // The thumb follows playback.
+    rig.until(
+        |r| r.app.seek_drawn.is_some_and(|v| v > 0.05),
+        "the thumb moves",
+    );
+    // A click at 75% of a 2 s track seeks to 1.5 s, and the thumb goes there at once and
+    // stays: it never jumps back to the old position while the seek is on its way.
+    rig.click(seek_at(&rig, 0.75));
+    for _ in 0..20 {
+        rig.pump();
+        let v = rig.app.seek_drawn.unwrap();
+        assert!(v > 0.7, "the thumb stays at the target: {v}");
+    }
+    rig.until(
+        |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
+        "seeked to 1.5 s",
+    );
+    // A drag: the thumb follows the pointer, and the seek waits for the release.
+    let from = seek_at(&rig, 0.9);
+    rig.frame(vec![Event::PointerMoved(from)]);
+    rig.press(from, PointerButton::Primary, true);
+    for f in [0.7, 0.5, 0.25] {
+        rig.frame(vec![Event::PointerMoved(seek_at(&rig, f))]);
+    }
+    assert!(rig.app.seek_drag.is_some_and(|v| (v - 0.25).abs() < 0.02));
+    assert!(rig.app.seek_drawn.is_some_and(|v| (v - 0.25).abs() < 0.02));
+    rig.press(seek_at(&rig, 0.25), PointerButton::Primary, false);
+    assert!(rig.app.seek_drag.is_none(), "released: the seek is sent");
+    rig.until(
+        |r| (r.app.position.seconds() - 0.5).abs() < 0.2,
+        "seeked to 0.5 s",
+    );
+    // The tooltip names the time under the pointer: 50% of 2 s.
+    let mid = seek_at(&rig, 0.5);
+    let mut seen = false;
+    for _ in 0..10 {
+        let out = rig.frame(vec![Event::PointerMoved(mid)]);
+        seen |= shows(&out, "0:01");
+    }
+    assert!(seen, "the tooltip names 0:01");
+    // Stopped: no thumb, and a click seeks nothing.
+    rig.key(Key::Space, Modifiers::SHIFT);
+    rig.until(|r| r.app.position.state == PlayState::Stopped, "stopped");
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.seek_drawn, None);
+    rig.click(seek_at(&rig, 0.75));
+    assert!(rig.app.seek_drag.is_none());
+    assert_eq!(rig.app.position.state, PlayState::Stopped);
 }

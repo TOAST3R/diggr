@@ -369,7 +369,8 @@ and Home/End jump), and Enter plays the entry under it.
     another album), or local files with the same artist and album tags.
 - **Mini player** (the band's left panel): the play state, time and two lines of title on an
   LCD (the track, then the record's label, side, year and what's for sale, or a file's album),
-  and under it previous, play, pause, stop, next, volume, shuffle and repeat:
+  under it previous, play, pause, stop, next, volume, shuffle and repeat, and at the bottom a
+  **seek bar** (click or drag it, and it seeks where you let go; its tooltip names the time):
   - click the time to switch between elapsed and remaining;
   - the title line flashes WANTED, PASS, OWNED or UNWANTED for a moment after a verdict;
   - three buttons at the LCD's end: **▤** groups the crate on screen by record (lit while
@@ -1529,7 +1530,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1145 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1147 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

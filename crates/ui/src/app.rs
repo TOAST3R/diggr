@@ -112,6 +112,11 @@ pub struct DiggrApp {
     meta: Option<MetaWorker<MetaKey>>,
     now_playing: Option<TrackInfo>,
     position: Position,
+    /// Where the player's seek bar is being dragged (0..1), until the release seeks there.
+    seek_drag: Option<f32>,
+    /// A seek sent from the bar (where to, and when): the thumb stays there until the clock
+    /// reports it, instead of jumping back to the old position meanwhile.
+    seek_pending: Option<(f32, Instant)>,
     /// When SYNC last changed the playing track's speed (changes come at most every 30 ms).
     sync_applied: Instant,
     /// Scrolling over the pitch fader not yet worth a whole BPM, in skin pixels.
@@ -191,6 +196,9 @@ pub struct DiggrApp {
     /// place (-1 to 1, `None` without one).
     #[cfg(test)]
     deck_drawn: Option<(String, String, Option<f32>)>,
+    /// Where the seek bar's thumb was last drawn (0..1), `None` while it is inert.
+    #[cfg(test)]
+    seek_drawn: Option<f32>,
     /// The filter bar's search text as typed (the shown crate holds its folded words).
     pl_search: String,
     /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
@@ -356,6 +364,8 @@ impl DiggrApp {
                 discontinuity: false,
                 speed: 1.0,
             },
+            seek_drag: None,
+            seek_pending: None,
             sync_applied: Instant::now(),
             sync_drag: 0.0,
             deck_turn: 0.0,
@@ -398,6 +408,8 @@ impl DiggrApp {
             readout_drawn: None,
             #[cfg(test)]
             deck_drawn: None,
+            #[cfg(test)]
+            seek_drawn: None,
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
@@ -1913,6 +1925,83 @@ impl DiggrApp {
         match &entry.origin {
             Some(o) => Some(format::origin_line(o)).filter(|l| !l.is_empty()),
             None => Some(entry.album.trim().to_owned()).filter(|a| !a.is_empty()),
+        }
+    }
+
+    /// The player's seek bar, under its button row across its width: a groove, the played
+    /// part, and a thumb at the playing position. A click or a drag seeks on release, and the
+    /// tooltip names the time under the pointer. Inert while nothing plays or the track's
+    /// length isn't known.
+    fn seek_bar(&mut self, ui: &mut Ui, sk: &Skinned, w: f32, actions: &mut Vec<Action>) {
+        let h = crate::skin::generate::SEEK_H as f32;
+        let bar_w = (w - 8.0).max(4.0);
+        sk.sprite("seek_track_l", 4.0, SEEK_Y);
+        sk.sprite_in("seek_track_m", sk.rect(6.0, SEEK_Y, bar_w - 4.0, h));
+        sk.sprite("seek_track_r", 4.0 + bar_w - 2.0, SEEK_Y);
+        let Some(d) = self
+            .now_playing
+            .as_ref()
+            .and_then(|i| i.duration_secs)
+            .filter(|d| *d > 0.0 && self.position.state != PlayState::Stopped)
+        else {
+            self.seek_drag = None;
+            self.seek_pending = None;
+            #[cfg(test)]
+            {
+                self.seek_drawn = None;
+            }
+            return;
+        };
+        let thumb_w = sk.def.sprite("seek_thumb").w as f32;
+        let travel = (bar_w - thumb_w).max(1.0);
+        // A little taller than the groove, so it's easy to hit, but under the transport.
+        let bar = sk.rect(4.0, SEEK_Y - 2.0, bar_w, h + 3.0);
+        let resp = ui.interact(bar, Id::new("mini_seek"), Sense::click_and_drag());
+        let fraction =
+            |p: Pos2| (((p.x - bar.left()) / sk.scale - thumb_w / 2.0) / travel).clamp(0.0, 1.0);
+        if let Some(p) = resp.interact_pointer_pos() {
+            self.seek_drag = Some(fraction(p));
+        }
+        // A seek on its way holds the thumb where it was sent, until the clock gets there (or
+        // half a second goes by).
+        let playing_at = (self.position.seconds() / d) as f32;
+        if let Some((to, at)) = self.seek_pending
+            && ((playing_at - to).abs() < 0.02 || at.elapsed() > SEEK_SETTLE)
+        {
+            self.seek_pending = None;
+        }
+        if self.seek_pending.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+        let v = self
+            .seek_drag
+            .or(self.seek_pending.map(|(to, _)| to))
+            .unwrap_or(playing_at)
+            .clamp(0.0, 1.0);
+        let x = 4.0 + (v * travel).round();
+        sk.sprite_in(
+            "seek_fill",
+            sk.rect(6.0, SEEK_Y, (x + thumb_w / 2.0 - 6.0).max(0.0), h),
+        );
+        let name = if resp.is_pointer_button_down_on() {
+            "seek_thumb_p"
+        } else {
+            "seek_thumb"
+        };
+        sk.sprite(name, x, SEEK_Y);
+        #[cfg(test)]
+        {
+            self.seek_drawn = Some(v);
+        }
+        if (resp.drag_stopped() || resp.clicked())
+            && let Some(v) = self.seek_drag.take()
+        {
+            self.seek_pending = Some((v, Instant::now()));
+            actions.push(Action::Seek(v as f64 * d));
+        }
+        let at = self.seek_drag.or_else(|| resp.hover_pos().map(fraction));
+        if let Some(f) = at {
+            resp.on_hover_text(format::clock(f as f64 * d));
         }
     }
 
@@ -7841,6 +7930,10 @@ const LINE1_Y: f32 = 13.0;
 const LINE2_Y: f32 = 26.0;
 const TRANSPORT_Y: f32 = 48.0;
 const BUTTON_ROW_Y: f32 = 51.0;
+/// The seek bar's top, under the transport, in the band's last pixels.
+const SEEK_Y: f32 = 68.0;
+/// How long the seek bar's thumb waits at a seek's target for the clock to get there.
+const SEEK_SETTLE: Duration = Duration::from_millis(500);
 /// Where the volume slider starts, after the transport's five buttons.
 const VOLUME_X: f32 = 123.0;
 
@@ -8844,6 +8937,7 @@ impl DiggrApp {
         {
             actions.push(Action::Repeat);
         }
+        self.seek_bar(ui, &sk, w, &mut actions);
         for a in actions {
             self.apply(a, ui.ctx());
         }
