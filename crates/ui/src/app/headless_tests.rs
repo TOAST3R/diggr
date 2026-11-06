@@ -444,6 +444,8 @@ mod seller_tests;
 mod insights_tests;
 // Things appearing and disappearing with motion on.
 mod motion_tests;
+// The mini player's level meter.
+mod meter_tests;
 
 fn texts(out: &egui::FullOutput) -> Vec<Text> {
     fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {

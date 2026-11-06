@@ -26,6 +26,16 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Hold the turntable's platter",
                 "a hand on the record: it slows to a stop; let go and it spins back up",
             ),
+            (
+                "Level meter (under the time)",
+                "how loud each channel is, left above right, before the volume: green, amber \
+                 from −12 dB, red from −3 dB; the dot is the last second's peak",
+            ),
+            (
+                "Turntable's beat lamp",
+                "flashes on each beat of the analysed grid as you hear it, brighter on the \
+                 downbeat; dark until the beats are known",
+            ),
         ],
     ),
     (

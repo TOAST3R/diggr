@@ -95,6 +95,21 @@ pub struct DiggrApp {
     tex: Option<TextureHandle>,
     /// What's appearing and disappearing (see [`crate::motion`]).
     motion: crate::motion::Motion,
+    /// The beat lamp: where the playing track was last frame (to see which beats passed), and
+    /// when it last lit and how brightly.
+    beat_seen: Option<(audio::TrackId, f64)>,
+    beat_lit: Option<(f64, f32)>,
+    /// A score standing in for the analyzer's in tests (which have no analyzer).
+    #[cfg(test)]
+    score_override: Option<Arc<analysis::SongScore>>,
+    /// The level meter's bars, left and right (see [`crate::meter`]).
+    meter: [crate::meter::Bar; 2],
+    /// The beat lamp's brightness as last drawn (`None`: dark), for tests.
+    #[cfg(test)]
+    beat_drawn: Option<f32>,
+    /// The meter as last drawn (lit segments and peak dots, left and right), for tests.
+    #[cfg(test)]
+    meter_drawn: ([usize; 2], [Option<usize>; 2]),
     /// The playlist's rows moving: a crate switch cross-fading, rows making room.
     list_motion: crate::motion::ListMotion,
     /// Rows answering a verdict just given: how, and when (egui time).
@@ -367,6 +382,15 @@ impl DiggrApp {
             motion: new_motion(),
             row_answers: HashMap::new(),
             list_motion: Default::default(),
+            meter: Default::default(),
+            beat_seen: None,
+            beat_lit: None,
+            #[cfg(test)]
+            score_override: None,
+            #[cfg(test)]
+            meter_drawn: Default::default(),
+            #[cfg(test)]
+            beat_drawn: None,
             store,
             settings,
             presets,
@@ -1123,6 +1147,10 @@ impl DiggrApp {
         {
             a.playhead(track, self.position.seconds());
             self.score = a.score(track);
+        }
+        #[cfg(test)]
+        if self.score.is_none() && self.position.state != PlayState::Stopped {
+            self.score = self.score_override.clone();
         }
         // The overview is built only once the analyzer has its first results, so it never
         // competes with playback start or the playhead analysis.
@@ -2436,6 +2464,7 @@ impl DiggrApp {
                 &fit.line(sync.range()),
                 text,
             );
+            self.beat_lamp(ui, &sk);
 
             let range = if sync.wide {
                 "deck_range_16"
@@ -8325,6 +8354,11 @@ const FLASH_RIM_SECS: f32 = 0.6;
 /// The pitch fader's thumb gliding to where it was moved for the user: about 5% overshoot,
 /// settled within 0.3 s.
 const FADER_OMEGA: f32 = 35.0;
+/// The beat lamp fades out over this long after a beat, at this brightness on a beat that isn't
+/// a downbeat; a move of the playhead longer than this is a jump, not playback.
+const BEAT_FADE: f32 = 0.15;
+const BEAT_DIM: f32 = 0.7;
+const BEAT_JUMP: f64 = 0.2;
 const FADER_ZETA: f32 = 0.7;
 const COUNT_SECS: f32 = 0.5;
 const DIM_ALPHA: u8 = 125;
@@ -9218,6 +9252,7 @@ impl DiggrApp {
         {
             actions.push(Action::ToggleRemaining);
         }
+        self.level_meter(ui, &sk);
         // The title line, or a verdict's flash centred on it.
         let icons_x = lcd_icons_x(w);
         let (tx, tw) = (74.0, icons_x - 3.0 - 74.0);
@@ -9383,6 +9418,94 @@ impl DiggrApp {
 
     /// The EQ window while it is open: the skin's EQ section in a window of its own, above the
     /// app's. Where it was put is remembered.
+    /// The turntable's beat lamp: it lights on each beat of the playing track's beat grid that
+    /// was heard since the last frame (brighter on a downbeat) and fades over [`BEAT_FADE`].
+    /// The beats are in track time, so it follows SYNC's speed and a held platter; a jump (a
+    /// seek, another track) fires nothing.
+    fn beat_lamp(&mut self, ui: &Ui, sk: &Skinned) {
+        let now = ui.input(|i| i.time);
+        let playing = self.position.state == PlayState::Playing;
+        let at = (self.position.track, self.position.seconds());
+        match (&self.score, self.beat_seen) {
+            (Some(score), Some((track, was))) if playing && track == at.0 => {
+                let moved = at.1 - was;
+                if moved > 0.0 && moved < BEAT_JUMP {
+                    let from = score.beats.partition_point(|&b| b <= was);
+                    let to = score.beats.partition_point(|&b| b <= at.1);
+                    if to > from {
+                        let down = (from..to).any(|i| score.downbeats.binary_search(&i).is_ok());
+                        self.beat_lit = Some((now, if down { 1.0 } else { BEAT_DIM }));
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.beat_seen = (playing && self.score.is_some()).then_some(at);
+        let r = sk.def.at("deck_beat");
+        let (x, y) = (r.x as f32, r.y as f32);
+        sk.sprite("beat_off", x, y);
+        if let Some((since, strength)) = self.beat_lit {
+            let left = 1.0 - (now - since) as f32 / BEAT_FADE;
+            if left > 0.0 {
+                let rect = sk.rect(x, y, r.w as f32, r.h as f32);
+                sk.sprite_tinted(
+                    "beat_on",
+                    rect,
+                    Color32::WHITE.gamma_multiply(strength * left),
+                );
+                ui.ctx().request_repaint();
+            } else {
+                self.beat_lit = None;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.beat_drawn = self.beat_lit.map(|(_, s)| s);
+        }
+    }
+
+    /// The level meter under the time: the loudest peaks since the last frame move the bars
+    /// (instant up, 20 dB per 1.5 s down, a peak dot hanging a second), drawn as two rows of
+    /// LEDs. Once empty it asks for nothing; with Reduce motion the bars just show the level.
+    fn level_meter(&mut self, ui: &Ui, sk: &Skinned) {
+        let peaks = self.engine().map_or([0.0; 2], |e| e.levels());
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let reduced = self.motion.is_reduced();
+        for (bar, p) in self.meter.iter_mut().zip(peaks) {
+            if reduced {
+                bar.set(p);
+            } else {
+                bar.step(p, dt);
+            }
+        }
+        let r = sk.def.at("lcd_meter");
+        let seg_h = crate::skin::generate::METER_SEG_H as f32;
+        for (row, bar) in self.meter.iter().enumerate() {
+            let y = r.y as f32 + row as f32 * (seg_h + 1.0);
+            let (lit, dot) = (bar.lit(), bar.dot());
+            for k in 0..crate::meter::SEGMENTS {
+                let on = k < lit || dot == Some(k);
+                let led = crate::meter::Led::of(k).name();
+                let state = if on { "on" } else { "off" };
+                sk.sprite(
+                    &format!("meter_{led}_{state}"),
+                    r.x as f32 + 2.0 * k as f32,
+                    y,
+                );
+            }
+        }
+        #[cfg(test)]
+        {
+            self.meter_drawn = (
+                [self.meter[0].lit(), self.meter[1].lit()],
+                [self.meter[0].dot(), self.meter[1].dot()],
+            );
+        }
+        if !self.meter.iter().all(|b| b.settled()) {
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// How far a separate window's content has faded in since it opened. Embedded windows
     /// (the web, tests) are areas of the main window, which motion moves on its own: 1.
     fn window_fade(&mut self, ctx: &egui::Context, which: &str, open: bool) -> f32 {

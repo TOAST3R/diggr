@@ -388,6 +388,12 @@ impl Engine {
         self.control.keep_hold(self.sink.now_ns());
     }
 
+    /// The loudest peak of each channel (left, right; linear, before the volume) played since
+    /// the last call, for a level meter: a transient between two calls is never missed.
+    pub fn levels(&self) -> [f32; 2] {
+        self.control.take_levels()
+    }
+
     /// Whether the app is holding the record (asked for, not yet released or ended).
     pub fn held(&self) -> bool {
         self.control.hold_active(self.sink.now_ns())

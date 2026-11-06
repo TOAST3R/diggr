@@ -113,6 +113,8 @@ fn renderer_never_allocates() {
         call(&mut r, &mut out);
         control.set_hold(false, 0); // let go: spinning back up
         call(&mut r, &mut out);
+        let _ = control.take_levels(); // the meter reads the levels between callbacks
+        call(&mut r, &mut out);
         control.mark_soft(); // a speed change
         let g3 = control.bump_generation();
         call(&mut r, &mut out); // the old speed plays on until the new one is queued

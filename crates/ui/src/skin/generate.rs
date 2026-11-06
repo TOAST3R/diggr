@@ -28,6 +28,14 @@ const GROOVE_B: C = rgb(70, 64, 56);
 /// The one accent: captions, slider marks, lit LEDs. The same amber as the LCD.
 const ACCENT: C = rgb(255, 176, 40);
 const ACCENT_DIM: C = rgb(150, 100, 24);
+/// The level meter's LEDs, lit and unlit: green, then amber from −12 dB, red from −3 dB.
+const METER_LEDS: [(&str, C, C); 3] = [
+    ("green", rgb(96, 224, 88), rgb(14, 30, 12)),
+    ("amber", LCD_ON, rgb(34, 23, 6)),
+    ("red", rgb(255, 72, 48), rgb(36, 10, 8)),
+];
+/// The level meter's segments: one skin pixel wide, a pixel apart, and this tall.
+pub const METER_SEG_H: u16 = 3;
 const LCD_BG: C = rgb(0, 0, 0);
 const LCD_ON: C = rgb(255, 176, 40);
 const LCD_DIM: C = rgb(64, 40, 8);
@@ -1076,6 +1084,27 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         seven_seg(c, x, y, QUESTION_MASK)
     });
     b.sprite("digit_blank", 9, 13, |c, x, y| c.fill(x, y, 9, 13, LCD_BG));
+    // The turntable's beat lamp: a round LED, lit (with a bright centre) and dark.
+    for (name, lit) in [("beat_on", true), ("beat_off", false)] {
+        b.sprite(name, 5, 5, |c, x, y| {
+            let (edge, mid) = if lit {
+                (ACCENT, rgb(255, 226, 150))
+            } else {
+                (rgb(40, 27, 7), rgb(58, 39, 10))
+            };
+            c.fill(x + 1, y, 3, 5, edge);
+            c.fill(x, y + 1, 5, 3, edge);
+            c.fill(x + 1, y + 1, 3, 3, mid);
+        });
+    }
+    for (name, lit, unlit) in METER_LEDS {
+        b.sprite(&format!("meter_{name}_on"), 1, METER_SEG_H, |c, x, y| {
+            c.fill(x, y, 1, METER_SEG_H as i32, lit)
+        });
+        b.sprite(&format!("meter_{name}_off"), 1, METER_SEG_H, |c, x, y| {
+            c.fill(x, y, 1, METER_SEG_H as i32, unlit)
+        });
+    }
     b.sprite("digit_colon", 3, 13, |c, x, y| {
         c.fill(x, y, 3, 13, LCD_BG);
         c.fill(x, y + 3, 2, 2, LCD_ON);
@@ -1335,6 +1364,8 @@ fn layout() -> BTreeMap<String, R> {
     let mut l: Vec<(&str, R)> = vec![
         // the mini player's volume slider (moved into place by the app)
         ("volume", R::new(107, 57, VOLUME_W, 13)),
+        // the mini player's level meter, under the time: two rows of 24 segments
+        ("lcd_meter", R::new(16, 27, 47, 2 * METER_SEG_H + 1)),
         // turntable (relative to its content, DECK_W wide)
         ("deck_platter", R::new(8, 6, 64, 64)),
         ("deck_target", R::new(84, 5, 30, 13)),
@@ -1344,6 +1375,8 @@ fn layout() -> BTreeMap<String, R> {
         ("deck_record", R::new(84, 31, 100, 7)),
         ("deck_meter", R::new(123, 22, 62, 7)),
         ("deck_state", R::new(80, 43, 114, 12)),
+        // The beat lamp, at the state line's right end.
+        ("deck_beat", R::new(187, 46, 5, 5)),
         ("deck_sync", R::new(80, 58, 30, 12)),
         ("deck_range", R::new(114, 58, 30, 13)),
         ("deck_reset", R::new(148, 58, 42, 13)),

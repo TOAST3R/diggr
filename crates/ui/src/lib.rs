@@ -11,6 +11,7 @@ pub mod help;
 pub mod insights;
 pub mod layout;
 pub mod metadata;
+pub mod meter;
 pub mod motion;
 pub mod navigation;
 pub mod playlist;
