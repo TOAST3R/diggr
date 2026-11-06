@@ -731,6 +731,12 @@
         ),
     },
     layout: {
+        "deck_fine": (
+            x: 115,
+            y: 11,
+            w: 17,
+            h: 7,
+        ),
         "deck_meter": (
             x: 123,
             y: 22,

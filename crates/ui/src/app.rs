@@ -127,7 +127,12 @@ pub struct DiggrApp {
     /// The rim's lock flash, started when a record becomes fitted.
     deck_flash: Option<Instant>,
     /// The digits counting from a new track's own BPM to the target (from, to, since).
-    deck_count: Option<(u16, u16, Instant)>,
+    deck_count: Option<(u32, u32, Instant)>,
+    /// The pitch fader's fine drag: where the pointer and the tempo (hundredths) were when
+    /// Shift went down.
+    fader_anchor: Option<(f32, u32)>,
+    /// The turntable's digits open for typing a tempo: what has been typed.
+    deck_typing: Option<String>,
     /// Who played and whether it was locked on the last frame, to see a record become fitted.
     deck_seen: (Option<(CrateId, crate::playlist::EntryId)>, bool),
     /// A different track began and hasn't been fitted yet (see `deck_section`).
@@ -199,6 +204,9 @@ pub struct DiggrApp {
     /// Where the seek bar's thumb was last drawn (0..1), `None` while it is inert.
     #[cfg(test)]
     seek_drawn: Option<f32>,
+    /// The hundredths last drawn beside the turntable's digits.
+    #[cfg(test)]
+    deck_fine_drawn: Option<u32>,
     /// The filter bar's search text as typed (the shown crate holds its folded words).
     pl_search: String,
     /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
@@ -372,6 +380,8 @@ impl DiggrApp {
             deck_strobe: 0.0,
             deck_flash: None,
             deck_count: None,
+            fader_anchor: None,
+            deck_typing: None,
             deck_seen: (None, false),
             deck_new: false,
             lp_knob: audio::filter::OFF,
@@ -410,6 +420,8 @@ impl DiggrApp {
             deck_drawn: None,
             #[cfg(test)]
             seek_drawn: None,
+            #[cfg(test)]
+            deck_fine_drawn: None,
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
@@ -583,7 +595,7 @@ impl DiggrApp {
         sync.pending = None;
         if sync.on {
             match self.playing_bpm() {
-                Some(bpm) => self.settings.sync.target = bpm,
+                Some(bpm) => self.settings.sync.set_cents(bpm as u32 * 100),
                 // (A whole score without a tempo has nothing more to give.)
                 None if self.position.state != PlayState::Stopped
                     && !self.score.as_ref().is_some_and(|s| s.complete) =>
@@ -608,7 +620,7 @@ impl DiggrApp {
             }
             (true, None) => format!(
                 "SYNC on: every track in the list plays at {} BPM (within ±{range}%)",
-                sync.target
+                format::bpm_2(sync.cents())
             ),
         });
         self.mark_settings();
@@ -622,7 +634,7 @@ impl DiggrApp {
         if !sync.on || self.position.state == PlayState::Stopped || self.position.track != track {
             self.settings.sync.pending = None;
         } else if let Some(bpm) = self.playing_bpm() {
-            self.settings.sync.target = bpm;
+            self.settings.sync.set_cents(bpm as u32 * 100);
             self.settings.sync.pending = None;
             self.mark_settings();
         }
@@ -637,11 +649,23 @@ impl DiggrApp {
         waiting
     }
 
-    fn nudge_sync(&mut self, bpm: i32) {
+    /// Steps SYNC's tempo by `cents` hundredths of a BPM, kept within the playing record's
+    /// range when its BPM is known.
+    fn nudge_sync(&mut self, cents: i32) {
         if self.sync_waiting() {
             return;
         }
-        self.settings.sync.nudge(bpm);
+        let sync = &mut self.settings.sync;
+        let before = sync.cents();
+        sync.nudge(cents);
+        if let Some(b) = self.playing_bpm() {
+            let (lo, hi) = self.settings.sync.range_cents(b);
+            let c = self.settings.sync.cents();
+            // A tempo already outside (set before this record) only moves toward it.
+            if !(lo..=hi).contains(&c) && (lo..=hi).contains(&before) {
+                self.settings.sync.set_cents(c.clamp(lo, hi));
+            }
+        }
         self.mark_settings();
     }
 
@@ -1405,7 +1429,85 @@ impl DiggrApp {
 
     // ---- keyboard ----------------------------------------------------------------------------
 
+    /// Typing a tempo into the turntable's digits: digits, one point (a comma counts), up to
+    /// three digits before it and two after; Backspace deletes, Enter sets the tempo (kept
+    /// within the playing record's range), Esc cancels.
+    fn type_tempo(&mut self, ctx: &egui::Context) {
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            match e {
+                egui::Event::Text(t) => {
+                    for c in t.chars() {
+                        let Some(typed) = self.deck_typing.as_mut() else {
+                            return;
+                        };
+                        let c = if c == ',' { '.' } else { c };
+                        let (whole, point, decimals) = match typed.split_once('.') {
+                            Some((w, d)) => (w.len(), true, d.len()),
+                            None => (typed.len(), false, 0),
+                        };
+                        let ok = match c {
+                            '.' => !point,
+                            '0'..='9' if point => decimals < 2,
+                            '0'..='9' => whole < 3,
+                            _ => false,
+                        };
+                        if ok {
+                            typed.push(c);
+                        }
+                    }
+                }
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } => match key {
+                    Key::Backspace => {
+                        if let Some(typed) = self.deck_typing.as_mut() {
+                            typed.pop();
+                        }
+                    }
+                    Key::Escape => self.deck_typing = None,
+                    Key::Enter => {
+                        let typed = self.deck_typing.take().unwrap_or_default();
+                        self.set_typed_tempo(&typed, ctx);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    /// Sets SYNC's tempo from typed text, kept within the playing record's range (and saying so
+    /// when it had to move); text that isn't a tempo changes nothing.
+    fn set_typed_tempo(&mut self, typed: &str, ctx: &egui::Context) {
+        let Some(v) = typed
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v > 0.0)
+        else {
+            return;
+        };
+        let mut cents = (v * 100.0).round() as u32;
+        if let Some(b) = self.playing_bpm() {
+            let (lo, hi) = self.settings.sync.range_cents(b);
+            if !(lo..=hi).contains(&cents) {
+                cents = cents.clamp(lo, hi);
+                let range = if self.settings.sync.wide { 16 } else { 8 };
+                self.notify(format!(
+                    "Kept within ±{range}% of this record: {} BPM",
+                    format::bpm_2(cents)
+                ));
+            }
+        }
+        self.apply(Action::SyncTarget(cents), ctx);
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // The turntable's digits open for typing a tempo take every key.
+        if self.deck_typing.is_some() {
+            self.type_tempo(ctx);
+            return;
+        }
         // Tab switches between the player and the playlist. egui would otherwise move its
         // widget focus, and a focused widget holds the keyboard until Esc.
         if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Tab) && !i.modifiers.any())
@@ -1526,8 +1628,14 @@ impl DiggrApp {
             Key::ArrowRight => self.with_engine(|e| e.seek(secs + 5.0)),
             // With the playlist focused, the arrows move its cursor instead (`window_key`).
             Key::ArrowUp | Key::ArrowDown if self.arrows_move_cursor() => return false,
-            Key::ArrowUp if mods.shift => self.nudge_sync(1),
-            Key::ArrowDown if mods.shift => self.nudge_sync(-1),
+            // SYNC's tempo: Shift by 1 BPM, Alt (Option) by 0.01.
+            Key::ArrowUp if mods.shift => self.nudge_sync(100),
+            Key::ArrowDown if mods.shift => self.nudge_sync(-100),
+            Key::ArrowUp if mods.alt => self.nudge_sync(1),
+            Key::ArrowDown if mods.alt => self.nudge_sync(-1),
+            // With SYNC on, the plain arrows step its tempo by 0.1 BPM instead of the volume.
+            Key::ArrowUp if self.settings.sync.on => self.nudge_sync(10),
+            Key::ArrowDown if self.settings.sync.on => self.nudge_sync(-10),
             Key::ArrowUp => self.set_volume(self.settings.volume + 0.05),
             Key::ArrowDown => self.set_volume(self.settings.volume - 0.05),
             Key::CloseBracket if mods.shift => self.structure_jump(crate::navigation::next_rise),
@@ -2042,8 +2150,9 @@ impl DiggrApp {
                         self.deck_flash = Some(now);
                     }
                     if self.deck_new {
-                        let from = (sync.target as f64 / speed).round() as u16;
-                        self.deck_count = (from != sync.target).then_some((from, sync.target, now));
+                        let to = sync.cents();
+                        let from = (sync.target_bpm() / speed * 100.0).round() as u32;
+                        self.deck_count = (from != to).then_some((from, to, now));
                     }
                     self.deck_new = false;
                 }
@@ -2059,7 +2168,7 @@ impl DiggrApp {
             let drift = match (fit, bpm) {
                 (Fit::Analyzing, _) => 0.8,
                 (Fit::Locked(_), _) | (Fit::Off, _) | (Fit::Idle, _) => 0.0,
-                (_, Some(b)) => b as f32 / sync.target as f32 - 1.0,
+                (_, Some(b)) => b as f32 / sync.target_bpm() as f32 - 1.0,
                 (_, None) => 0.05,
             };
             self.deck_strobe = (self.deck_strobe + dt * TAU * drift) % TAU;
@@ -2127,6 +2236,29 @@ impl DiggrApp {
             // SYNC is off the record's own BPM; then how far this record is pushed, and its
             // own tempo.
             let t = sk.def.at("deck_target");
+            // The hundredths beside the big digits, when they show SYNC's tempo.
+            let mut fine = None;
+            // A click on the digits opens them for typing a tempo (SYNC on, the record's BPM
+            // known); SYNC turning off or a click anywhere else closes them.
+            let f = sk.def.at("deck_fine");
+            let digits_rect = sk.rect(t.x as f32, t.y as f32, (f.x + f.w - t.x) as f32, t.h as f32);
+            let digits_click = ui
+                .interact(digits_rect, Id::new("deck_digits"), Sense::click())
+                .on_hover_text("Click to type a tempo")
+                .clicked();
+            let can_type = sync.on && bpm.is_some() && sync.pending.is_none() && !analyzing;
+            if digits_click && can_type && self.deck_typing.is_none() {
+                self.deck_typing = Some(String::new());
+            }
+            let pressed_elsewhere = ui.input(|i| {
+                i.pointer.primary_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !digits_rect.contains(p))
+            });
+            if self.deck_typing.is_some() && (!can_type || pressed_elsewhere) {
+                self.deck_typing = None;
+            }
             let digits = if !sync.on {
                 match (bpm, analyzing) {
                     (_, true) => "  ?".to_owned(),
@@ -2135,26 +2267,59 @@ impl DiggrApp {
                 }
             } else if sync.pending.is_some() || analyzing {
                 "  ?".to_owned()
-            } else if let Some((from, to, at)) = self.deck_count {
-                let k = at.elapsed().as_secs_f32() / COUNT_SECS;
-                if k >= 1.0 {
-                    self.deck_count = None;
-                    format!("{to:>3}")
-                } else {
-                    ui.ctx().request_repaint_after(Duration::from_millis(16));
-                    let v = from as f32 + (to as f32 - from as f32) * k;
-                    format!("{:>3}", v.round() as u16)
-                }
             } else {
-                format!("{:>3}", sync.target)
-            };
-            for (i, c) in digits.chars().enumerate() {
-                let name = match c {
-                    ' ' => "digit_blank".to_owned(),
-                    '?' => "digit_q".to_owned(),
-                    c => format!("digit_{c}"),
+                let cents = match self.deck_count {
+                    Some((from, to, at)) => {
+                        let k = at.elapsed().as_secs_f32() / COUNT_SECS;
+                        if k >= 1.0 {
+                            self.deck_count = None;
+                            to
+                        } else {
+                            ui.ctx().request_repaint_after(Duration::from_millis(16));
+                            (from as f32 + (to as f32 - from as f32) * k).round() as u32
+                        }
+                    }
+                    None => sync.cents(),
                 };
-                sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
+                fine = Some(cents % 100);
+                format!("{:>3}", cents / 100)
+            };
+            // (What the digits show, for the tests.)
+            #[cfg_attr(not(test), allow(unused_variables))]
+            let digits = match &self.deck_typing {
+                Some(typed) => {
+                    // The typed text in the LCD, with a caret blinking twice a second.
+                    fine = None;
+                    let blink = (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
+                    let caret = if blink { "_" } else { " " };
+                    sk.text(
+                        t.x as f32,
+                        t.y as f32 + 3.0,
+                        &format!("{typed}{caret}"),
+                        lcd,
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(250));
+                    typed.clone()
+                }
+                None => {
+                    for (i, c) in digits.chars().enumerate() {
+                        let name = match c {
+                            ' ' => "digit_blank".to_owned(),
+                            '?' => "digit_q".to_owned(),
+                            c => format!("digit_{c}"),
+                        };
+                        sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
+                    }
+                    digits
+                }
+            };
+            if let Some(f) = fine {
+                let r = sk.def.at("deck_fine");
+                sk.text(r.x as f32, r.y as f32, &format!(".{f:02}"), lcd);
+            }
+            #[cfg(test)]
+            {
+                self.deck_fine_drawn = fine;
             }
             let r = sk.def.at("deck_push");
             if let (Some(_), true, true) = (bpm, playing, sync.on) {
@@ -2244,28 +2409,40 @@ impl DiggrApp {
                 resp.interact_pointer_pos(),
                 resp.is_pointer_button_down_on(),
             ) {
-                let at = ((pos.y - travel.top()) / travel.height()).clamp(0.0, 1.0);
-                // Whole BPM, kept inside the range so the record stays locked.
-                let b = b as f32;
-                let target = (b * (1.0 + range * (1.0 - 2.0 * at)))
-                    .round()
-                    .clamp((b * (1.0 - range)).ceil(), (b * (1.0 + range)).floor())
-                    as u16;
-                if target != sync.target {
-                    actions.push(Action::SyncTarget(target));
+                let (lo, hi) = sync.range_cents(b);
+                let cents = if ui.input(|i| i.modifiers.shift) {
+                    // Fine: from where the pointer and the tempo were when Shift went down,
+                    // 0.01 BPM per skin pixel, up faster.
+                    let (y0, c0) = *self.fader_anchor.get_or_insert((pos.y, sync.cents()));
+                    c0 as f32 + ((y0 - pos.y) / sk.scale).round()
+                } else {
+                    self.fader_anchor = None;
+                    let at = ((pos.y - travel.top()) / travel.height()).clamp(0.0, 1.0);
+                    (b as f32 * 100.0 * (1.0 + range * (1.0 - 2.0 * at))).round()
+                };
+                // To 0.01 BPM, kept inside the range so the record stays locked.
+                let cents = (cents.max(0.0) as u32).clamp(lo, hi);
+                if cents != sync.cents() {
+                    actions.push(Action::SyncTarget(cents));
                 }
+            } else {
+                self.fader_anchor = None;
             }
             // Waiting for the record's BPM: the fader does nothing, and says why.
             if sync.on && sync.pending.is_some() && resp.is_pointer_button_down_on() {
-                actions.push(Action::SyncTarget(sync.target));
+                actions.push(Action::SyncTarget(sync.cents()));
             }
-            // Scrolling over it: 1 BPM per 4 skin pixels.
+            // Scrolling over it: 1 BPM per 4 skin pixels, 0.01 with Shift held (which some
+            // systems turn into a sideways scroll).
             if sync.on && resp.hovered() {
-                self.sync_drag += ui.input(|i| i.smooth_scroll_delta.y) / sk.scale;
+                let (d, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
+                let dy = if shift { d.y + d.x } else { d.y };
+                self.sync_drag += dy / sk.scale;
                 let n = (self.sync_drag / 4.0).trunc();
                 if n != 0.0 {
                     self.sync_drag -= n * 4.0;
-                    actions.push(Action::SyncNudge(n as i32));
+                    let step = if shift { 1 } else { 100 };
+                    actions.push(Action::SyncNudge(n as i32 * step));
                 }
             }
             let thumb = sk.def.sprite("pitch_thumb");
@@ -6751,17 +6928,16 @@ impl DiggrApp {
                 self.notify(format!("SYNC fits tracks within ±{range}%"));
                 self.mark_settings();
             }
-            Action::SyncNudge(bpm) => self.nudge_sync(bpm),
+            Action::SyncNudge(cents) => self.nudge_sync(cents),
             Action::SyncTarget(_) if self.sync_waiting() => {}
-            Action::SyncTarget(bpm) => {
-                self.settings.sync.target = bpm;
-                self.settings.sync = self.settings.sync.sanitized();
+            Action::SyncTarget(cents) => {
+                self.settings.sync.set_cents(cents);
                 self.mark_settings();
             }
             Action::SyncTakeBpm if self.sync_waiting() => {}
             Action::SyncTakeBpm => match self.playing_bpm() {
                 Some(bpm) => {
-                    self.settings.sync.target = bpm;
+                    self.settings.sync.set_cents(bpm as u32 * 100);
                     self.mark_settings();
                 }
                 None => self.notify("Not analyzed yet"),
@@ -7172,9 +7348,11 @@ enum Action {
     /// SYNC's range: ±8% or ±16%.
     SyncRange,
     /// SYNC's target, by this many BPM.
+    /// Steps SYNC's tempo by this many hundredths of a BPM.
     SyncNudge(i32),
     /// SYNC's target, in BPM.
-    SyncTarget(u16),
+    /// Sets SYNC's tempo, in hundredths of a BPM.
+    SyncTarget(u32),
     /// SYNC's target from the playing track.
     SyncTakeBpm,
     /// The EQ window.

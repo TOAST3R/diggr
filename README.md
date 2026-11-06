@@ -157,7 +157,7 @@ or right-click the mini player anywhere that isn't a control) has Discogs…, Br
 Set up Diggr….
 
 Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the header
-lights up while the player has it and the playlist's title bar while the playlist does. With the player focused, `↑` / `↓` set the volume. With the
+lights up while the player has it and the playlist's title bar while the playlist does. With the player focused, `↑` / `↓` set the volume (SYNC's tempo while SYNC is on). With the
 playlist focused, they move a cursor through the list (Shift extends the selection; PgUp/PgDn
 and Home/End jump), and Enter plays the entry under it.
 
@@ -385,10 +385,14 @@ and Home/End jump), and Enter plays the entry under it.
   is dimmed: the platter turns with the speed heard and the digits show the record's own BPM.
   With SYNC on:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
-      record's own tempo (±8%; the **8%/16%** button widens it). Scroll over it, or press
-      `Shift+↑` / `Shift+↓` (player focused), for 1 BPM steps; **RESET** goes back to the
-      record's own tempo;
-    - the LCD shows the tempo, how far this record is pushed ("+2.4%") and its own BPM;
+      record's own tempo (±8%; the **8%/16%** button widens it), to 0.01 BPM. Scroll over it, or
+      press `Shift+↑` / `Shift+↓` (player focused), for 1 BPM steps; Shift+drag it (0.01 BPM per
+      pixel), Shift+scroll it, or press `Alt+↑` / `Alt+↓`, for 0.01 BPM steps; while SYNC is on,
+      plain `↑` / `↓` step it by 0.1 BPM instead of the volume; **click the
+      digits** to type a tempo such as 126.35 (Enter sets it, kept within the record's range; Esc
+      cancels); **RESET** goes back to the record's own tempo;
+    - the LCD shows the tempo (whole BPM in big digits, the hundredths small beside them), how far
+      this record is pushed ("+2.4%") and its own BPM;
     - every track plays at `target / its BPM` (or its double or half, whichever is closest),
       vinyl-style: pitch follows speed. The change is heard within a buffer or two, without
       a gap, and the fader then shows how far each new record is pushed;
@@ -423,7 +427,7 @@ and Home/End jump), and Enter plays the entry under it.
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
 | `Space` | play / pause | | `←` / `→` | seek −5 s / +5 s (grouped playlist focused: close / open the record) |
-| `Shift+Space` | stop | | `↑` / `↓` | volume (playlist focused: move in the list) |
+| `Shift+Space` | stop | | `↑` / `↓` | volume, or SYNC's tempo while SYNC is on (playlist focused: move in the list) |
 | `Z` `X` `C` `V` `B` | previous, play, pause, stop, next (the classic keys) | | | |
 | | | | `Delete` / `Backspace` | remove selected entries |
 | | | | `Enter` | play the entry under the cursor (or the first selected) |
@@ -435,6 +439,8 @@ and Home/End jump), and Enter plays the entry under it.
 | `N` | pass the playing track | | `I` | open the playing release's for-sale page |
 | `Tab` | switch the keyboard between player and playlist | | `P` | show the playing entry |
 | | | | `Shift+↑` / `Shift+↓` | SYNC tempo +1 / −1 BPM (player focused) |
+| | | | `Alt+↑` / `Alt+↓` | SYNC tempo +0.01 / −0.01 BPM (player focused) |
+| | | | `↑` / `↓` with SYNC on | SYNC tempo +0.1 / −0.1 BPM, instead of the volume (player focused) |
 | | | | `Cmd+F` | search the crate on screen |
 | | | | `Cmd+=` / `Cmd+−` / `Cmd+0` | double size / classic size / classic size |
 
@@ -1530,7 +1536,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1147 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1152 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1749,7 +1755,7 @@ What's covered:
   once), the key and price in the tooltip, Beatport samples playing, the analyser's tempo
   taking over, Open on Beatport, pasted store addresses refused, a Discogs track not found
   fixed by a Beatport sample, a Traxsource track found by search and one not found keeping its
-  details, and 500 tracks in under 50 ms. The send checks (ids, sample UUIDs, Camelot codes,
+  details, and 500 tracks in under 200 ms. The send checks (ids, sample UUIDs, Camelot codes,
   keys folded from names, one bad track alone, 501 refused), the bridge's store sends, Beatport
   sample hosts and keys, Beatport limiting pausing only Beatport, and a real sample download
   (ignored by default) are tested in `crates/dig`.

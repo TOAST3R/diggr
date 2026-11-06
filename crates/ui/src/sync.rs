@@ -7,8 +7,13 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct SyncSettings {
     pub on: bool,
-    /// The tempo every track is fitted to, in BPM.
+    /// The tempo every track is fitted to, in whole BPM: what older builds read and write.
+    /// Use [`Self::cents`] for the tempo itself.
     pub target: u16,
+    /// The tempo in hundredths of a BPM. It counts while it rounds to `target`; a file from an
+    /// older build has none, and one an older build saved may hold a `target` that moved on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_cents: Option<u32>,
     /// ±16% instead of ±8%.
     pub wide: bool,
     /// Turned on while the playing track's BPM wasn't known: that track (its engine id),
@@ -22,6 +27,7 @@ impl Default for SyncSettings {
         Self {
             on: false,
             target: 124,
+            target_cents: None,
             wide: false,
             pending: None,
         }
@@ -34,7 +40,38 @@ pub const TARGET: (u16, u16) = (40, 250);
 impl SyncSettings {
     pub fn sanitized(mut self) -> Self {
         self.target = self.target.clamp(TARGET.0, TARGET.1);
+        if self.target_cents.is_some() {
+            let cents = self.cents();
+            self.set_cents(cents);
+        }
         self
+    }
+
+    /// The tempo every track is fitted to, in hundredths of a BPM.
+    pub fn cents(&self) -> u32 {
+        let whole = self.target as u32 * 100;
+        match self.target_cents {
+            Some(c) if (c + 50) / 100 == self.target as u32 => c,
+            _ => whole,
+        }
+    }
+
+    /// The tempo every track is fitted to, in BPM.
+    pub fn target_bpm(&self) -> f64 {
+        self.cents() as f64 / 100.0
+    }
+
+    /// Sets the tempo, in hundredths of a BPM, kept within [`TARGET`]; both fields follow.
+    pub fn set_cents(&mut self, cents: u32) {
+        let c = cents.clamp(TARGET.0 as u32 * 100, TARGET.1 as u32 * 100);
+        self.target_cents = Some(c);
+        self.target = ((c + 50) / 100) as u16;
+    }
+
+    /// The tempo a record of `bpm` can be fitted to, in hundredths: its range either side.
+    pub fn range_cents(&self, bpm: u16) -> (u32, u32) {
+        let p = if self.wide { 16 } else { 8 };
+        (bpm as u32 * (100 - p), bpm as u32 * (100 + p))
     }
 
     /// How far from its own speed a track may play.
@@ -48,7 +85,7 @@ impl SyncSettings {
     pub fn speed(&self, bpm: Option<u16>) -> Option<f64> {
         let b = bpm.filter(|&b| self.on && b > 0)? as f64;
         let s = [b, b * 2.0, b / 2.0]
-            .map(|b| self.target as f64 / b)
+            .map(|b| self.target_bpm() / b)
             .into_iter()
             .min_by(|x, y| (x - 1.0).abs().total_cmp(&(y - 1.0).abs()))?;
         // (A hair over, so a range edge like 124 → 133.92 still fits.)
@@ -83,14 +120,16 @@ impl SyncSettings {
     pub fn raw_speed(&self, bpm: u16) -> f64 {
         let b = bpm.max(1) as f64;
         [b, b * 2.0, b / 2.0]
-            .map(|b| self.target as f64 / b)
+            .map(|b| self.target_bpm() / b)
             .into_iter()
             .min_by(|x, y| (x - 1.0).abs().total_cmp(&(y - 1.0).abs()))
             .unwrap_or(1.0)
     }
 
-    pub fn nudge(&mut self, bpm: i32) {
-        self.target = (self.target as i32 + bpm).clamp(TARGET.0 as i32, TARGET.1 as i32) as u16;
+    /// Steps the tempo by `cents` hundredths of a BPM (100 is 1 BPM).
+    pub fn nudge(&mut self, cents: i32) {
+        let c = (self.cents() as i64 + cents as i64).max(0) as u32;
+        self.set_cents(c);
     }
 }
 
@@ -142,9 +181,51 @@ mod tests {
         SyncSettings {
             on: true,
             target,
+            target_cents: None,
             wide: false,
             pending: None,
         }
+    }
+
+    #[test]
+    fn the_tempo_is_kept_to_hundredths_and_old_files_load() {
+        let mut s = on(124);
+        assert_eq!((s.cents(), s.target_bpm()), (12_400, 124.0));
+        s.set_cents(12_635);
+        assert_eq!((s.cents(), s.target), (12_635, 126), "both fields follow");
+        s.nudge(1);
+        assert_eq!(s.cents(), 12_636);
+        s.nudge(-100);
+        assert_eq!(s.cents(), 12_536);
+        s.set_cents(30_000);
+        assert_eq!(s.cents(), 25_000, "kept within 250");
+        s.set_cents(100);
+        assert_eq!(s.cents(), 4_000, "and 40");
+        // A record's range in hundredths: 123 at ±8% is 113.16 to 132.84, 124 tops at 133.92.
+        assert_eq!(on(123).range_cents(123), (11_316, 13_284));
+        assert_eq!(on(124).range_cents(124).1, 13_392);
+        // An old file has only the whole tempo; a new one keeps both.
+        let old: SyncSettings = ron::from_str("(on: true, target: 124)").unwrap();
+        assert_eq!(old.cents(), 12_400);
+        let mut new = on(124);
+        new.set_cents(12_635);
+        let text = ron::to_string(&new).unwrap();
+        assert!(
+            text.contains("target:126") && text.contains("target_cents:Some(12635)"),
+            "{text}"
+        );
+        let back: SyncSettings = ron::from_str(&text).unwrap();
+        assert_eq!(back.cents(), 12_635);
+        // An older build saved a new whole tempo over it: the whole tempo wins.
+        let moved = SyncSettings {
+            target: 130,
+            ..back
+        };
+        assert_eq!(moved.cents(), 13_000);
+        // The speed follows the hundredths.
+        let mut f = on(124);
+        f.set_cents(12_435);
+        assert!((f.speed(Some(124)).unwrap() - 124.35 / 124.0).abs() < 1e-12);
     }
 
     #[test]
@@ -224,7 +305,7 @@ mod tests {
     #[test]
     fn target_and_label() {
         let mut s = on(249);
-        s.nudge(5);
+        s.nudge(500);
         assert_eq!(s.target, TARGET.1);
         assert_eq!(speed_label(126.0 / 123.0).as_deref(), Some("+2.4%"));
         assert_eq!(speed_label(0.97).as_deref(), Some("-3.0%"));

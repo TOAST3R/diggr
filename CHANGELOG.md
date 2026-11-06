@@ -26,6 +26,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Changed
 
+- **Tempo to a hundredth.** SYNC's tempo now goes to 0.01 BPM, shown small beside the big digits.
+  Click the digits and type a tempo like 126.35, or fine-tune it with Shift+drag or Shift+scroll on
+  the pitch fader, or Alt+↑ / Alt+↓; with SYNC on, plain ↑ / ↓ move it by 0.1 BPM.
 - **A seek bar in the player.** Under the transport buttons, a bar shows how far into the track
   you are; click or drag it to jump, and it tells you the time before you let go.
 - **Jumps without a click.** Seeking, or skipping to the next or previous track, now fades the

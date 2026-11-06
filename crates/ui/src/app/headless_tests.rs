@@ -543,13 +543,14 @@ fn sync_lights_the_turntable_whose_fader_sets_the_tempo() {
     rig.click(deck_at(&rig, "deck_reset", 0.5, 0.5));
     assert!(!rig.app.settings.sync.on);
     assert_eq!(
-        rig.app.settings.sync.target, 124,
+        rig.app.settings.sync.cents(),
+        12_400,
         "the target is unchanged while off"
     );
     // On: the record's tempo becomes the target, and plays on as it is.
     rig.click(deck_sync(&rig));
     assert!(rig.app.settings.sync.on);
-    assert_eq!(rig.app.settings.sync.target, 123);
+    assert_eq!(rig.app.settings.sync.cents(), 12_300);
     rig.frame(Vec::new());
     assert_eq!(
         rig.app.pl_geometry().1,
@@ -559,8 +560,12 @@ fn sync_lights_the_turntable_whose_fader_sets_the_tempo() {
     assert_eq!(rig.engine().speed(0), 1.0);
     // The fader at the top: as fast as the range allows, and heard.
     rig.click(deck_at(&rig, "deck_pitch", 0.5, 0.0));
-    assert_eq!(rig.app.settings.sync.target, 132, "123 + 8%, still locked");
-    let fitted = 132.0 / 123.0;
+    assert_eq!(
+        rig.app.settings.sync.cents(),
+        13_284,
+        "123 + 8%, to 0.01 BPM, still locked"
+    );
+    let fitted = 132.84 / 123.0;
     rig.until(
         |r| (r.app.position.speed - fitted).abs() < 1e-9,
         "heard at the new speed",
@@ -568,12 +573,12 @@ fn sync_lights_the_turntable_whose_fader_sets_the_tempo() {
     // At its centre detent: the record's own tempo.
     let mid = deck_at(&rig, "deck_pitch", 0.5, 0.5);
     rig.click(mid);
-    assert_eq!(rig.app.settings.sync.target, 123);
+    assert_eq!(rig.app.settings.sync.cents(), 12_300);
     // Shift+↑ and scrolling over the fader step it.
     for _ in 0..3 {
         rig.key(Key::ArrowUp, Modifiers::SHIFT);
     }
-    assert_eq!(rig.app.settings.sync.target, 126);
+    assert_eq!(rig.app.settings.sync.cents(), 12_600);
     assert!(
         rig.app.settings.volume == Settings::default().volume,
         "not the volume"
@@ -591,10 +596,10 @@ fn sync_lights_the_turntable_whose_fader_sets_the_tempo() {
     for _ in 0..30 {
         rig.frame(Vec::new());
     }
-    assert!(rig.app.settings.sync.target > 126, "scrolled up");
+    assert!(rig.app.settings.sync.cents() > 12_600, "scrolled up");
     // RESET, the range switch, and SYNC again to turn it off.
     rig.click(deck_at(&rig, "deck_reset", 0.5, 0.5));
-    assert_eq!(rig.app.settings.sync.target, 123);
+    assert_eq!(rig.app.settings.sync.cents(), 12_300);
     rig.until(|r| r.app.position.speed == 1.0, "back to its own speed");
     rig.click(deck_at(&rig, "deck_range", 0.5, 0.5));
     assert!(rig.app.settings.sync.wide);
@@ -622,6 +627,7 @@ fn the_turntable_says_what_sync_is_doing() {
         rig.app.settings.sync = crate::sync::SyncSettings {
             on: true,
             target,
+            target_cents: None,
             wide: false,
             pending: None,
         };
@@ -673,6 +679,7 @@ fn a_track_out_of_range_plays_at_its_own_tempo_and_says_so() {
     rig.app.settings.sync = crate::sync::SyncSettings {
         on: true,
         target: 126,
+        target_cents: None,
         wide: false,
         pending: None,
     };
@@ -4294,6 +4301,7 @@ fn a_fitted_track_flashes_the_rim_and_counts_to_the_target() {
     rig.app.settings.sync = crate::sync::SyncSettings {
         on: true,
         target: 126,
+        target_cents: None,
         wide: false,
         pending: None,
     };
@@ -4314,14 +4322,14 @@ fn a_fitted_track_flashes_the_rim_and_counts_to_the_target() {
     // (The fit waits for the clock to say it plays.)
     rig.until(|r| r.app.deck_flash.is_some(), "the rim flashes");
     let (from, to, _) = rig.app.deck_count.expect("it counts");
-    assert_eq!((from, to), (130, 126));
+    assert_eq!((from, to), (13_000, 12_600));
     assert_eq!(
         deck(&rig).1,
         "130",
         "the count starts at the record's own BPM"
     );
     // It ends by itself, on the target.
-    rig.app.deck_count = Some((130, 126, Instant::now() - Duration::from_secs(1)));
+    rig.app.deck_count = Some((13_000, 12_600, Instant::now() - Duration::from_secs(1)));
     rig.frame(Vec::new());
     assert!(rig.app.deck_count.is_none());
     assert_eq!(deck(&rig).1, "126");
@@ -4441,4 +4449,147 @@ fn the_seek_bar_follows_playback_and_seeks_on_release() {
     rig.click(seek_at(&rig, 0.75));
     assert!(rig.app.seek_drag.is_none());
     assert_eq!(rig.app.position.state, PlayState::Stopped);
+}
+
+/// A playing track at `bpm` with SYNC on at the record's tempo, in a window wide enough for
+/// the turntable.
+fn fine_tempo_rig(name: &str, bpm: f64) -> Rig {
+    let mut rig = Rig::new(name, vec![fixture("tone.flac")], |_| {});
+    rig.screen.x = 720.0;
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing
+                && r.app.track_refs.contains_key(&r.app.position.track)
+        },
+        "the track plays",
+    );
+    let track = rig.app.track_refs[&rig.app.position.track].clone();
+    rig.app.set_track_bpm(&track, bpm);
+    rig.app.settings.sync = crate::sync::SyncSettings {
+        on: true,
+        target: bpm.round() as u16,
+        target_cents: None,
+        wide: false,
+        pending: None,
+    };
+    rig.frame(Vec::new());
+    rig
+}
+
+#[test]
+fn the_tempo_shows_and_steps_in_hundredths() {
+    let mut rig = fine_tempo_rig("fine-steps", 124.0);
+    // The big digits and the small hundredths.
+    rig.app.settings.sync.set_cents(12_635);
+    rig.frame(Vec::new());
+    assert_eq!(deck(&rig).1, "126");
+    assert_eq!(rig.app.deck_fine_drawn, Some(35));
+    // Shift+drag on the fader: 0.01 BPM per skin pixel from where it was grabbed.
+    rig.app.settings.sync.set_cents(12_400);
+    let mid = deck_at(&rig, "deck_pitch", 0.5, 0.5);
+    rig.mods = Modifiers::SHIFT;
+    rig.frame(vec![Event::PointerMoved(mid)]);
+    rig.press(mid, PointerButton::Primary, true);
+    for dy in [10.0, 20.0, 35.0] {
+        rig.frame(vec![Event::PointerMoved(mid - vec2(0.0, dy))]);
+    }
+    rig.press(mid - vec2(0.0, 35.0), PointerButton::Primary, false);
+    assert_eq!(
+        rig.app.settings.sync.cents(),
+        12_435,
+        "Shift+drag up 35 pixels"
+    );
+    // Shift+scroll: 0.01 BPM per 4 skin pixels.
+    rig.app.settings.sync.set_cents(12_600);
+    rig.frame(vec![
+        Event::PointerMoved(mid),
+        Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 8.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::SHIFT,
+        },
+    ]);
+    for _ in 0..30 {
+        rig.frame(Vec::new());
+    }
+    rig.mods = Modifiers::NONE;
+    assert_eq!(
+        rig.app.settings.sync.cents(),
+        12_602,
+        "Shift+scroll 8 pixels"
+    );
+    // Alt+↑ three times: 0.03 BPM.
+    rig.app.settings.sync.set_cents(12_600);
+    for _ in 0..3 {
+        rig.key(Key::ArrowUp, Modifiers::ALT);
+    }
+    assert_eq!(rig.app.settings.sync.cents(), 12_603);
+    // At the top of the record's range, a step stays there.
+    rig.app.settings.sync.set_cents(13_392);
+    rig.key(Key::ArrowUp, Modifiers::ALT);
+    assert_eq!(rig.app.settings.sync.cents(), 13_392, "kept within ±8%");
+    // Shift+↑ is still 1 BPM, keeping the hundredths.
+    rig.app.settings.sync.set_cents(12_635);
+    rig.key(Key::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(rig.app.settings.sync.cents(), 12_735);
+    // With SYNC on, the plain arrows step the tempo by 0.1 BPM and leave the volume alone.
+    let volume = rig.app.settings.volume;
+    rig.app.settings.sync.set_cents(12_600);
+    rig.key(Key::ArrowUp, Modifiers::NONE);
+    rig.key(Key::ArrowUp, Modifiers::NONE);
+    rig.key(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(rig.app.settings.sync.cents(), 12_610);
+    assert_eq!(rig.app.settings.volume, volume);
+    // With SYNC off, they are the volume again.
+    rig.app.settings.sync.on = false;
+    rig.key(Key::ArrowDown, Modifiers::NONE);
+    assert!(rig.app.settings.volume < volume, "the volume goes down");
+    assert_eq!(rig.app.settings.sync.cents(), 12_610);
+}
+
+#[test]
+fn the_tempo_can_be_typed_into_the_digits() {
+    let mut rig = fine_tempo_rig("fine-typing", 124.0);
+    let digits = deck_at(&rig, "deck_target", 0.5, 0.5);
+    // Type 126.359: the third decimal is refused; Backspace deletes; Space types nothing and
+    // doesn't pause; Enter sets it.
+    rig.click(digits);
+    assert_eq!(rig.app.deck_typing.as_deref(), Some(""));
+    rig.frame(vec![Event::Text("126,359".into())]);
+    assert_eq!(rig.app.deck_typing.as_deref(), Some("126.35"));
+    assert_eq!(deck(&rig).1, "126.35", "the digits show what is typed");
+    rig.key(Key::Backspace, Modifiers::NONE);
+    assert_eq!(rig.app.deck_typing.as_deref(), Some("126.3"));
+    rig.frame(vec![Event::Text("5".into())]);
+    rig.key(Key::Space, Modifiers::NONE);
+    assert_eq!(rig.app.position.state, PlayState::Playing, "Space waits");
+    assert_eq!(rig.app.deck_typing.as_deref(), Some("126.35"));
+    rig.key(Key::Enter, Modifiers::NONE);
+    assert_eq!(rig.app.deck_typing, None);
+    assert_eq!(rig.app.settings.sync.cents(), 12_635);
+    // Out of the record's range: kept within it, and said.
+    rig.click(digits);
+    rig.frame(vec![Event::Text("150".into())]);
+    rig.key(Key::Enter, Modifiers::NONE);
+    assert_eq!(rig.app.settings.sync.cents(), 13_392);
+    let said = rig.app.message.as_ref().map(|(t, _)| t.clone());
+    assert_eq!(
+        said.as_deref(),
+        Some("Kept within ±8% of this record: 133.92 BPM")
+    );
+    // Esc cancels, and so does a click anywhere else.
+    rig.click(digits);
+    rig.frame(vec![Event::Text("99".into())]);
+    rig.key(Key::Escape, Modifiers::NONE);
+    assert_eq!(rig.app.deck_typing, None);
+    assert_eq!(rig.app.settings.sync.cents(), 13_392);
+    rig.click(digits);
+    rig.click(rig.row(0));
+    assert_eq!(rig.app.deck_typing, None, "a click elsewhere");
+    // With SYNC off the digits don't open.
+    rig.app.settings.sync.on = false;
+    rig.frame(Vec::new());
+    rig.click(digits);
+    assert_eq!(rig.app.deck_typing, None);
 }

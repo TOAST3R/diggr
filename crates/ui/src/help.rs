@@ -41,6 +41,22 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "tempo +1 / −1 BPM (player focused)",
             ),
             (
+                "Alt+Up / Alt+Down",
+                "tempo +0.01 / −0.01 BPM (player focused)",
+            ),
+            (
+                "Up / Down (SYNC on)",
+                "tempo +0.1 / −0.1 BPM instead of the volume (player focused)",
+            ),
+            (
+                "Shift+drag / Shift+scroll the fader",
+                "fine: 0.01 BPM per pixel / per 4 pixels of scroll",
+            ),
+            (
+                "Click the tempo digits",
+                "type a tempo (126.35), Enter sets it, Esc cancels",
+            ),
+            (
                 "RESET / 8%·16%",
                 "back to the record's own tempo / the pitch range",
             ),
@@ -352,6 +368,7 @@ mod tests {
             "P",
             "Right / Left (playlist focused, grouped)",
             "Shift+Up / Shift+Down",
+            "Alt+Up / Alt+Down",
         ] {
             assert!(keys.contains(&k), "help is missing {k}");
         }

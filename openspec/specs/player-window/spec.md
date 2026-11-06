@@ -115,7 +115,7 @@ The mini player SHALL be the player: the band's left panel, a third of its width
 - **THEN** it has no open (Eject) button, and ⌘O, the list menu's Add files… and drag-and-drop still add files to the shown crate
 
 ### Requirement: Keyboard shortcuts
-The system SHALL support Space (play or pause: from stopped or paused it plays, while playing it pauses), Shift+Space (stop), Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s; with the playlist focused in a grouped crate, close or open the record under the cursor instead, see `record-view`), ↑/↓ (volume while the player has focus; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), H or F1 (shortcuts help), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page). Space and Shift+Space SHALL work whichever of the player and the playlist has focus, and SHALL NOT activate a focused button.
+The system SHALL support Space (play or pause: from stopped or paused it plays, while playing it pauses), Shift+Space (stop), Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s; with the playlist focused in a grouped crate, close or open the record under the cursor instead, see `record-view`), ↑/↓ (volume while the player has focus, or while SYNC is on its tempo by 0.1 BPM; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), H or F1 (shortcuts help), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page). Space and Shift+Space SHALL work whichever of the player and the playlist has focus, and SHALL NOT activate a focused button.
 
 #### Scenario: Space pauses and resumes
 - **WHEN** a track is playing and the user presses Space, then Space again
@@ -176,6 +176,10 @@ The system SHALL support Space (play or pause: from stopped or paused it plays, 
 #### Scenario: No W
 - **WHEN** the user presses W
 - **THEN** nothing changes: the waveform stays in the band
+
+#### Scenario: Arrows set the tempo under SYNC
+- **WHEN** SYNC is on at 126.00, the player has focus, and the user presses ↑ twice and ↓ once
+- **THEN** the tempo reads 126.10 and the volume is unchanged; with SYNC off, ↓ lowers the volume
 
 ### Requirement: Low idle cost
 The UI SHALL consume near-zero CPU when idle and SHALL NOT repaint while minimized or occluded.

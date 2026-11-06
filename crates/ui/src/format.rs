@@ -129,6 +129,17 @@ pub fn origin_line(o: &crate::playlist::Origin) -> String {
     }
 }
 
+/// A tempo in hundredths of a BPM, with up to two decimals and no trailing zeros: `126.35`,
+/// `124.5`, `124`.
+pub fn bpm_2(cents: u32) -> String {
+    let (whole, frac) = (cents / 100, cents % 100);
+    match frac {
+        0 => whole.to_string(),
+        f if f % 10 == 0 => format!("{whole}.{}", f / 10),
+        f => format!("{whole}.{f:02}"),
+    }
+}
+
 /// A record row's second line: catalog number, year, tracks ("3 tracks", or "2 of 4 tracks"
 /// under a filter; "tracks coming…" while the record is only listed, its tracklist not read
 /// yet) and the for-sale summary, e.g. `LT-012 · 1994 · 3 tracks · 6 for sale from €9.00`.
@@ -854,6 +865,14 @@ mod tests {
             "4. Crusher-P: Echo (3:50)"
         );
         assert_eq!(title_line(1, "untitled", None), "1. untitled");
+    }
+
+    #[test]
+    fn a_tempo_shows_up_to_two_decimals() {
+        assert_eq!(bpm_2(12_635), "126.35");
+        assert_eq!(bpm_2(12_450), "124.5");
+        assert_eq!(bpm_2(12_400), "124");
+        assert_eq!(bpm_2(12_405), "124.05");
     }
 
     #[test]
