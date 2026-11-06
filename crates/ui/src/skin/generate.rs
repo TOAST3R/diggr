@@ -666,7 +666,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         // LCD, the state line's inset and the pitch meter's scale (centre tick).
         let l = DECK_LCD;
         c.inset(x + l.0, y + l.1, l.2, l.3, LCD_BG);
-        c.text(x + 120, y + 8, "BPM", LCD_DIM);
+        c.text(x + 136, y + 8, "BPM", LCD_DIM);
         c.inset(x + 80, y + 43, 114, 12, LCD_BG);
         c.inset(x + 122, y + 21, 64, 9, GROOVE);
         c.fill(x + 154, y + 21, 1, 9, ACCENT);
@@ -1327,6 +1327,8 @@ fn layout() -> BTreeMap<String, R> {
         // turntable (relative to its content, DECK_W wide)
         ("deck_platter", R::new(8, 6, 64, 64)),
         ("deck_target", R::new(84, 5, 30, 13)),
+        // The target's hundredths, beside its big digits: ".35".
+        ("deck_fine", R::new(115, 11, 17, 7)),
         ("deck_push", R::new(84, 22, 36, 7)),
         ("deck_record", R::new(84, 31, 100, 7)),
         ("deck_meter", R::new(123, 22, 62, 7)),

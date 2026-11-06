@@ -516,6 +516,34 @@ mod tests {
         assert!((folded / 174.0 - 1.0).abs() < 0.01, "read as {coarse}");
     }
 
+    /// The spike behind `fine-tempo`: how close the analysed tempo of a record comes to its
+    /// true tempo when that has decimals, from the tempo segment and from a straight line
+    /// through the detected beats. Run with
+    /// `cargo test -p analysis tempo_accuracy -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn tempo_accuracy_on_fractional_tempos() {
+        println!("true BPM | segment BPM (error) | beat-line BPM (error)");
+        for bpm in [98.5, 122.37, 124.0, 128.25, 140.0, 150.8, 172.5, 174.0] {
+            let (fr, on, _) = analyze(&synth::standard_track(bpm));
+            let segs = tempo_segments(&fr, &on);
+            let seg = segs.first().map_or(f64::NAN, |s| s.bpm());
+            let b = beats(&segs);
+            // Least squares of beat time against beat number: the slope is a beat's length.
+            let n = b.len() as f64;
+            let (sx, sy) = (n * (n - 1.0) / 2.0, b.iter().sum::<f64>());
+            let sxx = (0..b.len()).map(|i| (i * i) as f64).sum::<f64>();
+            let sxy = b.iter().enumerate().map(|(i, t)| i as f64 * t).sum::<f64>();
+            let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+            let line = 60.0 / slope;
+            println!(
+                "{bpm:>8.2} | {seg:>8.3} ({:+.3}) | {line:>8.3} ({:+.3})",
+                seg - bpm,
+                line - bpm
+            );
+        }
+    }
+
     #[test]
     fn grid_is_precise_on_a_full_track() {
         for bpm in [124.0, 128.0, 174.0] {

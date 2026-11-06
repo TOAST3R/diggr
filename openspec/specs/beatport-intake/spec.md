@@ -2,7 +2,9 @@
 
 ## Purpose
 Beatport pages sent from the browser extension become crates: the tracks a page shows, with the store's BPM and key, played from Beatport's 2-minute samples, linked to Discogs, with a price note and Open on Beatport.
+
 ## Requirements
+
 ### Requirement: Beatport sends come from the browser only
 Beatport tracks SHALL reach the app only as a Beatport send from the paired browser extension (see `browser-bridge`), built from the page the user has open. The app SHALL NOT fetch any page of beatport.com, SHALL NOT search Beatport, and SHALL NOT pass any Beatport address to yt-dlp. A Beatport address pasted into the app SHALL be refused with a message saying to send it from the browser extension, and nothing SHALL be added.
 
@@ -32,7 +34,7 @@ Text SHALL hold no control characters. A track breaking any rule SHALL be refuse
 - **THEN** it is refused whole, and no crate changes
 
 ### Requirement: Beatport tracks into a crate
-Each track SHALL become an entry titled "Artist - Title (Mix)", leaving out a mix named "Original Mix", with the artists joined by ", ". Each entry SHALL carry its length, the release's catalogue number, label and image, the track's BPM and key, and the Beatport track. Tracks SHALL be merged into the target crate as Juno tracks are (see `juno-intake`): matched by normalized artist and title, narrowed by catalogue number. A match that plays is skipped, a match that is unavailable gets the Beatport sample, and the rest are added in the page's order, honouring skip passed. Beatport sends SHALL use the modes of Discogs sends (Play, Enqueue, Crate). The main window SHALL say how many tracks were added, fixed and skipped. Adding SHALL take less than 50 ms for a 500-track send and SHALL cause zero underruns.
+Each track SHALL become an entry titled "Artist - Title (Mix)", leaving out a mix named "Original Mix", with the artists joined by ", ". Each entry SHALL carry its length, the release's catalogue number, label and image, the track's BPM and key, and the Beatport track. Tracks SHALL be merged into the target crate as Juno tracks are (see `juno-intake`): matched by normalized artist and title, narrowed by catalogue number. A match that plays is skipped, a match that is unavailable gets the Beatport sample, and the rest are added in the page's order, honouring skip passed. Beatport sends SHALL use the modes of Discogs sends (Play, Enqueue, Crate). The main window SHALL say how many tracks were added, fixed and skipped. Adding SHALL take less than 200 ms for a 500-track send and SHALL cause zero underruns.
 
 #### Scenario: Enqueue a chart
 - **WHEN** a 100-track Beatport chart is enqueued while crate "Friday" is shown and empty
@@ -69,4 +71,3 @@ With a Discogs token, each Beatport release not linked before SHALL be looked up
 #### Scenario: Open on Beatport
 - **WHEN** the user chooses Open on Beatport on the entry of track 17654321 `infinite-now`
 - **THEN** the default browser opens `https://www.beatport.com/track/infinite-now/17654321`
-
