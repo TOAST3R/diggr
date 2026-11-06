@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change classic-ui. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Atlas-driven rendering
 All player, equalizer, and playlist widgets SHALL be drawn from a skin atlas image plus a RON sprite/layout map, with nearest-neighbor filtering and integer scaling.
 
@@ -37,7 +39,7 @@ Skinned buttons SHALL show distinct normal and pressed sprites, and toggle butto
 - **THEN** the atlas holds `play_on`, `pause_on` and `stop_on` of the same size as `play`, `pause` and `stop`, and the skin test passes
 
 ### Requirement: LCD colour from the skin
-Every LCD text the app draws (the title line, kbps and kHz, the filter bar's search text, BPM range, filters and cart switch, and the playlist footer's info) SHALL use the skin's LCD colour. A skin file that names no LCD colour SHALL get the earlier green (0, 236, 0).
+Every LCD text the app draws (the title line, kbps and kHz, and the filter bar's search text, time readout, BPM range, filters and cart switch) SHALL use the skin's LCD colour. A skin file that names no LCD colour SHALL get the earlier green (0, 236, 0).
 
 #### Scenario: Amber default
 - **WHEN** a track plays with the default skin
@@ -51,3 +53,6 @@ Every LCD text the app draws (the title line, kbps and kHz, the filter bar's sea
 - **WHEN** the user types "parrish" in the search field with the default skin
 - **THEN** "PARRISH" is drawn in the default skin's amber
 
+#### Scenario: Time readout
+- **WHEN** a crate is shown with the default skin
+- **THEN** its time readout in the filter bar is drawn in the default skin's amber

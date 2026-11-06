@@ -1,7 +1,7 @@
 # style-filter Specification
 
 ## Purpose
-Narrows any crate of records (wantlist, collection, friend, seller, label, dig) to the records of chosen styles, as diggers look for them: footer chips (or a searchable list when there are many), any of the chosen styles, on top of the BPM filter, remembered per crate, with play following what's shown.
+Narrows any crate of records (wantlist, collection, friend, seller, label, dig) to the records of chosen styles, as diggers look for them: filter-bar chips (or a searchable list when there are many), any of the chosen styles, on top of the BPM filter, remembered per crate, with play following what's shown.
 ## Requirements
 ### Requirement: Style filter control
 When the shown crate holds entries with record data (see `record-filters`), and its entries have at least two different styles, the filter bar (see `filter-bar`) SHALL offer a style filter after the BPM filter control, laid out with the artist and label filters as `record-filters` says. An entry's styles SHALL be the record's Discogs styles (its genres when it has none). Styles SHALL be listed by the number of records that have them, most first, then by name, counted over the whole crate. The control SHALL be either:

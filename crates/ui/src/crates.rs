@@ -56,7 +56,7 @@ pub struct CrateInfo {
     /// or beside its Discogs id: the crate fills from that page too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bandcamp: Option<String>,
-    /// Shown grouped by record, once toggled; `None` follows the crate's kind.
+    /// Shown grouped by record, once toggled; `None` (never toggled) is grouped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouped: Option<bool>,
     /// Records as of the last save (albums, and entries of no album), for the sidebar of a
@@ -95,11 +95,9 @@ impl CrateInfo {
         self.label.is_some() || self.bandcamp.is_some()
     }
 
-    /// Grouped by record: as toggled, else the user's Discogs crates, seller crates and label
-    /// crates are and others aren't.
+    /// Grouped by record: as toggled, else every crate is.
     pub fn is_grouped(&self) -> bool {
-        self.grouped
-            .unwrap_or_else(|| self.discogs() || self.seller.is_some() || self.is_label())
+        self.grouped.unwrap_or(true)
     }
 }
 
@@ -136,7 +134,7 @@ impl Crates {
     /// Crates kept in memory only (no config folder).
     pub fn in_memory() -> Self {
         let mut c = Self::empty(None);
-        c.loaded.insert(PLAYLIST, Playlist::default());
+        c.loaded.insert(PLAYLIST, c.fresh(PLAYLIST));
         c
     }
 
@@ -331,7 +329,7 @@ impl Crates {
             }
         }
         self.unreadable.remove(&PLAYLIST);
-        self.loaded.insert(PLAYLIST, Playlist::default());
+        self.loaded.insert(PLAYLIST, self.fresh(PLAYLIST));
     }
 
     // ---- loading ---------------------------------------------------------------------------
@@ -374,6 +372,13 @@ impl Crates {
 
     pub fn is_grouped(&self, id: CrateId) -> bool {
         self.info(id).is_some_and(CrateInfo::is_grouped)
+    }
+
+    /// An empty playlist for crate `id`, grouped as the crate is.
+    fn fresh(&self, id: CrateId) -> Playlist {
+        let mut p = Playlist::default();
+        p.set_grouped(self.is_grouped(id));
+        p
     }
 
     /// Groups a crate by record (gathering it) or shows it flat, remembered across launches.
@@ -731,7 +736,7 @@ impl Crates {
             grouped: None,
             records: 0,
         });
-        self.loaded.insert(id, Playlist::default());
+        self.loaded.insert(id, self.fresh(id));
         self.touch(id);
         self.mark_index();
         Ok(id)
@@ -1414,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn grouping_is_remembered_and_the_discogs_crates_default_to_it() {
+    fn grouping_is_remembered_and_every_crate_defaults_to_it() {
         use crate::playlist::Origin;
         let cfg = config("grouped");
         let o = |r: u64, c: &str| Origin {
@@ -1424,7 +1429,12 @@ mod tests {
         };
         let (friday, coll) = {
             let mut c = Crates::open(&cfg);
+            assert!(c.is_grouped(PLAYLIST), "the default Playlist is grouped");
             let friday = c.create("Friday").unwrap();
+            assert!(
+                c.get(friday).unwrap().is_grouped(),
+                "its list opens grouped"
+            );
             let coll = c.create("Collection: digger").unwrap();
             for id in [friday, coll] {
                 let p = c.get_mut(id).unwrap();
@@ -1433,9 +1443,11 @@ mod tests {
                 }
                 c.touch(id);
             }
-            assert!(!c.is_grouped(friday), "an ordinary crate is flat");
+            assert!(c.is_grouped(friday), "an ordinary crate is grouped too");
             c.set_collection(coll);
             assert!(c.is_grouped(coll), "the collection is grouped by default");
+            // What arrived while grouped is placed with its record (the app settles it).
+            assert!(c.get_mut(coll).unwrap().settle());
             let titles: Vec<String> = c
                 .get(coll)
                 .unwrap()
@@ -1444,21 +1456,27 @@ mod tests {
                 .map(|e| e.title.clone())
                 .collect();
             assert_eq!(titles, ["a", "c", "b"], "and gathered");
-            c.set_grouped(friday, true);
+            c.set_grouped(friday, false);
             c.save_due(true, Duration::ZERO);
             (friday, coll)
         };
         let mut c = Crates::open(&cfg);
-        assert!(c.is_grouped(friday) && c.is_grouped(coll), "remembered");
+        assert!(!c.is_grouped(friday), "an ungrouped crate stays flat");
+        assert!(c.is_grouped(coll), "remembered");
         c.load(friday);
-        assert!(c.get(friday).unwrap().is_grouped());
+        assert!(!c.get(friday).unwrap().is_grouped());
         c.set_grouped(coll, false);
         assert!(!c.is_grouped(coll), "a choice beats the default");
-        // An index written before grouping existed loads, every crate by its kind.
+        // An index written before grouping existed, or a crate never toggled, loads grouped;
+        // one saved ungrouped stays flat.
         let old: CrateInfo =
             ron::from_str(r#"(id: 5, name: "Old", entries: 0, created: 1)"#).unwrap();
         assert_eq!(old.grouped, None);
-        assert!(!old.is_grouped());
+        assert!(old.is_grouped());
+        let flat: CrateInfo =
+            ron::from_str(r#"(id: 6, name: "Sets", entries: 0, created: 1, grouped: Some(false))"#)
+                .unwrap();
+        assert!(!flat.is_grouped());
     }
 
     #[test]

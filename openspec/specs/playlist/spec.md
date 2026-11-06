@@ -150,11 +150,15 @@ Each entry SHALL carry its tempo once any analysis of its audio is known: from t
 - **THEN** its entry shows no BPM until its whole file is analyzed
 
 ### Requirement: Playlist placement and size
-The playlist SHALL be drawn under the band (see `player-window` "Full-screen window") at the window's full width, its rows filling the height left, with columns when it is wide enough. Its width and rows SHALL follow the window; it SHALL have no resize handle and SHALL always be shown (there is no playlist toggle). Resizing the window SHALL NOT affect playback.
+The playlist SHALL be drawn under the band (see `player-window` "Full-screen window") at the window's full width, its rows filling the height left, with columns when it is wide enough. Its frame SHALL be its title bar and filter bar above the rows and, below them, an edge drawn like its left edge and as wide (12 skin pixels), holding nothing: there SHALL be no footer. Its width and rows SHALL follow the window; it SHALL have no resize handle and SHALL always be shown (there is no playlist toggle). Resizing the window SHALL NOT affect playback.
 
 #### Scenario: Fills the window
 - **WHEN** the window is 1100 × 600 skin pixels and SYNC is off
 - **THEN** the playlist is 1100 skin pixels wide and its rows fill the 542 pixels under the 58-pixel band
+
+#### Scenario: No footer
+- **WHEN** the window is 720 × 435 skin pixels and SYNC is off
+- **THEN** the list shows 25 rows (23 with the old footer): 435 less the 58-pixel band, the 20-pixel title bar, the 16-pixel filter bar and the 12-pixel bottom edge, in 13-pixel rows; under the last row is only the edge
 
 #### Scenario: Follows the window
 - **WHEN** the operating system restores the window to 800 × 500 skin pixels
@@ -280,31 +284,6 @@ Scrolling the playlist SHALL add up partial scroll steps, so that slow two-finge
 - **WHEN** 10 points of scrolling are left over and the pointer leaves the list and comes back
 - **THEN** the next 3 points of scrolling don't move the list
 
-### Requirement: Playlist footer
-The playlist footer SHALL hold, from left to right: a gear button and the "selected/total" time readout, right-aligned in its LCD box beside the resize grip (only the total when both don't fit in the box). The footer SHALL hold no `+` button, no filter control (see `filter-bar`) and no `≡` button. Everything SHALL fit at the classic 275 skin pixel width. The gear SHALL open the Options menu (see the player window's Options menu), with the same items as the right-click.
-
-No app setting SHALL be in the footer. The crate's own actions, adding music and M3U export included, SHALL be in the list menu (see "List menu").
-
-#### Scenario: Three buttons
-- **WHEN** the playlist is shown at 275 skin pixels wide
-- **THEN** the footer shows only the gear and the time readout, and no `+`, `≡`, ADD, REM, SEL, MISC or OPT button
-
-#### Scenario: No filters in the footer
-- **WHEN** the collection crate, with tempos and styles, is shown 700 pixels wide
-- **THEN** the footer shows the gear and the time readout only, and the BPM control and style chips are in the filter bar
-
-#### Scenario: Options from the footer
-- **WHEN** the user clicks the gear and chooses Discogs…
-- **THEN** the Discogs dialog opens, as from the right-click Options menu
-
-#### Scenario: Add
-- **WHEN** the user right-clicks the list's empty space and chooses Add folder…
-- **THEN** the folder dialog opens, as `+` ▸ Add folder… did
-
-#### Scenario: M3U together
-- **WHEN** the user right-clicks the list's empty space
-- **THEN** the menu holds Export M3U…, which writes the shown crate as `+` ▸ Export M3U… did, and its Add files… opens M3U playlists as `+` ▸ Import M3U… did
-
 ### Requirement: Empty crate hint
 When the shown crate has no entries and is not a Discogs crate (wantlist or collection), its list SHALL show, centred in the list area under the column header:
 - "PASTE A LINK HERE · CMD+V" (CTRL+V off macOS), then the store names **Discogs** and **Bandcamp**;
@@ -393,8 +372,8 @@ Add files… SHALL open the file dialog, accepting audio files and M3U/M3U8 play
 - **THEN** the list menu offers no Open cart item
 
 ### Requirement: Title bar buttons
-The playlist's title bar SHALL hold, at its right end, the ▤ button that groups the shown crate by record (see `record-view`). It SHALL have no close button and no button that maximizes or restores the playlist.
+The playlist's title bar SHALL hold the shown crate's name and no button: no ▤ (which is in the mini player, see `record-view`), no close button and no button that maximizes or restores the playlist.
 
 #### Scenario: Title bar buttons
 - **WHEN** the playlist is shown
-- **THEN** its title bar shows ▤ at its right end, and no close or maximize button
+- **THEN** its title bar shows the crate's name, and no ▤, close or maximize button

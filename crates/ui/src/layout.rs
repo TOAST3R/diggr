@@ -14,9 +14,10 @@ pub fn deck_h(settings: &Settings, d: &SkinDef) -> u16 {
     }
 }
 
-/// The playlist's frame above and below its rows: the title bar, the filter bar and the footer.
+/// The playlist's frame: the title bar and the filter bar above its rows, and an edge under
+/// them like the one at its left. There is no footer.
 pub fn playlist_chrome(d: &SkinDef) -> u16 {
-    d.pl_top_h + d.pl_filter_h + d.pl_bottom_h
+    d.pl_top_h + d.pl_filter_h + d.sprite("pl_bottom_edge").h
 }
 
 /// Height of the band across the top: the mini player, and the waveform beside it. Shown with
@@ -37,7 +38,7 @@ pub fn playlist_fit(d: &SkinDef, band: u16, w: f32, h: f32) -> (u16, u16) {
 }
 
 /// The skin's playlist layout stretched to `width`: the list and title bar grow, and what sits
-/// on the right (▤, scrollbar, info) moves with the right edge.
+/// on the right (the scrollbar) moves with the right edge.
 /// The list and scrollbar start under the filter bar.
 pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
     let width = width.max(d.pl_width);
@@ -54,10 +55,8 @@ pub fn playlist_def(d: &SkinDef, width: u16) -> SkinDef {
             r.y += d.pl_filter_h;
         }
     }
-    for name in ["pl_group", "pl_scroll", "pl_info"] {
-        if let Some(r) = out.layout.get_mut(name) {
-            r.x += extra;
-        }
+    if let Some(r) = out.layout.get_mut("pl_scroll") {
+        r.x += extra;
     }
     out
 }
@@ -121,14 +120,7 @@ mod tests {
         assert_eq!(w.pl_width, 400);
         assert_eq!(w.at("pl_list").w, d.at("pl_list").w + 125);
         assert_eq!(w.at("pl_titlebar").w, 400);
-        for name in ["pl_group", "pl_scroll", "pl_info"] {
-            assert_eq!(w.at(name).x, d.at(name).x + 125, "{name}");
-        }
-        assert_eq!(
-            w.at("pl_opts"),
-            d.at("pl_opts"),
-            "the gear stays on the left"
-        );
+        assert_eq!(w.at("pl_scroll").x, d.at("pl_scroll").x + 125);
         assert_eq!(
             playlist_def(&d, 100).pl_width,
             275,
@@ -139,11 +131,10 @@ mod tests {
     #[test]
     fn the_playlist_takes_the_window_under_the_band() {
         let d = LoadedSkin::default_skin().def;
-        // 1440 × 870 points at 2×: 720 × 435 skin pixels.
-        assert_eq!(
-            playlist_fit(&d, BAND_H, 720.0, 435.0),
-            (720, (435 - 58 - 74) / 13)
-        );
+        // 1440 × 870 points at 2×: 720 × 435 skin pixels; a 12-pixel edge instead of the
+        // 38-pixel footer, so 25 rows (23 with the footer).
+        assert_eq!(playlist_chrome(&d), 20 + 16 + 12);
+        assert_eq!(playlist_fit(&d, BAND_H, 720.0, 435.0), (720, 25));
         // A tiny window still gets the minimum playlist.
         assert_eq!(playlist_fit(&d, BAND_H, 100.0, 50.0), (275, 4));
         // SYNC's turntable makes the band taller.

@@ -502,10 +502,15 @@ fn bar_piece(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, top: C, bot: C, end
 /// fills the rest: 235 pixels of title stripes, and nothing of the bottom bar).
 pub const PL_TOP_L: u16 = 6;
 pub const PL_TOP_R: u16 = 34;
-pub const PL_BOTTOM_L: u16 = 125;
-pub const PL_BOTTOM_R: u16 = 150;
 /// Heights of the filter bar and of its search field's sunken box.
 pub const PL_FILTER_H: u16 = 16;
+/// The frame under the playlist's last row, as wide as its left edge.
+pub const PL_BOTTOM_EDGE: u16 = 12;
+/// The mini player's volume slider.
+pub const VOLUME_W: u16 = 108;
+
+/// The Options gear on its 9×9 window button.
+const GEAR: [&str; 5] = [".#.#.", "#####", "##.##", "#####", ".#.#."];
 pub const PL_FIELD_H: u16 = 12;
 
 /// One column of a plain title bar (its gradient and top/bottom bevel), to stretch behind text.
@@ -691,34 +696,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             (false, true),
         );
     });
-    b.sprite("pl_bottom_l", PL_BOTTOM_L, 38, |c, x, y| {
-        bar_piece(
-            c,
-            x,
-            y,
-            PL_BOTTOM_L as i32,
-            38,
-            PANEL_TOP,
-            PANEL_BOT,
-            (true, false),
-        );
-    });
     b.sprite("pl_bottom_fill", 1, 38, |c, x, y| {
         bar_piece(c, x, y, 1, 38, PANEL_TOP, PANEL_BOT, (false, false));
-    });
-    b.sprite("pl_bottom_r", PL_BOTTOM_R, 38, |c, x, y| {
-        bar_piece(
-            c,
-            x,
-            y,
-            PL_BOTTOM_R as i32,
-            38,
-            PANEL_TOP,
-            PANEL_BOT,
-            (false, true),
-        );
-        // The time readout's LCD, just left of the resize grip.
-        c.inset(x + 50, y + 12, 84, 11, LCD_BG);
     });
     // The filter bar under the playlist's title bar: a panel strip stretched like the
     // bottom bar, and a sunken LCD field (left edge, a column to tile, right edge) the app
@@ -786,9 +765,15 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         c.fill(x + 5, y, 10, 1, GROOVE);
         c.px(x + 19, y, LO);
     });
+    // Under the last row: the left edge's panel, turned to run along the bottom.
+    b.sprite("pl_bottom_edge", 1, PL_BOTTOM_EDGE, |c, x, y| {
+        c.grad_v(x, y, 1, PL_BOTTOM_EDGE as i32, PANEL_TOP, PANEL_BOT);
+        c.px(x, y, LO);
+    });
 
     // ---- title bar buttons ----------------------------------------------------------------
-    for (name, icon) in [("btn_min", 0), ("btn_close", 1)] {
+    // The band's corner: minimize, the Options gear and close.
+    for (name, icon) in [("btn_min", 0), ("btn_opts", 2), ("btn_close", 1)] {
         for pressed in [false, true] {
             let n = if pressed {
                 format!("{name}_p")
@@ -800,6 +785,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 let o = pressed as i32;
                 if icon == 0 {
                     c.fill(x + 2 + o, y + 6 + o, 5, 1, ICON);
+                } else if icon == 2 {
+                    c.bits(x + 2 + o, y + 2 + o, &GEAR, ICON);
                 } else {
                     for i in 0..5 {
                         c.px(x + 2 + i + o, y + 2 + i + o, ICON);
@@ -808,24 +795,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 }
             });
         }
-    }
-
-    // ▤ (group by record): a cover square and two lines, lit while the crate is grouped.
-    for (name, pressed, lit) in [
-        ("btn_group", false, false),
-        ("btn_group_p", true, false),
-        ("btn_group_on", false, true),
-        ("btn_group_on_p", true, true),
-    ] {
-        b.sprite(name, 9, 9, |c, x, y| {
-            button_face(c, x, y, 9, 9, pressed);
-            let o = pressed as i32;
-            let ink = if lit { LCD_ON } else { ICON };
-            c.fill(x + 2 + o, y + 2 + o, 2, 2, ink);
-            c.fill(x + 5 + o, y + 2 + o, 2, 1, ink);
-            c.fill(x + 2 + o, y + 5 + o, 2, 2, ink);
-            c.fill(x + 5 + o, y + 5 + o, 2, 1, ink);
-        });
     }
 
     // ---- transport ------------------------------------------------------------------------
@@ -912,22 +881,10 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             pressed,
         );
     }
-    // The mini player's icon buttons, lit while on: waveform, EQ, spectrum (the spectrogram
-    // window), shuffle and repeat; repeat one adds a small 1 in the loop.
+    // The mini player's icon buttons, lit while on: EQ, spectrum (the spectrogram window),
+    // shuffle, repeat and ▤ (group by record: covers and their lines); repeat one adds
+    // a small 1 in the loop.
     const TOGGLE_ICONS: [(&str, [&str; 8]); 5] = [
-        (
-            "tog_wave",
-            [
-                "......#....",
-                "..#...#....",
-                "..#...#...#",
-                "#.#.#.#.#.#",
-                "#.#.#.#.#.#",
-                "..#...#...#",
-                "..#...#....",
-                "......#....",
-            ],
-        ),
         (
             "tog_eq",
             [
@@ -980,6 +937,19 @@ pub fn generate() -> (RgbaImage, SkinDef) {
                 ".....#.....",
             ],
         ),
+        (
+            "tog_group",
+            [
+                "###.#######",
+                "###........",
+                "###.#####..",
+                "...........",
+                "###.#######",
+                "###........",
+                "###.#####..",
+                "...........",
+            ],
+        ),
     ];
     for (name, icon) in TOGGLE_ICONS {
         for (state, lit) in [("off", false), ("on", true)] {
@@ -994,7 +964,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         b.sprite(&format!("tog_rep1_{state}"), 17, 12, |c, x, y| {
             button_face(c, x, y, 17, 12, lit);
             let col = if lit { ACCENT } else { ICON };
-            c.bits(x + 3, y + 2, &TOGGLE_ICONS[4].1, col);
+            c.bits(x + 3, y + 2, &TOGGLE_ICONS[3].1, col);
             c.tiny(x + 7, y + 3, "1", col);
         });
     }
@@ -1009,34 +979,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     }
     text_button(&mut b, "eq_presets", 44, 12, "PRESETS", false, false);
     text_button(&mut b, "eq_presets_p", 44, 12, "PRESETS", false, true);
-    // The playlist footer's one button, the gear: the Options menu. Adding music and M3U are
-    // in the list menu.
-    const GEAR: [&str; 10] = [
-        "....##....",
-        "..#.##.#..",
-        ".########.",
-        "..##..##..",
-        "####..####",
-        "####..####",
-        "..##..##..",
-        ".########.",
-        "..#.##.#..",
-        "....##....",
-    ];
-    for pressed in [false, true] {
-        let n = if pressed { "pl_opts_p" } else { "pl_opts" };
-        b.sprite(n, 18, 18, |c, x, y| {
-            button_face(c, x, y, 18, 18, pressed);
-            let o = pressed as i32;
-            for (gy, row) in GEAR.iter().enumerate() {
-                for (gx, ch) in row.bytes().enumerate() {
-                    if ch == b'#' {
-                        c.px(x + 4 + gx as i32 + o, y + 4 + gy as i32 + o, ICON);
-                    }
-                }
-            }
-        });
-    }
     // × after the BPM range: clears it.
     b.sprite("bpm_clear", 7, 7, |c, x, y| {
         for i in 0..7 {
@@ -1075,20 +1017,18 @@ pub fn generate() -> (RgbaImage, SkinDef) {
     });
 
     // ---- sliders --------------------------------------------------------------------------
-    b.sprite("seek_track", 248, 10, |c, x, y| {
-        c.inset(x, y, 248, 10, GROOVE)
+    // The mini player's volume: it fills the button row between the transport and shuffle.
+    b.sprite("volume_track", VOLUME_W, 13, |c, x, y| {
+        c.inset(x, y + 3, VOLUME_W as i32, 7, GROOVE)
     });
-    for (name, pressed) in [("seek_thumb", false), ("seek_thumb_p", true)] {
-        b.sprite(name, 29, 10, |c, x, y| {
-            button_face(c, x, y, 29, 10, pressed);
-            c.fill(x + 14, y + 2, 1, 6, ACCENT);
-        });
-    }
-    b.sprite("volume_track", 48, 13, |c, x, y| {
-        c.inset(x, y + 3, 48, 7, GROOVE)
-    });
-    b.sprite("volume_fill", 48, 13, |c, x, y| {
-        c.grad_h(x + 1, y + 4, 46, 5, &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)]);
+    b.sprite("volume_fill", VOLUME_W, 13, |c, x, y| {
+        c.grad_h(
+            x + 1,
+            y + 4,
+            VOLUME_W as i32 - 2,
+            5,
+            &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)],
+        );
     });
     for name in ["volume_thumb"] {
         for pressed in [false, true] {
@@ -1237,7 +1177,6 @@ pub fn generate() -> (RgbaImage, SkinDef) {
         eq_size: (275, 116),
         pl_width: 275,
         pl_top_h: 20,
-        pl_bottom_h: 38,
         pl_filter_h: PL_FILTER_H,
         pl_row_h: 13,
         sprites: b.sprites,
@@ -1272,7 +1211,7 @@ pub fn generate() -> (RgbaImage, SkinDef) {
 fn layout() -> BTreeMap<String, R> {
     let mut l: Vec<(&str, R)> = vec![
         // the mini player's volume slider (moved into place by the app)
-        ("volume", R::new(107, 57, 48, 13)),
+        ("volume", R::new(107, 57, VOLUME_W, 13)),
         // turntable (relative to its section)
         ("deck_titlebar", R::new(0, 0, 275, 14)),
         ("deck_close", R::new(262, 3, 9, 9)),
@@ -1294,15 +1233,10 @@ fn layout() -> BTreeMap<String, R> {
         ("eq_lp", R::new(46, 17, 14, 14)),
         ("eq_graph", R::new(86, 17, 113, 19)),
         ("eq_preamp", R::new(21, 38, 14, 63)),
-        // playlist: titlebar/list/scroll relative to the playlist top; buttons, info and
-        // resize relative to the bottom bar. A height of 0 means "stretch".
+        // playlist, relative to its top. A height of 0 means "stretch".
         ("pl_titlebar", R::new(0, 0, 275, 20)),
-        ("pl_group", R::new(262, 6, 9, 9)),
         ("pl_list", R::new(12, 20, 243, 0)),
         ("pl_scroll", R::new(260, 20, 10, 0)),
-        ("pl_opts", R::new(11, 12, 18, 18)),
-        // The time readout is right-aligned in `pl_info`.
-        ("pl_info", R::new(177, 14, 80, 7)),
     ];
     let bands: Vec<(String, R)> = (0..10)
         .map(|i| (format!("eq_band{i}"), R::new(78 + 18 * i, 38, 14, 63)))

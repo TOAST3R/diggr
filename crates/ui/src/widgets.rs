@@ -243,7 +243,7 @@ mod tests {
                 origin: Pos2::ZERO,
                 scale: 2.0,
             };
-            out.0 = button(ui, &sk, "group", "pl_group", "btn_group").clicked();
+            out.0 = button(ui, &sk, "close", "eq_close", "btn_close").clicked();
             let s = SliderSprites {
                 track: "volume_track",
                 fill: Some("volume_fill"),
@@ -268,8 +268,8 @@ mod tests {
     fn skinned_button_clicks_at_scaled_layout_position() {
         let ctx = egui::Context::default();
         let skin = LoadedSkin::default_skin();
-        let group = skin.def.at("pl_group"); // (262, 6) in skin pixels → ×2 in points
-        let p = pos2((group.x as f32 + 4.0) * 2.0, (group.y as f32 + 4.0) * 2.0);
+        let close = skin.def.at("eq_close"); // (262, 3) in skin pixels → ×2 in points
+        let p = pos2((close.x as f32 + 4.0) * 2.0, (close.y as f32 + 4.0) * 2.0);
         frame(&ctx, &skin, vec![Event::PointerMoved(p)], 0.5);
         frame(&ctx, &skin, vec![press(p, true)], 0.5);
         let (clicked, _) = frame(&ctx, &skin, vec![press(p, false)], 0.5);

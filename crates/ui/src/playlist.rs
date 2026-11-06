@@ -478,6 +478,18 @@ impl Entry {
         }
     }
 
+    /// Whether it belongs to an album: `album_key().is_some()`, without building the key.
+    pub fn has_album(&self) -> bool {
+        match &self.origin {
+            Some(o) => {
+                o.release.is_some()
+                    || o.master.is_some()
+                    || (!o.bandcamp.is_empty() && !o.page.is_empty())
+            }
+            None => !self.album.trim().is_empty(),
+        }
+    }
+
     /// The album it belongs to, if any (see [`AlbumKey`]).
     pub fn album_key(&self) -> Option<AlbumKey> {
         match &self.origin {
@@ -855,6 +867,12 @@ impl Playlist {
 
     pub fn is_grouped(&self) -> bool {
         self.grouped
+    }
+
+    /// Whether any entry belongs to an album, so that grouping makes record rows. It looks at
+    /// every entry, whatever the search and filters show, and stops at the first album.
+    pub fn has_albums(&self) -> bool {
+        self.entries.iter().any(Entry::has_album)
     }
 
     /// Groups (or ungroups) the entries by record. Grouping gathers them at once; ungrouping
@@ -3487,6 +3505,26 @@ mod tests {
 
     fn order(p: &Playlist) -> Vec<String> {
         p.entries().iter().map(|e| e.title.clone()).collect()
+    }
+
+    #[test]
+    fn has_albums_agrees_with_the_album_keys() {
+        let (loose, _) = records(&[None, None]);
+        assert!(!loose.has_albums(), "local files without an album tag");
+        let (mut p, _) = records(&[None, Some(7)]);
+        assert!(p.has_albums());
+        p.entries_mut().next().unwrap().album = "Silentintroduction".into();
+        let mut bandcamp = origin(0, "x");
+        bandcamp.release = None;
+        bandcamp.bandcamp = "moodymann".into();
+        bandcamp.page = "https://moodymann.bandcamp.com/album/x".into();
+        for e in p.entries_mut() {
+            assert_eq!(e.has_album(), e.album_key().is_some(), "{}", e.title);
+            e.origin = Some(bandcamp.clone());
+            assert_eq!(e.has_album(), e.album_key().is_some(), "{}", e.title);
+            e.origin.as_mut().unwrap().page.clear();
+            assert_eq!(e.has_album(), e.album_key().is_some(), "{}", e.title);
+        }
     }
 
     #[test]

@@ -47,8 +47,6 @@ pub struct Settings {
     /// The EQ window is open, and where it was last put.
     pub show_eq: bool,
     pub eq_window_pos: Option<(f32, f32)>,
-    /// The waveform in the band (`W`).
-    pub show_waveform: bool,
     /// Bars visible in the waveform's zoomed row.
     pub waveform_bars: f32,
     /// The playlist's columns, shown once it is wide enough.
@@ -75,7 +73,6 @@ impl Default for Settings {
             scale: 2,
             show_eq: false,
             eq_window_pos: None,
-            show_waveform: true,
             waveform_bars: crate::waveform::DEFAULT_BARS,
             columns: Default::default(),
             volume: 0.8,

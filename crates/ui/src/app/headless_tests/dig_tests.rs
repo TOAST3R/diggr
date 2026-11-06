@@ -101,6 +101,7 @@ fn memory(rig: &Rig) -> &DigMemory {
 /// Play mode for the release into a new crate on screen, until its first preview plays.
 fn play_release(rig: &mut Rig) -> CrateId {
     let c = rig.app.crates.create("Release").unwrap();
+    flat(rig, c);
     rig.app.show_crate(c);
     rig.app
         .dig_send(url::parse(RELEASE).unwrap(), SendMode::Play, None);
@@ -1678,10 +1679,12 @@ fn options_on_the_main_window_open_the_discogs_dialog() {
 }
 
 #[test]
-fn the_footer_gear_opens_the_discogs_dialog() {
+fn the_corner_gear_opens_the_discogs_dialog() {
     let fakes = Fakes::new();
     let mut rig = rig("dig-gear", &fakes, |_| {});
-    rig.click(footer_button(&rig, "pl_opts"));
+    rig.screen.x = 1100.0;
+    rig.frame(Vec::new());
+    rig.click(corner_gear(&rig));
     let out = rig.frame(Vec::new());
     assert_dig_options(&out);
     rig.click_text("Discogs…");
@@ -3403,6 +3406,7 @@ fn a_digital_only_record_stays_marked_as_a_file() {
     let fakes = Fakes::new();
     let mut rig = rig("digital-only", &fakes, |_| {});
     let c = rig.app.crates.create("Analogical Force").unwrap();
+    flat(&mut rig, c);
     let j = af_job(c);
     rig.app.dig_intake_event(Intake::Listed(
         j.clone(),
@@ -3629,6 +3633,7 @@ fn only_the_vinyl_release_of_a_record_without_clips_is_searched() {
 /// A record with no clip and six tracks, `T1` to `T6` (3:00 each), into a new crate `name`.
 fn six_tracks(rig: &mut Rig, name: &str) -> CrateId {
     let c = rig.app.crates.create(name).unwrap();
+    flat(rig, c);
     let j = af_job(c);
     rig.app.dig_intake_event(Intake::Listed(
         j.clone(),
@@ -4518,6 +4523,7 @@ fn sixty(rig: &mut Rig, fakes: &Fakes, found: usize) -> CrateId {
             .answer(&format!("The 89th Passenger {title}"), results);
     }
     let c = rig.app.crates.create("Sixty").unwrap();
+    flat(rig, c);
     let j = af_job(c);
     rig.app.dig_intake_event(Intake::Listed(
         j.clone(),

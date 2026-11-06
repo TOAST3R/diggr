@@ -1,7 +1,7 @@
 # playlist-filters Specification
 
 ## Purpose
-Narrows a crate to a tempo range in one move: a BPM range in the playlist footer decides which entries are shown and which play, remembered per crate, without fetching anything to learn a tempo.
+Narrows a crate to a tempo range in one move: a BPM range in the filter bar decides which entries are shown and which play, remembered per crate, without fetching anything to learn a tempo.
 ## Requirements
 ### Requirement: What plays under a filter
 Next, previous, shuffle, the pre-warmed next track and the previews downloaded ahead SHALL use only the entries the filter shows. The playing track SHALL finish even if the filter hides it, and SHALL be followed by the next shown entry after it in crate order. Changing the filter SHALL NOT interrupt playback and SHALL cause zero underruns. Keyboard navigation, the cursor, Select all and Invert selection SHALL work over the shown entries. Entries SHALL keep their crate numbers. Pressing P while the filter hides the playing entry SHALL turn the filter off and show the playing entry. Sorting and M3U export SHALL act on the whole crate.

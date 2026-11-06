@@ -26,6 +26,15 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Changed
 
+- **A tidier window.** The gear for Options sits in the top-right corner between minimize and
+  close, ▤ (group by record) and SYNC are in the player beside EQ and the spectrogram, and the
+  player's two rows now line up. The playlist's footer is gone: its time readout is in the
+  filter bar after the search, and the list gets about three more rows.
+- **The waveform is always on.** Its button and the W key are gone, and the list's bottom edge
+  matches its left one.
+- **Records first.** Every crate opens grouped by record, new or old, until you turn it off with
+  ▤. A crate of loose tracks keeps its column header so you can still sort it.
+
 - **Lighter track tooltips.** Hovering a track now shows just its details as text, with no
   cover. The cover and the record's details are on its record card: press Shift+G to group
   the crate by record.

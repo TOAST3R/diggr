@@ -32,19 +32,31 @@ The mini player SHALL show a scrolling "N. (catno) Artist: Title (T BPM) (m:ss)"
 - **THEN** the mini player's title line shows "WANTED" centred for 1.5 s, then the track line again
 
 ### Requirement: Transport and sliders
-The mini player SHALL be the player: 275 skin pixels wide at the left of the band (see "Full-screen window"), in two rows. Its LCD row SHALL hold the play state, the time, the title line, and at its right end three icon buttons: EQ, which opens or closes the EQ window (see `eq-window`) and is drawn lit while it is open; waveform, which shows or hides the waveform exactly as `W` does and is drawn lit while it shows; and spectrum, which opens or closes the spectrogram window exactly as `S` does and is drawn lit while it is open. Its button row SHALL hold previous, play, pause, stop and next, a volume slider (48 skin pixels wide, covering 0–100%), shuffle and repeat, and SYNC, all wired to the Engine or the view, and none of them SHALL overlap. Shuffle and repeat SHALL be drawn as icons the size of the band's icon buttons, lit while their setting is on; repeat one SHALL show the repeat icon with a small 1. Each icon SHALL have a tooltip naming it, and SYNC SHALL stay labelled SYNC. There SHALL be no open (Eject) button, no balance control (playback is always centred), no playlist or crates toggle and no button that changes the layout. Seeking SHALL be done on the waveform, or, while it is hidden, on the seek bar the band shows in its place (see `waveform-view`).
+The mini player SHALL be the player: 275 skin pixels wide at the left of the band (see "Full-screen window"), in two rows. Its LCD row SHALL hold the play state, the time, the title line, and at its right end, ending 4 skin pixels from the edge: ▤, which groups or ungroups the crate shown in the playlist (see `record-view`) and is drawn lit while it is grouped; EQ, which opens or closes the EQ window (see `eq-window`) and is drawn lit while it is open; spectrum, which opens or closes the spectrogram window exactly as `S` does and is drawn lit while it is open; and SYNC. Its button row SHALL hold previous, play, pause, stop and next, a volume slider (108 skin pixels wide, covering 0–100%), shuffle and repeat, all wired to the Engine or the view, on the transport buttons' centre line, with gaps of 2 to 4 skin pixels and none overlapping, ending where the LCD row ends. Shuffle and repeat SHALL be drawn as icons the size of the band's icon buttons, lit while their setting is on; repeat one SHALL show the repeat icon with a small 1. Each icon SHALL have a tooltip naming it, and SYNC SHALL stay labelled SYNC. There SHALL be no waveform button (the waveform is always shown, see `waveform-view`), no open (Eject) button, no balance control (playback is always centred), no playlist or crates toggle and no button that changes the layout. Seeking SHALL be done on the waveform.
 
 #### Scenario: Volume change is immediate
 - **WHEN** the volume slider is moved
 - **THEN** the loudness change is audible within 20 ms
 
 #### Scenario: Waveform button
-- **WHEN** the waveform is hidden and the user clicks the mini player's waveform button
-- **THEN** the waveform appears in the band, the button is drawn lit, and the setting is remembered across launches
+- **WHEN** the mini player is drawn
+- **THEN** it has no waveform button, and the waveform shows in the band
 
 #### Scenario: Shuffle and repeat fit
 - **WHEN** the mini player is drawn at 275 skin pixels wide
-- **THEN** previous, play, pause, stop, next, the volume slider, shuffle, repeat and SYNC all show in its button row without overlapping
+- **THEN** previous, play, pause, stop, next, the volume slider, shuffle and repeat show in its button row without overlapping, repeat ending 4 pixels from the right edge, as SYNC does in the LCD row above it
+
+#### Scenario: LCD row icons fit
+- **WHEN** the mini player is drawn at 275 skin pixels wide
+- **THEN** ▤, EQ, spectrum and SYNC show at the LCD row's right end without overlapping each other or the title line, which keeps room for 17 characters
+
+#### Scenario: SYNC beside the spectrum button
+- **WHEN** the user clicks SYNC, right of the spectrum button in the LCD row
+- **THEN** SYNC turns on, as it did from the button row
+
+#### Scenario: Group button
+- **WHEN** a flat crate is shown and the user clicks the mini player's ▤
+- **THEN** the crate is grouped by record and ▤ is drawn lit; its tooltip reads "Group by record"
 
 #### Scenario: Repeat icon cycles
 - **WHEN** repeat is off and the user clicks the mini player's repeat icon twice
@@ -71,7 +83,7 @@ The mini player SHALL be the player: 275 skin pixels wide at the left of the ban
 - **THEN** it has no open (Eject) button, and ⌘O, the list menu's Add files… and drag-and-drop still add files to the shown crate
 
 ### Requirement: Keyboard shortcuts
-The system SHALL support Space (play or pause: from stopped or paused it plays, while playing it pauses), Shift+Space (stop), Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s; with the playlist focused in a grouped crate, close or open the record under the cursor instead, see `record-view`), ↑/↓ (volume while the player has focus; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), H or F1 (shortcuts help), W (waveform section), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page). Space and Shift+Space SHALL work whichever of the player and the playlist has focus, and SHALL NOT activate a focused button.
+The system SHALL support Space (play or pause: from stopped or paused it plays, while playing it pauses), Shift+Space (stop), Z (previous), X (play), C (pause), V (stop), B (next), ←/→ (seek ∓5 s; with the playlist focused in a grouped crate, close or open the record under the cursor instead, see `record-view`), ↑/↓ (volume while the player has focus; move the playlist cursor while the playlist has focus), Tab (switch focus between the player and the playlist), P (show the playing entry in the playlist), H or F1 (shortcuts help), S (spectrogram window), [ and ] (previous/next section), Shift+] (next energy rise), L (section loop), Shift+L (4/8/16-bar loop), Y (add to the wantlist, or remove from it), N (pass), I (open the for-sale page), and Cmd+V, or Ctrl+V on Linux and Windows (paste a Discogs page). Space and Shift+Space SHALL work whichever of the player and the playlist has focus, and SHALL NOT activate a focused button.
 
 #### Scenario: Space pauses and resumes
 - **WHEN** a track is playing and the user presses Space, then Space again
@@ -129,6 +141,10 @@ The system SHALL support Space (play or pause: from stopped or paused it plays, 
 - **WHEN** the user presses Shift+P
 - **THEN** nothing changes: the layout, the window and playback stay as they are
 
+#### Scenario: No W
+- **WHEN** the user presses W
+- **THEN** nothing changes: the waveform stays in the band
+
 ### Requirement: Low idle cost
 The UI SHALL consume near-zero CPU when idle and SHALL NOT repaint while minimized or occluded.
 
@@ -170,7 +186,7 @@ The player side (the band: mini player, turntable and waveform) and the playlist
 - **THEN** the player has focus
 
 ### Requirement: Options menu
-Right-clicking (or Control-clicking on macOS) anywhere on the mini player that is not a control SHALL open the Options menu: where digging is available, Discogs…, Browser… and Set up Diggr…. The menu SHALL NOT offer the size (see "Size keys") or the spectrogram, which has the mini player's spectrum button and S. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. The playlist footer's gear button SHALL open the same menu, so it can be found without knowing about the right-click. Opening the menu SHALL NOT affect playback.
+Right-clicking (or Control-clicking on macOS) anywhere on the mini player that is not a control SHALL open the Options menu: where digging is available, Discogs…, Browser… and Set up Diggr…. The menu SHALL NOT offer the size (see "Size keys") or the spectrogram, which has the mini player's spectrum button and S. The controls SHALL keep their own clicks. Hovering that area SHALL show a tooltip saying that a right-click opens the options. The gear button in the band's top-right corner (see "Full-screen window") SHALL open the same menu, so it can be found without knowing about the right-click; where digging isn't available the menu is empty and the gear SHALL NOT be shown. Opening the menu SHALL NOT affect playback.
 
 #### Scenario: Open the options
 - **WHEN** the user right-clicks the mini player's title line
@@ -179,6 +195,14 @@ Right-clicking (or Control-clicking on macOS) anywhere on the mini player that i
 #### Scenario: Controls keep their clicks
 - **WHEN** the user right-clicks the volume slider
 - **THEN** the Options menu doesn't open
+
+#### Scenario: Options from the gear
+- **WHEN** the user clicks the gear between minimize and close and chooses Discogs…
+- **THEN** the Discogs dialog opens, as from the right-click Options menu
+
+#### Scenario: No digging, no gear
+- **WHEN** the app runs where digging isn't available
+- **THEN** the band's corner shows minimize and close only, each in its usual place
 
 ### Requirement: Verdict flash
 When a verdict changes at least one record, the title line SHALL show, for 1.5 s and without scrolling, centred: "WANTED" after adding to the wantlist, "UNWANTED" after removing from it, "PASS" after a pass and "OWNED" after adding to the collection. When more than one record changed, the count SHALL follow ("WANTED 3"). A verdict that changes nothing (Y on an owned record, N on a wanted one, a key while stopped) SHALL show no flash. A newer flash SHALL replace an older one, and when the flash ends the normal title line SHALL come back.
@@ -222,11 +246,11 @@ The help panel's Playback group SHALL list "Space: play / pause" and "Shift+Spac
 - **THEN** the first Playback line is "Space: play / pause", and no line says Space opens a record
 
 ### Requirement: Full-screen window
-The app SHALL have one layout: a band across the top of the window and the playlist under it. The band SHALL hold, from the left, the mini player (see "Transport and sliders"), the turntable while SYNC is on (see `tempo-preview`), and the waveform (see `waveform-view`) or, while it is hidden, a seek bar, across the rest of the width; minimize and close buttons SHALL sit at the band's top-right corner, close quitting the app. The band SHALL be as tall as the waveform section (58 skin pixels), or the turntable (104) while SYNC is on. The app SHALL open with its window maximized (the screen's usable area, below the menu bar), within the 300 ms launch target. When the operating system restores, resizes or maximizes the window, the same layout SHALL fill it. Dragging the band's top-right corner outside its buttons SHALL move the window when it isn't maximized. There SHALL be no other layout and no button or key that switches layouts. Resizing SHALL NOT affect playback.
+The app SHALL have one layout: a band across the top of the window and the playlist under it. The band SHALL hold, from the left, the mini player (see "Transport and sliders"), the turntable while SYNC is on (see `tempo-preview`), and the waveform (see `waveform-view`), always shown, across the rest of the width; at the band's top-right corner SHALL sit, from the left, minimize, the Options gear (see "Options menu") and close, all drawn at the same size, close quitting the app. Each SHALL take clicks only inside its own button, so a click between two of them does nothing. The band SHALL be as tall as the waveform section (58 skin pixels), or the turntable (104) while SYNC is on. The app SHALL open with its window maximized (the screen's usable area, below the menu bar), within the 300 ms launch target. When the operating system restores, resizes or maximizes the window, the same layout SHALL fill it. Dragging the band's top-right corner outside its buttons SHALL move the window when it isn't maximized. There SHALL be no other layout and no button or key that switches layouts. Resizing SHALL NOT affect playback.
 
 #### Scenario: Launch
 - **WHEN** the app is launched on a 1440 × 900 display
-- **THEN** its first frame fills the area below the menu bar, the mini player is at the top left, the waveform at the top right, minimize and close at the top-right corner, and the playlist fills the full width under them
+- **THEN** its first frame fills the area below the menu bar, the mini player is at the top left, the waveform at the top right, minimize, the gear and close at the top-right corner, and the playlist fills the full width under them
 
 #### Scenario: Restored by the operating system
 - **WHEN** the user restores the window with the operating system's button
@@ -235,6 +259,10 @@ The app SHALL have one layout: a band across the top of the window and the playl
 #### Scenario: Close
 - **WHEN** the user clicks the band's close button
 - **THEN** the app quits, as the main window's close button did
+
+#### Scenario: Between the gear and close
+- **WHEN** the user clicks the gap between the gear and close
+- **THEN** nothing opens and the app doesn't quit
 
 #### Scenario: An older settings file
 - **WHEN** the app starts with a `settings.ron` holding `playlist_maximized: false`, `show_playlist: false`, `show_crates: true`, a `vis` mode and a playlist width and rows
