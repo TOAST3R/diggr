@@ -1138,3 +1138,76 @@ fn a_seek_neither_stops_nor_starts_with_a_click() {
     assert!(step < 0.08, "a click at the seek: a step of {step}");
     assert_eq!(rig.engine.stats().underruns, 0);
 }
+
+#[test]
+fn a_hold_slows_the_record_within_a_buffer_and_comes_back_to_its_speed() {
+    let dir = temp_dir("hold");
+    let t = sine_wav(&dir.join("a.wav"), 1_000.0, 0..480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.set_speed(0, 1.03);
+    rig.engine.play_index(0);
+    rig.pull_audio(10);
+    assert_eq!(rig.engine.position().speed, 1.03);
+    // The first buffer after the hold is already slower: within 20 ms.
+    rig.engine.hold(true);
+    assert!(rig.engine.held());
+    rig.pull_waiting();
+    let p = rig.engine.position();
+    assert!(p.speed < 1.03 && p.speed > 0.9, "slowing: {}", p.speed);
+    // Kept alive, it stops; the position stays put.
+    for _ in 0..45 {
+        rig.engine.hold_keepalive();
+        rig.pull_waiting();
+    }
+    let held = rig.engine.position();
+    assert_eq!(held.speed, 0.0);
+    rig.engine.hold_keepalive();
+    rig.pull_waiting();
+    assert_eq!(rig.engine.position().frame, held.frame);
+    // Let go: back to its own SYNC speed, without an underrun.
+    rig.engine.hold(false);
+    for _ in 0..35 {
+        rig.pull_waiting();
+    }
+    assert_eq!(rig.engine.position().speed, 1.03);
+    assert!(rig.engine.position().frame > held.frame);
+    assert_eq!(rig.engine.stats().underruns, 0);
+}
+
+#[test]
+fn seek_stop_pause_and_track_changes_end_a_hold() {
+    let dir = temp_dir("hold-ends");
+    let tracks: Vec<_> = (0..2)
+        .map(|i| sine_wav(&dir.join(format!("{i}.wav")), 1_000.0, 0..96_000))
+        .collect();
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(tracks);
+    rig.engine.play_index(0);
+    rig.pull_audio(2);
+    type Act = fn(&mut Engine);
+    let acts: [(&str, Act); 4] = [
+        ("seek", |e| e.seek(0.5)),
+        ("next", |e| e.next()),
+        ("previous", |e| e.previous()),
+        ("pause", |e| e.pause()),
+    ];
+    for (what, act) in acts {
+        rig.engine.hold(true);
+        assert!(rig.engine.held(), "{what}: held");
+        act(&mut rig.engine);
+        assert!(!rig.engine.held(), "{what} ends the hold");
+        rig.engine.play();
+        rig.pull_audio(1);
+    }
+    rig.engine.hold(true);
+    let index = rig.engine.current_index().unwrap();
+    rig.engine.set_speed(index, 1.05);
+    assert!(!rig.engine.held(), "a speed change ends the hold");
+    rig.engine.hold(true);
+    rig.engine.stop();
+    assert!(!rig.engine.held(), "stop ends the hold");
+    // And holding does nothing unless playing.
+    rig.engine.hold(true);
+    assert!(!rig.engine.held());
+}

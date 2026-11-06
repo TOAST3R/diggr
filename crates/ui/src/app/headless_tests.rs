@@ -4593,3 +4593,37 @@ fn the_tempo_can_be_typed_into_the_digits() {
     rig.click(digits);
     assert_eq!(rig.app.deck_typing, None);
 }
+
+#[test]
+fn holding_the_platter_stops_the_record_and_letting_go_spins_it_up() {
+    let mut rig = Rig::new("platter-hold", vec![fixture("tone.flac")], |_| {});
+    rig.screen.x = 720.0;
+    rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+    assert!(!rig.app.settings.sync.on, "it works with SYNC off");
+    let platter = deck_at(&rig, "deck_platter", 0.5, 0.5);
+    rig.frame(vec![Event::PointerMoved(platter)]);
+    rig.press(platter, PointerButton::Primary, true);
+    assert!(rig.app.platter_held);
+    assert!(rig.engine().held(), "the engine holds the record");
+    rig.until(|r| r.app.position.speed == 0.0, "the record stops");
+    let at = rig.app.position.frame;
+    for _ in 0..5 {
+        rig.pump();
+    }
+    assert_eq!(rig.app.position.frame, at, "the time stops");
+    assert!(rig.engine().held(), "still held while the button is down");
+    rig.press(platter, PointerButton::Primary, false);
+    assert!(!rig.app.platter_held);
+    assert!(!rig.engine().held());
+    rig.until(|r| r.app.position.speed == 1.0, "it spins back up");
+    rig.until(
+        |r| r.app.position.frame > at,
+        "and plays on from where it stopped",
+    );
+    // Nothing playing: pressing the platter does nothing.
+    rig.key(Key::Space, Modifiers::SHIFT);
+    rig.until(|r| r.app.position.state == PlayState::Stopped, "stopped");
+    rig.press(platter, PointerButton::Primary, true);
+    assert!(!rig.engine().held());
+    rig.press(platter, PointerButton::Primary, false);
+}

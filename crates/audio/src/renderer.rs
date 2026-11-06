@@ -10,7 +10,7 @@
 //! 5 ms, with the short silence of the new audio loading between them.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use platform::{CallbackInfo, StreamFormat};
 use rtrb::Consumer;
@@ -29,6 +29,110 @@ const MAX_RUNS: usize = 16;
 const FADE_FRAMES: usize = 96;
 /// A seek's or track change's fade-out of the old audio and fade-in of the new: 5 ms at 48 kHz.
 pub const DECLICK_FRAMES: usize = 240;
+/// A held record slows to a stop in this long, and a released one spins back up in this long.
+pub const BRAKE_SECS: f32 = 0.4;
+pub const SPINUP_SECS: f32 = 0.3;
+/// Below this rate the platter fades to silence: a stopped record makes no sound.
+const SILENT_RATE: f32 = 0.08;
+
+/// Where a frame of the queue is in its track.
+#[derive(Clone, Copy)]
+struct Stamp {
+    track: TrackId,
+    frame: u64,
+    speed: f64,
+}
+
+/// The platter: plays the queue's audio at a rate from 0 to 1 while a hold slows it or a release
+/// spins it back up, reading the queue only as fast as it plays. `a` is the frame at the play
+/// position, `b` the one after it (read when the position is between them); at rate 1 with
+/// nothing between frames it plays `a` itself, sample for sample. At rest (`active` false) the
+/// renderer doesn't use it at all.
+struct Platter {
+    active: bool,
+    rate: f32,
+    frac: f32,
+    a: Option<([f32; CHANNELS], Stamp)>,
+    b: Option<([f32; CHANNELS], Stamp)>,
+    /// Frames read from the queue and not played yet, with their runs' stamps.
+    fifo: Box<[f32]>,
+    fifo_len: usize,
+    fifo_pos: usize,
+    runs: [RunNote; MAX_RUNS],
+    run_count: usize,
+    /// The queue ended after the frames in the FIFO.
+    end: Option<(TrackId, u64)>,
+    /// Where the frame after the last one read is.
+    next: Stamp,
+}
+
+impl Platter {
+    fn new() -> Self {
+        Self {
+            active: false,
+            rate: 1.0,
+            frac: 0.0,
+            a: None,
+            b: None,
+            fifo: vec![0.0; BLOCK_FRAMES * CHANNELS].into_boxed_slice(),
+            fifo_len: 0,
+            fifo_pos: 0,
+            runs: [RunNote {
+                track: 0,
+                start_frame: 0,
+                speed: 1.0,
+                offset: 0,
+                frames: 0,
+            }; MAX_RUNS],
+            run_count: 0,
+            end: None,
+            next: Stamp {
+                track: 0,
+                frame: 0,
+                speed: 1.0,
+            },
+        }
+    }
+
+    /// Back to rest, dropping what it held (stale after a flush).
+    fn reset(&mut self) {
+        self.active = false;
+        self.rate = 1.0;
+        self.frac = 0.0;
+        self.a = None;
+        self.b = None;
+        self.fifo_len = 0;
+        self.fifo_pos = 0;
+        self.run_count = 0;
+        self.end = None;
+    }
+
+    /// Nothing held, nothing read ahead, at rate 1: the plain path can take over.
+    fn at_rest(&self, held: bool) -> bool {
+        !held
+            && self.rate == 1.0
+            && self.frac == 0.0
+            && self.a.is_none()
+            && self.b.is_none()
+            && self.fifo_pos == self.fifo_len
+            && self.end.is_none()
+    }
+}
+
+/// What the platter played in a block.
+struct PlatterBlock {
+    filled: usize,
+    underrun: bool,
+    ended: Option<(TrackId, u64)>,
+    /// Where the block started, and the mean rate it played at.
+    start: Option<Stamp>,
+    mean_rate: f64,
+}
+
+enum PlatterStop {
+    Empty,
+    Ended(TrackId, u64),
+}
 
 /// State shared between the control side (engine) and the callback.
 pub struct Control {
@@ -47,7 +151,13 @@ pub struct Control {
     start_generation: AtomicU32,
     last_start_latency_ns: AtomicU64,
     queue_ended: AtomicU64,
+    /// A hand on the record (see [`Control::set_hold`]), and when the app last confirmed it.
+    hold: AtomicBool,
+    hold_seen_ns: AtomicU64,
 }
+
+/// A hold the app hasn't confirmed for this long ends by itself.
+pub const HOLD_TIMEOUT_NS: u64 = 500_000_000;
 
 impl Default for Control {
     fn default() -> Self {
@@ -63,6 +173,8 @@ impl Default for Control {
             start_generation: AtomicU32::new(0),
             last_start_latency_ns: AtomicU64::new(0),
             queue_ended: AtomicU64::new(0),
+            hold: AtomicBool::new(false),
+            hold_seen_ns: AtomicU64::new(0),
         }
     }
 }
@@ -141,6 +253,31 @@ impl Control {
         self.last_start_latency_ns.load(Ordering::Relaxed)
     }
 
+    /// Holds the playing record (`true`) or lets it go, at `now_ns` in the sink's time base.
+    pub fn set_hold(&self, on: bool, now_ns: u64) {
+        if on {
+            self.hold_seen_ns.store(now_ns, Ordering::Relaxed);
+        }
+        self.hold.store(on, Ordering::Release);
+    }
+
+    /// The app still holds the record, at `now_ns`.
+    pub fn keep_hold(&self, now_ns: u64) {
+        self.hold_seen_ns.store(now_ns, Ordering::Relaxed);
+    }
+
+    /// Ends a hold at once (a seek, stop, pause, track or speed change).
+    pub fn release_hold(&self) {
+        self.hold.store(false, Ordering::Release);
+    }
+
+    /// Whether the record is held at `now_ns`: asked for and confirmed within
+    /// [`HOLD_TIMEOUT_NS`].
+    pub fn hold_active(&self, now_ns: u64) -> bool {
+        self.hold.load(Ordering::Acquire)
+            && now_ns.saturating_sub(self.hold_seen_ns.load(Ordering::Relaxed)) <= HOLD_TIMEOUT_NS
+    }
+
     /// Increments each time playback runs off the end of the queue.
     pub fn queue_ended_count(&self) -> u64 {
         self.queue_ended.load(Ordering::Relaxed)
@@ -206,6 +343,7 @@ pub struct Renderer {
     fade_in_pos: usize,
     /// Audio was heard in the last callback (a flush while paused has nothing to fade out).
     audible: bool,
+    platter: Platter,
     played_generation: u32,
     /// The generation in the clock epoch: a speed change keeps the one it continues.
     epoch_generation: u32,
@@ -244,6 +382,7 @@ impl Renderer {
             fade_in_from: None,
             fade_in_pos: DECLICK_FRAMES,
             audible: false,
+            platter: Platter::new(),
             played_generation: 0,
             epoch_generation: 0,
             soft_switch: false,
@@ -306,6 +445,11 @@ impl Renderer {
                 self.pcm.discard_stale(target);
             }
             self.audible = false;
+            // Pausing or stopping ends a hold: what plays next plays at its speed.
+            self.platter.rate = 1.0;
+            if state == PlayState::Stopped {
+                self.platter.reset();
+            }
             out.fill(0.0);
             self.clock.publish(&snap);
             return;
@@ -332,6 +476,12 @@ impl Renderer {
             self.declick_generation = target;
         }
 
+        // A flush ends a hold and drops what the platter held: the new audio plays as it is.
+        if self.platter.active && self.played_generation < target {
+            self.platter.reset();
+        }
+        let held = self.control.hold_active(info.host_ns);
+
         let mut done = 0;
         let mut any_audio = false;
         let mut underrun = false;
@@ -347,7 +497,34 @@ impl Renderer {
             }; MAX_RUNS];
             let mut run_count = 0;
             let mut filled = 0;
-            while filled < n && !ended {
+            let mut platter_tap = None;
+            if held || self.platter.active {
+                self.platter.active = true;
+                let b = self.platter_block(n, held, min_generation);
+                filled = b.filled;
+                underrun |= b.underrun;
+                if let Some((track, at_frame)) = b.ended {
+                    self.pos = (track, at_frame);
+                    ended = true;
+                }
+                if let Some(start) = b.start {
+                    any_audio = true;
+                    if done == 0 {
+                        snap.track = start.track;
+                        snap.frame = start.frame;
+                        snap.speed = start.speed * b.mean_rate;
+                        snap.epoch = self.epoch();
+                    }
+                    // A stopped record writes nothing: the views freeze rather than see silence.
+                    if b.mean_rate > 0.0 && filled > 0 {
+                        platter_tap = Some((start.track, start.frame, start.speed * b.mean_rate));
+                    }
+                }
+                if self.platter.at_rest(held) {
+                    self.platter.active = false;
+                }
+            }
+            while filled < n && !ended && !(held || self.platter.active) {
                 match self.pcm.read(
                     min_generation,
                     &mut self.scratch[filled * CHANNELS..n * CHANNELS],
@@ -435,6 +612,10 @@ impl Renderer {
                 let data = &self.scratch[r.offset * CHANNELS..(r.offset + r.frames) * CHANNELS];
                 self.tap.write(r.track, r.start_frame, r.speed, data);
             }
+            if let Some((track, frame, speed)) = platter_tap {
+                self.tap
+                    .write(track, frame, speed, &self.scratch[..filled * CHANNELS]);
+            }
             self.write_device(&mut out[done * ch..(done + n) * ch], n);
             done += n;
             if underrun || ended {
@@ -462,6 +643,193 @@ impl Renderer {
         snap.starved = !any_audio;
         self.audible = any_audio;
         self.clock.publish(&snap);
+    }
+
+    /// The next frame from the queue for the platter, through its FIFO (refilled with up to
+    /// `want` frames at a time, so at rate 1 it reads no further than the block plays).
+    fn platter_frame(
+        &mut self,
+        min_generation: u32,
+        want: usize,
+    ) -> Result<([f32; CHANNELS], Stamp), PlatterStop> {
+        let p = &mut self.platter;
+        if p.fifo_pos == p.fifo_len {
+            if let Some((track, at)) = p.end.take() {
+                return Err(PlatterStop::Ended(track, at));
+            }
+            p.fifo_len = 0;
+            p.fifo_pos = 0;
+            p.run_count = 0;
+            let want = want.clamp(1, BLOCK_FRAMES);
+            while p.fifo_len < want {
+                match self.pcm.read(
+                    min_generation,
+                    &mut p.fifo[p.fifo_len * CHANNELS..want * CHANNELS],
+                ) {
+                    ReadResult::Audio(run) => {
+                        // Audio of a generation not played yet (the hold began before it
+                        // arrived): it starts here, as on the plain path.
+                        if run.generation != self.played_generation {
+                            self.epoch_generation = run.generation;
+                            self.played_generation = run.generation;
+                            self.started = true;
+                        }
+                        if p.run_count < MAX_RUNS {
+                            p.runs[p.run_count] = RunNote {
+                                track: run.track,
+                                start_frame: run.start_frame,
+                                speed: run.speed,
+                                offset: p.fifo_len,
+                                frames: run.frames,
+                            };
+                            p.run_count += 1;
+                        }
+                        self.played_splice = run.splice;
+                        p.fifo_len += run.frames;
+                    }
+                    ReadResult::EndOfQueue { track, at_frame } => {
+                        if p.fifo_len == 0 {
+                            return Err(PlatterStop::Ended(track, at_frame));
+                        }
+                        p.end = Some((track, at_frame));
+                        break;
+                    }
+                    ReadResult::Empty => {
+                        if p.fifo_len == 0 {
+                            return Err(PlatterStop::Empty);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let k = p.fifo_pos;
+        p.fifo_pos += 1;
+        let run = p.runs[..p.run_count]
+            .iter()
+            .rev()
+            .find(|r| r.offset <= k)
+            .copied()
+            .unwrap_or(p.runs[0]);
+        let stamp = Stamp {
+            track: run.track,
+            frame: run.start_frame + crate::ring::track_frames(k - run.offset, run.speed),
+            speed: run.speed,
+        };
+        p.next = Stamp {
+            frame: stamp.frame + crate::ring::track_frames(1, stamp.speed),
+            ..stamp
+        };
+        let mut frame = [0.0; CHANNELS];
+        frame.copy_from_slice(&p.fifo[k * CHANNELS..(k + 1) * CHANNELS]);
+        Ok((frame, stamp))
+    }
+
+    /// Plays up to `n` frames into `scratch` through the platter: the rate slews toward 0 while
+    /// `held` (in [`BRAKE_SECS`]) and back to 1 otherwise (in [`SPINUP_SECS`]), the position moves
+    /// by the rate, and the output is interpolated between the two frames around it, fading to
+    /// silence below [`SILENT_RATE`]. After a release, once at rate 1, the position catches up to
+    /// a whole frame (at most 1.6% faster, for a few frames) so that it plays frames exactly again.
+    fn platter_block(&mut self, n: usize, held: bool, min_generation: u32) -> PlatterBlock {
+        let rate_hz = self.sample_rate.max(1) as f32;
+        let down = 1.0 / (BRAKE_SECS * rate_hz);
+        let up = 1.0 / (SPINUP_SECS * rate_hz);
+        let mut out = PlatterBlock {
+            filled: 0,
+            underrun: false,
+            ended: None,
+            start: None,
+            mean_rate: 0.0,
+        };
+        let mut moved = 0.0f64;
+        let mut i = 0;
+        while i < n {
+            let target = if held { 0.0 } else { 1.0 };
+            let p = &mut self.platter;
+            if p.rate < target {
+                p.rate = (p.rate + up).min(target);
+            } else if p.rate > target {
+                p.rate = (p.rate - down).max(target);
+            }
+            if self.platter.a.is_none() {
+                match self.platter_frame(min_generation, n - i) {
+                    Ok(f) => self.platter.a = Some(f),
+                    Err(PlatterStop::Empty) => {
+                        out.underrun = true;
+                        break;
+                    }
+                    Err(PlatterStop::Ended(track, at)) => {
+                        out.ended = Some((track, at));
+                        break;
+                    }
+                }
+            }
+            let (fa, sa) = self
+                .platter
+                .a
+                .unwrap_or(([0.0; CHANNELS], self.platter.next));
+            if out.start.is_none() {
+                out.start = Some(Stamp {
+                    frame: sa.frame + (self.platter.frac as f64 * sa.speed) as u64,
+                    ..sa
+                });
+            }
+            let frame = if self.platter.frac == 0.0 {
+                fa
+            } else {
+                if self.platter.b.is_none()
+                    && let Ok(f) = self.platter_frame(min_generation, n - i)
+                {
+                    self.platter.b = Some(f);
+                }
+                match self.platter.b {
+                    Some((fb, _)) => {
+                        let t = self.platter.frac;
+                        let mut f = [0.0; CHANNELS];
+                        for c in 0..CHANNELS {
+                            f[c] = fa[c] + (fb[c] - fa[c]) * t;
+                        }
+                        f
+                    }
+                    None => fa,
+                }
+            };
+            let p = &mut self.platter;
+            let gain = (p.rate / SILENT_RATE).min(1.0);
+            let dst = &mut self.scratch[i * CHANNELS..(i + 1) * CHANNELS];
+            for (d, &s) in dst.iter_mut().zip(&frame) {
+                *d = if gain == 1.0 { s } else { s * gain };
+            }
+            // Move: by the rate, or (released, at rate 1, between frames) a little faster until
+            // the position lands on a frame.
+            let catch_up = !held && p.rate >= 1.0 && p.frac > 0.0;
+            let step = if catch_up {
+                1.0 + ((1.0 - p.frac) / 64.0).max(1e-3)
+            } else {
+                p.rate
+            };
+            p.frac += step;
+            if catch_up && p.frac >= 1.0 {
+                p.frac = 1.0;
+            }
+            moved += step as f64;
+            while p.frac >= 1.0 {
+                p.a = p.b.take();
+                p.frac -= 1.0;
+            }
+            i += 1;
+        }
+        out.filled = i;
+        if i > 0 {
+            out.mean_rate = moved / i as f64;
+        }
+        let p = &self.platter;
+        self.pos = match p.a {
+            Some((_, s)) => (s.track, s.frame + (p.frac as f64 * s.speed) as u64),
+            None => (p.next.track, p.next.frame),
+        };
+        self.speed = p.a.map_or(p.next.speed, |(_, s)| s.speed);
+        out
     }
 
     /// Takes the start of the old audio still queued before `target`'s, to fade out over
@@ -643,6 +1011,204 @@ mod tests {
             host_ns,
             output_latency_ns: 0,
         }
+    }
+
+    /// Renders `n` buffers of 512 frames from `*host`, 10.67 ms apart; returns the output and the
+    /// clock's speed after each.
+    fn run(g: &mut Rig, host: &mut u64, n: usize) -> (Vec<f32>, Vec<f64>) {
+        let mut all = Vec::new();
+        let mut speeds = Vec::new();
+        let mut out = vec![0.0; 512 * 2];
+        for _ in 0..n {
+            *host += 512 * 1_000_000_000 / RATE as u64;
+            g.r.render(&mut out, info(*host));
+            all.extend_from_slice(&out);
+            speeds.push(g.clock.snapshot().speed);
+        }
+        (all, speeds)
+    }
+
+    /// The ramp's next value after `v` (it wraps at 1.0).
+    fn ramp_follows(a: f32, b: f32) -> bool {
+        let next = ((a * 1000.0).round() as u64 + 1) % 1000;
+        (b - next as f32 / 1000.0).abs() < 1e-6
+    }
+
+    #[test]
+    fn a_held_record_brakes_to_silence_and_spins_back_up_exactly() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        g.tx.push(gen_, 1, 0, &ramp(48_000, 0));
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        let (before, _) = run(&mut g, &mut host, 4);
+        assert_eq!(before, ramp(2048, 0), "at rest the audio passes untouched");
+
+        // Hold: the rate falls to 0 in 0.4 s (19,200 frames), then silence and a still position.
+        g.control.set_hold(true, u64::MAX);
+        let (_, speeds) = run(&mut g, &mut host, 40);
+        let stopped = speeds.iter().position(|&s| s == 0.0).expect("it stops") * 512;
+        assert!(
+            (19_200 - 512..=19_200 + 1024).contains(&stopped),
+            "stopped after {stopped} frames"
+        );
+        assert!(
+            speeds.windows(2).all(|w| w[1] <= w[0]),
+            "it only slows down"
+        );
+        let (held, speeds) = run(&mut g, &mut host, 10);
+        assert!(held.iter().all(|&s| s == 0.0), "a stopped record is silent");
+        assert!(speeds.iter().all(|&s| s == 0.0));
+        let at = g.clock.snapshot().frame;
+        run(&mut g, &mut host, 3);
+        assert_eq!(g.clock.snapshot().frame, at, "the position stays put");
+
+        // Release: back to rate 1 in 0.3 s, then exactly the queue's frames again.
+        g.control.set_hold(false, 0);
+        let (_, speeds) = run(&mut g, &mut host, 32);
+        assert_eq!(*speeds.last().unwrap(), 1.0);
+        assert!(!g.r.platter.active, "back on the plain path");
+        let (after, _) = run(&mut g, &mut host, 2);
+        assert!(
+            after
+                .chunks(2)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .all(|w| ramp_follows(w[0][0], w[1][0])),
+            "frames follow one another exactly"
+        );
+        assert!(after.chunks(2).all(|f| f[1] == -f[0]));
+        assert!(g.clock.snapshot().frame > at);
+    }
+
+    #[test]
+    fn braking_and_spinning_up_do_not_click() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        let sine: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let v = (2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / RATE as f32).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        g.tx.push(gen_, 1, 0, &sine);
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        let mut all = run(&mut g, &mut host, 4).0;
+        g.control.set_hold(true, u64::MAX);
+        all.extend(run(&mut g, &mut host, 45).0);
+        g.control.set_hold(false, 0);
+        all.extend(run(&mut g, &mut host, 35).0);
+        // A 1 kHz sine at 0.5 moves at most 0.066 a sample at full speed, less when slower.
+        let left: Vec<f32> = all.chunks(2).map(|f| f[0]).collect();
+        let worst = left
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.07, "a click: a step of {worst}");
+    }
+
+    #[test]
+    fn a_record_released_before_it_stops_speeds_up_from_where_it_was() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        g.tx.push(gen_, 1, 0, &ramp(48_000, 0));
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        run(&mut g, &mut host, 2);
+        g.control.set_hold(true, u64::MAX);
+        run(&mut g, &mut host, 19); // 0.2 s: about halfway down
+        g.control.set_hold(false, 0);
+        let (_, speeds) = run(&mut g, &mut host, 40);
+        let lowest = speeds.iter().copied().fold(f64::MAX, f64::min);
+        assert!((0.3..0.7).contains(&lowest), "it turned at {lowest}");
+        assert_eq!(*speeds.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn the_clock_follows_a_hold_without_going_back_or_drifting() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        g.tx.push(gen_, 1, 0, &ramp(48_000, 0));
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        let mut out = vec![0.0; 512 * 2];
+        let mut snaps = Vec::new();
+        let mut step = |g: &mut Rig, host: &mut u64, snaps: &mut Vec<(u64, f64)>| {
+            *host += 512 * 1_000_000_000 / RATE as u64;
+            g.r.render(&mut out, info(*host));
+            let s = g.clock.snapshot();
+            snaps.push((s.frame, s.speed));
+        };
+        for _ in 0..2 {
+            step(&mut g, &mut host, &mut snaps);
+        }
+        g.control.set_hold(true, u64::MAX);
+        for _ in 0..45 {
+            step(&mut g, &mut host, &mut snaps);
+        }
+        let held = snaps.last().unwrap().0;
+        g.control.set_hold(false, 0);
+        let released = snaps.len();
+        for _ in 0..35 {
+            step(&mut g, &mut host, &mut snaps);
+        }
+        // After the start: never backwards, and each buffer's extrapolated end lands within 1 ms (48 frames) of
+        // where the next buffer starts: the clock reports the rate heard.
+        for w in snaps[1..].windows(2) {
+            let ((f0, s0), (f1, _)) = (w[0], w[1]);
+            assert!(f1 >= f0, "the clock went back: {f0} then {f1}");
+            let guess = f0 as f64 + 512.0 * s0;
+            assert!(
+                (guess - f1 as f64).abs() <= 48.0,
+                "off by {} frames",
+                guess - f1 as f64
+            );
+        }
+        // Released, it continues from where it was held.
+        assert_eq!(
+            snaps[released].0, held,
+            "it continues from the held position"
+        );
+        assert!(snaps.last().unwrap().0 > held);
+    }
+
+    #[test]
+    fn an_unconfirmed_hold_ends_by_itself() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        g.tx.push(gen_, 1, 0, &ramp(48_000, 0));
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        run(&mut g, &mut host, 2);
+        g.control.set_hold(true, host);
+        // Held and never confirmed: after half a second it spins back up.
+        let (_, speeds) = run(&mut g, &mut host, 90);
+        let lowest = speeds.iter().copied().fold(f64::MAX, f64::min);
+        assert!(lowest < 0.1, "it was held: {lowest}");
+        assert_eq!(*speeds.last().unwrap(), 1.0, "and let go");
+        assert!(!g.control.hold_active(host));
+    }
+
+    #[test]
+    fn a_seek_during_a_hold_plays_the_new_audio_at_its_speed() {
+        let mut g = rig(2);
+        let g1 = g.control.bump_generation();
+        g.tx.push(g1, 1, 0, &ramp(4_096, 0));
+        g.control.set_state(PlayState::Playing);
+        let mut host = 0;
+        run(&mut g, &mut host, 2);
+        g.control.set_hold(true, u64::MAX);
+        run(&mut g, &mut host, 4);
+        // The engine releases the hold on a seek; the renderer drops what the platter held.
+        g.control.release_hold();
+        let g2 = g.control.bump_generation();
+        g.tx.push(g2, 1, 96_000, &ramp(2_048, 500));
+        let (_, speeds) = run(&mut g, &mut host, 2);
+        assert!(!g.r.platter.active);
+        assert_eq!(speeds[1], 1.0);
+        // The clock gives where the last buffer started: the second 512 frames of the new audio.
+        assert_eq!(g.clock.snapshot().frame, 96_000 + 512);
     }
 
     #[test]

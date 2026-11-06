@@ -23,6 +23,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
   Want it or put it in your cart from the card, and slide to the next or previous record with
   ‹ › or the arrow keys. When a record finishes, the card slides on to the next one with the
   music. × or Esc puts it away.
+- **A hand on the record.** Press and hold the turntable's platter and the record slows to a
+  stop, the pitch sinking with it, just like vinyl under your palm. Let go and it spins back up
+  and plays on from where it stopped. It works with SYNC on or off.
 
 ### Changed
 

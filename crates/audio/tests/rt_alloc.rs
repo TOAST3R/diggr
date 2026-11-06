@@ -1,6 +1,7 @@
 //! The audio callback must never allocate. This binary installs the counting allocator and
 //! drives the renderer through every code path: playback, gapless boundaries, seeks/flushes,
-//! EQ changes, underruns, end of queue, tap overflow, pause, and device channel layouts.
+//! EQ changes, underruns, end of queue, tap overflow, pause, a platter hold, and device channel
+//! layouts.
 
 use std::sync::Arc;
 
@@ -104,6 +105,14 @@ fn renderer_never_allocates() {
         tx.push_spliced(g2, 0, 2, 90_700, 1.04, &chunk);
         tx.push_spliced(g2, 0, 2, 91_428, 1.04, &chunk);
         call(&mut r, &mut out); // varispeed
+        control.set_hold(true, u64::MAX); // a hand on the record: braking, then held
+        for i in 0..4 {
+            tx.push_spliced(g2, 0, 2, 92_000 + i * 700, 1.04, &chunk);
+        }
+        call(&mut r, &mut out);
+        call(&mut r, &mut out);
+        control.set_hold(false, 0); // let go: spinning back up
+        call(&mut r, &mut out);
         control.mark_soft(); // a speed change
         let g3 = control.bump_generation();
         call(&mut r, &mut out); // the old speed plays on until the new one is queued
