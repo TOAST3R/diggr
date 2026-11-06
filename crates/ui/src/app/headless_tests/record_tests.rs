@@ -295,14 +295,20 @@ fn grouping_is_remembered_per_crate() {
     let friday = rig.crate_with("Friday", &["tone.wav"]);
     rig.app.show_crate(friday);
     assert!(
-        !rig.app.crates.shown().is_grouped(),
-        "another crate stays flat"
+        rig.app.crates.shown().is_grouped(),
+        "a new crate opens grouped"
     );
+    rig.app.apply(Action::ToggleGrouped, &rig.ctx.clone());
+    assert!(!rig.app.crates.shown().is_grouped());
     rig.app.show_crate(PLAYLIST);
     assert!(rig.app.crates.shown().is_grouped());
     rig.app.crates.save_due(true, Duration::ZERO);
     let crates = Crates::open(&Store::new(rig.dir.join("config")));
     assert!(crates.is_grouped(PLAYLIST), "saved");
+    assert!(
+        !crates.is_grouped(friday),
+        "and the one ungrouped stays flat"
+    );
 }
 
 #[test]

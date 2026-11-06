@@ -72,10 +72,6 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "switch the keyboard between the player and the playlist",
             ),
             (
-                "W",
-                "show / hide the waveform (also the mini player's waveform button)",
-            ),
-            (
                 "S",
                 "spectrogram window (also the mini player's spectrum button)",
             ),
@@ -344,7 +340,6 @@ mod tests {
             "Shift+]",
             "L",
             "Shift+L",
-            "W",
             "S",
             "Cmd+= / Cmd+− / Cmd+0",
             "H or F1",

@@ -112,7 +112,6 @@ pub struct DiggrApp {
     meta: Option<MetaWorker<MetaKey>>,
     now_playing: Option<TrackInfo>,
     position: Position,
-    seek_drag: Option<f32>,
     /// When SYNC last changed the playing track's speed (changes come at most every 30 ms).
     sync_applied: Instant,
     /// Scrolling over the pitch fader not yet worth a whole BPM, in skin pixels.
@@ -177,6 +176,9 @@ pub struct DiggrApp {
     /// The CART switch as last drawn (its label and where, in points), for tests.
     #[cfg(test)]
     cart_drawn: Option<(String, Pos2)>,
+    /// The filter bar's time readout as last drawn (its text, x and width in skin pixels).
+    #[cfg(test)]
+    readout_drawn: Option<(String, f32, f32)>,
     /// The filter bar's search text as typed (the shown crate holds its folded words).
     pl_search: String,
     /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
@@ -342,7 +344,6 @@ impl DiggrApp {
                 discontinuity: false,
                 speed: 1.0,
             },
-            seek_drag: None,
             sync_applied: Instant::now(),
             sync_drag: 0.0,
             deck_turn: 0.0,
@@ -377,6 +378,8 @@ impl DiggrApp {
             filters_drawn: None,
             #[cfg(test)]
             cart_drawn: None,
+            #[cfg(test)]
+            readout_drawn: None,
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
@@ -1509,7 +1512,6 @@ impl DiggrApp {
 
     fn window_key(&mut self, ctx: &egui::Context, key: Key, mods: Modifiers) {
         match key {
-            Key::W if !mods.command => self.apply(Action::ToggleWaveform, ctx),
             Key::S if !mods.command => self.spectro_open = !self.spectro_open,
             // The size, on the keys every app zooms with: "+" has its own key on many
             // European layouts and "=" is shifted, so both mean double size.
@@ -2264,10 +2266,12 @@ impl DiggrApp {
         self.pl_geometry().0 >= crate::columns::COLUMNS_FROM_WIDTH
     }
 
-    /// The column header shows: wide enough for columns, and not grouped by record (record
-    /// rows span the whole width, so the header's labels would name nothing).
+    /// The column header shows: wide enough for columns, and not grouped into record rows
+    /// (they span the whole width, so the header's labels would name nothing). A grouped crate
+    /// without albums has no record rows, so it keeps its header.
     fn pl_header(&self) -> bool {
-        self.pl_columns() && !self.crates.shown().is_grouped()
+        let shown = self.crates.shown();
+        self.pl_columns() && (!shown.is_grouped() || !shown.has_albums())
     }
 
     /// Rows of entries on screen: the playlist's rows, less the column header.
@@ -3549,6 +3553,20 @@ impl DiggrApp {
         if r.clicked() {
             actions.push(Action::ToggleCartOnly);
         }
+    }
+
+    /// The shown crate's time readout, widest first: "selected/total", then the total only,
+    /// each with `+` while an entry's duration isn't known. It counts the whole crate.
+    fn time_readout(&self) -> [String; 2] {
+        let shown = self.crates.shown();
+        let (total, t_unknown) = shown.total_duration();
+        let (sel, s_unknown) = shown.selected_duration();
+        let plus = |unknown: bool| if unknown { "+" } else { "" };
+        let total = format!("{}{}", format::clock(total), plus(t_unknown));
+        [
+            format!("{}{}/{total}", format::clock(sel), plus(s_unknown)),
+            total,
+        ]
     }
 
     /// "CART 3 · €41.20": the shown seller crate's part of the cart, when it has one (or the
@@ -4986,11 +5004,7 @@ impl DiggrApp {
         w: f32,
         actions: &mut Vec<Action>,
     ) {
-        let h = fsk.def.sprite("pl_field_fill").h as f32;
-        let y = ((fsk.def.pl_filter_h as f32 - h) / 2.0).floor();
-        fsk.sprite("pl_field_l", x, y);
-        fsk.sprite_in("pl_field_fill", fsk.rect(x + 1.0, y, w - 2.0, h));
-        fsk.sprite("pl_field_r", x + w - 1.0, y);
+        let (y, h) = draw_field_box(fsk, x, w);
         // Cleared elsewhere (another crate shown, P, ×): the field follows.
         if !crate::playlist::fold_words(&self.pl_search).is_empty()
             && self.crates.shown().search().is_empty()
@@ -5114,11 +5128,38 @@ impl DiggrApp {
         if let Some(cart) = self.cart_label() {
             want += STYLE_GAP + fsk.text_width(&cart);
         }
+        // The time readout takes what the controls and the search's minimum leave: the full
+        // "selected/total", the total only, or nothing.
+        let room = x_end - x0 - 4.0 - want - SEARCH_MIN_W - 4.0;
+        let readout = self
+            .time_readout()
+            .into_iter()
+            .map(|t| {
+                let w = fsk.text_width(&t) + 6.0;
+                (t, w)
+            })
+            .find(|(_, w)| *w <= room);
+        if let Some((_, w)) = &readout {
+            want += w + 4.0;
+        }
         let search_w = (x_end - x0 - 4.0 - want)
             .min(width * SEARCH_MAX_SHARE)
             .max(SEARCH_MIN_W);
         self.search_field(ui, fsk, x0, search_w, actions);
-        let x = x0 + search_w + 4.0;
+        let mut x = x0 + search_w + 4.0;
+        if let Some((text, w)) = readout {
+            draw_lcd_box(fsk, x, w, &text);
+            #[cfg(test)]
+            {
+                self.readout_drawn = Some((text.clone(), x, w));
+            }
+            x += w + 4.0;
+        } else {
+            #[cfg(test)]
+            {
+                self.readout_drawn = None;
+            }
+        }
         let bpm_end = self.bpm_control(ui, fsk, (x, 0.0, x_end, h), actions);
         let filters_end = self.filter_controls(ui, fsk, (bpm_end, 0.0, x_end, h), actions);
         self.cart_switch(ui, fsk, (filters_end, 0.0, x_end, h), actions);
@@ -5182,15 +5223,6 @@ impl DiggrApp {
                 egui::Popup::menu(&title)
                     .id(Id::new("crate_menu"))
                     .show(|ui| self.crate_menu(ui, &mut actions));
-            }
-            // ▤: one row per record (lit while grouped).
-            let on = self.crates.shown().is_grouped();
-            let sprite = if on { "btn_group_on" } else { "btn_group" };
-            if widgets::button(ui, &sk, "pl_group", "pl_group", sprite)
-                .on_hover_text("Group by record (Shift+G)")
-                .clicked()
-            {
-                actions.push(Action::ToggleGrouped);
             }
             // The filter bar, between the title bar and the list.
             let fsk = Skinned {
@@ -5971,46 +6003,9 @@ impl DiggrApp {
                 sc.x as f32,
                 top + (frac * travel).round(),
             );
-
-            // Bottom bar.
-            let bottom_y = top + list_h;
-            let bsk = Skinned {
-                origin: sk.origin + vec2(0.0, bottom_y * scale),
-                ..self.skinned(&def, ui, origin)
-            };
-            draw_stretched_bar(&bsk, "pl_bottom", 0.0, width, d.pl_bottom_h as f32);
-            // The gear: the same Options as a right-click on the player. Adding music and M3U
-            // are in the list menu (a right-click on the list).
-            // Without anything in the menu, the gear's slot stays empty.
-            if self.has_options() {
-                let opts = widgets::button(ui, &bsk, "pl_opts", "pl_opts", "pl_opts");
-                egui::Popup::menu(&opts).show(|ui| self.options_items(ui, &mut actions));
-                opts.on_hover_text("Options");
-            }
-
-            // "selected/total" time, classic style, right-aligned beside the grip.
-            let (total, t_unknown) = self.crates.shown().total_duration();
-            let (seltime, s_unknown) = self.crates.shown().selected_duration();
-            let info = format!(
-                "{}{}/{}{}",
-                format::clock(seltime),
-                if s_unknown { "+" } else { "" },
-                format::clock(total),
-                if t_unknown { "+" } else { "" }
-            );
-            // In the skin's LCD box, right-aligned; just the total when both don't fit.
-            let pi = d.at("pl_info");
-            let info = if bsk.text_width(&info) > pi.w as f32 {
-                format!(
-                    "{}{}",
-                    format::clock(total),
-                    if t_unknown { "+" } else { "" }
-                )
-            } else {
-                info
-            };
-            let info_x = (pi.x + pi.w) as f32 - bsk.text_width(&info);
-            bsk.text(info_x, pi.y as f32, &info, color(bsk.def.colors.lcd));
+            // The edge under the last row, like the one at the left.
+            let edge_h = d.sprite("pl_bottom_edge").h as f32;
+            sk.sprite_in("pl_bottom_edge", sk.rect(0.0, top + list_h, width, edge_h));
         }
         self.show_card(ui.ctx(), card_scale, &mut actions);
         for a in actions {
@@ -6524,10 +6519,6 @@ impl DiggrApp {
                 self.with_engine(|e| e.set_repeat(r));
                 self.mark_settings();
             }
-            Action::ToggleWaveform => {
-                self.settings.show_waveform = !self.settings.show_waveform;
-                self.mark_settings();
-            }
             Action::ToggleEq => {
                 self.settings.show_eq = !self.settings.show_eq;
                 self.mark_settings();
@@ -6890,7 +6881,6 @@ enum Action {
     Next,
     Seek(f64),
     Volume(f32),
-    ToggleWaveform,
     /// Sort the shown crate by a column (again: the other way).
     Sort(Field),
     /// Show (and play) only the shown crate's entries in this BPM range; `None` shows all.
@@ -7636,6 +7626,23 @@ fn sprite_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) 
     resp
 }
 
+/// A window button in the band's corner, and whether it was clicked with the pointer inside
+/// its own rectangle (not merely near it).
+fn corner_button(
+    ui: &mut Ui,
+    sk: &Skinned,
+    id: &str,
+    rect: Rect,
+    sprite: &str,
+) -> (egui::Response, bool) {
+    let resp = sprite_button(ui, sk, id, rect, sprite);
+    let inside = ui
+        .input(|i| i.pointer.interact_pos())
+        .is_some_and(|p| rect.contains(p));
+    let clicked = resp.clicked() && inside;
+    (resp, clicked)
+}
+
 /// A toggle icon (`{base}_on` / `{base}_off`) at any rectangle: the mini player's icons have
 /// no layout entry.
 fn icon_toggle(
@@ -7651,9 +7658,25 @@ fn icon_toggle(
     resp
 }
 
-/// The band's icon buttons' width (skin pixels), and the corner that holds minimize and close.
+/// The band's icon buttons' width and the gap between them (skin pixels), and the corner that
+/// holds minimize, the Options gear and close.
 const ICON_W: f32 = 17.0;
-const CORNER_W: f32 = 28.0;
+const ICON_GAP: f32 = 2.0;
+const CORNER_W: f32 = 39.0;
+/// The mini player's LCD-row icons before SYNC: ▤, EQ and spectrum.
+const LCD_ICONS: f32 = 3.0;
+/// SYNC's width, at the LCD row's right end.
+const SYNC_W: f32 = 30.0;
+/// The button row's controls under the transport (volume, shuffle, repeat) share its top.
+const BUTTON_ROW_Y: f32 = 37.0;
+/// Shuffle, then repeat, end the button row where the LCD row ends (4 pixels in).
+const SHUFFLE_X: f32 = 275.0 - 4.0 - 2.0 * ICON_W - ICON_GAP;
+
+/// Where the mini player's LCD-row icons start, in a player `w` wide: the title line ends
+/// before it.
+fn lcd_icons_x(w: f32) -> f32 {
+    w - 4.0 - SYNC_W - LCD_ICONS * (ICON_W + ICON_GAP)
+}
 
 /// The EQ window's viewport.
 fn eq_viewport_id() -> egui::ViewportId {
@@ -7686,6 +7709,23 @@ fn dim_title(sk: &Skinned, layout: &str, lit: bool) {
         sk.painter
             .rect_filled(sk.at(layout), 0.0, Color32::from_black_alpha(140));
     }
+}
+
+/// The filter bar's sunken LCD box at `x`, `w` wide, centred in the bar: its top and height.
+fn draw_field_box(fsk: &Skinned, x: f32, w: f32) -> (f32, f32) {
+    let h = fsk.def.sprite("pl_field_fill").h as f32;
+    let y = ((fsk.def.pl_filter_h as f32 - h) / 2.0).floor();
+    fsk.sprite("pl_field_l", x, y);
+    fsk.sprite_in("pl_field_fill", fsk.rect(x + 1.0, y, w - 2.0, h));
+    fsk.sprite("pl_field_r", x + w - 1.0, y);
+    (y, h)
+}
+
+/// A sunken LCD box holding `text`, as the search field draws its own.
+fn draw_lcd_box(fsk: &Skinned, x: f32, w: f32, text: &str) {
+    let (y, h) = draw_field_box(fsk, x, w);
+    let ty = y + ((h - fsk.def.font.glyph_h as f32) / 2.0).round();
+    fsk.text(x + 3.0, ty, text, color(fsk.def.colors.lcd));
 }
 
 /// A playlist bar (`{base}_l`, `{base}_fill`, `{base}_r`) stretched to `width`: the end pieces
@@ -8211,7 +8251,7 @@ impl DiggrApp {
         });
         let activity = Activity {
             playing: self.position.state == PlayState::Playing,
-            waveform: self.settings.show_waveform,
+            waveform: true,
             engine_starting: matches!(self.engine, EngineSlot::Starting(_)),
             hidden,
         };
@@ -8324,17 +8364,13 @@ impl DiggrApp {
             origin + vec2(left * scale, 0.0),
             vec2(right - left, band_h) * scale,
         );
-        if self.settings.show_waveform {
-            self.waveform_section(ui, rest);
-        } else {
-            self.band_seek(ui, rest);
-        }
+        self.waveform_section(ui, rest);
         self.window_buttons(ui, origin + vec2(right * scale, 0.0), band_h);
         self.mini_player(ui, origin);
         self.playlist_section(ui, origin + vec2(0.0, band_h * scale));
     }
 
-    /// The band's top-right corner: minimize and close (which quits). Dragging it moves a
+    /// The band's top-right corner: minimize, the Options gear and close (which quits). Dragging it moves a
     /// window that isn't maximized.
     fn window_buttons(&mut self, ui: &mut Ui, origin: Pos2, band_h: f32) {
         let def = self.def.clone();
@@ -8345,60 +8381,33 @@ impl DiggrApp {
         if corner.drag_started() && !ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        if sprite_button(ui, &sk, "min", sk.rect(4.0, 3.0, 9.0, 9.0), "btn_min").clicked() {
+        // Each button takes only clicks inside its own 9×9 square (egui would hand it clicks a
+        // few points off too): a click in a gap does nothing, so a near-miss never quits.
+        if corner_button(ui, &sk, "min", sk.rect(4.0, 3.0, 9.0, 9.0), "btn_min").1 {
             ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
         }
-        if sprite_button(ui, &sk, "close", sk.rect(15.0, 3.0, 9.0, 9.0), "btn_close").clicked() {
+        // The gear: the same Options as a right-click on the player. Without anything in the
+        // menu, its slot stays empty and close keeps its place.
+        if self.has_options() {
+            let (opts, clicked) =
+                corner_button(ui, &sk, "opts", sk.rect(15.0, 3.0, 9.0, 9.0), "btn_opts");
+            let mut actions = Vec::new();
+            egui::Popup::menu(&opts)
+                .open_memory(clicked.then_some(egui::SetOpenCommand::Toggle))
+                .show(|ui| self.options_items(ui, &mut actions));
+            opts.on_hover_text("Options");
+            for a in actions {
+                self.apply(a, ui.ctx());
+            }
+        }
+        if corner_button(ui, &sk, "close", sk.rect(26.0, 3.0, 9.0, 9.0), "btn_close").1 {
             ui.ctx().send_viewport_cmd(ViewportCommand::Close);
         }
     }
 
-    /// The band's seek bar while the waveform is hidden: the track's position, seeking on
-    /// release.
-    fn band_seek(&mut self, ui: &mut Ui, rect: Rect) {
-        let def = self.def.clone();
-        let sk = self.skinned(&def, ui, rect.min);
-        let (w, h) = (rect.width() / sk.scale, rect.height() / sk.scale);
-        sk.sprite_in("pl_bottom_fill", sk.rect(0.0, 0.0, w, h));
-        let (track, thumb) = (sk.def.sprite("seek_track"), sk.def.sprite("seek_thumb"));
-        let y = ((h - track.h as f32) / 2.0).round();
-        let bar = sk.rect(8.0, y, (w - 16.0).max(thumb.w as f32), track.h as f32);
-        sk.sprite_in("seek_track", bar);
-        let Some(d) = self
-            .now_playing
-            .as_ref()
-            .and_then(|i| i.duration_secs)
-            .filter(|d| *d > 0.0 && self.position.state != PlayState::Stopped)
-        else {
-            return;
-        };
-        let resp = ui.interact(bar, Id::new("band_seek"), Sense::click_and_drag());
-        let travel = bar.width() / sk.scale - thumb.w as f32;
-        if let Some(p) = resp.interact_pointer_pos() {
-            let x = (p.x - bar.left()) / sk.scale - thumb.w as f32 / 2.0;
-            self.seek_drag = Some((x / travel).clamp(0.0, 1.0));
-        }
-        let v = self
-            .seek_drag
-            .unwrap_or((self.position.seconds() / d) as f32)
-            .clamp(0.0, 1.0);
-        let name = if resp.is_pointer_button_down_on() {
-            "seek_thumb_p"
-        } else {
-            "seek_thumb"
-        };
-        let ty = y + ((track.h as f32 - thumb.h as f32) / 2.0).floor();
-        sk.sprite(name, 8.0 + (v * travel).round(), ty);
-        if (resp.drag_stopped() || resp.clicked())
-            && let Some(v) = self.seek_drag.take()
-        {
-            self.apply(Action::Seek(v as f64 * d), ui.ctx());
-        }
-    }
-
-    /// The player: play state, time and title on an LCD line, with the EQ, waveform and
-    /// spectrum buttons at its end; previous, play, pause, stop, next, volume, shuffle, repeat
-    /// and SYNC under it. A right-click off the controls opens the Options menu.
+    /// The player: play state, time and title on an LCD line, with ▤, EQ, spectrum and SYNC
+    /// at its end; previous, play, pause, stop, next, volume, shuffle and repeat under it. A
+    /// right-click off the controls opens the Options menu.
     fn mini_player(&mut self, ui: &mut Ui, origin: Pos2) {
         let mut def = (*self.def).clone();
         let (w, h) = (
@@ -8410,7 +8419,7 @@ impl DiggrApp {
             "mini_volume".into(),
             crate::skin::R {
                 x: 123,
-                y: 36,
+                y: BUTTON_ROW_Y as u16,
                 ..def.at("volume")
             },
         );
@@ -8473,7 +8482,7 @@ impl DiggrApp {
             actions.push(Action::ToggleRemaining);
         }
         // The title line, or a verdict's flash centred on it.
-        let icons_x = w - 4.0 - 3.0 * ICON_W - 4.0;
+        let icons_x = lcd_icons_x(w);
         let (tx, tw) = (74.0, icons_x - 3.0 - 74.0);
         let ty = 4.0 + ((22.0 - def.font.glyph_h as f32) / 2.0).round();
         let left = self
@@ -8498,20 +8507,21 @@ impl DiggrApp {
                 lcd,
             );
         }
+        // ▤, EQ and spectrum, then SYNC: the band's tools, at the LCD row's right end.
         for (i, (id, icon, on, tip, action)) in [
+            (
+                "mini_group",
+                "tog_group",
+                self.crates.shown().is_grouped(),
+                "Group by record",
+                Action::ToggleGrouped,
+            ),
             (
                 "mini_eq",
                 "tog_eq",
                 self.settings.show_eq,
                 "Equalizer",
                 Action::ToggleEq,
-            ),
-            (
-                "mini_wave",
-                "tog_wave",
-                self.settings.show_waveform,
-                "Waveform (W)",
-                Action::ToggleWaveform,
             ),
             (
                 "mini_spec",
@@ -8524,13 +8534,25 @@ impl DiggrApp {
         .into_iter()
         .enumerate()
         {
-            let r = sk.rect(icons_x + (ICON_W + 2.0) * i as f32, 9.0, ICON_W, 12.0);
+            let r = sk.rect(icons_x + (ICON_W + ICON_GAP) * i as f32, 9.0, ICON_W, 12.0);
             if icon_toggle(ui, &sk, id, r, icon, on)
                 .on_hover_text(tip)
                 .clicked()
             {
                 actions.push(action);
             }
+        }
+        let sync = if self.settings.sync.on {
+            "sync_on"
+        } else {
+            "sync_off"
+        };
+        let r = sk.rect(w - 4.0 - SYNC_W, 9.0, SYNC_W, 12.0);
+        if sprite_button(ui, &sk, "mini_sync", r, sync)
+            .on_hover_text("SYNC: every track at one tempo, set on the turntable")
+            .clicked()
+        {
+            actions.push(Action::Sync);
         }
         // The main transport's buttons, the one of the play state lit.
         let lit = match state {
@@ -8573,7 +8595,9 @@ impl DiggrApp {
         ) {
             actions.push(Action::Volume(v));
         }
-        let r = sk.rect(174.0, 37.0, ICON_W, 12.0);
+        // The button row ends where the LCD row's icons do: shuffle and repeat at the right,
+        // the volume slider filling the room between them and the transport.
+        let r = sk.rect(SHUFFLE_X, BUTTON_ROW_Y, ICON_W, 12.0);
         if icon_toggle(
             ui,
             &sk,
@@ -8592,24 +8616,12 @@ impl DiggrApp {
             Repeat::All => ("tog_rep", true, "Repeat: all"),
             Repeat::One => ("tog_rep1", true, "Repeat: one"),
         };
-        let r = sk.rect(193.0, 37.0, ICON_W, 12.0);
+        let r = sk.rect(SHUFFLE_X + ICON_W + ICON_GAP, BUTTON_ROW_Y, ICON_W, 12.0);
         if icon_toggle(ui, &sk, "mini_repeat", r, icon, on)
             .on_hover_text(tip)
             .clicked()
         {
             actions.push(Action::Repeat);
-        }
-        let sync = if self.settings.sync.on {
-            "sync_on"
-        } else {
-            "sync_off"
-        };
-        let r = sk.rect(w - 49.0, 37.0, 30.0, 12.0);
-        if sprite_button(ui, &sk, "mini_sync", r, sync)
-            .on_hover_text("SYNC: every track at one tempo, set on the turntable")
-            .clicked()
-        {
-            actions.push(Action::Sync);
         }
         for a in actions {
             self.apply(a, ui.ctx());
@@ -9052,7 +9064,7 @@ mod tests {
         // Every flash fits the mini player's title line, between the time and its icons.
         let def = LoadedSkin::default_skin().def;
         let w = flash_text(Verdict::Unwanted, 999).chars().count() as f32 * def.font.advance as f32;
-        let icons_x = def.main_size.0 as f32 - 4.0 - 3.0 * ICON_W - 4.0;
+        let icons_x = lcd_icons_x(def.main_size.0 as f32);
         assert!(w <= icons_x - 3.0 - 74.0);
     }
 

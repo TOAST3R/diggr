@@ -57,7 +57,7 @@ pub struct Colors {
     /// The OWNED badge on records already in the user's collection.
     #[serde(default = "owned_amber")]
     pub pl_owned: [u8; 3],
-    /// LCD text the app draws (title line, kbps/kHz, the playlist footer's controls). Skins
+    /// LCD text the app draws (title line, kbps/kHz, the filter bar). Skins
     /// written before it existed keep their green.
     #[serde(default = "lcd_green")]
     pub lcd: [u8; 3],
@@ -88,7 +88,6 @@ pub struct SkinDef {
     pub eq_size: (u16, u16),
     pub pl_width: u16,
     pub pl_top_h: u16,
-    pub pl_bottom_h: u16,
     /// The filter bar between the title bar and the list.
     #[serde(default = "filter_h")]
     pub pl_filter_h: u16,
@@ -106,11 +105,10 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "pl_top_l",
     "pl_top_fill",
     "pl_top_r",
-    "pl_bottom_l",
     "pl_bottom_fill",
-    "pl_bottom_r",
     "pl_left",
     "pl_right",
+    "pl_bottom_edge",
     "pl_filter_l",
     "pl_filter_fill",
     "pl_filter_r",
@@ -121,10 +119,8 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "btn_min_p",
     "btn_close",
     "btn_close_p",
-    "btn_group",
-    "btn_group_p",
-    "btn_group_on",
-    "btn_group_on_p",
+    "btn_opts",
+    "btn_opts_p",
     "prev",
     "prev_p",
     "play",
@@ -160,15 +156,10 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "digit_blank",
     "digit_q",
     "digit_colon",
-    "seek_track",
-    "seek_thumb",
-    "seek_thumb_p",
     "volume_track",
     "volume_fill",
     "volume_thumb",
     "volume_thumb_p",
-    "tog_wave_off",
-    "tog_wave_on",
     "tog_spec_off",
     "tog_spec_on",
     "tog_shuf_off",
@@ -177,6 +168,8 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "tog_rep_on",
     "tog_rep1_off",
     "tog_rep1_on",
+    "tog_group_off",
+    "tog_group_on",
     "eq_on_off",
     "eq_on_on",
     "eq_presets",
@@ -184,8 +177,6 @@ pub const REQUIRED_SPRITES: &[&str] = &[
     "eq_track",
     "eq_thumb",
     "eq_thumb_p",
-    "pl_opts",
-    "pl_opts_p",
     "pl_scroll_thumb",
     "st_listed",
     "st_queued",
@@ -214,11 +205,8 @@ pub const REQUIRED_LAYOUT: &[&str] = &[
     "eq_band8",
     "eq_band9",
     "pl_titlebar",
-    "pl_group",
     "pl_list",
     "pl_scroll",
-    "pl_opts",
-    "pl_info",
 ];
 
 impl SkinDef {
@@ -394,6 +382,27 @@ mod tests {
         let old = text.replace("pl_filter_h:16,", "");
         assert_ne!(old, text);
         assert_eq!(ron::from_str::<SkinDef>(&old).unwrap().pl_filter_h, 16);
+    }
+
+    #[test]
+    fn a_skin_file_from_before_the_footer_went_still_loads() {
+        // Older skin files carry the footer's height and its pieces' names: they are ignored.
+        let (img, def) = generate::generate();
+        let text = ron::to_string(&def).unwrap();
+        let old = text
+            .replacen("pl_top_h:", "pl_bottom_h:38,pl_top_h:", 1)
+            .replacen(
+                "layout:{",
+                "layout:{\"pl_info\":(x:177,y:14,w:80,h:7),\"pl_opts\":(x:11,y:12,w:18,h:18),",
+                1,
+            );
+        assert_ne!(old, text);
+        let loaded: SkinDef = ron::from_str(&old).unwrap();
+        loaded.validate(img.width(), img.height()).unwrap();
+        assert_eq!(
+            crate::layout::playlist_chrome(&loaded),
+            def.pl_top_h + def.pl_filter_h + def.sprite("pl_bottom_edge").h
+        );
     }
 
     #[test]

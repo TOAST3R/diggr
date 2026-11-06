@@ -85,7 +85,6 @@ impl Rig {
                 &Settings {
                     scale: 1,
                     show_eq: false,
-                    show_waveform: false,
                     repeat: Repeat::One, // the 2 s fixtures keep playing
                     ..Default::default()
                 },
@@ -95,7 +94,7 @@ impl Rig {
         let sink = ManualSink::new(48_000, 2);
         let engine_sink = sink.clone();
         let ctx = egui::Context::default();
-        let app = DiggrApp::build(
+        let mut app = DiggrApp::build(
             ctx.clone(),
             AppContext {
                 engine: Box::new(move || {
@@ -121,6 +120,15 @@ impl Rig {
                 dig: dig(&dir),
             },
         );
+        // The tests were written for a crate that starts flat: the shown crate starts so
+        // unless it was saved toggled or is a kind that was always grouped (Discogs, seller
+        // and label crates). The grouping default has tests of its own.
+        let shown = app.crates.shown_id();
+        if app.crates.info(shown).is_some_and(|c| {
+            c.grouped.is_none() && !c.discogs() && c.seller.is_none() && !c.is_label()
+        }) {
+            app.crates.set_grouped(shown, false);
+        }
         Rig {
             app,
             ctx,
@@ -489,7 +497,7 @@ fn start_drag(out: &egui::FullOutput) -> bool {
 
 /// The mini player's SYNC button, and on the turntable beside it in the band (at 1×) the
 /// pitch fader's top, centre and bottom, its 8/16 and RESET buttons and its ×.
-const SYNC: Pos2 = pos2(275.0 - 49.0 + 15.0, 37.0 + 6.0);
+const SYNC: Pos2 = pos2(275.0 - 4.0 - SYNC_W / 2.0, 9.0 + 6.0);
 const PITCH_UP: Pos2 = pos2(275.0 + 251.0, 22.0);
 const PITCH_MID: Pos2 = pos2(275.0 + 251.0, 54.0);
 const DECK_RANGE: Pos2 = pos2(275.0 + 147.0, 92.0);
@@ -1201,6 +1209,8 @@ fn only_the_card_takes_the_pointer_and_esc_or_its_x_close_it() {
         rig.frame(vec![Event::PointerMoved(over)]);
     }
     assert_eq!(rig.app.pl_scroll, 0, "the list didn't scroll");
+    // Tall again, so the whole card is on screen.
+    rig.screen.y = 900.0;
     // A click inside the card (its pressing line) keeps it open.
     let out = rig.frame(Vec::new());
     let line = texts(&out)
@@ -1796,10 +1806,8 @@ fn the_mini_player_is_the_player() {
     rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
     let ids = rig.ids(PLAYLIST);
     let rows = rig.app.pl_geometry().1;
-    // W keeps the band (a seek bar takes the waveform's place when off): the rows don't move.
-    assert!(!rig.app.settings.show_waveform);
+    // The waveform is always in the band: W no longer does anything, and the rows don't move.
     rig.key(Key::W, Modifiers::NONE);
-    assert!(rig.app.settings.show_waveform);
     assert_eq!(rig.app.pl_geometry().1, rows);
     // Pause is the third button of the second line, play the second.
     let button = |i: f32| pos2(4.0 + 23.0 * i + 11.0, 34.0 + 9.0);
@@ -1813,12 +1821,13 @@ fn the_mini_player_is_the_player() {
         |r| r.app.position.state == PlayState::Playing,
         "play resumes",
     );
-    // Shuffle and repeat, between the volume slider and SYNC.
-    rig.click(pos2(174.0 + 8.0, 37.0 + 6.0));
+    // Shuffle and repeat, at the end of the button row after the volume slider.
+    let shuffle = pos2(SHUFFLE_X + 8.0, BUTTON_ROW_Y + 6.0);
+    rig.click(shuffle);
     assert!(rig.app.settings.shuffle);
-    rig.click(pos2(174.0 + 8.0, 37.0 + 6.0));
+    rig.click(shuffle);
     assert!(!rig.app.settings.shuffle);
-    let repeat = pos2(193.0 + 8.0, 37.0 + 6.0);
+    let repeat = pos2(SHUFFLE_X + ICON_W + ICON_GAP + 8.0, BUTTON_ROW_Y + 6.0);
     let was = rig.app.settings.repeat;
     rig.click(repeat);
     assert_eq!(rig.app.settings.repeat, was.cycle());
@@ -1846,22 +1855,23 @@ fn the_mini_player_is_the_player() {
         |r| r.app.crates.playing().current() == Some(ids[1]),
         "the mini player's next starts the next track",
     );
-    // The LCD row's buttons: EQ, waveform, spectrum.
-    let icon = |i: f32| pos2(216.0 + 19.0 * i + 8.0, 9.0 + 6.0);
-    rig.click(icon(0.0));
-    assert!(rig.app.settings.show_eq, "the EQ window opens");
-    rig.click(icon(0.0));
-    assert!(!rig.app.settings.show_eq);
+    // The LCD row's buttons: ▤, EQ, spectrum (then SYNC).
+    let icon = |i: f32| pos2(lcd_icons_x(275.0) + 19.0 * i + 8.0, 9.0 + 6.0);
     rig.click(icon(1.0));
-    assert!(
-        !rig.app.settings.show_waveform,
-        "the waveform goes, as with W"
-    );
+    assert!(rig.app.settings.show_eq, "the EQ window opens");
+    rig.click(icon(1.0));
+    assert!(!rig.app.settings.show_eq);
     rig.click(icon(2.0));
     assert!(rig.app.spectro_open, "the spectrogram opens, as with S");
     // (Here it is drawn over the band, having no window of its own: S closes it.)
     rig.key(Key::S, Modifiers::NONE);
     assert!(!rig.app.spectro_open);
+    // ▤ groups the crate shown in the playlist, and ungroups it.
+    assert!(!rig.app.crates.shown().is_grouped());
+    rig.click(icon(0.0));
+    assert!(rig.app.crates.shown().is_grouped(), "▤ groups by record");
+    rig.click(icon(0.0));
+    assert!(!rig.app.crates.shown().is_grouped());
     // A click on the time shows what remains.
     rig.click(pos2(40.0, 15.0));
     assert!(rig.app.settings.time_remaining);
@@ -1883,21 +1893,40 @@ fn the_mini_players_title_line_flashes_a_verdict() {
 
 #[test]
 fn the_buttons_fit_in_the_mini_player() {
-    // The button row, left to right: transport, volume, shuffle, repeat, SYNC.
+    // The button row, left to right: transport, volume, shuffle, repeat, with even gaps and
+    // ending where the LCD row does.
     let d = LoadedSkin::default_skin().def;
     let vol = d.at("volume").w as f32;
     let row = [
         (4.0, 5.0 * 23.0),
         (123.0, vol),
-        (174.0, ICON_W),
-        (193.0, ICON_W),
-        (275.0 - 49.0, 30.0),
+        (SHUFFLE_X, ICON_W),
+        (SHUFFLE_X + ICON_W + ICON_GAP, ICON_W),
     ];
     for pair in row.windows(2) {
-        assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:?} overlap");
+        let gap = pair[1].0 - (pair[0].0 + pair[0].1);
+        assert!((ICON_GAP..=4.0).contains(&gap), "{pair:?}: a gap of {gap}");
     }
     let (x, w) = row[row.len() - 1];
-    assert!(x + w <= d.main_size.0 as f32 - 4.0, "inside 275 pixels");
+    assert_eq!(
+        x + w,
+        d.main_size.0 as f32 - 4.0,
+        "ends 4 pixels in, like the LCD row"
+    );
+    // Everything in it shares the transport's centre line (34 + 18 / 2), to half a pixel.
+    for h in [12.0, 13.0] {
+        assert!((BUTTON_ROW_Y + h / 2.0 - 43.0).abs() <= 0.5, "{h}");
+    }
+    // The LCD row: the time, the title line, then ▤, EQ, spectrum and SYNC.
+    let x0 = lcd_icons_x(d.main_size.0 as f32);
+    assert_eq!(x0, 184.0);
+    let last = x0 + 3.0 * (ICON_W + ICON_GAP) + SYNC_W;
+    assert_eq!(last, d.main_size.0 as f32 - 4.0, "SYNC ends 4 pixels in");
+    let title_w = x0 - 3.0 - 74.0;
+    assert!(
+        title_w >= 17.0 * d.font.advance as f32,
+        "17 characters of title"
+    );
 }
 
 #[test]
@@ -1916,31 +1945,32 @@ fn the_band_has_minimize_and_close() {
     rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, true);
     let out = rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, false);
     assert!(commands(&out).contains(&ViewportCommand::Minimized(true)));
-    rig.frame(vec![Event::PointerMoved(pos2(corner + 19.0, 7.0))]);
-    rig.press(pos2(corner + 19.0, 7.0), PointerButton::Primary, true);
-    let out = rig.press(pos2(corner + 19.0, 7.0), PointerButton::Primary, false);
+    // Without digging there are no options: the gear's slot (and each gap) does nothing.
+    for x in [corner + 19.0, corner + 14.0, corner + 25.0] {
+        rig.frame(vec![Event::PointerMoved(pos2(x, 7.0))]);
+        rig.press(pos2(x, 7.0), PointerButton::Primary, true);
+        let out = rig.press(pos2(x, 7.0), PointerButton::Primary, false);
+        assert!(commands(&out).is_empty(), "{x}: {:?}", commands(&out));
+    }
+    // Dragging the corner below its buttons moves the window.
+    let below = pos2(corner + 20.0, 30.0);
+    rig.frame(vec![Event::PointerMoved(below)]);
+    let out = rig.press(below, PointerButton::Primary, true);
+    let mut sent = commands(&out);
+    for dx in [4.0, 10.0, 16.0] {
+        let out = rig.frame(vec![Event::PointerMoved(below + vec2(dx, 0.0))]);
+        sent.extend(commands(&out));
+    }
+    assert!(sent.contains(&ViewportCommand::StartDrag), "{sent:?}");
+    rig.press(below + vec2(16.0, 0.0), PointerButton::Primary, false);
+    // Close keeps its place at the right.
+    rig.frame(vec![Event::PointerMoved(pos2(corner + 30.0, 7.0))]);
+    rig.press(pos2(corner + 30.0, 7.0), PointerButton::Primary, true);
+    let out = rig.press(pos2(corner + 30.0, 7.0), PointerButton::Primary, false);
     assert!(
         commands(&out).contains(&ViewportCommand::Close),
         "close quits"
     );
-}
-
-#[test]
-fn the_band_seeks_while_the_waveform_is_hidden() {
-    let mut rig = Rig::new("band-seek", vec![fixture("tone.flac")], |_| {});
-    rig.screen.x = 1100.0;
-    rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
-    let rows = rig.app.pl_geometry().1;
-    // The bar runs from 8 pixels in to 8 before the window buttons: 75% is 1.5 s of 2 s.
-    let (left, right) = (275.0 + 8.0, 1100.0 - CORNER_W - 8.0);
-    let thumb = rig.app.skin.def.sprite("seek_thumb").w as f32;
-    let x = left + thumb / 2.0 + (right - left - thumb) * 0.75;
-    rig.click(pos2(x, crate::layout::BAND_H as f32 / 2.0));
-    rig.until(
-        |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
-        "seeked to 1.5 s",
-    );
-    assert_eq!(rig.app.pl_geometry().1, rows, "the playlist keeps its rows");
 }
 
 #[test]
@@ -1987,7 +2017,6 @@ fn space_plays_and_pauses_and_shift_space_stops() {
 fn the_waveform_sits_beside_the_mini_player_and_seeks() {
     let mut rig = Rig::new("band", vec![fixture("tone.flac")], |_| {});
     rig.screen.x = 1100.0;
-    rig.app.settings.show_waveform = true;
     rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
     // Three quarters across the overview row, between the mini player and the window
     // buttons: 1.5 s of 2 s.
@@ -2001,21 +2030,21 @@ fn the_waveform_sits_beside_the_mini_player_and_seeks() {
 }
 
 #[test]
-fn the_waveform_button_shows_and_hides_the_waveform_like_w() {
-    let mut rig = Rig::new("wave-button", Vec::new(), |_| {});
-    // The mini player's second LCD-row icon.
-    let at = pos2(216.0 + 19.0 + 8.0, 9.0 + 6.0);
-    let rows = rig.app.pl_geometry().1;
-    assert!(!rig.app.settings.show_waveform);
-    rig.click(at);
-    assert!(rig.app.settings.show_waveform);
+fn the_waveform_is_always_in_the_band() {
+    let mut rig = Rig::new("wave-always", Vec::new(), |_| {});
+    let d = &rig.app.skin.def;
+    assert_eq!(d.sprite("tog_wave_off").w, 0, "no waveform button");
     assert_eq!(
-        rig.app.pl_geometry().1,
-        rows,
-        "the band doesn't change height"
+        d.sprite("seek_track").w,
+        0,
+        "and no seek bar to stand in for it"
     );
-    rig.click(at);
-    assert!(!rig.app.settings.show_waveform);
+    let rows = rig.app.pl_geometry().1;
+    rig.key(Key::W, Modifiers::NONE);
+    assert_eq!(rig.app.pl_geometry().1, rows, "W does nothing");
+    // An older settings file that hid it loads, and the waveform shows all the same.
+    let old: Settings = ron::from_str("(scale: 1, show_waveform: false)").unwrap();
+    assert_eq!(old.scale, 1);
 }
 
 #[test]
@@ -2240,7 +2269,6 @@ fn the_lp_knob_sweeps_the_filter_and_double_click_turns_it_off() {
                 &Settings {
                     scale: 1,
                     show_eq: true,
-                    show_waveform: false,
                     repeat: Repeat::One,
                     ..Default::default()
                 },
@@ -2659,28 +2687,36 @@ fn below_rows(rig: &Rig) -> Pos2 {
     )
 }
 
-/// The centre of footer button `name` (`pl_opts`, the gear).
-fn footer_button(rig: &Rig, name: &str) -> Pos2 {
-    let r = rig.app.def.at(name);
-    let bottom = PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0;
-    pos2(
-        PL_LEFT + r.x as f32 + r.w as f32 / 2.0,
-        bottom + r.y as f32 + r.h as f32 / 2.0,
-    )
+/// The centre of the Options gear, between minimize and close in the band's corner.
+fn corner_gear(rig: &Rig) -> Pos2 {
+    let corner = (rig.screen.x - CORNER_W).max(275.0);
+    pos2(corner + 15.0 + 4.5, 3.0 + 4.5)
 }
 
 #[test]
-fn the_footer_has_only_the_gear_and_the_list_has_the_crate_menu() {
+fn the_playlist_has_no_footer_and_the_list_has_the_crate_menu() {
     let mut rig = Rig::new("footer", Vec::new(), |_| {});
     let ids = rig.fill_playlist(3);
     set_tempos(&mut rig, &[128, 122, 140]);
     rig.frame(Vec::new());
+    for name in [
+        "pl_add",
+        "pl_menu",
+        "pl_plus",
+        "pl_opts",
+        "pl_bottom_l",
+        "pl_bottom_r",
+    ] {
+        assert_eq!(rig.app.def.sprite(name).w, 0, "no {name} any more");
+    }
+    // Under the last row only the edge (as wide as the left one), then less than a row.
+    let edge = rig.app.def.sprite("pl_bottom_edge").h as f32;
+    assert_eq!(edge, rig.app.def.sprite("pl_left").w as f32);
+    let rows_end = PL_TOP + LIST_TOP + rig.app.pl_rows() as f32 * 13.0 + edge;
     assert!(
-        rig.app.def.sprite("pl_add").w == 0 && rig.app.def.sprite("pl_menu").w == 0,
-        "no ADD/REM/SEL/MISC/OPT or ≡ any more"
+        rows_end <= rig.screen.y && rig.screen.y - rows_end < 13.0,
+        "{rows_end}"
     );
-    assert_eq!(rig.app.def.sprite("pl_plus").w, 0, "and no + any more");
-    assert_eq!(rig.app.def.at("pl_opts").x, 11, "the gear comes first");
 
     // A right-click below the rows opens the crate's menu.
     rig.click_with(below_rows(&rig), PointerButton::Secondary);
@@ -2723,7 +2759,8 @@ fn without_digging_there_are_no_options_to_open() {
     rig.click_with(pos2(150.0, 15.0), PointerButton::Secondary);
     assert!(!egui::Popup::is_any_open(&rig.ctx), "no menu opens");
     // The gear isn't there to click: its slot is empty and opens nothing.
-    rig.click(footer_button(&rig, "pl_opts"));
+    rig.screen.x = 1100.0;
+    rig.click(corner_gear(&rig));
     rig.frame(Vec::new());
     assert!(!egui::Popup::is_any_open(&rig.ctx), "no menu opens");
     assert!(!rig.app.spectro_open);
@@ -2898,7 +2935,7 @@ fn the_style_filter_shows_chips_in_any_crate_with_records() {
     rig.frame(Vec::new());
     assert!(rig.app.filters_drawn.is_some(), "drawn in any crate");
 
-    rig.app.crates.set_collection(PLAYLIST);
+    as_collection(&mut rig);
     rig.frame(Vec::new());
     let (x, tier) = rig.app.filters_drawn.expect("the control is drawn");
     assert_eq!(
@@ -2933,7 +2970,7 @@ fn many_styles_or_a_narrow_playlist_show_the_styles_button_and_its_list() {
         &mut rig,
         &["Deep House", "Minimal, Techno", "Electro", "Tech House"],
     );
-    rig.app.crates.set_collection(PLAYLIST);
+    as_collection(&mut rig);
     rig.frame(Vec::new());
     let (x, tier) = rig.app.filters_drawn.expect("the control is drawn");
     assert_eq!(
@@ -2992,6 +3029,18 @@ fn set_records(rig: &mut Rig, records: &[(&str, &str, &str)]) {
     }
 }
 
+/// Shows crate `c` flat, for tests of a track's own row (crates open grouped by record).
+fn flat(rig: &mut Rig, c: CrateId) {
+    rig.app.crates.set_grouped(c, false);
+}
+
+/// Makes the rig's Playlist the collection crate, grouped by record as it opens (the rig
+/// starts it flat).
+fn as_collection(rig: &mut Rig) {
+    rig.app.crates.set_collection(PLAYLIST);
+    rig.app.crates.set_grouped(PLAYLIST, true);
+}
+
 /// A collection crate of six records with 3 styles, 4 artists and 3 labels.
 fn credited_rig(name: &str) -> Rig {
     let mut rig = Rig::new(name, Vec::new(), |_| {});
@@ -3011,7 +3060,7 @@ fn credited_rig(name: &str) -> Rig {
             ("Techno", "Theo Parrish", "Sound Signature"),
         ],
     );
-    rig.app.crates.set_collection(PLAYLIST);
+    as_collection(&mut rig);
     rig
 }
 
@@ -3022,8 +3071,15 @@ fn the_bar_shows_chips_then_buttons_then_filters_as_it_narrows() {
     rig.frame(Vec::new());
     let (x, tier) = rig.app.filters_drawn.unwrap();
     assert_eq!(tier, FooterFilters::Chips);
-    // The search field takes at most half the bar; the filters follow it.
-    assert!(x <= 4.0 + 350.0 + 4.0 + STYLE_GAP, "{x}");
+    // The search field takes at most half the bar; the time readout, then the filters
+    // follow it.
+    let (_, rx, rw) = rig
+        .app
+        .readout_drawn
+        .clone()
+        .expect("the readout fits at 700");
+    assert!(rx <= 4.0 + 350.0 + 4.0, "{rx}");
+    assert!(x <= rx + rw + 4.0 + STYLE_GAP, "{x}");
     rig.screen.x = 300.0;
     rig.frame(Vec::new());
     let (x, tier) = rig.app.filters_drawn.unwrap();
@@ -3884,4 +3940,126 @@ fn send_to_crate_copies_the_selection_from_the_entry_menu() {
         PLAYLIST,
         "the source stays shown"
     );
+}
+
+#[test]
+fn the_time_readout_follows_the_search_field_and_counts_the_whole_crate() {
+    let mut rig = Rig::new("readout", Vec::new(), |_| {});
+    let ids = rig.fill_playlist(3);
+    // 7:30 + 1:00:00 + 1:06:35 = 2:14:05.
+    for (e, (title, secs)) in rig.app.crates.shown_mut().entries_mut().zip([
+        ("Parrish", 450.0),
+        ("Other", 3600.0),
+        ("Third", 3995.0),
+    ]) {
+        e.title = title.into();
+        e.duration = Some(secs);
+    }
+    rig.app.crates.shown_mut().select_only(&[ids[0]], ids[0]);
+    rig.screen.x = 700.0;
+    rig.frame(Vec::new());
+    let (text, x, _) = rig.app.readout_drawn.clone().expect("drawn at 700");
+    assert_eq!(text, "7:30/2:14:05");
+    assert!(
+        x >= 4.0 + SEARCH_MIN_W + 4.0,
+        "right after the search field: {x}"
+    );
+    // A search narrows the list, not the readout: it counts the whole crate.
+    rig.app
+        .apply(Action::SetSearch("parrish".into()), &rig.ctx.clone());
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.crates.shown().shown_rows().len(), 1);
+    assert_eq!(rig.app.readout_drawn.clone().unwrap().0, "7:30/2:14:05");
+    // A duration not known yet: the total ends with +.
+    rig.app
+        .crates
+        .shown_mut()
+        .entries_mut()
+        .nth(2)
+        .unwrap()
+        .duration = None;
+    rig.frame(Vec::new());
+    assert_eq!(rig.app.readout_drawn.clone().unwrap().0, "7:30/1:07:30+");
+}
+
+#[test]
+fn the_time_readout_gives_way_first_as_the_bar_narrows() {
+    let mut rig = credited_rig("readout-narrow");
+    set_tempos(&mut rig, &[124, 128, 132, 136, 138, 140]);
+    for e in rig.app.crates.shown_mut().entries_mut() {
+        e.duration = Some(3995.0);
+    }
+    let clear_w = rig.app.def.sprite("bpm_clear").w as f32;
+    let mut seen = (false, false, false);
+    for w in (275..=1000).step_by(5) {
+        rig.screen.x = w as f32;
+        rig.frame(Vec::new());
+        match rig.app.readout_drawn.clone() {
+            Some((text, x, rw)) => {
+                if text.contains('/') {
+                    seen.0 = true;
+                } else {
+                    seen.1 = true;
+                }
+                assert!(x >= 4.0 + SEARCH_MIN_W + 4.0, "{w}: the search keeps 60");
+                assert!(x + rw <= w as f32 - 8.0 - clear_w, "{w}: inside the bar");
+                if let Some((fx, _)) = rig.app.filters_drawn {
+                    assert!(
+                        fx >= x + rw,
+                        "{w}: the filters follow it ({fx} < {})",
+                        x + rw
+                    );
+                }
+            }
+            None => seen.2 = true,
+        }
+        assert!(rig.app.bpm_slider.is_some(), "{w}: the BPM control stays");
+    }
+    assert_eq!(seen, (true, true, true), "full, total only, and none");
+}
+
+#[test]
+fn a_grouped_crate_without_albums_keeps_its_column_header() {
+    let mut rig = Rig::new("header-loose", Vec::new(), |_| {});
+    rig.fill_playlist(3);
+    for (e, artist) in rig.app.crates.shown_mut().entries_mut().zip([
+        "Moodymann",
+        "Anthony Shake Shakir",
+        "Theo Parrish",
+    ]) {
+        e.artist = artist.into();
+    }
+    rig.app.crates.set_grouped(PLAYLIST, true);
+    rig.screen.x = 700.0;
+    let out = rig.frame(Vec::new());
+    assert!(rig.app.pl_header(), "loose tracks: the header stays");
+    assert!(shows(&out, "Artist"), "{:?}", text_list(&out));
+    rig.click_text("Artist");
+    let artists: Vec<String> = rig
+        .app
+        .crates
+        .shown()
+        .entries()
+        .iter()
+        .map(|e| e.artist.clone())
+        .collect();
+    assert_eq!(
+        artists,
+        ["Anthony Shake Shakir", "Moodymann", "Theo Parrish"]
+    );
+    // A search that hides every row doesn't take the header away.
+    rig.app
+        .apply(Action::SetSearch("nothing".into()), &rig.ctx.clone());
+    rig.frame(Vec::new());
+    assert!(rig.app.pl_header());
+    // One album in the crate: record rows, and no header.
+    rig.app
+        .crates
+        .shown_mut()
+        .entries_mut()
+        .next()
+        .unwrap()
+        .album = "Silentintroduction".into();
+    rig.frame(Vec::new());
+    assert!(!rig.app.pl_header());
 }
