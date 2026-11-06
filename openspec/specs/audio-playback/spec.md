@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change audio-core. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Supported formats
 The system SHALL decode MP3, FLAC, WAV, OGG Vorbis, and AAC/M4A files using pure-Rust decoders, resampling to the output device's sample rate and channel layout when they differ.
 
@@ -33,15 +35,19 @@ The system SHALL deliver the first non-silent sample of a track to the device wi
 - **THEN** audio start is not delayed by reading them
 
 ### Requirement: Transport controls
-The system SHALL support play, pause, resume, stop, seek (to an absolute time), next, previous, volume (0–100%), and balance (full left to full right).
+The system SHALL support play, pause, resume, stop, seek (to an absolute time), next, previous, volume (0–100%), and balance (full left to full right). A seek, next or previous while audio plays SHALL fade the old audio out over 5 ms and the new audio in over 5 ms, so neither stops nor starts with a click; play from stopped and gapless playback SHALL be unchanged.
 
 #### Scenario: Seek
 - **WHEN** the user seeks to 2:00 in a 4:00 track
-- **THEN** audio resumes from 2:00 within 50 ms and no pre-seek audio is heard after the seek
+- **THEN** audio resumes from 2:00 within 50 ms; the pre-seek audio fades out over 5 ms and none of it is heard after that
 
 #### Scenario: Pause and resume
 - **WHEN** playback is paused and resumed
 - **THEN** audio resumes from the exact frame where it paused
+
+#### Scenario: No click at a seek
+- **WHEN** a 1 kHz sine at half scale plays and the user seeks to 5 s
+- **THEN** no two consecutive output samples differ by more than the sine itself does (0.08), and there is no underrun
 
 ### Requirement: Gapless playback with pre-warm
 The system SHALL pre-open and pre-decode the next queued track before the current one ends, and SHALL transition with no inserted silence.
@@ -130,4 +136,3 @@ The engine SHALL play any track at a speed from 0.84 to 1.16 set for it, by resa
 #### Scenario: Benchmark
 - **WHEN** `diggr --bench --speed 1.04` runs on the reference Mac
 - **THEN** worst start < 30 ms, worst seek < 50 ms, worst speed change < 50 ms, and 0 underruns
-
