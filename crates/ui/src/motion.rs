@@ -27,6 +27,175 @@ pub const MEDIUM: f32 = 0.18;
 /// Panels.
 pub const SLOW: f32 = 0.24;
 
+/// Where the app leaves Reduce motion for widgets that don't hold the app.
+const REDUCED: &str = "motion_reduced";
+
+/// Whether Reduce motion is on (as the app said at the start of this frame).
+pub fn reduced(ctx: &Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(Id::new(REDUCED)))
+        .unwrap_or(false)
+}
+
+/// How far (0..=1) a control held down at `id` is drawn pressed in: all the way at once while
+/// `down`, springing back over [`FAST`] once let go. Nothing with Reduce motion.
+pub fn press(ctx: &Context, id: Id, down: bool) -> f32 {
+    if reduced(ctx) {
+        return 0.0;
+    }
+    let x = ctx.animate_bool_with_time(id.with("press"), down, if down { 0.0 } else { FAST });
+    if down {
+        1.0
+    } else {
+        1.0 - ease_out_cubic(1.0 - x)
+    }
+}
+
+/// A lamp's moment at `id`: how strong its bloom is (1 as it lights, gone after [`MEDIUM`]) and
+/// how much of its lit look is left after it went out (1 → 0 over [`FAST`]). A lamp already lit
+/// when first seen doesn't bloom. Both 0 with Reduce motion.
+pub fn lamp(ctx: &Context, id: Id, on: bool) -> (f32, f32) {
+    let key = id.with("lamp");
+    let now = ctx.input(|i| i.time);
+    let (was, since) = ctx
+        .data(|d| d.get_temp::<(bool, f64)>(key))
+        .unwrap_or((on, f64::NEG_INFINITY));
+    let since = if was == on { since } else { now };
+    ctx.data_mut(|d| d.insert_temp(key, (on, since)));
+    if reduced(ctx) {
+        return (0.0, 0.0);
+    }
+    let age = (now - since) as f32;
+    let left = |dur: f32| 1.0 - ease_out_cubic(age / dur);
+    let (bloom, fade) = if on {
+        (left(MEDIUM), 0.0)
+    } else {
+        (0.0, left(FAST))
+    };
+    if bloom > 0.0 || fade > 0.0 {
+        ctx.request_repaint();
+    }
+    (bloom, fade)
+}
+
+/// A seven-segment digit at `id` now showing the segments `mask`: the segments that just went
+/// out and how much of their light is left (1 → 0 over [`FAST`]). Nothing with Reduce motion.
+pub fn afterglow(ctx: &Context, id: Id, mask: u8) -> (u8, f32) {
+    let key = id.with("afterglow");
+    let now = ctx.input(|i| i.time);
+    let (shown, mut gone, mut since) =
+        ctx.data(|d| d.get_temp::<(u8, u8, f64)>(key))
+            .unwrap_or((mask, 0, f64::NEG_INFINITY));
+    if shown != mask {
+        gone = shown & !mask;
+        since = now;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, (mask, gone, since)));
+    if reduced(ctx) || gone == 0 {
+        return (0, 0.0);
+    }
+    let left = 1.0 - ease_out_cubic((now - since) as f32 / FAST);
+    if left > 0.0 {
+        ctx.request_repaint();
+    }
+    (gone, left.max(0.0))
+}
+
+/// A label at `id` now reading `text`, as drawn: when only its numbers changed, they roll from
+/// the old values to the new ones over [`MEDIUM`] and the label pulses once (1 → 0). Anything
+/// else changing shows at once. What the label means is always `text`; this is its look.
+pub fn rolling(ctx: &Context, id: Id, text: &str) -> (String, f32) {
+    let key = id.with("rolling");
+    let now = ctx.input(|i| i.time);
+    let (from, to, since) = ctx
+        .data(|d| d.get_temp::<(String, String, f64)>(key))
+        .unwrap_or_else(|| (text.to_owned(), text.to_owned(), f64::NEG_INFINITY));
+    let (from, since) = if to == text {
+        (from, since)
+    } else {
+        // From what is drawn now, so a change midway carries on smoothly.
+        let p = ease_out_cubic((now - since) as f32 / MEDIUM);
+        (roll(&from, &to, p).unwrap_or(to.clone()), now)
+    };
+    ctx.data_mut(|d| d.insert_temp(key, (from.clone(), text.to_owned(), since)));
+    let age = (now - since) as f32;
+    if reduced(ctx) || age >= MEDIUM {
+        return (text.to_owned(), 0.0);
+    }
+    ctx.request_repaint();
+    let p = ease_out_cubic(age / MEDIUM);
+    match roll(&from, text, p) {
+        Some(shown) => (shown, 1.0 - p),
+        None => (text.to_owned(), 0.0),
+    }
+}
+
+/// `from` rolled `p` of the way to `to`, when they differ only in their numbers; each number
+/// keeps `to`'s decimals.
+fn roll(from: &str, to: &str, p: f32) -> Option<String> {
+    let (a, b) = (numbers(from), numbers(to));
+    if a.len() != b.len() || skeleton(from) != skeleton(to) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut last = 0;
+    for ((x, _), (y, (start, end))) in a.iter().zip(&b) {
+        out.push_str(&to[last..*start]);
+        let decimals = to[*start..*end]
+            .split(['.', ','])
+            .nth(1)
+            .map_or(0, str::len);
+        let v = x + (y - x) * f64::from(p.clamp(0.0, 1.0));
+        let s = format!("{v:.decimals$}");
+        // Keep `to`'s decimal mark.
+        let mark = to[*start..*end].contains(',');
+        out.push_str(&if mark { s.replace('.', ",") } else { s });
+        last = *end;
+    }
+    out.push_str(&to[last..]);
+    Some(out)
+}
+
+/// The numbers in `s` (digits, with an optional decimal part), and where each is.
+fn numbers(s: &str) -> Vec<(f64, (usize, usize))> {
+    let b = s.as_bytes();
+    let mut v = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i + 1 < b.len() && (b[i] == b'.' || b[i] == b',') && b[i + 1].is_ascii_digit() {
+                i += 1;
+                while i < b.len() && b[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let text = s[start..i].replace(',', ".");
+            if let Ok(x) = text.parse() {
+                v.push((x, (start, i)));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    v
+}
+
+/// `s` with its numbers taken out: two labels with the same skeleton differ only in numbers.
+fn skeleton(s: &str) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for (_, (start, end)) in numbers(s) {
+        out.push_str(&s[last..start]);
+        out.push('#');
+        last = end;
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
 /// How far a menu rises into place, in points.
 const RISE: f32 = 4.0;
 /// How far a panel slides into place, in points.
@@ -201,6 +370,7 @@ impl Motion {
         self.started = true;
         self.frame += 1;
         self.animating = false;
+        ctx.data_mut(|d| d.insert_temp(Id::new(REDUCED), reduce));
         if reduce != self.reduce {
             self.reduce = reduce;
             self.open.clear();
@@ -210,6 +380,16 @@ impl Motion {
         if ctx.global_style().animation_time != 0.0 {
             ctx.all_styles_mut(|s| s.animation_time = 0.0);
         }
+    }
+
+    /// The time this frame started (egui's clock, in seconds).
+    pub fn now(&self) -> f64 {
+        self.now
+    }
+
+    /// Whether Reduce motion is on.
+    pub fn is_reduced(&self) -> bool {
+        self.reduce
     }
 
     /// Whether something is still moving: the app then repaints at the display's rate.
@@ -360,6 +540,157 @@ impl Motion {
     }
 }
 
+/// How far a list's rows slide when it is switched for another, in points.
+const LIST_SLIDE: f32 = 12.0;
+/// How a row moved by a change in its list springs to its new place (about 0.18 s).
+const ROW_OMEGA: f32 = 32.0;
+
+/// Motion for a list drawn row by row into one layer: switching to another list cross-fades
+/// them with a slide, and rows that moved because the list changed (not scrolled) spring from
+/// where they were. Rows are drawn at their final places and take clicks there; only their
+/// shapes move. Call [`Self::begin`] before the rows, [`Self::row`] as each starts and
+/// [`Self::end`] after the last.
+#[derive(Default)]
+pub struct ListMotion {
+    list: Option<(u64, usize)>,
+    scroll: usize,
+    keys: Vec<u64>,
+    last_y: HashMap<u64, f32>,
+    offsets: HashMap<u64, Spring>,
+    look: Vec<ClippedShape>,
+    switch: Option<(f64, f32, Vec<ClippedShape>)>,
+    start: usize,
+    rows: Vec<(u64, f32, usize)>,
+}
+
+impl ListMotion {
+    /// Before the first row, in `layer`.
+    pub fn begin(&mut self, ctx: &Context, layer: LayerId) {
+        self.start = ctx.graphics_mut(|g| g.entry(layer).next_idx().0);
+        self.rows.clear();
+    }
+
+    /// As the row `key` starts, drawn at `y`.
+    pub fn row(&mut self, ctx: &Context, layer: LayerId, key: u64, y: f32) {
+        let at = ctx.graphics_mut(|g| g.entry(layer).next_idx().0);
+        self.rows.push((key, y, at));
+    }
+
+    /// After the last row of the list `list` (the `order`th of its kind, for the direction of a
+    /// switch), scrolled to `scroll`, at the context's time. Returns whether it is moving.
+    pub fn end(
+        &mut self,
+        ctx: &Context,
+        layer: LayerId,
+        (list, order): (u64, usize),
+        scroll: usize,
+    ) -> bool {
+        let now = ctx.input(|i| i.time);
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        let end = ctx.graphics_mut(|g| g.entry(layer).next_idx().0);
+        let look: Vec<ClippedShape> = ctx.graphics(|g| {
+            g.get(layer)
+                .map(|p| {
+                    p.all_entries()
+                        .skip(self.start)
+                        .take(end - self.start)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        let reduce = reduced(ctx);
+        let switched = self.list.is_some_and(|(l, _)| l != list);
+        if switched && !reduce {
+            let dir = if self.list.is_some_and(|(_, o)| order >= o) {
+                1.0
+            } else {
+                -1.0
+            };
+            self.switch = Some((now, dir, std::mem::take(&mut self.look)));
+        }
+        let keys: Vec<u64> = self.rows.iter().map(|r| r.0).collect();
+        // The list changed under the rows (not a scroll, not another list): rows that moved
+        // start from where they were.
+        let changed = !switched && scroll == self.scroll && keys != self.keys;
+        if switched || scroll != self.scroll || reduce {
+            self.offsets.clear();
+        }
+        if changed && !reduce {
+            for &(key, y, _) in &self.rows {
+                if let Some(&was) = self.last_y.get(&key)
+                    && (was - y).abs() > 0.5
+                {
+                    let from = self.offsets.get(&key).map_or(0.0, |s| s.x);
+                    self.offsets.insert(key, Spring::at(from + was - y));
+                }
+            }
+        }
+        let mut moving = false;
+        let ranges: Vec<(u64, usize, usize)> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, &(key, _, at))| (key, at, self.rows.get(i + 1).map_or(end, |r| r.2)))
+            .collect();
+        for (key, from, to) in ranges {
+            let Some(s) = self.offsets.get_mut(&key) else {
+                continue;
+            };
+            // Home once it's within a quarter point and nearly still (the rest is invisible).
+            if s.step(0.0, dt, ROW_OMEGA, 1.0) || (s.x.abs() < 0.25 && s.v.abs() < 10.0) {
+                self.offsets.remove(&key);
+                continue;
+            }
+            moving = true;
+            let shift = TSTransform::from_translation(vec2(0.0, s.x));
+            ctx.graphics_mut(|g| {
+                g.entry(layer)
+                    .transform_range(ShapeIdx(from), ShapeIdx(to), shift)
+            });
+        }
+        if let Some((since, dir, ghost)) = &self.switch {
+            let p = ease_out_cubic((now - since) as f32 / MEDIUM);
+            if p >= 1.0 || reduce {
+                self.switch = None;
+            } else {
+                moving = true;
+                let (start, dir) = (self.start, *dir);
+                ctx.graphics_mut(|g| {
+                    let list = g.entry(layer);
+                    let shift =
+                        TSTransform::from_translation(vec2(0.0, dir * LIST_SLIDE * (1.0 - p)));
+                    list.transform_range(ShapeIdx(start), ShapeIdx(end), shift);
+                    for i in start..end {
+                        list.mutate_shape(ShapeIdx(i), |cs| fade_shape(&mut cs.shape, p));
+                    }
+                    let away = TSTransform::from_translation(vec2(0.0, -dir * LIST_SLIDE * p));
+                    for cs in ghost {
+                        let mut cs = cs.clone();
+                        cs.transform(away);
+                        fade_shape(&mut cs.shape, 1.0 - p);
+                        list.add(cs.clip_rect, cs.shape);
+                    }
+                });
+            }
+        }
+        self.look = look;
+        self.list = Some((list, order));
+        self.scroll = scroll;
+        self.keys = keys;
+        self.last_y = self.rows.iter().map(|&(k, y, _)| (k, y)).collect();
+        if moving {
+            ctx.request_repaint();
+        }
+        moving
+    }
+
+    /// Whether a switch is still cross-fading (for tests).
+    pub fn switching(&self) -> bool {
+        self.switch.is_some()
+    }
+}
+
 /// Multiplies every colour in `list` by `opacity`.
 fn fade_list(list: &mut egui::layers::PaintList, opacity: f32) {
     let n = list.next_idx().0;
@@ -476,6 +807,32 @@ mod tests {
         // About its centre: the centre stays put.
         assert!((t * r.center() - r.center()).length() < 1e-3);
         assert_eq!(Kind::Dialog.transform(1.0, r), TSTransform::IDENTITY);
+    }
+
+    #[test]
+    fn labels_roll_their_numbers_only() {
+        assert_eq!(
+            roll("CART 3 · €41.20", "CART 4 · €53.20", 0.0).unwrap(),
+            "CART 3 · €41.20"
+        );
+        assert_eq!(
+            roll("CART 3 · €41.20", "CART 4 · €53.20", 0.5).unwrap(),
+            "CART 4 · €47.20"
+        );
+        assert_eq!(
+            roll("CART 3 · €41.20", "CART 4 · €53.20", 1.0).unwrap(),
+            "CART 4 · €53.20"
+        );
+        assert_eq!(roll("12,50 €", "13,50 €", 0.5).unwrap(), "13,00 €");
+        assert_eq!(
+            roll("KEEPERS 3/40", "KEEPERS 10/40", 1.0).unwrap(),
+            "KEEPERS 10/40"
+        );
+        assert!(
+            roll("KEEPERS", "FRIDAY", 0.5).is_none(),
+            "another label shows at once"
+        );
+        assert!(roll("CART 3", "CART 3 · €12.00", 0.5).is_none());
     }
 
     #[test]

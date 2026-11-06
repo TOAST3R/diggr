@@ -95,6 +95,10 @@ pub struct DiggrApp {
     tex: Option<TextureHandle>,
     /// What's appearing and disappearing (see [`crate::motion`]).
     motion: crate::motion::Motion,
+    /// The playlist's rows moving: a crate switch cross-fading, rows making room.
+    list_motion: crate::motion::ListMotion,
+    /// Rows answering a verdict just given: how, and when (egui time).
+    row_answers: HashMap<crate::playlist::EntryId, (Answer, f64)>,
     store: Option<Store>,
     settings: Settings,
     presets: EqPresets,
@@ -135,6 +139,9 @@ pub struct DiggrApp {
     fader_anchor: Option<(f32, u32)>,
     /// The turntable's digits open for typing a tempo: what has been typed.
     deck_typing: Option<String>,
+    /// Where the pitch fader's thumb is drawn (0 top, 1 bottom), gliding when it is moved for
+    /// the user and exact under the hand.
+    fader_spring: Option<crate::motion::Spring>,
     /// A hand is on the turntable's platter: the record is held.
     platter_held: bool,
     /// Who played and whether it was locked on the last frame, to see a record become fitted.
@@ -198,6 +205,9 @@ pub struct DiggrApp {
     /// The CART switch as last drawn (its label and where, in points), for tests.
     #[cfg(test)]
     cart_drawn: Option<(String, Pos2)>,
+    /// The CART switch's text as drawn (rolling to a new total) and its pulse, for tests.
+    #[cfg(test)]
+    cart_rolled: Option<(String, f32)>,
     /// The filter bar's time readout as last drawn (its text, x and width in skin pixels).
     #[cfg(test)]
     readout_drawn: Option<(String, f32, f32)>,
@@ -355,6 +365,8 @@ impl DiggrApp {
             skin,
             tex: None,
             motion: new_motion(),
+            row_answers: HashMap::new(),
+            list_motion: Default::default(),
             store,
             settings,
             presets,
@@ -387,6 +399,7 @@ impl DiggrApp {
             deck_count: None,
             fader_anchor: None,
             deck_typing: None,
+            fader_spring: None,
             platter_held: false,
             deck_seen: (None, false),
             deck_new: false,
@@ -420,6 +433,8 @@ impl DiggrApp {
             filters_drawn: None,
             #[cfg(test)]
             cart_drawn: None,
+            #[cfg(test)]
+            cart_rolled: None,
             #[cfg(test)]
             readout_drawn: None,
             #[cfg(test)]
@@ -681,6 +696,24 @@ impl DiggrApp {
 
     fn notify(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), Instant::now()));
+    }
+
+    /// Has the rows of `ids` answer a verdict just given (drawing only; see [`Answer`]).
+    fn answer_rows(&mut self, ids: impl IntoIterator<Item = crate::playlist::EntryId>, a: Answer) {
+        if self.motion.is_reduced() {
+            return;
+        }
+        let now = self.motion.now();
+        for id in ids {
+            self.row_answers.insert(id, (a, now));
+        }
+    }
+
+    /// How far (0..1) the row of `id` is into answering a verdict, if it is.
+    fn row_answer(&self, id: crate::playlist::EntryId) -> Option<(Answer, f32)> {
+        let (a, since) = *self.row_answers.get(&id)?;
+        let t = (self.motion.now() - since) as f32 / a.secs();
+        (t < 1.0).then_some((a, t.max(0.0)))
     }
 
     /// Shows `verdict` on the title line for a moment, for `count` records.
@@ -2334,12 +2367,14 @@ impl DiggrApp {
                 }
                 None => {
                     for (i, c) in digits.chars().enumerate() {
-                        let name = match c {
-                            ' ' => "digit_blank".to_owned(),
-                            '?' => "digit_q".to_owned(),
-                            c => format!("digit_{c}"),
-                        };
-                        sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
+                        crate::widgets::lcd_digit(
+                            ui,
+                            &sk,
+                            Id::new(("deck_digit", i)),
+                            t.x as f32 + 10.0 * i as f32,
+                            t.y as f32,
+                            c,
+                        );
                     }
                     digits
                 }
@@ -2477,8 +2512,24 @@ impl DiggrApp {
                 }
             }
             let thumb = sk.def.sprite("pitch_thumb");
-            let at = (0.5 - pitch / range / 2.0).clamp(0.0, 1.0);
-            let name = if sync.on && resp.is_pointer_button_down_on() {
+            let target = (0.5 - pitch / range / 2.0).clamp(0.0, 1.0);
+            // Moved for the user (RESET, a fit, the range), the thumb glides there with a
+            // little overshoot; under the hand, or with Reduce motion, it is exactly there.
+            let dragged = sync.on && resp.is_pointer_button_down_on();
+            let at = if dragged || crate::motion::reduced(ui.ctx()) {
+                self.fader_spring = Some(crate::motion::Spring::at(target));
+                target
+            } else {
+                let dt = ui.input(|i| i.stable_dt);
+                let s = self
+                    .fader_spring
+                    .get_or_insert(crate::motion::Spring::at(target));
+                if !s.step(target, dt, FADER_OMEGA, FADER_ZETA) {
+                    ui.ctx().request_repaint();
+                }
+                s.x
+            };
+            let name = if dragged {
                 "pitch_thumb_p"
             } else {
                 "pitch_thumb"
@@ -2502,9 +2553,10 @@ impl DiggrApp {
                 sk.fill(sk.rect(0.0, below, right, h - 1.0 - below), dim);
                 sk.fill(sk.rect(0.0, p.y as f32, p.x as f32, p.h as f32), dim);
             }
-            let btn = if sync.on { "sync_on" } else { "sync_off" };
             let rect = sk.at("deck_sync");
-            if sprite_button(ui, &sk, "deck_sync_button", rect, btn)
+            let resp = ui.interact(rect, Id::new("deck_sync_button"), Sense::click());
+            crate::widgets::lamp(ui, &sk, &resp, rect, "sync", sync.on, true);
+            if resp
                 .on_hover_text("SYNC: every track at one tempo, set on the turntable")
                 .clicked()
             {
@@ -3862,12 +3914,11 @@ impl DiggrApp {
                 continue;
             }
             let w = sk.text_width(&text);
-            sk.text(cx, ty, &text, if on { lcd } else { dim });
-            let button = ui.interact(
-                sk.rect(cx - 1.0, y, w + 2.0, h),
-                Id::new(("facet_button", f.name())),
-                Sense::click(),
-            );
+            // A filter's count changing ("STYLES 2" → "STYLES 3") rolls and pulses.
+            let id = Id::new(("facet_button", f.name()));
+            let (drawn, pulse) = crate::motion::rolling(ui.ctx(), id, &text);
+            sk.text(cx, ty, &drawn, pulsed(if on { lcd } else { dim }, pulse));
+            let button = ui.interact(sk.rect(cx - 1.0, y, w + 2.0, h), id, Sense::click());
             if button.double_clicked() {
                 actions.push(Action::ClearPicks(Some(f)));
             } else if button.clicked() {
@@ -4011,7 +4062,14 @@ impl DiggrApp {
         let lcd = color(sk.def.colors.lcd);
         let dim = lerp_color(sk.def.colors.lcd, sk.def.colors.pl_bg, 0.6);
         let ty = y + ((h - sk.def.font.glyph_h as f32) / 2.0).round();
-        sk.text(x, ty, &label, if on { lcd } else { dim });
+        // A change in the cart rolls its numbers and pulses (the switch means the new ones).
+        let (drawn, pulse) = crate::motion::rolling(ui.ctx(), Id::new("cart_switch"), &label);
+        let tint = if on { lcd } else { dim };
+        sk.text(x, ty, &drawn, pulsed(tint, pulse));
+        #[cfg(test)]
+        {
+            self.cart_rolled = Some((drawn, pulse));
+        }
         let r = ui
             .interact(
                 sk.rect(x - 1.0, y, w + 2.0, h),
@@ -5899,12 +5957,28 @@ impl DiggrApp {
             // Each record's cart mark, drawn across its run: registered after every row, so
             // the rows under it don't take its clicks.
             let mut run_marks: Vec<RunMark> = Vec::new();
+            self.list_motion.begin(ui.ctx(), clip.layer_id());
             for (i, row) in list_rows.iter().enumerate().skip(self.pl_scroll) {
                 if y > 0 && y + row.units() > visible {
                     break;
                 }
                 let at_y = y;
                 y += row.units();
+                // Which row this is, whatever its place (for its motion when the list changes).
+                let key = match row {
+                    ListRow::Entry { idx, .. } => {
+                        Id::new(("entry", shown.entries().get(*idx).map(|e| e.id)))
+                    }
+                    ListRow::Record(r) => Id::new(("record", &r.key)),
+                    ListRow::Copy { listing, .. } => Id::new(("copy", listing)),
+                    ListRow::More { .. } => Id::new("more"),
+                };
+                self.list_motion.row(
+                    ui.ctx(),
+                    clip.layer_id(),
+                    key.value(),
+                    rows_top + at_y as f32 * row_h,
+                );
                 let (idx, track) = match row {
                     ListRow::Entry { idx, track } => (*idx, *track),
                     ListRow::More { next, left, .. } => {
@@ -6006,10 +6080,29 @@ impl DiggrApp {
                     l.w as f32 - indent,
                     row_h,
                 );
+                // A verdict just given: the row answers it (see `Answer`).
+                let answer = self.row_answer(e.id);
+                let row_shapes = clip
+                    .ctx()
+                    .graphics_mut(|g| g.entry(clip.layer_id()).next_idx());
                 if shown.is_selected(e.id) {
                     clip.rect_filled(rr, 0.0, color(d.colors.pl_selected_bg));
                 } else if self.pl_tint.contains(&e.id) {
                     clip.rect_filled(rr, 0.0, tint);
+                }
+                match answer {
+                    Some((Answer::Want, t)) => {
+                        // The want colour sweeps across, fading as it goes.
+                        let x = rr.left() + rr.width() * crate::motion::ease_out_cubic(t);
+                        let band = Rect::from_x_y_ranges(rr.left()..=x, rr.y_range());
+                        let glow = crate::widgets::GLOW.gamma_multiply(0.35 * (1.0 - t));
+                        clip.rect_filled(band, 0.0, glow);
+                    }
+                    Some((Answer::Cart, t)) => {
+                        let glow = crate::widgets::GLOW.gamma_multiply(0.4 * (1.0 - t));
+                        clip.rect_filled(rr, 0.0, glow);
+                    }
+                    _ => {}
                 }
                 if self.focus == Focus::Playlist && shown.cursor() == Some(e.id) {
                     clip.rect_stroke(
@@ -6102,8 +6195,13 @@ impl DiggrApp {
                 // Where the slot's cell is, to draw the mark across the run in it.
                 let mut slot_cell = rr;
                 if marks.passed {
+                    // Just passed, it fades to its dimmed look.
+                    let k = match answer {
+                        Some((Answer::Pass, t)) => crate::motion::ease_out_cubic(t),
+                        _ => 1.0,
+                    };
                     let [r, g, b, _] = col.to_array();
-                    col = lerp_color([r, g, b], d.colors.pl_bg, 0.55);
+                    col = lerp_color([r, g, b], d.colors.pl_bg, 0.55 * k);
                 }
                 let failed = marks.wantlist_failed.is_some()
                     || marks.collection_failed.is_some()
@@ -6283,6 +6381,16 @@ impl DiggrApp {
                         checkout: mark.checkout,
                     });
                 }
+                // Just passed: the row is drawn nudged aside and back (its place doesn't move).
+                if let Some((Answer::Pass, t)) = answer {
+                    let dx = PASS_NUDGE * scale * (std::f32::consts::PI * t).sin();
+                    let shift = egui::emath::TSTransform::from_translation(vec2(dx, 0.0));
+                    clip.ctx().graphics_mut(|g| {
+                        let list = g.entry(clip.layer_id());
+                        let end = list.next_idx();
+                        list.transform_range(row_shapes, end, shift);
+                    });
+                }
                 let mut resp = ui.interact(rr, row_id(idx), Sense::click_and_drag());
                 // Everything known about the entry, built only for the row under the pointer.
                 if resp.hovered() && self.pl_drag_from.is_none() {
@@ -6356,6 +6464,15 @@ impl DiggrApp {
                     );
                 }
             }
+            let shown_id = self.crates.shown_id();
+            let order = self
+                .crates
+                .list()
+                .iter()
+                .position(|c| c.id == shown_id)
+                .unwrap_or(0);
+            self.list_motion
+                .end(ui.ctx(), clip.layer_id(), (shown_id, order), self.pl_scroll);
             for m in &run_marks {
                 if let (Some(rect), Some(p)) = (m.hits.pill, &m.store_pill) {
                     self.store_pill_click(ui, rect, m.band, m.id, p, &mut actions);
@@ -8101,12 +8218,7 @@ fn badge(
 /// A momentary skin button at any rectangle (the mini player's buttons have no layout entry).
 fn sprite_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) -> egui::Response {
     let resp = ui.interact(rect, Id::new(id), Sense::click());
-    let name = if resp.is_pointer_button_down_on() {
-        format!("{sprite}_p")
-    } else {
-        sprite.to_owned()
-    };
-    sk.sprite_in(&name, rect);
+    crate::widgets::pressable(ui, sk, &resp, rect, sprite);
     resp
 }
 
@@ -8138,7 +8250,7 @@ fn icon_toggle(
     on: bool,
 ) -> egui::Response {
     let resp = ui.interact(rect, Id::new(id), Sense::click());
-    sk.sprite_in(&format!("{base}_{}", if on { "on" } else { "off" }), rect);
+    crate::widgets::lamp(ui, sk, &resp, rect, base, on, false);
     resp
 }
 
@@ -8210,6 +8322,10 @@ const STROBE_DOTS: usize = 24;
 const STROBE_R: f32 = 28.0;
 const RIM_DOTS: usize = 72;
 const FLASH_RIM_SECS: f32 = 0.6;
+/// The pitch fader's thumb gliding to where it was moved for the user: about 5% overshoot,
+/// settled within 0.3 s.
+const FADER_OMEGA: f32 = 35.0;
+const FADER_ZETA: f32 = 0.7;
 const COUNT_SECS: f32 = 0.5;
 const DIM_ALPHA: u8 = 125;
 
@@ -8252,6 +8368,16 @@ fn draw_stretched_bar(sk: &Skinned, base: &str, y: f32, width: f32, h: f32) {
     sk.sprite(&format!("{base}_r"), width - r, y);
 }
 
+/// `c` brightened toward white by a pulse (1 → 0).
+fn pulsed(c: Color32, pulse: f32) -> Color32 {
+    if pulse <= 0.0 {
+        return c;
+    }
+    let k = 0.6 * pulse;
+    let up = |v: u8| (v as f32 + (255.0 - v as f32) * k).round() as u8;
+    Color32::from_rgba_unmultiplied(up(c.r()), up(c.g()), up(c.b()), c.a())
+}
+
 fn draw_crate_name(sk: &Skinned, name: &str, count: Option<(usize, usize)>) {
     const PAD: f32 = 5.0; // plain title bar either side of the name
     const SIDE: f32 = 40.0; // decoration left visible at each end (the close button's side)
@@ -8272,7 +8398,14 @@ fn draw_crate_name(sk: &Skinned, name: &str, count: Option<(usize, usize)>) {
         ),
     );
     let y = bar.y as f32 + ((bar.h - sk.def.font.glyph_h) / 2) as f32;
-    sk.text(bar.x as f32 + x, y, &text, color(sk.def.colors.pl_title));
+    // A filter changing the count rolls it.
+    let (drawn, pulse) = crate::motion::rolling(sk.painter.ctx(), Id::new("crate_title"), &text);
+    sk.text(
+        bar.x as f32 + x,
+        y,
+        &drawn,
+        pulsed(color(sk.def.colors.pl_title), pulse),
+    );
 }
 
 /// What the window is doing, for the repaint policy.
@@ -8329,6 +8462,30 @@ pub enum Verdict {
     Pass,
     Owned,
 }
+
+/// How a row answers a verdict: wanted, a sweep of the want colour; passed, a nudge aside as it
+/// dims; put in the cart, a flash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    Want,
+    Pass,
+    Cart,
+}
+
+impl Answer {
+    fn secs(self) -> f32 {
+        match self {
+            Answer::Want | Answer::Cart => crate::motion::SLOW,
+            Answer::Pass => crate::motion::MEDIUM,
+        }
+    }
+}
+
+/// How far the verdict word slides onto the title line, in skin pixels.
+const FLASH_SLIDE: f32 = 8.0;
+
+/// How far a passed row is nudged aside, in skin pixels.
+const PASS_NUDGE: f32 = 6.0;
 
 /// "WANTED", or "WANTED 3" when it took several records.
 fn flash_text(verdict: Verdict, count: usize) -> String {
@@ -8810,6 +8967,12 @@ impl DiggrApp {
     fn ui_inner(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.motion.begin_frame(&ctx, self.settings.reduce_motion);
+        let now = self.motion.now();
+        self.row_answers
+            .retain(|_, (a, since)| ((now - *since) as f32) < a.secs());
+        if !self.row_answers.is_empty() {
+            ctx.request_repaint();
+        }
         if self.tex.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(self.skin.size, &self.skin.rgba);
             self.tex = Some(ctx.load_texture("skin-atlas", img, egui::TextureOptions::NEAREST));
@@ -9031,22 +9194,19 @@ impl DiggrApp {
             sk.sprite("digit_minus", 16.0, DIGITS_Y);
         }
         let (mm, ss) = format::lcd(secs);
-        let digit = |c: char| {
-            if show {
-                format!("digit_{c}")
-            } else {
-                "digit_blank".to_owned()
-            }
-        };
+        let digit = |c: char| if show { c } else { ' ' };
+        let at = |slot: &str, i: usize| Id::new(("time_digit", slot, i));
         let mins: Vec<char> = mm.chars().collect();
         for (i, c) in mins.iter().rev().take(2).enumerate() {
-            sk.sprite(&digit(*c), 36.0 - 10.0 * i as f32, DIGITS_Y);
+            let x = 36.0 - 10.0 * i as f32;
+            crate::widgets::lcd_digit(ui, &sk, at("m", i), x, DIGITS_Y, digit(*c));
         }
         if show {
             sk.sprite("digit_colon", 46.0, DIGITS_Y);
         }
         for (i, c) in ss.chars().enumerate() {
-            sk.sprite(&digit(c), 50.0 + 10.0 * i as f32, DIGITS_Y);
+            let x = 50.0 + 10.0 * i as f32;
+            crate::widgets::lcd_digit(ui, &sk, at("s", i), x, DIGITS_Y, digit(c));
         }
         if ui
             .interact(
@@ -9068,8 +9228,19 @@ impl DiggrApp {
             .and_then(|(_, at)| FLASH_SECS.checked_sub(at.elapsed()))
             .filter(|d| !d.is_zero());
         if let (Some(left), Some((text, _))) = (left, &self.flash) {
-            let x = tx + ((tw - sk.text_width(text)) / 2.0).round();
-            sk.text(x, ty, text, lcd);
+            // It slides in from the right as it lights.
+            let age = (FLASH_SECS - left).as_secs_f32();
+            let p = if self.motion.is_reduced() {
+                1.0
+            } else {
+                crate::motion::ease_out_cubic(age / crate::motion::FAST)
+            };
+            let x =
+                tx + ((tw - sk.text_width(text)) / 2.0).round() + (FLASH_SLIDE * (1.0 - p)).round();
+            sk.text(x, ty, text, lcd.gamma_multiply(0.3 + 0.7 * p));
+            if p < 1.0 {
+                ui.ctx().request_repaint();
+            }
             ui.ctx().request_repaint_after(left);
         } else {
             self.flash = None;

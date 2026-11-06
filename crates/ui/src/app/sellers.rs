@@ -5,7 +5,7 @@
 //! the intake worker, so nothing here waits on the network: a click shows what is saved, and
 //! answers come back as events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use dig::discogs::cart::{AddResult, CartItem, CartSnapshot};
@@ -894,6 +894,13 @@ impl DiggrApp {
 
     /// Add to cart: the badges change at once; the answer says what really happened.
     fn cart_add(&mut self, listings: Vec<u64>) {
+        let shown = self.crates.shown_id();
+        let records: HashSet<u64> = listings
+            .iter()
+            .filter_map(|&l| self.crates.shown().release_of_listing(l))
+            .collect();
+        let rows = self.entries_of(shown, &records);
+        self.answer_rows(rows, super::Answer::Cart);
         if listings.is_empty() || self.seller_needs_token() {
             return;
         }

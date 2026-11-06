@@ -2620,3 +2620,48 @@ fn the_card_carries_the_records_pills_and_they_act_as_on_its_row() {
     rig.click(copies);
     assert_eq!(rig.app.pl_open_rev, opened + 1, "the record opened");
 }
+
+#[test]
+fn the_cart_total_rolls_to_its_new_value_and_pulses() {
+    let fakes = Fakes::new();
+    let (mut rig, _) = dug("cart-roll", &fakes);
+    rig.screen.x = 500.0;
+    let mut snap = cart_with(&[(11, 1001, "logon", "€9.00")]);
+    snap.sellers.get_mut("logon").unwrap().subtotal = "€41.20".into();
+    snap.sellers.get_mut("logon").unwrap().count = 3;
+    rig.dig_mut().cart = snap.clone();
+    rig.frame(Vec::new());
+    rig.app.settings.reduce_motion = false;
+    rig.frame(Vec::new());
+    // A €12.00 copy is added.
+    snap.sellers.get_mut("logon").unwrap().subtotal = "€53.20".into();
+    snap.sellers.get_mut("logon").unwrap().count = 4;
+    rig.dig_mut().cart = snap;
+    let mut drawn = Vec::new();
+    for _ in 0..14 {
+        rig.frame(Vec::new());
+        assert_eq!(
+            rig.app.cart_drawn.as_ref().unwrap().0,
+            "CART 4 · €53.20",
+            "the new total at once"
+        );
+        drawn.push(rig.app.cart_rolled.clone().unwrap());
+    }
+    let money = |s: &str| s.split('€').nth(1).unwrap().parse::<f64>().unwrap();
+    // (The change's own frame still shows the old total; from the next, it rolls.)
+    assert!(
+        money(&drawn[1].0) > 41.20 && money(&drawn[1].0) < 53.20,
+        "rolling: {drawn:?}"
+    );
+    assert!(drawn[0].1 > 0.0, "pulsing");
+    assert!(
+        drawn.windows(2).all(|w| money(&w[1].0) >= money(&w[0].0)),
+        "{drawn:?}"
+    );
+    // There within 0.18 s (11 frames ±1), the pulse over.
+    let done = drawn
+        .iter()
+        .position(|(t, p)| t == "CART 4 · €53.20" && *p == 0.0)
+        .unwrap();
+    assert!(done <= 12, "rolled for {done} frames: {drawn:?}");
+}
