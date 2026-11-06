@@ -47,6 +47,8 @@ impl Load {
 
 const START_TARGET_MS: f64 = 30.0;
 const SEEK_TARGET_MS: f64 = 50.0;
+/// A hand on the record is heard slowing within this long (see `Engine::hold`).
+const HOLD_TARGET_MS: f64 = 20.0;
 const SPEED_TARGET_MS: f64 = 50.0;
 
 pub fn run(
@@ -103,9 +105,10 @@ pub fn run(
     let mut worst_start = 0f64;
     let mut worst_seek = 0f64;
     let mut worst_speed = 0f64;
+    let mut worst_hold = 0f64;
     println!(
-        "\n{:<32} {:>9} {:>9} {:>9} {:>9} {:>9}",
-        "file", "start ms", "seek25", "seek50", "seek75", "speed ms"
+        "\n{:<32} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "file", "start ms", "seek25", "seek50", "seek75", "speed ms", "hold ms"
     );
     for (i, f) in files.iter().enumerate() {
         engine.play_index(i);
@@ -134,14 +137,30 @@ pub fn run(
             worst_speed = worst_speed.max(worst);
             changes = Some(worst);
         }
+        // A hand on the record: how long until the clock reports it slowing.
+        let before = engine.position().speed;
+        let asked = Instant::now();
+        engine.hold(true);
+        let mut hold = f64::NAN;
+        while asked.elapsed() < Duration::from_millis(200) {
+            if engine.position().speed < before {
+                hold = asked.elapsed().as_secs_f64() * 1000.0;
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        engine.hold(false);
+        load.sleep(&mut engine, Duration::from_millis(400)); // spun back up
+        worst_hold = worst_hold.max(if hold.is_nan() { 200.0 } else { hold });
         println!(
-            "{:<32} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9}",
+            "{:<32} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9} {:>9.2}",
             truncate(f.file_name(), 32),
             start,
             seeks[0],
             seeks[1],
             seeks[2],
-            changes.map_or("-".into(), |ms| format!("{ms:.2}"))
+            changes.map_or("-".into(), |ms| format!("{ms:.2}")),
+            hold
         );
     }
 
@@ -169,6 +188,7 @@ pub fn run(
     if speed.is_some() {
         println!("worst speed {worst_speed:.2} ms (target < {SPEED_TARGET_MS})");
     }
+    println!("worst hold  {worst_hold:.2} ms (target < {HOLD_TARGET_MS})");
     println!("underruns   {underruns} (target 0)");
     if cfg!(debug_assertions) {
         println!("rt allocs   {} (target 0)", s.rt_alloc_violations);
@@ -193,6 +213,7 @@ pub fn run(
     let ok = worst_start < START_TARGET_MS
         && worst_seek < SEEK_TARGET_MS
         && worst_speed < SPEED_TARGET_MS
+        && worst_hold < HOLD_TARGET_MS
         && underruns == 0
         && s.rt_alloc_violations == 0;
     if ok {

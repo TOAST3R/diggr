@@ -22,6 +22,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "Up / Down",
                 "volume (with the playlist focused: move in the list)",
             ),
+            (
+                "Hold the turntable's platter",
+                "a hand on the record: it slows to a stop; let go and it spins back up",
+            ),
         ],
     ),
     (

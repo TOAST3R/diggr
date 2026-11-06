@@ -383,6 +383,10 @@ and Home/End jump), and Enter plays the entry under it.
 - **Turntable** (the band's middle panel, always there): **SYNC** on it plays every track at one
   tempo, the way it will sit in a set, set to the playing record's tempo. With SYNC off the deck
   is dimmed: the platter turns with the speed heard and the digits show the record's own BPM.
+  **Press and hold the platter** while a track plays, SYNC on or off, to put a hand on the
+  record: it slows to a stop in 0.4 s, the pitch falling with it, and the time stops; let go
+  and it spins back up to its speed in 0.3 s and plays on from where it stopped. A seek, stop,
+  pause or track change lets go of it too.
   With SYNC on:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
       record's own tempo (±8%; the **8%/16%** button widens it), to 0.01 BPM. Scroll over it, or
@@ -1373,11 +1377,13 @@ debug build: drop `--release`). `--volume 0` runs the full pipeline silently (it
 default for `--bench`). Add `--analysis` to run the music analyzer during the whole bench and
 confirm it doesn't cost underruns or latency. Add `--speed 1.04` (0.84–1.16) to play
 everything at that speed, as SYNC does, and time speed changes (to ±0.02 and back) after the
-seeks: target < 50 ms.
+seeks: target < 50 ms. Each file also gets a platter hold: the time from the hold to the
+clock reporting the record slowing (target < 20 ms).
 
 Last measured on an M-series Mac (CoreAudio, 44.1 kHz, 512-frame buffer), 60 s files:
 start 7.9–20.8 ms, seek 12.1–20.0 ms. With `--speed 1.04` (48 kHz, the fixtures): start
 6.9–19.4 ms, seek 4.2–20.8 ms, speed change 7.3–21.2 ms.
+Platter hold (the fixtures, 44.1 kHz): 0.3–10.2 ms.
 
 ### Check A/V clock accuracy acoustically
 
@@ -1536,7 +1542,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1152 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1161 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1572,9 +1578,15 @@ What's covered:
   - varispeed: a speed change heard within 50 ms with no click, gap or underrun, the
     clock in track time (1.06 track frames per frame, monotonic across a change), gapless
     at 1.03 → 0.97, jumps and loops landing in track time at 1.04, and a change in a track's
-    last moments or at a gapless boundary applying to the track being heard.
+    last moments or at a gapless boundary applying to the track being heard;
+  - the platter hold: slowing within a buffer at 1.03 and coming back to 1.03 without an
+    underrun, and a seek, stop, pause, next, previous or speed change ending it (the renderer's
+    unit tests time the 0.4 s brake and 0.3 s spin-up, the silence and still clock while held,
+    a release before the stop, the 0.5 s watchdog, no clicks, the clock within 1 ms of the
+    audio and never going back, and the audio bit-exact again after a release).
 - **`crates/audio/tests/rt_alloc.rs`**: a counting global allocator proves the audio callback
-  never allocates on any path, varispeed and the speed change's crossfade included.
+  never allocates on any path, varispeed, the speed change's crossfade and a platter hold
+  included.
 - **`crates/ui`** (unit tests):
   - playlist selection, reordering and totals;
   - shuffle order, and a play order that skips entries waiting for their audio;
@@ -1587,7 +1599,8 @@ What's covered:
   - settings, crate and preset persistence;
   - SYNC: the speed for a BPM (fitted, half and double time, out of range, no BPM) and the
     "+2.4%" label and the state line for each state; headless, the always-there turntable
-    (dimmed and inert while off), its SYNC button, pitch fader (top, centre detent, scroll),
+    (dimmed and inert while off, but for the platter), holding its platter (the record stops,
+    the time stops, letting go spins it up, nothing while stopped), its SYNC button, pitch fader (top, centre detent, scroll),
     RESET, 8%/16%, `Shift+↑`, the state line, meter, lock flash and counting digits, what's
     heard following, and "(own tempo)" rows;
     SYNC turned on before the BPM is known waiting ("?") for the analysed tempo, a track started

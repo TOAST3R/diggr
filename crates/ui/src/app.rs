@@ -133,6 +133,8 @@ pub struct DiggrApp {
     fader_anchor: Option<(f32, u32)>,
     /// The turntable's digits open for typing a tempo: what has been typed.
     deck_typing: Option<String>,
+    /// A hand is on the turntable's platter: the record is held.
+    platter_held: bool,
     /// Who played and whether it was locked on the last frame, to see a record become fitted.
     deck_seen: (Option<(CrateId, crate::playlist::EntryId)>, bool),
     /// A different track began and hasn't been fitted yet (see `deck_section`).
@@ -382,6 +384,7 @@ impl DiggrApp {
             deck_count: None,
             fader_anchor: None,
             deck_typing: None,
+            platter_held: false,
             deck_seen: (None, false),
             deck_new: false,
             lp_knob: audio::filter::OFF,
@@ -2215,6 +2218,31 @@ impl DiggrApp {
             for r in [3.0, 5.0, 7.0] {
                 sk.fill(px(r, self.deck_turn, 1.0), white);
             }
+            // A hand on the record: pressing and holding the platter stops it, letting go spins it
+            // back up. The app confirms the hold while the button is down.
+            let platter = sk.rect(p.x as f32, p.y as f32, p.w as f32, p.h as f32);
+            let centre = platter.center();
+            let hand = ui
+                .interact(platter, Id::new("deck_platter"), Sense::drag())
+                .on_hover_text("Hold to stop the record");
+            let on_record = hand.is_pointer_button_down_on()
+                && ui.input(|i| {
+                    i.pointer.has_pointer()
+                        && i.focused
+                        && i.pointer
+                            .press_origin()
+                            .is_some_and(|o| o.distance(centre) <= platter.width() / 2.0)
+                });
+            if on_record && !self.platter_held && playing {
+                self.platter_held = true;
+                self.with_engine(|e| e.hold(true));
+            } else if on_record && self.platter_held {
+                self.with_engine(|e| e.hold_keepalive());
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            } else if !on_record && self.platter_held {
+                self.platter_held = false;
+                self.with_engine(|e| e.hold(false));
+            }
             // The lock flash: the whole rim lights once and fades.
             if let Some(at) = self.deck_flash {
                 let t = at.elapsed().as_secs_f32() / FLASH_RIM_SECS;
@@ -2458,12 +2486,18 @@ impl DiggrApp {
                 (r.y as f32 + at * r.h as f32 - thumb.h as f32 / 2.0).round(),
             );
 
-            // SYNC off: the deck is dimmed, and only the SYNC button is lit.
+            // SYNC off: the deck is dimmed, but for the platter (holding it works either way) and
+            // the SYNC button.
             if !sync.on {
-                sk.fill(
-                    sk.rect(0.0, 1.0, crate::skin::generate::DECK_W as f32, h - 2.0),
-                    Color32::from_black_alpha(DIM_ALPHA),
-                );
+                let dim = Color32::from_black_alpha(DIM_ALPHA);
+                let p = sk.def.at("deck_platter");
+                let right = (p.x + p.w) as f32 + 6.0;
+                let deck_w = crate::skin::generate::DECK_W as f32;
+                sk.fill(sk.rect(right, 1.0, deck_w - right, h - 2.0), dim);
+                sk.fill(sk.rect(0.0, 1.0, right, p.y as f32 - 1.0), dim);
+                let below = (p.y + p.h) as f32;
+                sk.fill(sk.rect(0.0, below, right, h - 1.0 - below), dim);
+                sk.fill(sk.rect(0.0, p.y as f32, p.x as f32, p.h as f32), dim);
             }
             let btn = if sync.on { "sync_on" } else { "sync_off" };
             let rect = sk.at("deck_sync");

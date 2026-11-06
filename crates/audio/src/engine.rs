@@ -210,6 +210,7 @@ impl Engine {
         if index >= self.queue.len() {
             return;
         }
+        self.control.release_hold();
         let generation = self.control.bump_generation();
         self.control
             .mark_start_request(generation, self.sink.now_ns());
@@ -235,6 +236,7 @@ impl Engine {
     }
 
     pub fn pause(&self) {
+        self.control.release_hold();
         if self.control.state() == PlayState::Playing {
             self.control.set_state(PlayState::Paused);
         }
@@ -254,6 +256,7 @@ impl Engine {
     }
 
     pub fn stop(&self) {
+        self.control.release_hold();
         self.control.bump_generation();
         self.control.set_state(PlayState::Stopped);
         let _ = self.commands.send(Command::Stop);
@@ -264,6 +267,7 @@ impl Engine {
         if self.control.state() == PlayState::Stopped {
             return;
         }
+        self.control.release_hold();
         let generation = self.control.bump_generation();
         self.control
             .mark_start_request(generation, self.sink.now_ns());
@@ -321,6 +325,7 @@ impl Engine {
         if duration.is_some_and(|d| secs >= d) {
             return;
         }
+        self.control.release_hold();
         self.control.mark_soft();
         let generation = self.control.bump_generation();
         self.control
@@ -365,6 +370,27 @@ impl Engine {
 
     pub fn state(&self) -> PlayState {
         self.control.state()
+    }
+
+    /// Puts a hand on the playing record (`true`): it slows to a stop in
+    /// [`crate::renderer::BRAKE_SECS`], its pitch falling with its speed, and stays stopped,
+    /// silent, until released (`false`), when it spins back up in
+    /// [`crate::renderer::SPINUP_SECS`]. The app confirms a hold with [`Self::hold_keepalive`];
+    /// one left unconfirmed for half a second ends by itself. Seek, stop, pause, play, next,
+    /// previous and a speed change end it at once. Does nothing unless playing.
+    pub fn hold(&self, on: bool) {
+        let on = on && self.control.state() == PlayState::Playing;
+        self.control.set_hold(on, self.sink.now_ns());
+    }
+
+    /// Confirms a hold (see [`Self::hold`]); call at least every 0.2 s while the record is held.
+    pub fn hold_keepalive(&self) {
+        self.control.keep_hold(self.sink.now_ns());
+    }
+
+    /// Whether the app is holding the record (asked for, not yet released or ended).
+    pub fn held(&self) -> bool {
+        self.control.hold_active(self.sink.now_ns())
     }
 
     // ---- levels & EQ ---------------------------------------------------------------------
