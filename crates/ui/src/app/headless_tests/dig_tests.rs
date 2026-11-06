@@ -1693,10 +1693,27 @@ fn the_corner_gear_opens_the_discogs_dialog() {
     assert!(rig.dig().dialog.is_some());
 }
 
-/// The Options menu holds accounts and setup.
+#[test]
+fn reduce_motion_is_in_the_options_menu_and_is_kept() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-reduce-motion", &fakes, |_| {});
+    rig.app.settings.reduce_motion = false;
+    rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
+    rig.click_text("Reduce motion");
+    assert!(rig.app.settings.reduce_motion, "turned on");
+    rig.app.save_now(true);
+    let saved = crate::settings::Store::new(rig.dir.join("config")).load_settings();
+    assert!(saved.reduce_motion, "kept for the next launch");
+    // And off again.
+    rig.click_with(pos2(150.0, 28.0), PointerButton::Secondary);
+    rig.click_text("Reduce motion");
+    assert!(!rig.app.settings.reduce_motion);
+}
+
+/// The Options menu holds accounts, setup and Reduce motion.
 fn assert_dig_options(out: &egui::FullOutput) {
     let texts = text_list(out);
-    for t in ["Discogs…", "Browser…"] {
+    for t in ["Discogs…", "Browser…", "Reduce motion"] {
         assert!(shows(out, t), "{t}: {texts:?}");
     }
     assert!(

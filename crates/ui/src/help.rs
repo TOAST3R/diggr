@@ -227,7 +227,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Mini player: right-click",
-                "Options: Discogs…, Browser…, Set up Diggr…",
+                "Options: Discogs…, Browser…, Set up Diggr…, Reduce motion",
             ),
             (
                 "Mini player's EQ button",
@@ -279,7 +279,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-const TITLE: &str = "Keyboard shortcuts";
+pub const TITLE: &str = "Keyboard shortcuts";
 const ACCENT: Color32 = Color32::from_rgb(0, 220, 110);
 
 /// Draws the panel while `open`; the window's close button clears it. It always fits inside

@@ -93,6 +93,8 @@ pub struct DiggrApp {
     skin: LoadedSkin,
     def: Arc<crate::skin::SkinDef>,
     tex: Option<TextureHandle>,
+    /// What's appearing and disappearing (see [`crate::motion`]).
+    motion: crate::motion::Motion,
     store: Option<Store>,
     settings: Settings,
     presets: EqPresets,
@@ -352,6 +354,7 @@ impl DiggrApp {
             def: Arc::new(skin.def.clone()),
             skin,
             tex: None,
+            motion: new_motion(),
             store,
             settings,
             presets,
@@ -2684,6 +2687,16 @@ impl DiggrApp {
             }
             if ui.button(self.setup_label()).clicked() {
                 actions.push(Action::Dig(DigAction::OpenWelcome));
+                ui.close();
+            }
+            ui.separator();
+            let mut reduce = self.settings.reduce_motion;
+            if ui
+                .checkbox(&mut reduce, "Reduce motion")
+                .on_hover_text("Menus, windows and panels appear at once, without motion")
+                .clicked()
+            {
+                actions.push(Action::ToggleReduceMotion);
                 ui.close();
             }
         }
@@ -6986,6 +6999,10 @@ impl DiggrApp {
                 self.settings.show_eq = !self.settings.show_eq;
                 self.mark_settings();
             }
+            Action::ToggleReduceMotion => {
+                self.settings.reduce_motion = !self.settings.reduce_motion;
+                self.mark_settings();
+            }
             Action::ToggleRemaining => {
                 self.settings.time_remaining = !self.settings.time_remaining;
                 self.mark_settings();
@@ -7322,6 +7339,8 @@ fn reveal_row(first: usize, row: usize, visible: usize) -> usize {
 }
 
 enum Action {
+    /// Turn Reduce motion on or off.
+    ToggleReduceMotion,
     /// Group the shown crate by record, or show it flat.
     ToggleGrouped,
     /// Open or close a record row of the shown crate.
@@ -8264,12 +8283,17 @@ pub struct Activity {
     pub waveform: bool,
     pub engine_starting: bool,
     pub hidden: bool,
+    /// Something is appearing or disappearing (see [`crate::motion`]).
+    pub animating: bool,
 }
 
 /// When to repaint without input. `None` means only on input, so an idle window costs nothing.
 pub fn repaint_after(a: Activity) -> Option<Duration> {
     if a.hidden {
         None
+    } else if a.animating {
+        // Every display refresh while something moves (120 Hz where the display is).
+        Some(Duration::ZERO)
     } else if a.playing && a.waveform {
         // The waveform scrolls with the playhead: smooth at the display rate.
         Some(Duration::from_millis(16))
@@ -8571,6 +8595,31 @@ const SIDEBAR_W: u16 = 110;
 /// The playlist width (skin pixels) from which the crate sidebar fits, unless maximized.
 const SIDEBAR_FROM_WIDTH: u16 = 600;
 
+/// Draws a separate window's content at `fade` while it fades in, asking for the next frame.
+fn fade_in(ui: &mut Ui, fade: f32) {
+    if fade < 1.0 {
+        ui.multiply_opacity(fade);
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The app's motion, with the areas that don't move like a menu or a window: the filter
+/// panels drop from the filter bar, the record card opens like a dialog over a dark layer that
+/// only fades.
+fn new_motion() -> crate::motion::Motion {
+    use crate::motion::{Kind, Motion};
+    let mut m = Motion::new();
+    m.set_kind(filters_popup_id(), Kind::Panel);
+    for f in Facet::ALL {
+        m.set_kind(facet_popup_id(f), Kind::Panel);
+    }
+    m.set_kind(Id::new("record_card"), Kind::Dialog);
+    m.set_kind(Id::new("record_card_scrim"), Kind::Fade);
+    // The EQ floats over the playlist where there are no separate windows (the web, tests).
+    m.set_kind(Id::new("eq_area"), Kind::Fade);
+    m
+}
+
 /// A playlist row's widget id, by its index in the crate.
 fn row_id(idx: usize) -> Id {
     Id::new(("pl_row", idx))
@@ -8744,6 +8793,7 @@ impl DiggrApp {
             waveform: true,
             engine_starting: matches!(self.engine, EngineSlot::Starting(_)),
             hidden,
+            animating: self.motion.animating(),
         };
         if let Some(after) = repaint_after(activity) {
             ctx.request_repaint_after(after);
@@ -8759,6 +8809,7 @@ impl DiggrApp {
 
     fn ui_inner(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.motion.begin_frame(&ctx, self.settings.reduce_motion);
         if self.tex.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(self.skin.size, &self.skin.rgba);
             self.tex = Some(ctx.load_texture("skin-atlas", img, egui::TextureOptions::NEAREST));
@@ -8817,6 +8868,10 @@ impl DiggrApp {
         self.spectrogram_window(&ctx);
         self.eq_window(&ctx);
         self.insights_window(&ctx);
+        // After everything that opens or closes has been drawn: move it.
+        if self.motion.end_frame(&ctx) {
+            ctx.request_repaint();
+        }
         if !self.first_frame_done {
             self.first_frame_done = true;
             let ms = self.startup.process_start.elapsed().as_secs_f64() * 1e3;
@@ -9157,7 +9212,20 @@ impl DiggrApp {
 
     /// The EQ window while it is open: the skin's EQ section in a window of its own, above the
     /// app's. Where it was put is remembered.
+    /// How far a separate window's content has faded in since it opened. Embedded windows
+    /// (the web, tests) are areas of the main window, which motion moves on its own: 1.
+    fn window_fade(&mut self, ctx: &egui::Context, which: &str, open: bool) -> f32 {
+        let key = Id::new(("window_fade", which));
+        if !open || ctx.embed_viewports() {
+            self.motion.reset(key);
+            return 1.0;
+        }
+        let d = crate::motion::MEDIUM;
+        self.motion.fade(key, true, d, d)
+    }
+
     fn eq_window(&mut self, ctx: &egui::Context) {
+        let fade = self.window_fade(ctx, "eq", self.settings.show_eq);
         if !self.settings.show_eq {
             return;
         }
@@ -9185,6 +9253,7 @@ impl DiggrApp {
             return;
         }
         ctx.show_viewport_immediate(eq_viewport_id(), builder, |ui, _| {
+            fade_in(ui, fade);
             if ui.input(|i| i.viewport().close_requested()) {
                 self.apply(Action::ToggleEq, ui.ctx());
                 return;
@@ -9208,6 +9277,7 @@ impl DiggrApp {
     /// crate changed, and what its clicks ask.
     fn insights_window(&mut self, ctx: &egui::Context) {
         use crate::insights::{self, Action as Ia, LabelInfo};
+        let fade = self.window_fade(ctx, "insights", self.insights_open);
         if !self.insights_open {
             self.insights_opened = None;
             return;
@@ -9276,6 +9346,7 @@ impl DiggrApp {
             egui::ViewportId::from_hash_of("insights"),
             builder,
             |ui, _| {
+                fade_in(ui, fade);
                 let mut a = insights::ui(ui, &stats, &label, &look);
                 if ui.input(|i| i.viewport().close_requested()) {
                     a.push(Ia::Close);
@@ -9337,8 +9408,13 @@ impl DiggrApp {
                 }
             }
         }
+        let fade = self.window_fade(ctx, "spectrogram", self.spectro_open);
         if !self.spectro_open {
             return;
+        }
+        self.spectro.set_opacity(fade);
+        if fade < 1.0 {
+            ctx.request_repaint_of(crate::spectrogram::viewport_id());
         }
         let playing = self.position.state != PlayState::Stopped;
         let info = self.now_playing.as_ref().filter(|_| playing);
@@ -9578,6 +9654,36 @@ mod tests {
             repaint_after(minimized),
             None,
             "no repaints while minimized/occluded"
+        );
+    }
+
+    #[test]
+    fn motion_repaints_every_refresh_until_it_settles() {
+        let moving = Activity {
+            animating: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            repaint_after(moving),
+            Some(Duration::ZERO),
+            "at the display's rate"
+        );
+        let moving_while_playing = Activity {
+            animating: true,
+            playing: true,
+            waveform: true,
+            ..Default::default()
+        };
+        assert_eq!(repaint_after(moving_while_playing), Some(Duration::ZERO));
+        let hidden = Activity {
+            animating: true,
+            hidden: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            repaint_after(hidden),
+            None,
+            "nothing to see while minimized"
         );
     }
 

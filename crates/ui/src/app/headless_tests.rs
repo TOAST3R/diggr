@@ -131,6 +131,9 @@ impl Rig {
         }) {
             app.crates.set_grouped(shown, false);
         }
+        // The tests read where things end up in the frame after an action; the motion tests
+        // turn motion back on.
+        app.settings.reduce_motion = true;
         Rig {
             app,
             ctx,
@@ -439,6 +442,8 @@ mod store_cart_tests;
 mod seller_tests;
 // The collection's Insights window, with a fake Discogs.
 mod insights_tests;
+// Things appearing and disappearing with motion on.
+mod motion_tests;
 
 fn texts(out: &egui::FullOutput) -> Vec<Text> {
     fn walk(shape: &egui::Shape, acc: &mut Vec<Text>) {
