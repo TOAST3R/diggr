@@ -47,6 +47,10 @@ pub(super) struct CoverCache {
     large: HashMap<CoverKey, (TextureHandle, u64)>,
     large_asked: HashSet<CoverKey>,
     large_failed: HashSet<CoverKey>,
+    /// Each cover's colour (the record card's label), from whichever of its covers came first,
+    /// so the large cover arriving doesn't change it. Kept when its texture is dropped: three
+    /// bytes a record.
+    tints: HashMap<CoverKey, [u8; 3]>,
 }
 
 /// A record card's two covers: its thumbnail and its large cover (`None`: none to show).
@@ -197,6 +201,7 @@ impl CoverCache {
             match r {
                 CoverResult::Ready(key, c) => {
                     self.asked.remove(&key);
+                    self.keep_tint(key, c.tint);
                     let img = egui::ColorImage::from_rgba_unmultiplied(
                         [c.width as usize, c.height as usize],
                         &c.rgba,
@@ -216,6 +221,7 @@ impl CoverCache {
                 }
                 CoverResult::LargeReady(key, c) => {
                     self.large_asked.remove(&key);
+                    self.keep_tint(key, c.tint);
                     let img = egui::ColorImage::from_rgba_unmultiplied(
                         [c.width as usize, c.height as usize],
                         &c.rgba,
@@ -255,6 +261,16 @@ impl CoverCache {
         if !changed {
             self.failed.insert(key);
         }
+    }
+
+    /// The colour of the cover of `e`'s record, once one of its covers has been read.
+    pub(super) fn tint(&self, e: &Entry) -> Option<[u8; 3]> {
+        let (key, _) = cover_of(e)?;
+        self.tints.get(&key).copied()
+    }
+
+    fn keep_tint(&mut self, key: CoverKey, tint: [u8; 3]) {
+        self.tints.entry(key).or_insert(tint);
     }
 
     fn evict(&mut self) {
@@ -351,6 +367,25 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(c.card_slot(&ctx, &none), (None, None), "no image: the icon");
+    }
+
+    #[test]
+    fn a_cover_keeps_the_tint_of_whichever_came_first() {
+        let mut c = CoverCache::default();
+        let e = entry(Origin {
+            release: Some(7),
+            cover: "https://i.discogs.com/a/150.jpeg".into(),
+            ..Default::default()
+        });
+        assert_eq!(c.tint(&e), None, "nothing read yet");
+        let key = CoverKey::Record(RecordKey::Release(7));
+        c.keep_tint(key, [200, 40, 40]);
+        c.keep_tint(key, [190, 50, 45]);
+        assert_eq!(
+            c.tint(&e),
+            Some([200, 40, 40]),
+            "the large cover doesn't retint it"
+        );
     }
 
     #[test]

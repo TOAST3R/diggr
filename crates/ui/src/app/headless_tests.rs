@@ -486,6 +486,22 @@ fn rects(out: &egui::FullOutput) -> Vec<(Rect, Color32)> {
     acc
 }
 
+/// Filled circles drawn: centre, radius and fill.
+fn circles(out: &egui::FullOutput) -> Vec<(Pos2, f32, Color32)> {
+    fn walk(shape: &egui::Shape, acc: &mut Vec<(Pos2, f32, Color32)>) {
+        match shape {
+            egui::Shape::Circle(c) => acc.push((c.center, c.radius, c.fill)),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+            _ => {}
+        }
+    }
+    let mut acc = Vec::new();
+    for s in &out.shapes {
+        walk(&s.shape, &mut acc);
+    }
+    acc
+}
+
 fn text_list(out: &egui::FullOutput) -> Vec<String> {
     texts(out).into_iter().map(|t| t.text).collect()
 }

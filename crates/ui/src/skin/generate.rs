@@ -1355,6 +1355,8 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             pl_title: [ACCENT[0], ACCENT[1], ACCENT[2]],
             pl_owned: [OFF_WHITE[0], OFF_WHITE[1], OFF_WHITE[2]],
             lcd: [LCD_ON[0], LCD_ON[1], LCD_ON[2]],
+            sticker_price: [244, 214, 72],
+            sticker_hype: [214, 64, 52],
         },
     };
     (img, def)

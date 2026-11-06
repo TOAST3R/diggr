@@ -17,6 +17,9 @@ use ::dig::preview::fetcher::{FakeFetcher, Fetcher};
 use ::dig::preview::scheduler::PreviewEvent;
 use ::dig::tools::{FakeSource, ToolSource};
 
+// The record card's sleeve: its vinyl, stickers and motion, with covers from fake images.
+mod sleeve_tests;
+
 const RELEASE: &str = "https://www.discogs.com/release/1001-Glasshouse-EP";
 const CLIPS: [&str; 3] = ["GLASShouse1", "LUMENremix1", "LASTlight01"];
 
@@ -1549,7 +1552,7 @@ fn an_open_card_fetches_its_record_right_after_the_current_track() {
     );
     // The last record's card: its track comes right after the current one.
     rig.app
-        .apply(Action::OpenCard(AlbumKey::Release(105)), &ctx);
+        .apply(Action::OpenCard(AlbumKey::Release(105), None), &ctx);
     rig.frame(Vec::new());
     assert_eq!(
         rig.dig().horizon(),

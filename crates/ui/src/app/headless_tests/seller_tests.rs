@@ -2582,7 +2582,7 @@ fn the_card_carries_the_records_pills_and_they_act_as_on_its_row() {
     let ctx = rig.ctx.clone();
     // Release 1002 has one copy (12): + CART on its card adds it, and the card stays open.
     rig.app.apply(
-        Action::OpenCard(crate::playlist::AlbumKey::Release(1002)),
+        Action::OpenCard(crate::playlist::AlbumKey::Release(1002), None),
         &ctx,
     );
     let cart = in_card(&mut rig, "+ CART").expect("+ CART on the card");
@@ -2612,7 +2612,7 @@ fn the_card_carries_the_records_pills_and_they_act_as_on_its_row() {
     );
     // Release 1001 has three copies: its card's 3 COPIES opens it in the list.
     rig.app.apply(
-        Action::OpenCard(crate::playlist::AlbumKey::Release(1001)),
+        Action::OpenCard(crate::playlist::AlbumKey::Release(1001), None),
         &ctx,
     );
     let copies = in_card(&mut rig, "3 COPIES").expect("3 COPIES");

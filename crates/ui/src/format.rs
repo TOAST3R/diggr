@@ -678,6 +678,65 @@ pub fn price(cents: u64, currency: &str) -> String {
     }
 }
 
+/// A price as a shop sticker writes it: no cents when there are none ("€9", "€12.50").
+pub fn price_short(cents: u64, currency: &str) -> String {
+    short(&price(cents, currency))
+}
+
+fn short(price: &str) -> String {
+    let p = price.trim();
+    p.strip_suffix(".00").unwrap_or(p).to_owned()
+}
+
+/// The price on a record card's sleeve sticker, first known of: the copy in the user's cart
+/// (as Discogs writes it), the cheapest unsold copy of a seller crate's record, the cheapest
+/// price for sale.
+pub fn sticker_price(
+    cart: Option<&str>,
+    copies: &[&crate::playlist::SaleCopy],
+    for_sale: Option<&crate::playlist::ForSale>,
+) -> Option<String> {
+    if let Some(p) = cart.filter(|p| !p.trim().is_empty()) {
+        return Some(short(p));
+    }
+    if let Some(c) = copies.iter().filter(|c| !c.sold).min_by_key(|c| c.cents) {
+        return Some(price_short(c.cents, &c.currency));
+    }
+    let fs = for_sale.filter(|fs| fs.count > 0)?;
+    Some(price_short(fs.lowest_cents?, &fs.currency))
+}
+
+/// The one hype sticker a record card's sleeve carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hype {
+    Sold,
+    Owned,
+    Wanted,
+}
+
+impl Hype {
+    pub fn label(self) -> &'static str {
+        match self {
+            Hype::Sold => "SOLD",
+            Hype::Owned => "OWNED",
+            Hype::Wanted => "WANTED",
+        }
+    }
+}
+
+/// SOLD over OWNED over WANTED: what most changes whether to buy it.
+pub fn hype(sold: bool, owned: bool, wanted: bool) -> Option<Hype> {
+    if sold {
+        Some(Hype::Sold)
+    } else if owned {
+        Some(Hype::Owned)
+    } else if wanted {
+        Some(Hype::Wanted)
+    } else {
+        None
+    }
+}
+
 /// A window of `width` characters into `text`, scrolled by `offset` characters. Text that fits
 /// is returned unchanged; longer text loops with a `  ***  ` separator.
 pub fn scroll(text: &str, width: usize, offset: usize) -> String {
@@ -1331,6 +1390,63 @@ mod tests {
         assert!(c.styles.is_empty());
         assert!(!c.has_strip());
         assert_eq!(c.tracks[0].title, "Music Is Math");
+    }
+
+    fn copy(cents: u64, sold: bool) -> crate::playlist::SaleCopy {
+        crate::playlist::SaleCopy {
+            cents,
+            currency: "EUR".into(),
+            sold,
+            ..Default::default()
+        }
+    }
+
+    fn snapshot(count: u32, lowest: Option<u64>) -> crate::playlist::ForSale {
+        crate::playlist::ForSale {
+            count,
+            lowest_cents: lowest,
+            currency: "EUR".into(),
+            fetched_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_sticker_price_drops_zero_cents() {
+        assert_eq!(price_short(900, "EUR"), "€9");
+        assert_eq!(price_short(1250, "EUR"), "€12.50");
+        assert_eq!(price_short(150_000, "JPY"), "¥1500");
+    }
+
+    #[test]
+    fn the_sticker_price_is_the_cart_copy_then_the_cheapest_unsold_then_the_snapshot() {
+        let fs = snapshot(6, Some(900));
+        assert_eq!(sticker_price(None, &[], Some(&fs)).as_deref(), Some("€9"));
+        assert_eq!(
+            sticker_price(Some("€14.50"), &[], Some(&fs)).as_deref(),
+            Some("€14.50"),
+            "in the cart"
+        );
+        let (a, b, sold) = (copy(1200, false), copy(1800, false), copy(600, true));
+        assert_eq!(
+            sticker_price(None, &[&b, &sold, &a], Some(&fs)).as_deref(),
+            Some("€12"),
+            "a seller crate's cheapest unsold copy"
+        );
+        assert_eq!(sticker_price(None, &[], None), None, "a local album");
+        assert_eq!(
+            sticker_price(None, &[], Some(&snapshot(0, None))),
+            None,
+            "none for sale"
+        );
+    }
+
+    #[test]
+    fn one_hype_sticker_sold_then_owned_then_wanted() {
+        assert_eq!(hype(false, false, true), Some(Hype::Wanted));
+        assert_eq!(hype(false, true, true), Some(Hype::Owned));
+        assert_eq!(hype(true, true, true), Some(Hype::Sold));
+        assert_eq!(hype(false, false, false), None);
+        assert_eq!(Hype::Owned.label(), "OWNED");
     }
 
     #[test]

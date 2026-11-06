@@ -341,9 +341,17 @@ and Home/End jump), and Enter plays the entry under it.
     are searched, how many it holds ("11 tracks · 1 clip · 10 to search"). **‹ ›** beside the
     artist, or `←` `→` while the card is open, step to the previous and next record, selecting
     it and scrolling the list to it; what plays carries on. When the record's last track ends
-    and the next record starts, the card goes with it. Each move slides the new record in from
-    its side. The card is drawn in the skin's
-    colours and doubles at 2×;
+    and the next record starts, the card goes with it. The cover is drawn as a sleeve pulled
+    out of a crate: its record shows at the side, its label in the cover's colour, and slides
+    further out while one of its tracks plays (or is paused). A round price sticker on the
+    corner gives the price of the copy in your cart, else the seller's cheapest copy, else the
+    cheapest for sale ("€9"), and a SOLD, OWNED or WANTED sticker sits on the other corner; the
+    WANTED one slaps on when you want the record while its card is open. Opening a card lifts
+    the cover from its row into the card; each move flips the sleeve forward to the next record
+    (back to the previous one) while the text slides in from its side. With Reduce motion
+    nothing moves, but the record and the stickers are still there. The card is drawn in the
+    skin's colours (the stickers in `sticker_price` and `sticker_hype` of `skin.ron`) and
+    doubles at 2×;
   - scrolling over the list works anywhere on it, and slow two-finger trackpad scrolling adds
     up row by row;
   - `P` scrolls to the playing entry. When the next track starts, the list follows it if the
@@ -1570,7 +1578,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1207 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1231 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable

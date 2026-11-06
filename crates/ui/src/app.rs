@@ -174,6 +174,8 @@ pub struct DiggrApp {
     /// drawn (a click outside it closes it).
     card: Option<OpenCard>,
     card_rect: Option<Rect>,
+    /// The open card's cover square, as drawn last frame.
+    card_cover: Option<Rect>,
     /// A record row being dragged: all its entries move.
     pl_drag_block: Option<Vec<EntryId>>,
     /// A track row of an open record being dragged: it moves within that record only.
@@ -434,6 +436,7 @@ impl DiggrApp {
             pl_drag_from: None,
             card: None,
             card_rect: None,
+            card_cover: None,
             pl_drag_block: None,
             pl_drag_track: None,
             pl_open: HashMap::new(),
@@ -4896,6 +4899,7 @@ impl DiggrApp {
         self.card_follow(now);
         let Some((_, rec, prev, next)) = self.card_record() else {
             self.card_rect = None;
+            self.card_cover = None;
             return;
         };
         let card = self.card_details(&rec);
@@ -4925,24 +4929,53 @@ impl DiggrApp {
                     .or_else(|| shown.get(id).and_then(|e| e.duration))?;
                 Some((self.position.seconds(), total))
             });
+        let reduced = crate::motion::reduced(ctx);
         let slide = self
             .card
             .as_ref()
             .and_then(|c| c.moved)
             .map(|(at, dir)| ((now - at) as f32, dir))
-            .filter(|(t, _)| *t < card::SLIDE);
+            .filter(|(t, _)| *t < card::SLIDE && !reduced);
+        let image = card::pick(thumb, large);
+        let mut sleeve = self.card_sleeve(ctx, &rec);
+        let wanted = sleeve.hype == Some(card::Hype::Wanted);
+        if let Some(c) = self.card.as_mut() {
+            // The sticker slaps on when the record shown turns wanted, not when the card
+            // arrives on a wanted record.
+            match &c.wanted {
+                Some((k, false)) if *k == rec.key && wanted => c.wanted_at = Some(now),
+                Some((k, _)) if *k != rec.key => c.wanted_at = None,
+                _ => {}
+            }
+            c.wanted = Some((rec.key.clone(), wanted));
+            if !reduced {
+                sleeve.slap = c
+                    .wanted_at
+                    .filter(|_| wanted)
+                    .map(|at| (now - at) as f32)
+                    .filter(|t| *t < card::SLAP);
+                sleeve.flight = c
+                    .from
+                    .map(|(r, at)| (r, (now - at) as f32))
+                    .filter(|(_, t)| *t < card::FLIGHT);
+                sleeve.flip = slide.and(c.left);
+            }
+            c.shown = Some(image);
+        }
         let view = card::Card {
             card: &card,
-            image: card::pick(thumb, large),
+            image,
             prev,
             next,
             pills,
             progress,
             slide,
+            sleeve,
         };
-        let (rect, clicked) = card::show(ctx, &view, &self.def.colors, scale);
-        self.card_rect = Some(rect);
-        for a in clicked {
+        let shown = card::show(ctx, &view, &self.def.colors, scale);
+        self.card_rect = Some(shown.rect);
+        self.card_cover = Some(shown.cover);
+        for a in shown.actions {
             let action = match a {
                 card::CardAction::Play(id) => Some(Action::PlayEntry(id)),
                 card::CardAction::Resume => Some(Action::Play),
@@ -4953,6 +4986,67 @@ impl DiggrApp {
                 card::CardAction::Pill(i) => pill_actions.get_mut(i).and_then(Option::take),
             };
             actions.extend(action);
+        }
+    }
+
+    /// Record `rec` as a sleeve on its card: its vinyl (out while one of its tracks plays or is
+    /// paused), its label's colour and its stickers. Only what's in memory.
+    fn card_sleeve(&self, ctx: &egui::Context, rec: &records::RecordRow) -> card::Sleeve {
+        let shown = self.crates.shown();
+        let first = &shown.entries()[rec.members[0]];
+        let playing_here = self.crates.shown_id() == self.crates.playing_id()
+            && self.position.state != PlayState::Stopped
+            && shown
+                .current()
+                .is_some_and(|id| rec.members.iter().any(|&i| shown.entries()[i].id == id));
+        let out = if crate::motion::reduced(ctx) {
+            f32::from(u8::from(playing_here))
+        } else {
+            // Keyed by the record: one the card arrives on shows its vinyl where it is at once.
+            let x = ctx.animate_bool_with_time(
+                Id::new(("card_disc", &rec.key)),
+                playing_here,
+                crate::motion::MEDIUM,
+            );
+            if playing_here {
+                crate::motion::ease_out_cubic(x)
+            } else {
+                1.0 - crate::motion::ease_out_cubic(1.0 - x)
+            }
+        };
+        let copies = match rec.key {
+            AlbumKey::Release(r) => shown.copies_of(r),
+            _ => Vec::new(),
+        };
+        let marks = self.dig_marks(first);
+        let sold = (!copies.is_empty() && copies.iter().all(|c| c.sold))
+            || self.store_pill(first).is_some_and(|p| p.sold);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (cart, tint) = {
+            let release = first.origin.as_ref().and_then(|o| o.release);
+            let cart = self
+                .dig
+                .as_ref()
+                .zip(release)
+                .and_then(|(d, r)| d.cart.for_release(r))
+                .map(|i| i.price.clone());
+            let tint = self.dig.as_ref().and_then(|d| d.covers.tint(first));
+            (cart, tint)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (cart, tint): (Option<String>, Option<[u8; 3]>) = (None, None);
+        card::Sleeve {
+            tint: tint.map(color),
+            out,
+            price: format::sticker_price(
+                cart.as_deref(),
+                &copies,
+                first.origin.as_ref().and_then(|o| o.for_sale.as_ref()),
+            ),
+            hype: format::hype(sold, marks.owned.is_some(), marks.wanted),
+            slap: None,
+            flip: None,
+            flight: None,
         }
     }
 
@@ -5171,6 +5265,9 @@ impl DiggrApp {
             c.key = rec.key.clone();
             c.following = None;
             c.moved = Some((now, dir));
+            // The cover on show flips away; one still flying lands at once.
+            c.left = c.shown;
+            c.from = None;
         }
     }
 
@@ -5537,7 +5634,8 @@ impl DiggrApp {
             });
             // A plain click opens (or closes) its card; with Shift or Cmd it only selects.
             if !look.mods.shift && !look.mods.command {
-                actions.push(Action::OpenCard(rec.key.clone()));
+                let from = matches!(cover, Some(CoverSlot::Loaded(..))).then_some(cr);
+                actions.push(Action::OpenCard(rec.key.clone(), from));
             }
         } else if menu_click && !ids.iter().all(|&id| shown.is_selected(id)) {
             // The menu acts on the selection, which becomes the record.
@@ -7184,17 +7282,23 @@ impl DiggrApp {
                 }
                 self.pl_open_rev += 1;
             }
-            Action::OpenCard(key) => {
+            Action::OpenCard(key, from) => {
                 let crate_id = self.crates.shown_id();
                 let same = self
                     .card
                     .as_ref()
                     .is_some_and(|c| c.crate_id == crate_id && c.key == key);
+                let now = ctx.input(|i| i.time);
                 self.card = (!same).then_some(OpenCard {
                     crate_id,
                     key,
                     following: None,
                     moved: None,
+                    from: from.map(|r| (r, now)),
+                    shown: None,
+                    left: None,
+                    wanted: None,
+                    wanted_at: None,
                 });
             }
             Action::CloseCard => self.card = None,
@@ -7494,7 +7598,9 @@ enum Action {
     /// A click on a record row: these entries, with these modifiers.
     SelectRecord(Vec<EntryId>, ClickMods),
     /// Opens the record's card, moves it to the record, or closes it when it's on it already.
-    OpenCard(AlbumKey),
+    /// Opens (or closes) a record's card; its cover flies from where its row's cover is drawn,
+    /// when it is.
+    OpenCard(AlbumKey, Option<Rect>),
     CloseCard,
     /// The card's previous (-1) or next (1) record.
     CardStep(i8),
@@ -7717,6 +7823,15 @@ struct OpenCard {
     following: Option<EntryId>,
     /// When the card moved to this record (egui time) and which way: its content slides in.
     moved: Option<(f64, i8)>,
+    /// Where its cover flies from (the clicked row's thumbnail) and when the card opened.
+    from: Option<(Rect, f64)>,
+    /// The cover drawn last frame, and the one drawn when the card last moved: it flips away.
+    shown: Option<card::CardImage>,
+    left: Option<card::CardImage>,
+    /// The record whose WANTED sticker was drawn last frame (or not), and when the sticker
+    /// appeared on it while shown: it slaps on.
+    wanted: Option<(AlbumKey, bool)>,
+    wanted_at: Option<f64>,
 }
 
 struct RecordLook<'a> {

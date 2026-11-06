@@ -156,6 +156,92 @@ pub struct Cover {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// One colour standing for the cover (see [`tint`]), worked out here, off the UI thread.
+    pub tint: [u8; 3],
+}
+
+impl Cover {
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let tint = tint(&rgba, width, height);
+        Self {
+            width,
+            height,
+            rgba,
+            tint,
+        }
+    }
+}
+
+/// Samples along each side at most: enough for a colour, cheap on a 600 px cover, and the same
+/// grid on a thumbnail and its large cover, so both give nearly the same colour.
+const TINT_GRID: u32 = 32;
+
+/// One colour for a cover, to tint its record's label: the mean of a grid of samples, each
+/// weighted by how colourful it is (saturation, and lightness near the middle), so a white
+/// border or black type doesn't wash it out. Its lightness is kept to 0.35–0.75, so it shows
+/// on a black disc and isn't white.
+pub fn tint(rgba: &[u8], width: u32, height: u32) -> [u8; 3] {
+    let (mut sum, mut total) = ([0.0f32; 3], 0.0f32);
+    let n = |len: u32| len.clamp(1, TINT_GRID);
+    let (nx, ny) = (n(width), n(height));
+    for j in 0..ny {
+        for i in 0..nx {
+            // The middle of each cell of the grid.
+            let x = ((2 * i + 1) * width / (2 * nx)).min(width.saturating_sub(1));
+            let y = ((2 * j + 1) * height / (2 * ny)).min(height.saturating_sub(1));
+            let at = ((y * width + x) * 4) as usize;
+            let Some(px) = rgba.get(at..at + 4) else {
+                continue;
+            };
+            let c = [px[0], px[1], px[2]].map(|v| f32::from(v) / 255.0);
+            let (_, s, l) = to_hsl(c);
+            let w = (s * (1.0 - (l - 0.5).abs()) + 0.02) * f32::from(px[3]) / 255.0;
+            for k in 0..3 {
+                sum[k] += c[k] * w;
+            }
+            total += w;
+        }
+    }
+    if total <= 0.0 {
+        return from_hsl(0.0, 0.0, 0.35);
+    }
+    let (h, s, l) = to_hsl(sum.map(|v| v / total));
+    from_hsl(h, s, l.clamp(0.35, 0.75))
+}
+
+/// Hue (0..1), saturation and lightness of an RGB colour in 0..1.
+fn to_hsl([r, g, b]: [f32; 3]) -> (f32, f32, f32) {
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d <= f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON);
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } / 6.0;
+    (h, s.min(1.0), l)
+}
+
+fn from_hsl(h: f32, s: f32, l: f32) -> [u8; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h * 6.0;
+    let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    [r, g, b].map(|v| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -296,11 +382,7 @@ fn decode(bytes: &[u8], max: u32) -> Option<Cover> {
         img.resize(max, max, image::imageops::FilterType::Triangle)
     };
     let rgba = img.to_rgba8();
-    Some(Cover {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-    })
+    Some(Cover::new(rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
 fn read_png(path: &Path) -> Option<Cover> {
@@ -308,11 +390,7 @@ fn read_png(path: &Path) -> Option<Cover> {
     let rgba = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
         .ok()?
         .to_rgba8();
-    Some(Cover {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-    })
+    Some(Cover::new(rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
 /// Writes atomically; failures are ignored (the folder is only a cache).
@@ -502,6 +580,67 @@ mod tests {
 
     fn covers(root: &Path, images: &Arc<FakeImages>, clock: &Arc<FakeClock>) -> Covers {
         Covers::new(Some(root), images.clone(), clock.clone())
+    }
+
+    /// An image of `w` × `h` coloured by `f(x, y)` (fractions of the side), opaque.
+    fn image(w: u32, h: u32, f: impl Fn(f32, f32) -> [u8; 3]) -> Vec<u8> {
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let [r, g, b] = f(x as f32 / w as f32, y as f32 / h as f32);
+                out.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        out
+    }
+
+    fn lightness(c: [u8; 3]) -> f32 {
+        to_hsl(c.map(|v| f32::from(v) / 255.0)).2
+    }
+
+    #[test]
+    fn a_red_cover_tints_red() {
+        let t = tint(&image(64, 64, |_, _| [220, 20, 30]), 64, 64);
+        assert!(t[0] > 150 && t[1] < 60 && t[2] < 60, "{t:?}");
+    }
+
+    #[test]
+    fn a_white_border_does_not_wash_the_tint_out() {
+        // A red square in the middle third, white all around: most of the cover is white.
+        let red = |x: f32, y: f32| {
+            let inside = (0.33..0.67).contains(&x) && (0.33..0.67).contains(&y);
+            if inside {
+                [200, 30, 30]
+            } else {
+                [255, 255, 255]
+            }
+        };
+        let t = tint(&image(90, 90, red), 90, 90);
+        assert!(t[0] > t[1] + 60 && t[0] > t[2] + 60, "{t:?}");
+    }
+
+    #[test]
+    fn a_black_cover_still_shows_on_the_disc() {
+        let t = tint(&image(40, 40, |_, _| [0, 0, 0]), 40, 40);
+        assert!(lightness(t) >= 0.34, "{t:?}");
+        let t = tint(&image(40, 40, |_, _| [255, 255, 255]), 40, 40);
+        assert!(lightness(t) <= 0.76, "{t:?}");
+    }
+
+    #[test]
+    fn a_thumbnail_and_its_large_cover_tint_alike() {
+        let art = |x: f32, y: f32| [(x * 255.0) as u8, (y * 200.0) as u8, 90];
+        let small = tint(&image(150, 150, art), 150, 150);
+        let large = tint(&image(600, 600, art), 600, 600);
+        for k in 0..3 {
+            assert!(small[k].abs_diff(large[k]) <= 8, "{small:?} {large:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_or_short_buffer_gives_a_grey() {
+        assert_eq!(tint(&[], 0, 0), tint(&[], 4, 4));
+        assert!(lightness(tint(&[], 4, 4)) >= 0.34);
     }
 
     #[test]
