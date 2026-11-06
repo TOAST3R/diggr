@@ -145,13 +145,13 @@ No music handy? The repo includes short test tones:
 `cargo run --release -p diggr -- crates/audio/tests/fixtures/tone.*`
 
 The window opens full screen, in one layout: a band across the top holds the **mini player**
-on the left, SYNC's turntable beside it while SYNC is on, then the waveform (a seek bar while
-the waveform is off) and, in the top-right corner, minimize and close (which quits); the
-playlist fills the rest. Restoring the window keeps the same layout at the smaller size. It's
+on the left, SYNC's turntable beside it while SYNC is on, then the waveform (always shown) and,
+in the top-right corner, minimize, the Options gear and close (which quits); the playlist fills
+the rest. Restoring the window keeps the same layout at the smaller size. It's
 drawn from an original pixel-art skin dressed like a DJ's gear (warm graphite panels, an amber
 LCD, title bars with groove lines), at double size by default (`Cmd+=` / `Cmd+−` switch between
-double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the playlist's
-footer, or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
+double and classic size, `Cmd+0` goes back to classic). **Options** (the gear ⚙ in the top-right
+corner, or right-click the mini player anywhere that isn't a control) has Discogs…, Browser… and
 Set up Diggr….
 
 Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the playlist's
@@ -204,8 +204,10 @@ and Home/End jump), and Enter plays the entry under it.
     a crate to send them there, exactly as Send to crate does. Narrower than that, it's hidden
     and the title bar's crate menu does the same job.
 - **Playlist window:**
-  - **The footer:** the gear ⚙ opens **Options** (Discogs…, Browser…, Set up Diggr…). The
-    "selected/total" time sits on the right, beside the grip.
+  - **No footer:** the list runs to the bottom of the window, closed by a thin edge. The gear ⚙
+    that opens **Options** (Discogs…, Browser…, Set up Diggr…) is in the band's top-right
+    corner, and the crate's "selected/total" time is in the filter bar, right after the search
+    (it shows only the total as the bar narrows, then nothing).
     **The list menu** is a right-click below the last row (or **Crate ▸** at the end of a
     row's right-click): select all / none / invert, remove selected, clear the crate, **Sort
     ▸**, Group by record, **Add files…** (Cmd+O) and **Add folder…** (in crates you can edit),
@@ -290,17 +292,18 @@ and Home/End jump), and Enter plays the entry under it.
     the crate itself, as in classic players: the playing track plays on, and next, saving and export
     follow the new order. Entries without a value (no BPM yet, no catalog number) go last
     either way, and catalog numbers and sides sort naturally (LT-2 before LT-10);
-  - **▤** in the title bar (or the list menu's **Group by record**) shows the crate one row
+  - **▤** in the mini player (or the list menu's **Group by record**) shows the crate one row
     per record: its cover, "Artist – Album" (the record's credit, so a compilation reads
     "Various – …") with its Discogs styles at the right, the catalog
     number, year, number of tracks and what's for sale (or, while one of its tracks plays, that
-    track). The column header is hidden while grouped (the list menu's Sort ▸ still sorts). **⏵** (or `→` on it, playlist focused; `←` closes)
+    track). The column header is hidden while a grouped crate shows records (the list menu's Sort ▸
+    still sorts); a crate of loose tracks keeps it. **⏵** (or `→` on it, playlist focused; `←` closes)
     opens a record to show its tracks. A click selects the whole record, a double-click (or
     `Enter`) plays it from its first playable track, its menu acts on all of it, and dragging
     it moves it whole (a track moves only within its record). The arrows step over records.
     Turning it on gathers each record's tracks together, like a sort, so what plays next is
-    what you see; tracks added later join their record. Each crate remembers its choice; your
-    Discogs wantlist and collection crates start grouped. Covers load for the record rows in
+    what you see; tracks added later join their record. Each crate remembers its choice, and every
+    crate starts grouped. Covers load for the record rows in
     view, top first; under a BPM filter a record says how many of its tracks match ("2 of 4
     tracks"). Click a record row to open its **record card** in the middle of the window, over the rest of
     it dimmed (only the card answers the mouse until you close it with its × or Esc; Shift- and
@@ -363,13 +366,13 @@ and Home/End jump), and Enter plays the entry under it.
     tinted, wherever it is in the crate. An album is a Discogs release (another pressing is
     another album), or local files with the same artist and album tags.
 - **Mini player** (275 pixels wide, at the band's left): the play state, time and title on an
-  LCD line, and under it previous, play, pause, stop, next, volume, shuffle, repeat and SYNC:
+  LCD line, and under it previous, play, pause, stop, next, volume, shuffle and repeat:
   - click the time to switch between elapsed and remaining;
   - the title line flashes WANTED, PASS, OWNED or UNWANTED for a moment after a verdict;
-  - three icons at the LCD line's end: **EQ** opens the equalizer in a window of its own (it
-    stays on top, and its place is remembered), the **waveform** icon shows or hides the
-    waveform like `W`, and **spectrum** opens the spectrogram window like `S`; each is lit
-    while its window or waveform shows;
+  - four buttons at the LCD line's end: **▤** groups the crate on screen by record (lit while
+    grouped), **EQ** opens the equalizer in a window of its own (it stays on top, and its place
+    is remembered), **spectrum** opens the spectrogram window like `S`, and **SYNC** (below);
+    each icon is lit while it's on;
   - the **shuffle** icon (crossed arrows);
   - the **repeat** icon cycles off → all → one, shown with a small 1 (all gapless);
   - **SYNC** plays every track at one tempo, the way it will sit in a set. It opens the
@@ -414,7 +417,7 @@ and Home/End jump), and Enter plays the entry under it.
 | | | | `Delete` / `Backspace` | remove selected entries |
 | | | | `Enter` | play the entry under the cursor (or the first selected) |
 | `[` / `]` | previous / next section | | `Cmd+O` / `Cmd+A` | add files / select all |
-| `Shift+]` | jump to the next drop | | `W` | show/hide the waveform |
+| `Shift+]` | jump to the next drop | | | |
 | `L` | loop the current section | | `Shift+L` | loop 4 bars (press again: 8, 16) |
 | `H` or `F1` | all shortcuts (help panel) | | `S` | spectrogram window |
 | `Y` | add the playing track's record to the wantlist (again: remove it) | | `Cmd+V` | paste a Discogs page into the crate on screen (the Playlist when that's a wantlist, collection, label, seller or friend crate) |
@@ -1221,8 +1224,7 @@ changes. The extension is plain JavaScript with no build step and no dependencie
 
 ### Waveform and structure navigation
 
-In the band, right of the mini player, the **waveform** (`W`, or the mini player's waveform
-icon) has two rows; while it's off, a seek bar takes its place:
+In the band, right of the mini player, the **waveform** (always shown) has two rows:
 
 - **Overview** of the whole track: coloured by frequency, with section bands, red markers where
   the energy jumps (the drops), and the playhead. Click or drag to seek.
@@ -1517,7 +1519,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1131 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1135 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1587,9 +1589,11 @@ What's covered:
     headings that stay, the scrollbar, scrolling while dragging onto a crate, a shown crate
     opening its group, the busy mark, and the grouped, scrolling crate menu;
   - the full-screen layout, headless: the mini player's buttons (transport, shuffle, repeat,
-    SYNC, the EQ, waveform and spectrum icons, the time) and that they fit in 275 pixels, the
-    verdict flash on its title line, minimize and close, the band's seek bar while the
-    waveform is off, the EQ window, Shift+P doing nothing, and old layout settings loading;
+    SYNC, the ▤, EQ and spectrum icons, the time) and that its two rows line up and fit in 275
+    pixels, the verdict flash on its title line, minimize, the Options gear and close (and the
+    dead gaps between them), the always-on waveform, the playlist's bottom edge and no footer,
+    the filter bar's time readout across widths, the column header of a crate without albums,
+    the EQ window, Shift+P doing nothing, and old layout settings loading;
   - label crates: the label field and `is_locked`, every refused edit while pass still works,
     Move to Labels, the LABELS group, the label crate menu, Export to crate,
     Delete label, Refresh label's summary, a label sent from the browser (followed, then
