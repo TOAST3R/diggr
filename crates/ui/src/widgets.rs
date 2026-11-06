@@ -108,21 +108,122 @@ impl<'a> Skinned<'a> {
 pub fn button(ui: &mut Ui, sk: &Skinned, id: &str, layout: &str, sprite: &str) -> Response {
     let rect = sk.at(layout);
     let resp = ui.interact(rect, Id::new(id), Sense::click());
-    let name = if resp.is_pointer_button_down_on() {
+    pressable(ui, sk, &resp, rect, sprite);
+    resp
+}
+
+/// Draws a button's `sprite` for `resp` (`{sprite}_p` while held), pressed in by a skin pixel
+/// while held and springing back when let go (see [`crate::motion::press`]).
+pub fn pressable(ui: &Ui, sk: &Skinned, resp: &Response, rect: Rect, sprite: &str) {
+    let down = resp.is_pointer_button_down_on();
+    let name = if down {
         format!("{sprite}_p")
     } else {
         sprite.to_owned()
     };
-    sk.sprite_in(&name, rect);
-    resp
+    let dy = crate::motion::press(ui.ctx(), resp.id, down) * sk.scale;
+    sk.sprite_in(&name, rect.translate(vec2(0.0, dy)));
 }
 
 /// Two-state toggle drawn with `{base}_on` / `{base}_off`.
 pub fn toggle(ui: &mut Ui, sk: &Skinned, id: &str, layout: &str, base: &str, on: bool) -> Response {
     let rect = sk.at(layout);
     let resp = ui.interact(rect, Id::new(id), Sense::click());
-    sk.sprite_in(&format!("{base}_{}", if on { "on" } else { "off" }), rect);
+    lamp(ui, sk, &resp, rect, base, on, false);
     resp
+}
+
+/// How strongly a lit LCD segment glows past its edge.
+const SEGMENT_GLOW: f32 = 0.1;
+
+/// The segments `c` lights on a seven-segment digit.
+pub fn segments(c: char) -> u8 {
+    use crate::skin::generate::{DIGIT_MASKS, MINUS_MASK, QUESTION_MASK};
+    match c {
+        '0'..='9' => DIGIT_MASKS[c as usize - '0' as usize],
+        '-' => MINUS_MASK,
+        '?' => QUESTION_MASK,
+        _ => 0,
+    }
+}
+
+/// A seven-segment LCD digit `c` at (x, y) (skin pixels), for the place `slot` on the LCD: the
+/// skin's sprite, with a faint glow around its lit segments, and the segments that just went
+/// out fading over [`crate::motion::FAST`] instead of vanishing.
+pub fn lcd_digit(ui: &Ui, sk: &Skinned, slot: Id, x: f32, y: f32, c: char) {
+    let name = match c {
+        ' ' => "digit_blank".to_owned(),
+        '?' => "digit_q".to_owned(),
+        '-' => "digit_minus".to_owned(),
+        c => format!("digit_{c}"),
+    };
+    sk.sprite(&name, x, y);
+    let mask = segments(c);
+    let lit = color(sk.def.colors.lcd);
+    let seg = |i: usize, grow: f32| {
+        let (sx, sy, w, h) = crate::skin::generate::SEGMENTS[i];
+        sk.rect(x + sx as f32, y + sy as f32, w as f32, h as f32)
+            .expand(grow * sk.scale)
+    };
+    for i in (0..7).filter(|i| mask & (1 << i) != 0) {
+        sk.fill(seg(i, 1.0), lit.gamma_multiply(SEGMENT_GLOW));
+    }
+    let (gone, left) = crate::motion::afterglow(ui.ctx(), slot, mask);
+    if left > 0.0 {
+        for i in (0..7).filter(|i| gone & (1 << i) != 0) {
+            sk.fill(seg(i, 0.0), lit.gamma_multiply(left));
+        }
+    }
+}
+
+/// The glow a lamp gives off as it lights.
+pub const GLOW: Color32 = Color32::from_rgb(255, 178, 72);
+
+/// Draws a lamp or lit button for `resp`: `{base}_on` / `{base}_off` (with `_p` while held when
+/// `pressable`). As it lights it blooms, a glow up to 3 skin pixels past its edge that settles
+/// in [`crate::motion::MEDIUM`]; as it goes out its lit look fades over
+/// [`crate::motion::FAST`].
+pub fn lamp(
+    ui: &Ui,
+    sk: &Skinned,
+    resp: &Response,
+    rect: Rect,
+    base: &str,
+    on: bool,
+    pressable: bool,
+) {
+    let (bloom, fade) = crate::motion::lamp(ui.ctx(), resp.id, on);
+    if bloom > 0.0 {
+        let shadow = egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: (6.0 * sk.scale * bloom).round() as u8,
+            spread: (3.0 * sk.scale * bloom).round() as u8,
+            color: GLOW.gamma_multiply(0.7 * bloom),
+        };
+        sk.painter.add(shadow.as_shape(rect, 1.0 * sk.scale));
+    }
+    let state = if on { "on" } else { "off" };
+    let down = pressable && resp.is_pointer_button_down_on();
+    let dy = if pressable {
+        crate::motion::press(ui.ctx(), resp.id, down) * sk.scale
+    } else {
+        0.0
+    };
+    let held = format!("{base}_{state}_p");
+    let name = if down && sk.def.sprite(&held).w > 0 {
+        held
+    } else {
+        format!("{base}_{state}")
+    };
+    let at = rect.translate(vec2(0.0, dy));
+    sk.sprite_in(&name, at);
+    if fade > 0.0 {
+        sk.sprite_tinted(
+            &format!("{base}_on"),
+            at,
+            Color32::WHITE.gamma_multiply(fade),
+        );
+    }
 }
 
 pub struct SliderSprites<'s> {

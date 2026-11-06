@@ -542,19 +542,21 @@ fn button_face(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, pressed: bool) {
     }
 }
 
+/// A seven-segment digit's segments in its 9×13 sprite: (x, y, w, h), a … g.
+pub const SEGMENTS: [(i32, i32, i32, i32); 7] = [
+    (2, 0, 5, 2),  // a
+    (7, 2, 2, 4),  // b
+    (7, 7, 2, 4),  // c
+    (2, 11, 5, 2), // d
+    (0, 7, 2, 4),  // e
+    (0, 2, 2, 4),  // f
+    (2, 6, 5, 1),  // g
+];
+
 /// Seven-segment digit, 9×13: segments lit per `mask` (bit 0 = a … bit 6 = g).
 fn seven_seg(c: &mut Canvas, x: i32, y: i32, mask: u8) {
     c.fill(x, y, 9, 13, LCD_BG);
-    let segs: [(i32, i32, i32, i32); 7] = [
-        (2, 0, 5, 2),  // a
-        (7, 2, 2, 4),  // b
-        (7, 7, 2, 4),  // c
-        (2, 11, 5, 2), // d
-        (0, 7, 2, 4),  // e
-        (0, 2, 2, 4),  // f
-        (2, 6, 5, 1),  // g
-    ];
-    for (i, (sx, sy, w, h)) in segs.iter().enumerate() {
+    for (i, (sx, sy, w, h)) in SEGMENTS.iter().enumerate() {
         let col = if mask & (1 << i) != 0 {
             LCD_ON
         } else {
@@ -564,7 +566,12 @@ fn seven_seg(c: &mut Canvas, x: i32, y: i32, mask: u8) {
     }
 }
 
-const DIGIT_MASKS: [u8; 10] = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
+/// The segments "-" and "?" light.
+pub const MINUS_MASK: u8 = 0x40;
+pub const QUESTION_MASK: u8 = 0x53;
+
+/// The segments each digit 0–9 lights.
+pub const DIGIT_MASKS: [u8; 10] = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
 
 pub fn generate() -> (RgbaImage, SkinDef) {
     let mut b = Builder {
@@ -1061,9 +1068,13 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             seven_seg(c, x, y, *mask)
         });
     }
-    b.sprite("digit_minus", 9, 13, |c, x, y| seven_seg(c, x, y, 0x40));
+    b.sprite("digit_minus", 9, 13, |c, x, y| {
+        seven_seg(c, x, y, MINUS_MASK)
+    });
     // "?" (segments a, b, g, e): SYNC waiting for a BPM.
-    b.sprite("digit_q", 9, 13, |c, x, y| seven_seg(c, x, y, 0x53));
+    b.sprite("digit_q", 9, 13, |c, x, y| {
+        seven_seg(c, x, y, QUESTION_MASK)
+    });
     b.sprite("digit_blank", 9, 13, |c, x, y| c.fill(x, y, 9, 13, LCD_BG));
     b.sprite("digit_colon", 3, 13, |c, x, y| {
         c.fill(x, y, 3, 13, LCD_BG);

@@ -30,6 +30,10 @@ sentences. `## Unreleased` collects entries until a release renames it.
   filter panels slide up, and closing fades them away, all in a fraction of a second. It never
   slows you down: what opens answers your click at once. Prefer things still? Options ▸ Reduce
   motion.
+- **Every click answers.** Buttons press in, SYNC glows as it lights, and the pitch fader glides
+  home when you hit RESET. A want sweeps its row with colour, a pass nudges it aside as it dims,
+  and the cart total rolls up to its new price. Switching crates slides the list across, and rows
+  make room when a record arrives.
 
 ### Changed
 

@@ -5648,3 +5648,76 @@ fn the_connect_dialog_and_the_setup_step_use_connect_with_discogs() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+// ---- verdicts answered with motion --------------------------------------------------------
+
+#[test]
+fn a_passed_row_nudges_aside_and_fades_to_dimmed() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-pass-motion", &fakes, |_| {});
+    let c = play_release(&mut rig);
+    rig.until(|r| all_playable(r, c, 3), "all previews ready");
+    rig.app.settings.reduce_motion = false;
+    let row = |out: &egui::FullOutput| {
+        texts(out)
+            .into_iter()
+            .find(|t| t.text.starts_with("1. "))
+            .map(|t| (t.rect.min.x, t.color.unwrap()))
+            .unwrap()
+    };
+    let (rest_x, bright) = row(&rig.frame(Vec::new()));
+    key(&mut rig, Key::N);
+    assert!(memory(&rig).is_passed(CLIPS[0]), "passed in that frame");
+    let mut frames = Vec::new();
+    for _ in 0..14 {
+        frames.push(row(&rig.frame(Vec::new())));
+    }
+    let sum = |c: egui::Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+    assert!(
+        frames[0].0 > rest_x + 0.5,
+        "nudged aside: {rest_x} → {:?}",
+        frames[0]
+    );
+    assert!(sum(frames[0].1) > sum(frames[13].1), "fading");
+    assert!(sum(frames[0].1) <= sum(bright));
+    // Back in place and dimmed within 0.18 s (11 frames).
+    for f in &frames[11..] {
+        assert!((f.0 - rest_x).abs() < 1e-3, "back in place: {frames:?}");
+        assert_eq!(f.1, frames[13].1);
+    }
+}
+
+#[test]
+fn a_wanted_row_is_swept_with_the_want_colour() {
+    let fakes = Fakes::new();
+    let mut rig = rig("dig-want-motion", &fakes, |_| {});
+    play_release(&mut rig);
+    rig.app.settings.reduce_motion = false;
+    // The sweep: wide, translucent bands in the want colour.
+    let sweeps = |out: &egui::FullOutput| {
+        rects(out)
+            .into_iter()
+            .filter(|(r, c)| {
+                let g = crate::widgets::GLOW;
+                r.width() > 4.0
+                    && r.height() > 6.0
+                    && c.a() > 0
+                    && c.a() < 255
+                    && c.to_opaque() != Color32::BLACK
+                    && (c.r() as f32 / c.a() as f32 - g.r() as f32 / 255.0).abs() < 0.05
+                    && (c.g() as f32 / c.a() as f32 - g.g() as f32 / 255.0).abs() < 0.05
+            })
+            .count()
+    };
+    assert_eq!(sweeps(&rig.frame(Vec::new())), 0);
+    key(&mut rig, Key::Y);
+    assert!(memory(&rig).is_wanted(1001), "wanted in that frame");
+    let mut seen = Vec::new();
+    for _ in 0..18 {
+        seen.push(sweeps(&rig.frame(Vec::new())));
+    }
+    assert!(seen[0] > 0, "swept: {seen:?}");
+    // Over 0.24 s (15 frames ±1), then gone.
+    let last = seen.iter().rposition(|&n| n > 0).unwrap();
+    assert!(last <= 15, "{seen:?}");
+}

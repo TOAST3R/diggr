@@ -4299,7 +4299,7 @@ impl DiggrApp {
     }
 
     /// The entries of `releases` in crate `c` (loaded first).
-    fn entries_of(&mut self, c: CrateId, releases: &HashSet<u64>) -> Vec<EntryId> {
+    pub(super) fn entries_of(&mut self, c: CrateId, releases: &HashSet<u64>) -> Vec<EntryId> {
         if !self.crates.load(c) {
             return Vec::new();
         }
@@ -4410,6 +4410,8 @@ impl DiggrApp {
             for (r, _) in &added {
                 self.dig_fill(Page::new(url::PageKind::Release(*r)), wl);
             }
+            let rows = self.entries_of(c, &set);
+            self.answer_rows(rows, super::Answer::Want);
             let Some(d) = &mut self.dig else { return };
             for (r, _) in &added {
                 d.memory.wanted.insert(*r);
@@ -4768,6 +4770,7 @@ impl DiggrApp {
         let err = d.save_memory();
         self.dig_notify(err);
         self.flash(Verdict::Pass, 1);
+        self.answer_rows([id], super::Answer::Pass);
         let playing = self.position.state != PlayState::Stopped
             && c == self.crates.playing_id()
             && self.crates.playing().current() == Some(id);

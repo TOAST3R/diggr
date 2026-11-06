@@ -163,6 +163,18 @@ fades them out a little faster. What you open answers clicks and keys from its f
 what you close stops at once, so the motion never holds you up; the window repaints at the
 display's rate only while something moves. Options ▸ Reduce motion turns it all off.
 
+What you do answers too:
+- **Controls:** buttons press in a pixel while held and spring back; SYNC and the toggles glow
+  as they light and fade as they go out.
+- **The turntable:** the pitch fader glides home with a little overshoot when RESET, a fit or
+  8%/16% moves it (under your hand it follows exactly), and the LCD digits glow faintly, the
+  segments that go out fading instead of vanishing.
+- **Verdicts:** a want sweeps its row in the want colour, a pass nudges the row aside as it dims,
+  adding to the cart flashes the row, and the verdict word slides onto the title line.
+- **Numbers and lists:** the CART total, the filter buttons' counts and the crate's filtered
+  count roll to their new values; switching crates cross-fades the list with a short slide, and
+  rows ease aside to make room for one that arrives.
+
 Click in the band or in the playlist (or press `Tab`) to give it the keyboard: the header
 lights up while the player has it and the playlist's title bar while the playlist does. With the player focused, `↑` / `↓` set the volume (SYNC's tempo while SYNC is on). With the
 playlist focused, they move a cursor through the list (Shift extends the selection; PgUp/PgDn
@@ -1549,7 +1561,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1180 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1192 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1600,7 +1612,13 @@ What's covered:
     rising 4 points in 0.12 s and fading out when closed, a menu item working while the menu
     still moves, the help growing into place, a closing dialog taking no clicks, a filter panel
     sliding 12 points, the EQ and separate windows fading in, keys working while something
-    moves, and Reduce motion in the Options menu, kept across launches;
+    moves, and Reduce motion in the Options menu, kept across launches; buttons pressing in a
+    pixel and springing back, SYNC blooming as it lights, RESET gliding the pitch fader home
+    (overshoot under 10%, settled within 0.3 s) while a drag stays under the hand, LCD segments
+    fading out when a digit changes, a passed row nudging aside as it dims and a wanted one swept
+    in the want colour, the CART total rolling to its new value, a crate switch cross-fading with
+    its rows clickable at once, rows making room for one that arrives, and labels rolling only
+    their numbers;
   - playlist selection, reordering and totals;
   - shuffle order, and a play order that skips entries waiting for their audio;
   - the crate search: every word in some field, folded case and accents, the play order

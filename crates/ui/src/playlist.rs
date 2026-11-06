@@ -1599,6 +1599,14 @@ impl Playlist {
         &self.copies
     }
 
+    /// The record a listing in this crate is a copy of.
+    pub fn release_of_listing(&self, listing: u64) -> Option<u64> {
+        self.copies
+            .iter()
+            .find(|c| c.listing == listing)
+            .map(|c| c.release)
+    }
+
     /// A record's copies: unsold cheapest first, then the sold ones.
     pub fn copies_of(&self, release: u64) -> Vec<&SaleCopy> {
         let mut v: Vec<&SaleCopy> = self
