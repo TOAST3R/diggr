@@ -26,6 +26,10 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Changed
 
+- **A seek bar in the player.** Under the transport buttons, a bar shows how far into the track
+  you are; click or drag it to jump, and it tells you the time before you let go.
+- **Jumps without a click.** Seeking, or skipping to the next or previous track, now fades the
+  sound out and back in over a few milliseconds instead of cutting it, so it no longer clicks.
 - **The turntable is always there, and the band is in thirds.** The player, the turntable
   and the waveform each take a third of the top, so the waveform is no longer squeezed to a
   sliver when you turn SYNC on, and the band no longer jumps taller. SYNC is now a button on

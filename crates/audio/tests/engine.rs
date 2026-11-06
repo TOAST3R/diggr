@@ -107,6 +107,21 @@ impl Rig {
     /// Pulls one buffer after half of its real-time duration: 2× real time, which the decode
     /// thread must keep up with even while other tests load the CPU (tests assert zero
     /// underruns).
+    /// After a seek or a track change: pulls until the buffer where the new audio starts (the
+    /// old audio's fade-out is only in a buffer's first frames, and the new audio always begins
+    /// a buffer).
+    fn pull_after_flush(&mut self) -> Vec<f32> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let b = self.pull();
+            if b[DECLICK * 2..].iter().any(|&s| s != 0.0) {
+                return b;
+            }
+            assert!(Instant::now() < deadline, "no new audio arrived");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn pull_waiting(&mut self) -> Vec<f32> {
         let rate = self.engine.stats().format.sample_rate as u64;
         std::thread::sleep(Duration::from_micros(BUF as u64 * 1_000_000 / rate / 2));
@@ -132,6 +147,25 @@ fn expected(from: u64, frames: usize) -> Vec<f32> {
             [l, r]
         })
         .collect()
+}
+
+/// The renderer's de-click fade: 5 ms at 48 kHz.
+const DECLICK: usize = audio::renderer::DECLICK_FRAMES;
+
+/// New audio after a seek or a track change: its first [`DECLICK`] frames are the fade (the new
+/// audio fading in, under the old fading out when it arrived at once), then exactly the source.
+fn assert_faded_in(actual: &[f32], expected: &[f32], what: &str) {
+    assert_eq!(actual.len(), expected.len(), "{what}: length");
+    for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+        if i < DECLICK * 2 {
+            assert!(a.abs() <= 2.0, "{what}: sample {i} is {a} in the fade");
+        } else {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "{what}: sample {i} is {a}, expected {e}"
+            );
+        }
+    }
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], what: &str) {
@@ -204,7 +238,7 @@ fn pause_resumes_at_the_exact_frame() {
 }
 
 #[test]
-fn seek_jumps_without_old_audio() {
+fn a_seek_fades_out_then_plays_only_the_new_audio() {
     let dir = temp_dir("seek");
     let t = write_wav(&dir.join("a.wav"), 48_000, 0, 96_000);
     let mut rig = Rig::new(48_000, EngineConfig::default());
@@ -212,17 +246,18 @@ fn seek_jumps_without_old_audio() {
     rig.engine.play_index(0);
     rig.pull_audio(3);
     rig.engine.seek(1.5);
-    // Everything after the seek is either silence (while it loads) or post-seek audio.
+    // After the seek: the old audio's 5 ms fade-out, silence while it loads, then the new audio,
+    // faded in over its first 5 ms; nothing of the old audio after its fade.
     let deadline = Instant::now() + Duration::from_secs(5);
     let first = loop {
         let b = rig.pull();
-        if b.iter().any(|&s| s != 0.0) {
+        if b[DECLICK * 2..].iter().any(|&s| s != 0.0) {
             break b;
         }
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     };
-    assert_close(&first, &expected(72_000, BUF), "post-seek audio");
+    assert_faded_in(&first, &expected(72_000, BUF), "post-seek audio");
     let pos = rig.engine.position();
     assert!(pos.discontinuity || pos.frame >= 72_000);
     assert!(
@@ -364,11 +399,11 @@ fn next_previous_and_queue_edits() {
     rig.engine.play_index(0);
     rig.pull_audio(1);
     rig.engine.next();
-    let out = rig.pull_audio(1);
-    assert_close(&out, &expected(10_000, BUF), "next");
+    let out = rig.pull_after_flush();
+    assert_faded_in(&out, &expected(10_000, BUF), "next");
     rig.engine.previous();
-    let out = rig.pull_audio(1);
-    assert_close(&out, &expected(0, BUF), "previous");
+    let out = rig.pull_after_flush();
+    assert_faded_in(&out, &expected(0, BUF), "previous");
 
     // Reordering keeps the playing track and tracks its new index.
     rig.engine.set_queue(vec![
@@ -1072,5 +1107,34 @@ fn a_speed_change_at_a_gapless_boundary_applies_to_the_audible_track() {
         speeds.contains(&(Some(1), 1.0)),
         "then b at its own: {speeds:?}"
     );
+    assert_eq!(rig.engine.stats().underruns, 0);
+}
+
+#[test]
+fn a_seek_neither_stops_nor_starts_with_a_click() {
+    let dir = temp_dir("seek-declick");
+    let t = sine_wav(&dir.join("a.wav"), 1_000.0, 0..480_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let mut out = rig.pull_audio(10);
+    let at = out.len();
+    rig.engine.seek(5.0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let b = rig.pull_waiting();
+        let arrived = b[DECLICK * 2..].iter().any(|&s| s != 0.0);
+        out.extend(b);
+        if arrived {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the new audio arrived");
+    }
+    for _ in 0..4 {
+        out.extend(rig.pull_waiting());
+    }
+    // A sine at 0.5 and 1 kHz changes by at most 0.066 per sample; a hard cut steps up to 0.5.
+    let step = max_step(&out[at - 2..]);
+    assert!(step < 0.08, "a click at the seek: a step of {step}");
     assert_eq!(rig.engine.stats().underruns, 0);
 }

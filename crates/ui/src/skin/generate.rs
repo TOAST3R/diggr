@@ -518,6 +518,8 @@ pub const HDR_H: u16 = 15;
 pub const HB: u16 = 11;
 /// The frame under the playlist's last row, as wide as its left edge.
 pub const PL_BOTTOM_EDGE: u16 = 12;
+/// The player's seek bar's height.
+pub const SEEK_H: u16 = 7;
 /// The mini player's volume slider.
 pub const VOLUME_W: u16 = 108;
 
@@ -1112,6 +1114,34 @@ pub fn generate() -> (RgbaImage, SkinDef) {
             &[ACCENT_DIM, ACCENT, rgb(255, 84, 40)],
         );
     });
+    // The player's seek bar: a groove in three pieces (the app tiles the middle to the
+    // player's width), the played part's fill, and a thumb.
+    b.sprite("seek_track_l", 2, SEEK_H, |c, x, y| {
+        c.fill(x, y, 2, SEEK_H as i32, GROOVE);
+        c.fill(x, y, 2, 1, LO);
+        c.fill(x, y + SEEK_H as i32 - 1, 2, 1, HI);
+        c.fill(x, y, 1, SEEK_H as i32, LO);
+    });
+    b.sprite("seek_track_m", 1, SEEK_H, |c, x, y| {
+        c.fill(x, y, 1, SEEK_H as i32, GROOVE);
+        c.px(x, y, LO);
+        c.px(x, y + SEEK_H as i32 - 1, HI);
+    });
+    b.sprite("seek_track_r", 2, SEEK_H, |c, x, y| {
+        c.fill(x, y, 2, SEEK_H as i32, GROOVE);
+        c.fill(x, y, 2, 1, LO);
+        c.fill(x, y + SEEK_H as i32 - 1, 2, 1, HI);
+        c.fill(x + 1, y, 1, SEEK_H as i32, HI);
+    });
+    b.sprite("seek_fill", 1, SEEK_H, |c, x, y| {
+        c.fill(x, y + 2, 1, SEEK_H as i32 - 4, ACCENT_DIM);
+    });
+    for (name, pressed) in [("seek_thumb", false), ("seek_thumb_p", true)] {
+        b.sprite(name, 9, SEEK_H, |c, x, y| {
+            button_face(c, x, y, 9, SEEK_H as i32, pressed);
+            c.fill(x + 4, y + 1, 1, SEEK_H as i32 - 2, ACCENT);
+        });
+    }
     for name in ["volume_thumb"] {
         for pressed in [false, true] {
             let n = if pressed {
