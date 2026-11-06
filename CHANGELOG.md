@@ -26,6 +26,21 @@ sentences. `## Unreleased` collects entries until a release renames it.
 
 ### Changed
 
+- **The turntable is always there, and the band is in thirds.** The player, the turntable
+  and the waveform each take a third of the top, so the waveform is no longer squeezed to a
+  sliver when you turn SYNC on, and the band no longer jumps taller. SYNC is now a button on
+  the turntable, which sits dimmed until you use it, and you can drag the window by any empty
+  part of the band.
+- **A header across the top.** DIGGR sits in the middle of a title bar like the skin's others,
+  with help, Options, minimize and close at its right: no more three small buttons in a mostly
+  empty corner, and the waveform gets the width back. Drag the header to move the window,
+  double-click it to maximize or restore, and click `?` for the shortcuts.
+- **SYNC says what it's doing.** The turntable has a line that reads LOCKED +3.3%, ANALYZING,
+  or OWN · OUT OF ±8% (a record too far from your tempo), a pitch meter showing how hard the
+  record is pushed, a flash round the platter when it locks, and digits that count to your
+  tempo when a new track starts. The target digits are easier to read too.
+- **A second line in the player.** Under the track it shows the record's label, side, year and
+  what's for sale, or a file's album.
 - **A tidier window.** The gear for Options sits in the top-right corner between minimize and
   close, ▤ (group by record) and SYNC are in the player beside EQ and the spectrogram, and the
   player's two rows now line up. The playlist's footer is gone: its time readout is in the

@@ -7,8 +7,8 @@ use analysis::{SectionKind, SongScore};
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 /// Section height in skin pixels (multiplied by the UI scale).
-pub const HEIGHT: u32 = 58;
-const OVERVIEW_H: f32 = 14.0;
+pub const HEIGHT: u32 = 76;
+const OVERVIEW_H: f32 = 18.0;
 pub const MIN_BARS: f32 = 1.0;
 pub const MAX_BARS: f32 = 64.0;
 pub const DEFAULT_BARS: f32 = 8.0;

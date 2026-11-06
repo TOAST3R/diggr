@@ -55,8 +55,76 @@ impl SyncSettings {
         ((s - 1.0).abs() <= self.range() + 1e-9).then_some(s)
     }
 
+    /// Where SYNC stands for the playing record (`bpm`, `analyzing` while its tempo is
+    /// being read, `playing` for anything but stopped): what the turntable's state line says.
+    pub fn fit(&self, bpm: Option<u16>, analyzing: bool, playing: bool) -> Fit {
+        if !self.on {
+            return Fit::Off;
+        }
+        if self.pending.is_some() || analyzing {
+            return Fit::Analyzing;
+        }
+        if !playing {
+            return Fit::Idle;
+        }
+        let Some(b) = bpm.filter(|&b| b > 0) else {
+            return Fit::NoBpm;
+        };
+        let s = self.raw_speed(b);
+        if (s - 1.0).abs() <= self.range() + 1e-9 {
+            Fit::Locked(s)
+        } else {
+            Fit::Out(s)
+        }
+    }
+
+    /// The speed that would fit a record of `bpm` to the target, whether or not the range
+    /// allows it (see [`Self::speed`]).
+    pub fn raw_speed(&self, bpm: u16) -> f64 {
+        let b = bpm.max(1) as f64;
+        [b, b * 2.0, b / 2.0]
+            .map(|b| self.target as f64 / b)
+            .into_iter()
+            .min_by(|x, y| (x - 1.0).abs().total_cmp(&(y - 1.0).abs()))
+            .unwrap_or(1.0)
+    }
+
     pub fn nudge(&mut self, bpm: i32) {
         self.target = (self.target as i32 + bpm).clamp(TARGET.0 as i32, TARGET.1 as i32) as u16;
+    }
+}
+
+/// SYNC's state for the playing record, as the turntable shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fit {
+    /// SYNC is off.
+    Off,
+    /// On, nothing plays.
+    Idle,
+    /// Waiting for the record's BPM.
+    Analyzing,
+    /// Fitted to the target at this speed.
+    Locked(f64),
+    /// The speed that would fit it (this one) is outside the range: it plays at its own.
+    Out(f64),
+    /// The record has no BPM: it plays at its own tempo.
+    NoBpm,
+}
+
+impl Fit {
+    /// The turntable's state line (at most 17 characters).
+    pub fn line(&self, range: f64) -> String {
+        match self {
+            Fit::Off => "SYNC OFF".into(),
+            Fit::Idle => "SYNC ON".into(),
+            Fit::Analyzing => "ANALYZING".into(),
+            Fit::Locked(s) => match speed_label(*s) {
+                Some(p) => format!("LOCKED {p}"),
+                None => "LOCKED".into(),
+            },
+            Fit::Out(_) => format!("OWN · OUT OF ±{}%", (range * 100.0).round() as u32),
+            Fit::NoBpm => "OWN · NO BPM".into(),
+        }
     }
 }
 
@@ -77,6 +145,52 @@ mod tests {
             wide: false,
             pending: None,
         }
+    }
+
+    #[test]
+    fn the_state_line_says_what_sync_is_doing() {
+        let line = |s: SyncSettings, bpm, analyzing, playing| {
+            s.fit(bpm, analyzing, playing).line(s.range())
+        };
+        assert_eq!(
+            line(SyncSettings::default(), Some(124), false, true),
+            "SYNC OFF"
+        );
+        assert_eq!(line(on(126), Some(122), false, true), "LOCKED +3.3%");
+        assert_eq!(line(on(124), Some(124), false, true), "LOCKED");
+        assert_eq!(line(on(102), Some(124), false, true), "OWN · OUT OF ±8%");
+        assert_eq!(line(on(126), None, false, true), "OWN · NO BPM");
+        assert_eq!(line(on(126), None, true, true), "ANALYZING");
+        assert_eq!(line(on(126), None, false, false), "SYNC ON");
+        let wide = SyncSettings {
+            wide: true,
+            ..on(102)
+        };
+        assert!(
+            matches!(wide.fit(Some(124), false, true), Fit::Out(_)),
+            "102/124 = −18%"
+        );
+        // The longest line fits the state line's inset (17 characters after the lamp), also in
+        // the wide range.
+        assert!(line(on(102), Some(124), false, true).chars().count() <= 17);
+        assert!(
+            Fit::Out(0.8)
+                .line(
+                    SyncSettings {
+                        wide: true,
+                        ..on(102)
+                    }
+                    .range()
+                )
+                .chars()
+                .count()
+                <= 17
+        );
+        // Out of range, which way: 102 against 124 is a slow-down.
+        let Fit::Out(s) = on(102).fit(Some(124), false, true) else {
+            panic!()
+        };
+        assert!(s < 1.0);
     }
 
     #[test]

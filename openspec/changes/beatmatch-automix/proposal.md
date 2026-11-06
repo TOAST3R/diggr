@@ -1,3 +1,8 @@
+> **Note (console-band):** SYNC now lives on the turntable, an always-shown panel in the middle
+> of the band, and the player's button row has no SYNC button. Where this proposal says the SYNC
+> button sits right of shuffle and repeat, read the turntable's SYNC button instead; the
+> turntable's state line and waveform panel are the natural places for the mix state.
+
 ## Why
 
 The player already knows every track's beat grid, phrases, sections and energy ahead of time: exactly what a DJ uses to mix. A SYNC mode can turn a playlist into a continuous set, played the way a DJ would:

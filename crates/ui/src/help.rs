@@ -28,8 +28,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         "SYNC (every track at one tempo)",
         &[
             (
-                "SYNC button",
-                "opens the turntable at the playing record's tempo (again, or its ×: off)",
+                "SYNC button (on the turntable)",
+                "every track at the playing record's tempo (again: off)",
             ),
             (
                 "Pitch fader: drag / scroll",
@@ -45,9 +45,10 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
                 "back to the record's own tempo / the pitch range",
             ),
             (
-                "OWN TEMPO",
-                "lit when a track is out of range or has no BPM: it plays at its own speed, \
-                 its strobe dots drift and its row says (own tempo)",
+                "The state line",
+                "LOCKED, ANALYZING, or OWN · OUT OF ±8% / NO BPM (red: the track plays at its \
+                 own speed, its strobe dots drift and its row says (own tempo)); the meter \
+                 beside the push shows how hard the record is pushed",
             ),
         ],
     ),

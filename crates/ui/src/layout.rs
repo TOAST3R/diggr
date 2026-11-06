@@ -1,18 +1,8 @@
-//! Where the sections go: a band across the top (the mini player, SYNC's turntable while on,
-//! the waveform) and the playlist under it, filling the window. All sizes are in skin pixels;
-//! the app multiplies by the scale.
+//! Where the sections go: a header across the top, a band under it (the mini player, the
+//! turntable and the waveform, a third each) and the playlist under that, filling the window. All sizes are in
+//! skin pixels; the app multiplies by the scale.
 
-use crate::settings::Settings;
 use crate::skin::SkinDef;
-
-/// The turntable in the band while SYNC is on; 0 otherwise, or for a skin without one.
-pub fn deck_h(settings: &Settings, d: &SkinDef) -> u16 {
-    if settings.sync.on {
-        d.sprite("deck_bg").h
-    } else {
-        0
-    }
-}
 
 /// The playlist's frame: the title bar and the filter bar above its rows, and an edge under
 /// them like the one at its left. There is no footer.
@@ -20,13 +10,40 @@ pub fn playlist_chrome(d: &SkinDef) -> u16 {
     d.pl_top_h + d.pl_filter_h + d.sprite("pl_bottom_edge").h
 }
 
-/// Height of the band across the top: the mini player, and the waveform beside it. Shown with
-/// the waveform off too (a seek bar takes its place), so W doesn't move the rows.
+/// Height of the window header across the top.
+pub const HEADER_H: u16 = 15;
+
+/// Height of the band under the header. It never changes: the turntable is always there, so
+/// SYNC doesn't move the rows.
 pub const BAND_H: u16 = crate::waveform::HEIGHT as u16;
 
-/// The band's height now: taller while SYNC puts the turntable in it.
-pub fn band_h(settings: &Settings, d: &SkinDef) -> u16 {
-    BAND_H.max(deck_h(settings, d))
+/// The header and the band together: what the playlist sits under.
+pub const TOP_H: u16 = HEADER_H + BAND_H;
+
+/// The narrowest the mini player and the turntable go, and the widest (skin pixels).
+pub const PANEL_MIN: u16 = 227;
+pub const PANEL_MAX: u16 = 360;
+
+/// The band's three panels along a window `win_w` wide: each an x and a width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Panels {
+    pub player: (u16, u16),
+    pub deck: (u16, u16),
+    pub wave: (u16, u16),
+}
+
+/// A third of the window (rounded down) for the player and for the turntable, kept within
+/// [`PANEL_MIN`] and [`PANEL_MAX`]; the waveform has the rest, which never goes below nothing.
+pub fn band_panels(win_w: f32) -> Panels {
+    let third = (win_w / 3.0).floor().max(0.0) as u16;
+    let w = third.clamp(PANEL_MIN, PANEL_MAX);
+    let used = 2 * w;
+    let wave = win_w.max(0.0) as u16;
+    Panels {
+        player: (0, w),
+        deck: (w, w),
+        wave: (used, wave.saturating_sub(used)),
+    }
 }
 
 /// The playlist in a window `w` × `h` skin pixels, under a band `band` tall: its width and rows.
@@ -131,17 +148,77 @@ mod tests {
     #[test]
     fn the_playlist_takes_the_window_under_the_band() {
         let d = LoadedSkin::default_skin().def;
-        // 1440 × 870 points at 2×: 720 × 435 skin pixels; a 12-pixel edge instead of the
-        // 38-pixel footer, so 25 rows (23 with the footer).
+        // 1440 × 870 points at 2×: 720 × 435 skin pixels; the 15-pixel header and the 76-pixel
+        // band, then 22 rows.
+        assert_eq!((HEADER_H, BAND_H, TOP_H), (15, 76, 91));
+        assert_eq!(
+            d.sprite("hdr_fill").h,
+            HEADER_H,
+            "the skin's header is as tall"
+        );
         assert_eq!(playlist_chrome(&d), 20 + 16 + 12);
-        assert_eq!(playlist_fit(&d, BAND_H, 720.0, 435.0), (720, 25));
+        assert_eq!(playlist_fit(&d, TOP_H, 720.0, 435.0), (720, 22));
         // A tiny window still gets the minimum playlist.
-        assert_eq!(playlist_fit(&d, BAND_H, 100.0, 50.0), (275, 4));
-        // SYNC's turntable makes the band taller.
-        let mut s = Settings::default();
-        assert_eq!(band_h(&s, &d), BAND_H);
-        s.sync.on = true;
-        assert_eq!(band_h(&s, &d), d.sprite("deck_bg").h);
+        assert_eq!(playlist_fit(&d, TOP_H, 100.0, 50.0), (275, 4));
+    }
+
+    #[test]
+    fn the_band_is_three_panels_in_thirds_within_limits() {
+        let p = band_panels;
+        // The default window: a third each.
+        assert_eq!(
+            p(720.0),
+            Panels {
+                player: (0, 240),
+                deck: (240, 240),
+                wave: (480, 240)
+            }
+        );
+        // Up to 1,080 pixels the thirds are equal; beyond, the two fixed panels stop at 360
+        // and the waveform takes the rest.
+        assert_eq!(
+            p(1080.0),
+            Panels {
+                player: (0, 360),
+                deck: (360, 360),
+                wave: (720, 360)
+            }
+        );
+        assert_eq!(
+            p(1100.0),
+            Panels {
+                player: (0, 360),
+                deck: (360, 360),
+                wave: (720, 380)
+            }
+        );
+        assert_eq!(
+            p(1500.0),
+            Panels {
+                player: (0, 360),
+                deck: (360, 360),
+                wave: (720, 780)
+            }
+        );
+        // Narrow: the two keep 227 and the waveform keeps what is left, then nothing.
+        assert_eq!(
+            p(600.0),
+            Panels {
+                player: (0, 227),
+                deck: (227, 227),
+                wave: (454, 146)
+            }
+        );
+        assert_eq!(p(300.0).wave.1, 0);
+        for w in (200..=2000).step_by(7) {
+            let q = p(w as f32);
+            assert_eq!(q.deck.0, q.player.1);
+            assert_eq!(q.wave.0, q.deck.0 + q.deck.1);
+            assert!(
+                q.wave.0 as f32 + q.wave.1 as f32 <= (w as f32).max(454.0),
+                "{w}"
+            );
+        }
     }
 
     #[test]

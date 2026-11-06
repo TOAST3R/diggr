@@ -19,7 +19,9 @@ use std::path::Path;
 const BUF: usize = 512;
 /// Classic size, no SYNC. The playlist's top-left at 1×: under the band.
 const PL_LEFT: f32 = 0.0;
-const PL_TOP: f32 = crate::layout::BAND_H as f32;
+const PL_TOP: f32 = crate::layout::TOP_H as f32;
+/// Where the band starts: under the window header.
+const BAND_TOP: f32 = crate::layout::HEADER_H as f32;
 /// The rig's window by default: the classic playlist's width (no sidebar, no columns), and
 /// tall enough for menus and dialogs.
 const SCREEN: egui::Vec2 = vec2(275.0, 400.0);
@@ -495,17 +497,29 @@ fn start_drag(out: &egui::FullOutput) -> bool {
 
 // ---- SYNC ------------------------------------------------------------------------------
 
-/// The mini player's SYNC button, and on the turntable beside it in the band (at 1×) the
-/// pitch fader's top, centre and bottom, its 8/16 and RESET buttons and its ×.
-const SYNC: Pos2 = pos2(275.0 - 4.0 - SYNC_W / 2.0, 9.0 + 6.0);
-const PITCH_UP: Pos2 = pos2(275.0 + 251.0, 22.0);
-const PITCH_MID: Pos2 = pos2(275.0 + 251.0, 54.0);
-const DECK_RANGE: Pos2 = pos2(275.0 + 147.0, 92.0);
-const DECK_RESET: Pos2 = pos2(275.0 + 187.0, 92.0);
-const DECK_CLOSE: Pos2 = pos2(275.0 + 266.0, 7.0);
+/// A point in the turntable's control `name` (a layout entry), at fractions (`fx`, `fy`) of its
+/// rectangle, in a window `rig.screen.x` wide: the turntable's content is centred in its panel.
+fn deck_at(rig: &Rig, name: &str, fx: f32, fy: f32) -> Pos2 {
+    let panels = crate::layout::band_panels(rig.screen.x);
+    let ox = ((panels.deck.1 as f32 - crate::skin::generate::DECK_W as f32) / 2.0).floor();
+    let r = rig.app.def.at(name);
+    pos2(
+        panels.deck.0 as f32 + ox + r.x as f32 + fx * r.w as f32,
+        BAND_TOP + r.y as f32 + fy * r.h as f32,
+    )
+}
+
+fn deck_sync(rig: &Rig) -> Pos2 {
+    deck_at(rig, "deck_sync", 0.5, 0.5)
+}
+
+/// What the turntable last drew: its state line, its big digits and the meter's needle.
+fn deck(rig: &Rig) -> (String, String, Option<f32>) {
+    rig.app.deck_drawn.clone().expect("the turntable is drawn")
+}
 
 #[test]
-fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
+fn sync_lights_the_turntable_whose_fader_sets_the_tempo() {
     let mut rig = Rig::new("sync", vec![fixture("tone.flac")], |_| {});
     rig.screen.x = 1100.0;
     rig.until(
@@ -517,19 +531,34 @@ fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
     );
     let track = rig.app.track_refs[&rig.app.position.track].clone();
     rig.app.set_track_bpm(&track, 123.0);
-    // On: the turntable opens at the playing record's tempo, which plays on as it is.
-    let closed = rig.app.pl_geometry().1;
-    rig.click(SYNC);
+    let rows = rig.app.pl_geometry().1;
+    // Off: the turntable is there, dimmed, with the record's own BPM; the fader does nothing.
+    rig.frame(Vec::new());
+    let (line, digits, needle) = deck(&rig);
+    assert_eq!(
+        (line.as_str(), digits.as_str(), needle),
+        ("SYNC OFF", "123", None)
+    );
+    rig.click(deck_at(&rig, "deck_pitch", 0.5, 0.0));
+    rig.click(deck_at(&rig, "deck_reset", 0.5, 0.5));
+    assert!(!rig.app.settings.sync.on);
+    assert_eq!(
+        rig.app.settings.sync.target, 124,
+        "the target is unchanged while off"
+    );
+    // On: the record's tempo becomes the target, and plays on as it is.
+    rig.click(deck_sync(&rig));
     assert!(rig.app.settings.sync.on);
     assert_eq!(rig.app.settings.sync.target, 123);
     rig.frame(Vec::new());
-    assert!(
-        rig.app.pl_geometry().1 < closed,
-        "the turntable makes the band taller"
+    assert_eq!(
+        rig.app.pl_geometry().1,
+        rows,
+        "the band doesn't change height"
     );
     assert_eq!(rig.engine().speed(0), 1.0);
     // The fader at the top: as fast as the range allows, and heard.
-    rig.click(PITCH_UP);
+    rig.click(deck_at(&rig, "deck_pitch", 0.5, 0.0));
     assert_eq!(rig.app.settings.sync.target, 132, "123 + 8%, still locked");
     let fitted = 132.0 / 123.0;
     rig.until(
@@ -537,7 +566,8 @@ fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
         "heard at the new speed",
     );
     // At its centre detent: the record's own tempo.
-    rig.click(PITCH_MID);
+    let mid = deck_at(&rig, "deck_pitch", 0.5, 0.5);
+    rig.click(mid);
     assert_eq!(rig.app.settings.sync.target, 123);
     // Shift+↑ and scrolling over the fader step it.
     for _ in 0..3 {
@@ -549,7 +579,7 @@ fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
         "not the volume"
     );
     rig.frame(vec![
-        Event::PointerMoved(PITCH_MID),
+        Event::PointerMoved(mid),
         Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             delta: vec2(0.0, 8.0),
@@ -562,15 +592,74 @@ fn sync_opens_a_turntable_whose_fader_sets_the_tempo() {
         rig.frame(Vec::new());
     }
     assert!(rig.app.settings.sync.target > 126, "scrolled up");
-    // RESET, the range switch, and × to turn it off.
-    rig.click(DECK_RESET);
+    // RESET, the range switch, and SYNC again to turn it off.
+    rig.click(deck_at(&rig, "deck_reset", 0.5, 0.5));
     assert_eq!(rig.app.settings.sync.target, 123);
     rig.until(|r| r.app.position.speed == 1.0, "back to its own speed");
-    rig.click(DECK_RANGE);
+    rig.click(deck_at(&rig, "deck_range", 0.5, 0.5));
     assert!(rig.app.settings.sync.wide);
-    rig.click(DECK_CLOSE);
+    rig.click(deck_sync(&rig));
     assert!(!rig.app.settings.sync.on);
-    assert_eq!(rig.app.pl_geometry().1, closed);
+    assert_eq!(rig.app.pl_geometry().1, rows);
+    rig.frame(Vec::new());
+    assert_eq!(deck(&rig).0, "SYNC OFF");
+}
+
+#[test]
+fn the_turntable_says_what_sync_is_doing() {
+    let mut rig = Rig::new("sync-state", vec![fixture("tone.flac")], |_| {});
+    rig.screen.x = 720.0;
+    rig.until(
+        |r| {
+            r.app.position.state == PlayState::Playing
+                && r.app.track_refs.contains_key(&r.app.position.track)
+        },
+        "the track plays",
+    );
+    let track = rig.app.track_refs[&rig.app.position.track].clone();
+    rig.app.set_track_bpm(&track, 124.0);
+    let set = |rig: &mut Rig, target: u16| {
+        rig.app.settings.sync = crate::sync::SyncSettings {
+            on: true,
+            target,
+            wide: false,
+            pending: None,
+        };
+        rig.frame(Vec::new());
+        deck(rig)
+    };
+    // 124 against 102: out of the ±8% range, so it plays at its own tempo, the needle pinned
+    // to the slow end.
+    let (line, digits, needle) = set(&mut rig, 102);
+    assert_eq!(
+        (line.as_str(), digits.as_str(), needle),
+        ("OWN · OUT OF ±8%", "102", Some(-1.0))
+    );
+    // 126 against 124: locked, pushed 1.6% up, the needle a fifth of the way to the fast end.
+    let (line, _, needle) = set(&mut rig, 126);
+    assert_eq!(line, "LOCKED +1.6%");
+    assert!((needle.unwrap() - 0.2).abs() < 0.01, "{needle:?}");
+    // Waiting for a BPM: the track has none yet, and SYNC waits for it.
+    rig.app
+        .crates
+        .playing_mut()
+        .entries_mut()
+        .for_each(|e| e.bpm = None);
+    rig.app.settings.sync.pending = Some(rig.app.position.track);
+    rig.frame(Vec::new());
+    let (line, digits, needle) = deck(&rig);
+    assert_eq!(
+        (line.as_str(), digits.as_str(), needle),
+        ("ANALYZING", "  ?", None)
+    );
+    // A track without a BPM, once nothing waits for it.
+    rig.app.settings.sync.pending = None;
+    rig.frame(Vec::new());
+    assert_eq!(deck(&rig).0, "OWN · NO BPM");
+    // Paused or stopped with SYNC on.
+    rig.key(Key::Space, Modifiers::SHIFT);
+    rig.until(|r| r.app.position.state == PlayState::Stopped, "stopped");
+    assert_eq!(deck(&rig).0, "SYNC ON");
 }
 
 #[test]
@@ -1810,7 +1899,8 @@ fn the_mini_player_is_the_player() {
     rig.key(Key::W, Modifiers::NONE);
     assert_eq!(rig.app.pl_geometry().1, rows);
     // Pause is the third button of the second line, play the second.
-    let button = |i: f32| pos2(4.0 + 23.0 * i + 11.0, 34.0 + 9.0);
+    let button = |i: f32| pos2(4.0 + 23.0 * i + 11.0, BAND_TOP + TRANSPORT_Y + 9.0);
+    let player_w = crate::layout::band_panels(rig.screen.x).player.1 as f32;
     rig.click(button(2.0));
     rig.until(
         |r| r.app.position.state == PlayState::Paused,
@@ -1822,12 +1912,15 @@ fn the_mini_player_is_the_player() {
         "play resumes",
     );
     // Shuffle and repeat, at the end of the button row after the volume slider.
-    let shuffle = pos2(SHUFFLE_X + 8.0, BUTTON_ROW_Y + 6.0);
+    let shuffle = pos2(shuffle_x(player_w) + 8.0, BAND_TOP + BUTTON_ROW_Y + 6.0);
     rig.click(shuffle);
     assert!(rig.app.settings.shuffle);
     rig.click(shuffle);
     assert!(!rig.app.settings.shuffle);
-    let repeat = pos2(SHUFFLE_X + ICON_W + ICON_GAP + 8.0, BUTTON_ROW_Y + 6.0);
+    let repeat = pos2(
+        shuffle_x(player_w) + ICON_W + ICON_GAP + 8.0,
+        BAND_TOP + BUTTON_ROW_Y + 6.0,
+    );
     let was = rig.app.settings.repeat;
     rig.click(repeat);
     assert_eq!(rig.app.settings.repeat, was.cycle());
@@ -1835,9 +1928,8 @@ fn the_mini_player_is_the_player() {
         rig.click(repeat);
     }
     assert_eq!(rig.app.settings.repeat, was, "around the three");
-    // SYNC turns SYNC on, says what it does, and puts the turntable in the band beside
-    // the mini player, which grows to hold it.
-    rig.click(SYNC);
+    // SYNC, on the turntable beside the player, turns SYNC on and says what it does.
+    rig.click(deck_sync(&rig));
     assert!(rig.app.settings.sync.on);
     let said = rig.app.message.as_ref().map(|(t, _)| t.clone());
     assert!(
@@ -1845,8 +1937,8 @@ fn the_mini_player_is_the_player() {
             .is_some_and(|t| t.starts_with("SYNC on: every track")),
         "{said:?}"
     );
-    assert!(rig.app.pl_geometry().1 < rows, "the band is taller");
-    rig.click(DECK_CLOSE);
+    assert_eq!(rig.app.pl_geometry().1, rows, "the band doesn't change");
+    rig.click(deck_sync(&rig));
     assert!(!rig.app.settings.sync.on);
     assert_eq!(rig.app.pl_geometry().1, rows);
     // Next is the fifth.
@@ -1855,8 +1947,13 @@ fn the_mini_player_is_the_player() {
         |r| r.app.crates.playing().current() == Some(ids[1]),
         "the mini player's next starts the next track",
     );
-    // The LCD row's buttons: ▤, EQ, spectrum (then SYNC).
-    let icon = |i: f32| pos2(lcd_icons_x(275.0) + 19.0 * i + 8.0, 9.0 + 6.0);
+    // The LCD row's buttons: ▤, EQ, spectrum.
+    let icon = |i: f32| {
+        pos2(
+            lcd_icons_x(player_w) + 19.0 * i + 8.0,
+            BAND_TOP + DIGITS_Y + 6.0,
+        )
+    };
     rig.click(icon(1.0));
     assert!(rig.app.settings.show_eq, "the EQ window opens");
     rig.click(icon(1.0));
@@ -1873,7 +1970,7 @@ fn the_mini_player_is_the_player() {
     rig.click(icon(0.0));
     assert!(!rig.app.crates.shown().is_grouped());
     // A click on the time shows what remains.
-    rig.click(pos2(40.0, 15.0));
+    rig.click(pos2(40.0, BAND_TOP + 15.0));
     assert!(rig.app.settings.time_remaining);
 }
 
@@ -1893,84 +1990,147 @@ fn the_mini_players_title_line_flashes_a_verdict() {
 
 #[test]
 fn the_buttons_fit_in_the_mini_player() {
-    // The button row, left to right: transport, volume, shuffle, repeat, with even gaps and
-    // ending where the LCD row does.
     let d = LoadedSkin::default_skin().def;
-    let vol = d.at("volume").w as f32;
-    let row = [
-        (4.0, 5.0 * 23.0),
-        (123.0, vol),
-        (SHUFFLE_X, ICON_W),
-        (SHUFFLE_X + ICON_W + ICON_GAP, ICON_W),
-    ];
-    for pair in row.windows(2) {
-        let gap = pair[1].0 - (pair[0].0 + pair[0].1);
-        assert!((ICON_GAP..=4.0).contains(&gap), "{pair:?}: a gap of {gap}");
+    // Narrowest (the default window's third) and wider: the rows end together, with even gaps.
+    for w in [227.0_f32, 300.0, 353.0, 360.0] {
+        let vol_x = VOLUME_X;
+        let vol_w = shuffle_x(w) - 4.0 - vol_x;
+        assert!(
+            vol_w >= 60.0,
+            "{w}: the volume keeps 60 pixels, has {vol_w}"
+        );
+        let row = [
+            (4.0, 5.0 * 23.0),
+            (vol_x, vol_w),
+            (shuffle_x(w), ICON_W),
+            (shuffle_x(w) + ICON_W + ICON_GAP, ICON_W),
+        ];
+        for pair in row.windows(2) {
+            let gap = pair[1].0 - (pair[0].0 + pair[0].1);
+            assert!(
+                (ICON_GAP..=4.0).contains(&gap),
+                "{w}: {pair:?}: a gap of {gap}"
+            );
+        }
+        let (x, rw) = row[row.len() - 1];
+        assert_eq!(x + rw, w - 4.0, "{w}: ends 4 pixels in, like the LCD icons");
+        // The LCD's icons: ▤, EQ and spectrum end there too, and the track line keeps room.
+        let x0 = lcd_icons_x(w);
+        assert_eq!(x0 + 3.0 * (ICON_W + ICON_GAP) - ICON_GAP, w - 4.0, "{w}");
+        let chars = ((x0 - 3.0 - 74.0) / d.font.advance as f32).floor();
+        assert!(chars >= 15.0, "{w}: {chars} characters of title");
     }
-    let (x, w) = row[row.len() - 1];
-    assert_eq!(
-        x + w,
-        d.main_size.0 as f32 - 4.0,
-        "ends 4 pixels in, like the LCD row"
-    );
-    // Everything in it shares the transport's centre line (34 + 18 / 2), to half a pixel.
+    // Everything in the button row shares the transport's centre line, to half a pixel.
+    let centre = TRANSPORT_Y + 9.0;
     for h in [12.0, 13.0] {
-        assert!((BUTTON_ROW_Y + h / 2.0 - 43.0).abs() <= 0.5, "{h}");
+        assert!((BUTTON_ROW_Y + h / 2.0 - centre).abs() <= 0.5, "{h}");
     }
-    // The LCD row: the time, the title line, then ▤, EQ, spectrum and SYNC.
-    let x0 = lcd_icons_x(d.main_size.0 as f32);
-    assert_eq!(x0, 184.0);
-    let last = x0 + 3.0 * (ICON_W + ICON_GAP) + SYNC_W;
-    assert_eq!(last, d.main_size.0 as f32 - 4.0, "SYNC ends 4 pixels in");
-    let title_w = x0 - 3.0 - 74.0;
+    // The LCD's rows fit its box and the band.
+    assert!(LINE2_Y + 7.0 <= LCD_Y + LCD_H && TRANSPORT_Y + 18.0 <= crate::layout::BAND_H as f32);
+}
+
+/// The centre of the header's button in slot `n`, counted from the right (0 close, 1 minimize,
+/// 2 the Options gear, 3 help), in a window `rig.screen.x` wide.
+fn header_button(rig: &Rig, n: f32) -> Pos2 {
+    let hb = crate::skin::generate::HB as f32;
+    pos2(
+        rig.screen.x - HB_MARGIN - hb - n * (hb + HB_GAP) + hb / 2.0,
+        HB_Y + hb / 2.0,
+    )
+}
+
+/// The header's commands in `out`.
+fn commands(out: &egui::FullOutput) -> Vec<ViewportCommand> {
+    out.viewport_output
+        .values()
+        .flat_map(|v| v.commands.clone())
+        .collect()
+}
+
+#[test]
+fn the_header_has_help_the_gear_minimize_and_close() {
+    let mut rig = Rig::new("window-header", Vec::new(), |_| {});
+    rig.screen.x = 1100.0;
+    rig.frame(Vec::new());
+    let press = |rig: &mut Rig, at: Pos2| {
+        rig.frame(vec![Event::PointerMoved(at)]);
+        rig.press(at, PointerButton::Primary, true);
+        commands(&rig.press(at, PointerButton::Primary, false))
+    };
+    // Minimize.
+    let min = header_button(&rig, 1.0);
+    assert!(press(&mut rig, min).contains(&ViewportCommand::Minimized(true)));
+    // Without digging there are no options: the gear's slot does nothing, nor does a click
+    // in any gap, which never quits.
+    let gear = header_button(&rig, 2.0);
+    assert!(press(&mut rig, gear).is_empty());
+    assert!(!egui::Popup::is_any_open(&rig.ctx));
+    let hb = crate::skin::generate::HB as f32;
+    for n in [0.0, 1.0, 2.0] {
+        let gap = header_button(&rig, n) - vec2(hb / 2.0 + HB_GAP / 2.0, 0.0);
+        assert!(press(&mut rig, gap).is_empty(), "the gap after slot {n}");
+    }
+    // Help opens the shortcuts, as H does, and closes them again.
+    let help = header_button(&rig, 3.0);
+    assert!(!rig.app.help);
+    press(&mut rig, help);
+    assert!(rig.app.help, "help opens");
+    press(&mut rig, help);
+    assert!(!rig.app.help);
+    // Close keeps its place at the right and quits.
+    let close = header_button(&rig, 0.0);
     assert!(
-        title_w >= 17.0 * d.font.advance as f32,
-        "17 characters of title"
+        press(&mut rig, close).contains(&ViewportCommand::Close),
+        "close quits"
     );
 }
 
 #[test]
-fn the_band_has_minimize_and_close() {
-    let mut rig = Rig::new("window-buttons", Vec::new(), |_| {});
+fn the_header_drags_the_window_and_a_double_click_maximizes_it() {
+    let mut rig = Rig::new("header-drag", Vec::new(), |_| {});
     rig.screen.x = 1100.0;
     rig.frame(Vec::new());
-    let corner = 1100.0 - CORNER_W;
-    let commands = |out: &egui::FullOutput| -> Vec<ViewportCommand> {
-        out.viewport_output
-            .values()
-            .flat_map(|v| v.commands.clone())
-            .collect()
-    };
-    rig.frame(vec![Event::PointerMoved(pos2(corner + 8.0, 7.0))]);
-    rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, true);
-    let out = rig.press(pos2(corner + 8.0, 7.0), PointerButton::Primary, false);
-    assert!(commands(&out).contains(&ViewportCommand::Minimized(true)));
-    // Without digging there are no options: the gear's slot (and each gap) does nothing.
-    for x in [corner + 19.0, corner + 14.0, corner + 25.0] {
-        rig.frame(vec![Event::PointerMoved(pos2(x, 7.0))]);
-        rig.press(pos2(x, 7.0), PointerButton::Primary, true);
-        let out = rig.press(pos2(x, 7.0), PointerButton::Primary, false);
-        assert!(commands(&out).is_empty(), "{x}: {:?}", commands(&out));
-    }
-    // Dragging the corner below its buttons moves the window.
-    let below = pos2(corner + 20.0, 30.0);
-    rig.frame(vec![Event::PointerMoved(below)]);
-    let out = rig.press(below, PointerButton::Primary, true);
-    let mut sent = commands(&out);
+    // Empty header, left of the caption.
+    let at = pos2(200.0, 7.0);
+    rig.frame(vec![Event::PointerMoved(at)]);
+    let mut sent = commands(&rig.press(at, PointerButton::Primary, true));
     for dx in [4.0, 10.0, 16.0] {
-        let out = rig.frame(vec![Event::PointerMoved(below + vec2(dx, 0.0))]);
-        sent.extend(commands(&out));
+        sent.extend(commands(
+            &rig.frame(vec![Event::PointerMoved(at + vec2(dx, 0.0))]),
+        ));
     }
     assert!(sent.contains(&ViewportCommand::StartDrag), "{sent:?}");
-    rig.press(below + vec2(16.0, 0.0), PointerButton::Primary, false);
-    // Close keeps its place at the right.
-    rig.frame(vec![Event::PointerMoved(pos2(corner + 30.0, 7.0))]);
-    rig.press(pos2(corner + 30.0, 7.0), PointerButton::Primary, true);
-    let out = rig.press(pos2(corner + 30.0, 7.0), PointerButton::Primary, false);
+    rig.press(at + vec2(16.0, 0.0), PointerButton::Primary, false);
+    // A double-click on the caption maximizes (the test window isn't maximized yet).
+    let caption = pos2(550.0, 7.0);
+    rig.frame(vec![Event::PointerMoved(caption)]);
+    let mut all = Vec::new();
+    for _ in 0..2 {
+        all.extend(commands(&rig.press(caption, PointerButton::Primary, true)));
+        all.extend(commands(&rig.press(caption, PointerButton::Primary, false)));
+    }
     assert!(
-        commands(&out).contains(&ViewportCommand::Close),
-        "close quits"
+        all.contains(&ViewportCommand::Maximized(true)),
+        "double-click: {all:?}"
     );
+}
+
+#[test]
+fn the_header_is_lit_with_the_player_and_dimmed_with_the_playlist() {
+    let mut rig = Rig::new("header-focus", Vec::new(), |_| {});
+    rig.screen.x = 1100.0;
+    rig.frame(Vec::new());
+    assert_eq!(
+        rig.app.focus,
+        Focus::Player,
+        "the player starts with the keyboard"
+    );
+    // A click in the playlist gives it the keyboard.
+    rig.click(rig.row(0));
+    assert_eq!(rig.app.focus, Focus::Playlist);
+    // A click in the band gives it back to the player.
+    rig.click(pos2(120.0, BAND_TOP + 72.0));
+    assert_eq!(rig.app.focus, Focus::Player);
 }
 
 #[test]
@@ -2018,11 +2178,10 @@ fn the_waveform_sits_beside_the_mini_player_and_seeks() {
     let mut rig = Rig::new("band", vec![fixture("tone.flac")], |_| {});
     rig.screen.x = 1100.0;
     rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
-    // Three quarters across the overview row, between the mini player and the window
-    // buttons: 1.5 s of 2 s.
-    let mini = rig.app.skin.def.main_size.0 as f32;
-    let x = mini + (1100.0 - CORNER_W - mini) * 0.75;
-    rig.click(pos2(x, 6.0));
+    // Three quarters across the overview row, in the waveform panel: 1.5 s of 2 s.
+    let wave = crate::layout::band_panels(1100.0).wave;
+    let x = wave.0 as f32 + wave.1 as f32 * 0.75;
+    rig.click(pos2(x, BAND_TOP + 6.0));
     rig.until(
         |r| (r.app.position.seconds() - 1.5).abs() < 0.2,
         "seeked to 1.5 s",
@@ -2276,8 +2435,8 @@ fn the_lp_knob_sweeps_the_filter_and_double_click_turns_it_off() {
             .unwrap();
     };
     let mut rig = Rig::new("lp-knob", Vec::new(), with_eq);
-    // The EQ floats under the band (58 px) without windows of its own; the knob at (46, 17).
-    let knob = pos2(46.0 + 7.0, 58.0 + 17.0 + 7.0);
+    // The EQ floats under the band without windows of its own; the knob at (46, 17).
+    let knob = pos2(46.0 + 7.0, PL_TOP + 17.0 + 7.0);
     assert_eq!(rig.engine().filter(), audio::filter::OFF, "off at launch");
     rig.frame(vec![Event::PointerMoved(knob)]);
     rig.press(knob, PointerButton::Primary, true);
@@ -2687,10 +2846,9 @@ fn below_rows(rig: &Rig) -> Pos2 {
     )
 }
 
-/// The centre of the Options gear, between minimize and close in the band's corner.
+/// The centre of the Options gear in the window header.
 fn corner_gear(rig: &Rig) -> Pos2 {
-    let corner = (rig.screen.x - CORNER_W).max(275.0);
-    pos2(corner + 15.0 + 4.5, 3.0 + 4.5)
+    header_button(rig, 2.0)
 }
 
 #[test]
@@ -4062,4 +4220,135 @@ fn a_grouped_crate_without_albums_keeps_its_column_header() {
         .album = "Silentintroduction".into();
     rig.frame(Vec::new());
     assert!(!rig.app.pl_header());
+}
+
+#[test]
+fn the_players_second_line_is_the_album_of_a_file_and_empty_when_nothing_plays() {
+    let mut rig = Rig::new("second-line", vec![fixture("tone.flac")], |_| {});
+    // Nothing plays yet: no detail, whatever the entry holds.
+    assert_eq!(rig.app.now_playing_detail(), None);
+    rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+    rig.app
+        .crates
+        .playing_mut()
+        .entries_mut()
+        .for_each(|e| e.album = "Silentintroduction".into());
+    assert_eq!(
+        rig.app.now_playing_detail().as_deref(),
+        Some("Silentintroduction")
+    );
+    rig.app
+        .crates
+        .playing_mut()
+        .entries_mut()
+        .for_each(|e| e.album.clear());
+    assert_eq!(rig.app.now_playing_detail(), None, "no tag, no line");
+    // The verdict flash takes the first line only: the second stays.
+    rig.app
+        .crates
+        .playing_mut()
+        .entries_mut()
+        .for_each(|e| e.album = "Silentintroduction".into());
+    rig.app.flash(Verdict::Wanted, 1);
+    rig.frame(Vec::new());
+    assert!(rig.app.flash.is_some());
+    assert!(rig.app.now_playing_detail().is_some());
+    rig.key(Key::Space, Modifiers::SHIFT);
+    rig.until(|r| r.app.position.state == PlayState::Stopped, "stopped");
+    assert_eq!(rig.app.now_playing_detail(), None, "stopped: empty");
+}
+
+#[test]
+fn a_fitted_track_flashes_the_rim_and_counts_to_the_target() {
+    let mut rig = Rig::new(
+        "deck-effects",
+        vec![fixture("tone.flac"), fixture("tone.wav")],
+        |_| {},
+    );
+    rig.screen.x = 720.0;
+    rig.until(|r| r.app.position.state == PlayState::Playing, "playing");
+    let ids = rig.ids(PLAYLIST);
+    for (e, bpm) in rig
+        .app
+        .crates
+        .playing_mut()
+        .entries_mut()
+        .zip([126u16, 130])
+    {
+        e.bpm = Some(bpm);
+    }
+    // SYNC on at 126 over the 126 BPM record: it locks and the rim flashes; the digits already
+    // read the target, so there is nothing to count.
+    rig.app.settings.sync = crate::sync::SyncSettings {
+        on: true,
+        target: 126,
+        wide: false,
+        pending: None,
+    };
+    rig.frame(Vec::new());
+    assert!(rig.app.deck_flash.is_some(), "the rim flashes as it locks");
+    assert!(rig.app.deck_count.is_none());
+    // The flash ends by itself.
+    rig.app.deck_flash = Some(Instant::now() - Duration::from_secs(1));
+    rig.frame(Vec::new());
+    assert!(rig.app.deck_flash.is_none());
+    // The next track is 130 BPM, fitted at -3.1%: the rim flashes and the digits count from 130
+    // to 126.
+    rig.app.play_entry(PLAYLIST, ids[1]);
+    rig.until(
+        |r| r.app.crates.playing().current() == Some(ids[1]),
+        "the second plays",
+    );
+    // (The fit waits for the clock to say it plays.)
+    rig.until(|r| r.app.deck_flash.is_some(), "the rim flashes");
+    let (from, to, _) = rig.app.deck_count.expect("it counts");
+    assert_eq!((from, to), (130, 126));
+    assert_eq!(
+        deck(&rig).1,
+        "130",
+        "the count starts at the record's own BPM"
+    );
+    // It ends by itself, on the target.
+    rig.app.deck_count = Some((130, 126, Instant::now() - Duration::from_secs(1)));
+    rig.frame(Vec::new());
+    assert!(rig.app.deck_count.is_none());
+    assert_eq!(deck(&rig).1, "126");
+    // Back to the 126 BPM record: the rim flashes, and there is nothing to count.
+    rig.app.deck_flash = None;
+    rig.app.play_entry(PLAYLIST, ids[0]);
+    rig.until(
+        |r| r.app.crates.playing().current() == Some(ids[0]),
+        "the first plays again",
+    );
+    rig.until(|r| r.app.deck_flash.is_some(), "the rim flashes again");
+    assert!(rig.app.deck_count.is_none(), "same tempo: nothing to count");
+}
+
+#[test]
+fn dragging_the_band_anywhere_that_is_not_a_control_moves_the_window() {
+    let mut rig = Rig::new("band-drag", Vec::new(), |_| {});
+    rig.screen.x = 1100.0;
+    rig.frame(Vec::new());
+    let panels = crate::layout::band_panels(1100.0);
+    let drags = |rig: &mut Rig, at: Pos2| {
+        rig.frame(vec![Event::PointerMoved(at)]);
+        let mut sent = start_drag(&rig.press(at, PointerButton::Primary, true));
+        for dx in [4.0, 10.0, 16.0] {
+            sent |= start_drag(&rig.frame(vec![Event::PointerMoved(at + vec2(dx, 0.0))]));
+        }
+        rig.press(at + vec2(16.0, 0.0), PointerButton::Primary, false);
+        sent
+    };
+    // The turntable's margin, and under the player's transport.
+    assert!(
+        drags(&mut rig, pos2(panels.deck.0 as f32 + 3.0, BAND_TOP + 70.0)),
+        "the turntable"
+    );
+    assert!(drags(&mut rig, pos2(120.0, BAND_TOP + 72.0)), "the player");
+    // A control that takes drags keeps them: pulling the pitch fader doesn't move the window.
+    let fader = deck_at(&rig, "deck_pitch", 0.5, 0.5);
+    assert!(!drags(&mut rig, fader), "the fader is a control");
+    // And a control keeps its click.
+    rig.click(deck_sync(&rig));
+    assert!(rig.app.settings.sync.on);
 }

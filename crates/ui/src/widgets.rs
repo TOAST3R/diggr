@@ -153,14 +153,47 @@ pub fn hslider(
     }
     let v = new.unwrap_or(value).clamp(0.0, 1.0);
     let tx = r.x as f32 + (v * travel).round();
-    sk.sprite(s.track, r.x as f32, r.y as f32);
-    if let Some(fill) = s.fill {
-        sk.sprite_left(
-            fill,
-            r.x as f32,
-            r.y as f32,
-            tx - r.x as f32 + thumb.w as f32 / 2.0,
+    // A track in three pieces (`{track}_l`, `{track}_m`, `{track}_r`) stretches to the layout's
+    // width, with the fill stretched along it and shown up to the thumb; a one-piece track
+    // is drawn as it is.
+    let cap = sk.def.sprite(&format!("{}_l", s.track));
+    if cap.w > 0 {
+        let (ln, rn) = (format!("{}_l", s.track), format!("{}_r", s.track));
+        let (lw, rw) = (cap.w as f32, sk.def.sprite(&rn).w as f32);
+        let h = cap.h as f32;
+        let (x0, y0) = (r.x as f32, r.y as f32);
+        sk.sprite(&ln, x0, y0);
+        sk.sprite_in(
+            &format!("{}_m", s.track),
+            sk.rect(x0 + lw, y0, r.w as f32 - lw - rw, h),
         );
+        sk.sprite(&rn, x0 + r.w as f32 - rw, y0);
+        if let Some(fill) = s.fill {
+            let shown = tx - x0 + thumb.w as f32 / 2.0;
+            let whole = sk.rect(x0, y0, r.w as f32, h);
+            let part =
+                Rect::from_min_size(whole.min, vec2(shown.max(0.0) * sk.scale, whole.height()));
+            let clipped = Skinned {
+                painter: sk
+                    .painter
+                    .with_clip_rect(part.intersect(sk.painter.clip_rect())),
+                tex: sk.tex,
+                def: sk.def,
+                origin: sk.origin,
+                scale: sk.scale,
+            };
+            clipped.sprite_in(fill, whole);
+        }
+    } else {
+        sk.sprite(s.track, r.x as f32, r.y as f32);
+        if let Some(fill) = s.fill {
+            sk.sprite_left(
+                fill,
+                r.x as f32,
+                r.y as f32,
+                tx - r.x as f32 + thumb.w as f32 / 2.0,
+            );
+        }
     }
     let ty = r.y as f32 + ((r.h - thumb.h) as f32 / 2.0).floor();
     let name = if resp.is_pointer_button_down_on() {

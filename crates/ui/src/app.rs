@@ -119,6 +119,14 @@ pub struct DiggrApp {
     /// The turntable's platter angle and strobe drift, in radians.
     deck_turn: f32,
     deck_strobe: f32,
+    /// The rim's lock flash, started when a record becomes fitted.
+    deck_flash: Option<Instant>,
+    /// The digits counting from a new track's own BPM to the target (from, to, since).
+    deck_count: Option<(u16, u16, Instant)>,
+    /// Who played and whether it was locked on the last frame, to see a record become fitted.
+    deck_seen: (Option<(CrateId, crate::playlist::EntryId)>, bool),
+    /// A different track began and hasn't been fitted yet (see `deck_section`).
+    deck_new: bool,
     /// The LP knob, 0..=1 (1 is off); not remembered, so every launch starts with it off.
     lp_knob: f32,
     title_offset: usize,
@@ -179,6 +187,10 @@ pub struct DiggrApp {
     /// The filter bar's time readout as last drawn (its text, x and width in skin pixels).
     #[cfg(test)]
     readout_drawn: Option<(String, f32, f32)>,
+    /// The turntable as last drawn: its state line, its big digits and the meter needle's
+    /// place (-1 to 1, `None` without one).
+    #[cfg(test)]
+    deck_drawn: Option<(String, String, Option<f32>)>,
     /// The filter bar's search text as typed (the shown crate holds its folded words).
     pl_search: String,
     /// Cmd+F was pressed: the search field takes the keyboard on the next frame.
@@ -348,6 +360,10 @@ impl DiggrApp {
             sync_drag: 0.0,
             deck_turn: 0.0,
             deck_strobe: 0.0,
+            deck_flash: None,
+            deck_count: None,
+            deck_seen: (None, false),
+            deck_new: false,
             lp_knob: audio::filter::OFF,
             title_offset: 0,
             title_tick: 0.0,
@@ -380,6 +396,8 @@ impl DiggrApp {
             cart_drawn: None,
             #[cfg(test)]
             readout_drawn: None,
+            #[cfg(test)]
+            deck_drawn: None,
             pl_search: String::new(),
             search_focus: false,
             panel_tab: Facet::Style,
@@ -1872,8 +1890,7 @@ impl DiggrApp {
         }
     }
 
-    /// The main window's title line: `N. (catno) Artist: Title (N BPM) (m:ss)`, then the
-    /// record's side, year and for-sale summary for an entry from a catalogue page.
+    /// The player's title line: `N. (catno) Artist: Title (N BPM) (m:ss)`.
     fn now_playing_line(&self) -> Option<String> {
         let (artist, title, duration) = self.now_playing_names()?;
         let playing = self.crates.playing();
@@ -1882,46 +1899,100 @@ impl DiggrApp {
         let origin = entry.and_then(|e| e.origin.as_ref());
         let catno = origin.map_or("", |o| o.catno.as_str());
         let name = format::entry_name(catno, &artist, &title, "", entry.and_then(|e| e.bpm));
-        let mut line = format::title_line(number, &name, duration);
-        if let Some(o) = origin {
-            line += &format::origin_details(o);
-        }
-        Some(line)
+        Some(format::title_line(number, &name, duration))
     }
 
-    /// The turntable under the main window while SYNC is on. The pitch fader sets the set's
-    /// tempo against the playing record (its centre is the record's own tempo), and then shows
-    /// how far each record is pushed. The platter turns with the speed heard; its strobe dots
-    /// stand still while the record is locked to the tempo, as on a real deck.
-    fn deck_section(&mut self, ui: &mut Ui, origin: Pos2) {
+    /// The player's second line: an entry from a catalogue page gives its label, side, year and
+    /// for-sale summary; a local file its album tag. `None` while nothing plays or it has none.
+    fn now_playing_detail(&self) -> Option<String> {
+        if self.position.state == PlayState::Stopped {
+            return None;
+        }
+        let playing = self.crates.playing();
+        let entry = playing.current().and_then(|id| playing.get(id))?;
+        match &entry.origin {
+            Some(o) => Some(format::origin_line(o)).filter(|l| !l.is_empty()),
+            None => Some(entry.album.trim().to_owned()).filter(|a| !a.is_empty()),
+        }
+    }
+
+    /// The turntable, the band's middle panel `w` skin pixels wide, always there. The pitch
+    /// fader sets the set's tempo against the playing record (its centre is the record's own
+    /// tempo) once SYNC is on, and then shows how far each record is pushed; with SYNC off the
+    /// deck is dimmed and only SYNC answers. The platter turns with the speed heard; its
+    /// strobe dots stand still while the record is locked to the tempo, as on a real deck.
+    fn deck_section(&mut self, ui: &mut Ui, origin: Pos2, w: f32) {
+        use crate::sync::Fit;
         use std::f32::consts::TAU;
         let sync = self.settings.sync;
         let bpm = self.playing_bpm();
         let state = self.position.state;
+        let playing = state != PlayState::Stopped;
         let analyzing = self.playing_bpm_coming();
         let fitted = sync.speed(bpm);
+        let fit = sync.fit(bpm, analyzing, playing);
+        let now = Instant::now();
+        // A record becoming fitted (SYNC on over a fitted record, a fitted track starting, a
+        // tempo read at last) flashes the rim; a new track fitted at another tempo than its own
+        // makes the digits count to the target.
+        let who = {
+            let p = self.crates.playing();
+            p.current().map(|e| (self.crates.playing_id(), e))
+        };
+        let locked = matches!(fit, Fit::Locked(_));
+        let (was_who, was_locked) = self.deck_seen;
+        // A new track waits for its fit (a tempo being read, a clock still starting) before
+        // the rim flashes and the digits count; one that doesn't fit ends the wait.
+        if who != was_who {
+            self.deck_new = true;
+        }
+        if playing {
+            match fit {
+                Fit::Locked(speed) => {
+                    if !was_locked || self.deck_new {
+                        self.deck_flash = Some(now);
+                    }
+                    if self.deck_new {
+                        let from = (sync.target as f64 / speed).round() as u16;
+                        self.deck_count = (from != sync.target).then_some((from, sync.target, now));
+                    }
+                    self.deck_new = false;
+                }
+                Fit::Analyzing => {}
+                _ => self.deck_new = false,
+            }
+        }
+        self.deck_seen = (who, locked);
         if state == PlayState::Playing {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
             let rps = 100.0 / 3.0 / 60.0 * self.position.speed as f32;
             self.deck_turn = (self.deck_turn + dt * TAU * rps) % TAU;
-            let drift = match (fitted, bpm) {
-                (Some(_), _) => 0.0,
-                (None, Some(b)) => b as f32 / sync.target as f32 - 1.0,
-                (None, None) => 0.05,
+            let drift = match (fit, bpm) {
+                (Fit::Analyzing, _) => 0.8,
+                (Fit::Locked(_), _) | (Fit::Off, _) | (Fit::Idle, _) => 0.0,
+                (_, Some(b)) => b as f32 / sync.target as f32 - 1.0,
+                (_, None) => 0.05,
             };
             self.deck_strobe = (self.deck_strobe + dt * TAU * drift) % TAU;
         }
         let mut actions = Vec::new();
         {
             let def = self.def.clone();
-            let sk = self.skinned(&def, ui, origin);
+            let h = crate::layout::BAND_H as f32;
+            let panel = self.skinned(&def, ui, origin);
+            let ox = ((w - crate::skin::generate::DECK_W as f32) / 2.0)
+                .floor()
+                .max(0.0);
+            let sk = Skinned {
+                origin: panel.origin + vec2(ox * panel.scale, 0.0),
+                ..self.skinned(&def, ui, origin)
+            };
+            panel.sprite_in("deck_fill", panel.rect(0.0, 0.0, w, h));
             sk.sprite("deck_bg", 0.0, 0.0);
-            dim_title(&sk, "deck_titlebar", self.focus == Focus::Player);
-            Self::titlebar_drag(ui, &sk, "deck_title", "deck_titlebar");
-            if widgets::button(ui, &sk, "deck_close", "deck_close", "btn_close").clicked() {
-                actions.push(Action::Sync);
-            }
+            panel.sprite_in("deck_edge_l", panel.rect(0.0, 0.0, 1.0, h));
+            panel.sprite_in("deck_edge_r", panel.rect(w - 1.0, 0.0, 1.0, h));
             let lcd = color(sk.def.colors.lcd);
+            let red = Color32::from_rgb(235, 72, 60);
 
             // The platter: strobe dots on its rim, a mark on its label.
             let p = sk.def.at("deck_platter");
@@ -1932,18 +2003,61 @@ impl DiggrApp {
             };
             for k in 0..STROBE_DOTS {
                 let a = self.deck_strobe + k as f32 * TAU / STROBE_DOTS as f32;
-                sk.fill(px(37.5, a, 2.0), lcd);
+                // Analyzing: the lit dot runs round the rim, with a tail.
+                let dot = if fit == Fit::Analyzing {
+                    let phase =
+                        (k as f32 / STROBE_DOTS as f32 - self.deck_strobe / TAU).rem_euclid(1.0);
+                    lcd.gamma_multiply((1.0 - phase).powi(2).max(0.12))
+                } else {
+                    lcd
+                };
+                sk.fill(px(STROBE_R, a, 2.0), dot);
             }
             let white = color(sk.def.colors.pl_current);
-            for r in [4.0, 6.0, 8.0, 10.0] {
+            for r in [3.0, 5.0, 7.0] {
                 sk.fill(px(r, self.deck_turn, 1.0), white);
             }
+            // The lock flash: the whole rim lights once and fades.
+            if let Some(at) = self.deck_flash {
+                let t = at.elapsed().as_secs_f32() / FLASH_RIM_SECS;
+                if t >= 1.0 {
+                    self.deck_flash = None;
+                } else {
+                    let glow = lcd.gamma_multiply((1.0 - t).powi(2));
+                    for k in 0..RIM_DOTS {
+                        sk.fill(
+                            px(STROBE_R + 1.5, k as f32 * TAU / RIM_DOTS as f32, 2.0),
+                            glow,
+                        );
+                    }
+                    ui.ctx().request_repaint_after(Duration::from_millis(16));
+                }
+            }
 
-            // The tempo in big digits, how far this record is pushed, and its own tempo.
+            // The tempo in big digits: the target (counting to it on a new track), or while
+            // SYNC is off the record's own BPM; then how far this record is pushed, and its
+            // own tempo.
             let t = sk.def.at("deck_target");
-            let digits = match sync.pending {
-                Some(_) => "  ?".to_owned(),
-                None => format!("{:>3}", sync.target),
+            let digits = if !sync.on {
+                match (bpm, analyzing) {
+                    (_, true) => "  ?".to_owned(),
+                    (Some(b), false) => format!("{b:>3}"),
+                    (None, false) => "   ".to_owned(),
+                }
+            } else if sync.pending.is_some() || analyzing {
+                "  ?".to_owned()
+            } else if let Some((from, to, at)) = self.deck_count {
+                let k = at.elapsed().as_secs_f32() / COUNT_SECS;
+                if k >= 1.0 {
+                    self.deck_count = None;
+                    format!("{to:>3}")
+                } else {
+                    ui.ctx().request_repaint_after(Duration::from_millis(16));
+                    let v = from as f32 + (to as f32 - from as f32) * k;
+                    format!("{:>3}", v.round() as u16)
+                }
+            } else {
+                format!("{:>3}", sync.target)
             };
             for (i, c) in digits.chars().enumerate() {
                 let name = match c {
@@ -1954,7 +2068,7 @@ impl DiggrApp {
                 sk.sprite(&name, t.x as f32 + 10.0 * i as f32, t.y as f32);
             }
             let r = sk.def.at("deck_push");
-            if let (Some(_), true) = (bpm, state != PlayState::Stopped) {
+            if let (Some(_), true, true) = (bpm, playing, sync.on) {
                 let push = speed_label(fitted.unwrap_or(1.0)).unwrap_or_else(|| "0.0%".into());
                 sk.text(r.x as f32, r.y as f32, &push, lcd);
             }
@@ -1965,27 +2079,60 @@ impl DiggrApp {
                 (None, false) => "REC ---".to_owned(),
             };
             sk.text(r.x as f32, r.y as f32, &rec, lcd);
-            let r = sk.def.at("deck_lamp");
-            let own = state != PlayState::Stopped && fitted.is_none();
-            let lamp = if own { "own_tempo_on" } else { "own_tempo_off" };
-            sk.sprite(lamp, r.x as f32, r.y as f32);
+
+            // The pitch meter: a needle at the push, pinned and red when the fit is out of range.
+            let m = sk.def.at("deck_meter");
+            let needle = match fit {
+                Fit::Locked(s) => Some((((s - 1.0) / sync.range()).clamp(-1.0, 1.0) as f32, lcd)),
+                Fit::Out(s) => Some((if s > 1.0 { 1.0 } else { -1.0 }, red)),
+                _ => None,
+            };
+            if let Some((frac, col)) = needle {
+                let half = m.w as f32 / 2.0 - 1.0;
+                let x = m.x as f32 + m.w as f32 / 2.0 + frac * half;
+                sk.fill(sk.rect(x.round() - 1.0, m.y as f32, 2.0, m.h as f32), col);
+            }
+
+            // The state line: a lamp and what SYNC is doing.
+            let r = sk.def.at("deck_state");
+            let (lamp, text) = match fit {
+                Fit::Locked(_) => (lcd, lcd),
+                Fit::Out(_) | Fit::NoBpm => (red, red),
+                Fit::Analyzing => (lcd, lcd),
+                Fit::Off | Fit::Idle => (lcd.gamma_multiply(0.35), lcd.gamma_multiply(0.35)),
+            };
+            #[cfg(test)]
+            {
+                self.deck_drawn = Some((
+                    fit.line(sync.range()),
+                    digits.clone(),
+                    needle.map(|(f, _)| f),
+                ));
+            }
+            sk.fill(sk.rect(r.x as f32 + 3.0, r.y as f32 + 3.0, 3.0, 6.0), lamp);
+            sk.text(
+                r.x as f32 + 9.0,
+                r.y as f32 + 3.0,
+                &fit.line(sync.range()),
+                text,
+            );
 
             let range = if sync.wide {
                 "deck_range_16"
             } else {
                 "deck_range_8"
             };
-            if widgets::button(ui, &sk, "deck_range", "deck_range", range)
-                .on_hover_text("Pitch range: ±8% or ±16%")
-                .clicked()
-            {
-                actions.push(Action::SyncRange);
-            }
-            if widgets::button(ui, &sk, "deck_reset", "deck_reset", "deck_reset")
-                .on_hover_text("The tempo back to this record's own")
-                .clicked()
-            {
-                actions.push(Action::SyncTakeBpm);
+            let range_resp = widgets::button(ui, &sk, "deck_range", "deck_range", range)
+                .on_hover_text("Pitch range: ±8% or ±16%");
+            let reset_resp = widgets::button(ui, &sk, "deck_reset", "deck_reset", "deck_reset")
+                .on_hover_text("The tempo back to this record's own");
+            if sync.on {
+                if range_resp.clicked() {
+                    actions.push(Action::SyncRange);
+                }
+                if reset_resp.clicked() {
+                    actions.push(Action::SyncTakeBpm);
+                }
             }
 
             // The pitch fader: up is faster. Its thumb shows this record's push.
@@ -2002,7 +2149,8 @@ impl DiggrApp {
                 .on_hover_text(
                     "Your set's tempo: up faster, down slower (the centre is this record's own)",
                 );
-            if let (Some(b), Some(pos), true) = (
+            if let (true, Some(b), Some(pos), true) = (
+                sync.on,
                 bpm,
                 resp.interact_pointer_pos(),
                 resp.is_pointer_button_down_on(),
@@ -2019,11 +2167,11 @@ impl DiggrApp {
                 }
             }
             // Waiting for the record's BPM: the fader does nothing, and says why.
-            if sync.pending.is_some() && resp.is_pointer_button_down_on() {
+            if sync.on && sync.pending.is_some() && resp.is_pointer_button_down_on() {
                 actions.push(Action::SyncTarget(sync.target));
             }
             // Scrolling over it: 1 BPM per 4 skin pixels.
-            if resp.hovered() {
+            if sync.on && resp.hovered() {
                 self.sync_drag += ui.input(|i| i.smooth_scroll_delta.y) / sk.scale;
                 let n = (self.sync_drag / 4.0).trunc();
                 if n != 0.0 {
@@ -2033,7 +2181,7 @@ impl DiggrApp {
             }
             let thumb = sk.def.sprite("pitch_thumb");
             let at = (0.5 - pitch / range / 2.0).clamp(0.0, 1.0);
-            let name = if resp.is_pointer_button_down_on() {
+            let name = if sync.on && resp.is_pointer_button_down_on() {
                 "pitch_thumb_p"
             } else {
                 "pitch_thumb"
@@ -2043,6 +2191,22 @@ impl DiggrApp {
                 r.x as f32 + (r.w as f32 - thumb.w as f32) / 2.0,
                 (r.y as f32 + at * r.h as f32 - thumb.h as f32 / 2.0).round(),
             );
+
+            // SYNC off: the deck is dimmed, and only the SYNC button is lit.
+            if !sync.on {
+                sk.fill(
+                    sk.rect(0.0, 1.0, crate::skin::generate::DECK_W as f32, h - 2.0),
+                    Color32::from_black_alpha(DIM_ALPHA),
+                );
+            }
+            let btn = if sync.on { "sync_on" } else { "sync_off" };
+            let rect = sk.at("deck_sync");
+            if sprite_button(ui, &sk, "deck_sync_button", rect, btn)
+                .on_hover_text("SYNC: every track at one tempo, set on the turntable")
+                .clicked()
+            {
+                actions.push(Action::Sync);
+            }
         }
         for a in actions {
             self.apply(a, ui.ctx());
@@ -2248,11 +2412,11 @@ impl DiggrApp {
         self.dig.as_ref().is_some_and(|d| d.setup.welcome)
     }
 
-    /// The playlist's width and rows now: what the window leaves under the band.
+    /// The playlist's width and rows now: what the window leaves under the header and the band.
     fn pl_geometry(&self) -> (u16, usize) {
         let d = &self.skin.def;
-        let band = crate::layout::band_h(&self.settings, d);
-        let (w, rows) = crate::layout::playlist_fit(d, band, self.win_px.x, self.win_px.y);
+        let (w, rows) =
+            crate::layout::playlist_fit(d, crate::layout::TOP_H, self.win_px.x, self.win_px.y);
         (w, rows as usize)
     }
 
@@ -7626,8 +7790,8 @@ fn sprite_button(ui: &mut Ui, sk: &Skinned, id: &str, rect: Rect, sprite: &str) 
     resp
 }
 
-/// A window button in the band's corner, and whether it was clicked with the pointer inside
-/// its own rectangle (not merely near it).
+/// A window header button, and whether it was clicked with the pointer inside its own rectangle
+/// (not merely near it).
 fn corner_button(
     ui: &mut Ui,
     sk: &Skinned,
@@ -7658,24 +7822,38 @@ fn icon_toggle(
     resp
 }
 
-/// The band's icon buttons' width and the gap between them (skin pixels), and the corner that
-/// holds minimize, the Options gear and close.
+/// The band's icon buttons' width and the gap between them (skin pixels).
 const ICON_W: f32 = 17.0;
 const ICON_GAP: f32 = 2.0;
-const CORNER_W: f32 = 39.0;
-/// The mini player's LCD-row icons before SYNC: ▤, EQ and spectrum.
+/// The header's buttons: their gap, the margin at its right end, and their top.
+const HB_GAP: f32 = 2.0;
+const HB_MARGIN: f32 = 4.0;
+const HB_Y: f32 = 2.0;
+/// The mini player's LCD icons: ▤, EQ and spectrum.
 const LCD_ICONS: f32 = 3.0;
-/// SYNC's width, at the LCD row's right end.
-const SYNC_W: f32 = 30.0;
-/// The button row's controls under the transport (volume, shuffle, repeat) share its top.
-const BUTTON_ROW_Y: f32 = 37.0;
-/// Shuffle, then repeat, end the button row where the LCD row ends (4 pixels in).
-const SHUFFLE_X: f32 = 275.0 - 4.0 - 2.0 * ICON_W - ICON_GAP;
+/// The player's rows, in skin pixels from the band's top: the LCD box, the time digits and the
+/// icons, the two text lines, and the transport. Volume, shuffle and repeat share the
+/// transport's centre line (`BUTTON_ROW_Y` puts their 12 to 13 pixels on it).
+const LCD_Y: f32 = 6.0;
+const LCD_H: f32 = 34.0;
+const DIGITS_Y: f32 = 10.0;
+const LINE1_Y: f32 = 13.0;
+const LINE2_Y: f32 = 26.0;
+const TRANSPORT_Y: f32 = 48.0;
+const BUTTON_ROW_Y: f32 = 51.0;
+/// Where the volume slider starts, after the transport's five buttons.
+const VOLUME_X: f32 = 123.0;
 
-/// Where the mini player's LCD-row icons start, in a player `w` wide: the title line ends
-/// before it.
+/// Where the mini player's LCD icons start, in a player `w` wide: the track lines end before
+/// it. The icons end 4 pixels from the edge.
 fn lcd_icons_x(w: f32) -> f32 {
-    w - 4.0 - SYNC_W - LCD_ICONS * (ICON_W + ICON_GAP)
+    w - 4.0 - LCD_ICONS * ICON_W - (LCD_ICONS - 1.0) * ICON_GAP
+}
+
+/// Shuffle, then repeat, end the button row where the LCD icons end (4 pixels in); the volume
+/// slider takes the room between them and the transport.
+fn shuffle_x(w: f32) -> f32 {
+    w - 4.0 - 2.0 * ICON_W - ICON_GAP
 }
 
 /// The EQ window's viewport.
@@ -7703,6 +7881,13 @@ impl Focus {
 /// inactive windows. Drawn over the bar, before its buttons.
 /// Strobe dots on the turntable's rim.
 const STROBE_DOTS: usize = 24;
+/// The strobe dots' radius (the middle of the platter's rim), the dots of the lock flash, how
+/// long the flash and the digits' count last, and how dark the dimmed deck is.
+const STROBE_R: f32 = 28.0;
+const RIM_DOTS: usize = 72;
+const FLASH_RIM_SECS: f32 = 0.6;
+const COUNT_SECS: f32 = 0.5;
+const DIM_ALPHA: u8 = 125;
 
 fn dim_title(sk: &Skinned, layout: &str, lit: bool) {
     if !lit {
@@ -8275,7 +8460,6 @@ impl DiggrApp {
         }
         let origin = ui.max_rect().min;
         let scale = self.settings.scale as f32;
-        let d = self.skin.def.clone();
         self.win_px = ui.max_rect().size() / scale;
         // A click gives its side the keyboard (lit in this same frame).
         if let Some(p) = ctx.input(|i| {
@@ -8284,8 +8468,8 @@ impl DiggrApp {
                 .then(|| i.pointer.interact_pos())
                 .flatten()
         }) {
-            // The player is the band on top, the playlist under it.
-            let band = crate::layout::band_h(&self.settings, &d) as f32 * scale;
+            // The player is the header and the band on top, the playlist under them.
+            let band = crate::layout::TOP_H as f32 * scale;
             self.focus = if p.y >= origin.y + band {
                 Focus::Playlist
             } else {
@@ -8347,50 +8531,81 @@ impl DiggrApp {
         }
     }
 
-    /// The one layout: a band on top with the mini player on the left, SYNC's turntable beside
-    /// it while on, then the waveform (or a seek bar) and the window buttons, and the playlist
-    /// under it, filling the window.
+    /// The one layout: the window header on top, then the band of three panels, a third each
+    /// (the mini player, the turntable, the waveform), and the playlist under them, filling the
+    /// window.
     fn band_layout(&mut self, ui: &mut Ui, origin: Pos2) {
         let scale = self.settings.scale as f32;
-        let mini_w = self.def.main_size.0 as f32;
-        let band_h = crate::layout::band_h(&self.settings, &self.skin.def) as f32;
-        let mut left = mini_w;
-        if self.settings.sync.on {
-            self.deck_section(ui, origin + vec2(mini_w * scale, 0.0));
-            left += mini_w;
-        }
-        let right = (self.win_px.x - CORNER_W).max(left);
-        let rest = Rect::from_min_size(
-            origin + vec2(left * scale, 0.0),
-            vec2(right - left, band_h) * scale,
-        );
-        self.waveform_section(ui, rest);
-        self.window_buttons(ui, origin + vec2(right * scale, 0.0), band_h);
-        self.mini_player(ui, origin);
-        self.playlist_section(ui, origin + vec2(0.0, band_h * scale));
-    }
-
-    /// The band's top-right corner: minimize, the Options gear and close (which quits). Dragging it moves a
-    /// window that isn't maximized.
-    fn window_buttons(&mut self, ui: &mut Ui, origin: Pos2, band_h: f32) {
-        let def = self.def.clone();
-        let sk = self.skinned(&def, ui, origin);
-        let r = sk.rect(0.0, 0.0, CORNER_W, band_h);
-        sk.sprite_in("pl_bottom_fill", r);
-        let corner = ui.interact(r, Id::new("band_corner"), Sense::drag());
-        if corner.drag_started() && !ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        let win_w = self.win_px.x;
+        self.header(ui, origin, win_w);
+        let top = origin + vec2(0.0, crate::layout::HEADER_H as f32 * scale);
+        let band_h = crate::layout::BAND_H as f32;
+        let panels = crate::layout::band_panels(win_w);
+        let at = |x: u16| top + vec2(x as f32 * scale, 0.0);
+        // Anywhere on the band that is not a control drags a window that isn't maximized: this
+        // area goes first, so the controls drawn after it win their own clicks.
+        let band = Rect::from_min_size(top, vec2(win_w, band_h) * scale);
+        let drag = ui.interact(band, Id::new("band_drag"), Sense::drag());
+        if drag.drag_started() && !ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        // Each button takes only clicks inside its own 9×9 square (egui would hand it clicks a
-        // few points off too): a click in a gap does nothing, so a near-miss never quits.
-        if corner_button(ui, &sk, "min", sk.rect(4.0, 3.0, 9.0, 9.0), "btn_min").1 {
+        let wave = Rect::from_min_size(
+            at(panels.wave.0),
+            vec2(panels.wave.1 as f32, band_h) * scale,
+        );
+        self.waveform_section(ui, wave);
+        self.deck_section(ui, at(panels.deck.0), panels.deck.1 as f32);
+        self.mini_player(ui, top, panels.player.1 as f32);
+        self.playlist_section(ui, origin + vec2(0.0, crate::layout::TOP_H as f32 * scale));
+    }
+
+    /// The window header, `w` skin pixels wide: DIGGR between groove lines, and at the right
+    /// help, the Options gear (the same menu as a right-click on the player), minimize and
+    /// close (which quits). It lights while the player has the keyboard. Dragging it moves a
+    /// window that isn't maximized, and a double-click maximizes or restores it. Each button
+    /// takes only clicks inside its own square, so a near-miss never quits.
+    fn header(&mut self, ui: &mut Ui, origin: Pos2, w: f32) {
+        let def = self.def.clone();
+        let sk = self.skinned(&def, ui, origin);
+        let h = crate::layout::HEADER_H as f32;
+        sk.sprite("hdr_l", 0.0, 0.0);
+        sk.sprite_in("hdr_fill", sk.rect(2.0, 0.0, (w - 4.0).max(0.0), h));
+        sk.sprite("hdr_r", w - 2.0, 0.0);
+        let caption = "DIGGR";
+        let tw = sk.text_width(caption);
+        let x = ((w - tw) / 2.0).round();
+        sk.sprite_in("hdr_plain", sk.rect(x - 6.0, 0.0, tw + 12.0, h));
+        let ty = ((h - def.font.glyph_h as f32) / 2.0).floor();
+        sk.text(x, ty, caption, color(def.colors.pl_title));
+        if self.focus != Focus::Player {
+            sk.fill(sk.rect(0.0, 0.0, w, h), Color32::from_black_alpha(140));
+        }
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        let drag = ui.interact(
+            sk.rect(0.0, 0.0, w, h),
+            Id::new("header_drag"),
+            Sense::click_and_drag(),
+        );
+        if drag.drag_started() && !maximized {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        }
+        // Right to left: close, minimize, the gear, help. Without anything in the Options
+        // menu the gear's slot stays empty, so the others keep their places.
+        let hb = crate::skin::generate::HB as f32;
+        let slot = |n: f32| w - HB_MARGIN - hb - n * (hb + HB_GAP);
+        let rect = |n: f32| sk.rect(slot(n), HB_Y, hb, hb);
+        if corner_button(ui, &sk, "hdr_close", rect(0.0), "hb_close").1 {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
+        if corner_button(ui, &sk, "hdr_min", rect(1.0), "hb_min").1 {
             ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
         }
-        // The gear: the same Options as a right-click on the player. Without anything in the
-        // menu, its slot stays empty and close keeps its place.
         if self.has_options() {
-            let (opts, clicked) =
-                corner_button(ui, &sk, "opts", sk.rect(15.0, 3.0, 9.0, 9.0), "btn_opts");
+            let (opts, clicked) = corner_button(ui, &sk, "hdr_opts", rect(2.0), "hb_opts");
             let mut actions = Vec::new();
             egui::Popup::menu(&opts)
                 .open_memory(clicked.then_some(egui::SetOpenCommand::Toggle))
@@ -8400,36 +8615,38 @@ impl DiggrApp {
                 self.apply(a, ui.ctx());
             }
         }
-        if corner_button(ui, &sk, "close", sk.rect(26.0, 3.0, 9.0, 9.0), "btn_close").1 {
-            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        let (help, clicked) = corner_button(ui, &sk, "hdr_help", rect(3.0), "hb_help");
+        help.on_hover_text("Shortcuts (H)");
+        if clicked {
+            self.help = !self.help;
         }
     }
 
-    /// The player: play state, time and title on an LCD line, with ▤, EQ, spectrum and SYNC
-    /// at its end; previous, play, pause, stop, next, volume, shuffle and repeat under it. A
-    /// right-click off the controls opens the Options menu.
-    fn mini_player(&mut self, ui: &mut Ui, origin: Pos2) {
+    /// The player, the band's left panel `w` skin pixels wide: play state, time and two lines
+    /// of title on an LCD, with ▤, EQ and spectrum at its end; previous, play, pause, stop,
+    /// next, volume, shuffle and repeat under it. A right-click off the controls opens the
+    /// Options menu.
+    fn mini_player(&mut self, ui: &mut Ui, origin: Pos2, w: f32) {
         let mut def = (*self.def).clone();
-        let (w, h) = (
-            def.main_size.0 as f32,
-            crate::layout::band_h(&self.settings, &def) as f32,
-        );
+        let h = crate::layout::BAND_H as f32;
         // The volume slider's place here: `hslider` reads its rectangle from the layout.
         def.layout.insert(
             "mini_volume".into(),
             crate::skin::R {
-                x: 123,
+                x: VOLUME_X as u16,
                 y: BUTTON_ROW_Y as u16,
+                w: (shuffle_x(w) - 4.0 - VOLUME_X) as u16,
                 ..def.at("volume")
             },
         );
         let sk = self.skinned(&def, ui, origin);
-        sk.sprite_in("pl_bottom_fill", sk.rect(0.0, 0.0, w, h));
+        sk.sprite_in("deck_fill", sk.rect(0.0, 0.0, w, h));
+        sk.sprite_in("deck_edge_r", sk.rect(w - 1.0, 0.0, 1.0, h));
         let mut actions = Vec::new();
         self.options_menu(ui, sk.rect(0.0, 0.0, w, h), "mini_options", &mut actions);
         let colors = &def.colors;
         let lcd = color(colors.lcd);
-        sk.fill(sk.rect(4.0, 4.0, w - 8.0, 22.0), color(colors.pl_bg));
+        sk.fill(sk.rect(4.0, LCD_Y, w - 9.0, LCD_H), color(colors.pl_bg));
         let state = self.position.state;
         sk.sprite(
             match state {
@@ -8438,7 +8655,7 @@ impl DiggrApp {
                 PlayState::Stopped => "status_stop",
             },
             6.0,
-            11.0,
+            DIGITS_Y + 2.0,
         );
         // The time, elapsed or (a click away) remaining.
         let duration = self.now_playing.as_ref().and_then(|i| i.duration_secs);
@@ -8451,7 +8668,7 @@ impl DiggrApp {
         };
         let show = state != PlayState::Stopped;
         if show && remaining {
-            sk.sprite("digit_minus", 16.0, 9.0);
+            sk.sprite("digit_minus", 16.0, DIGITS_Y);
         }
         let (mm, ss) = format::lcd(secs);
         let digit = |c: char| {
@@ -8463,17 +8680,17 @@ impl DiggrApp {
         };
         let mins: Vec<char> = mm.chars().collect();
         for (i, c) in mins.iter().rev().take(2).enumerate() {
-            sk.sprite(&digit(*c), 36.0 - 10.0 * i as f32, 9.0);
+            sk.sprite(&digit(*c), 36.0 - 10.0 * i as f32, DIGITS_Y);
         }
         if show {
-            sk.sprite("digit_colon", 46.0, 9.0);
+            sk.sprite("digit_colon", 46.0, DIGITS_Y);
         }
         for (i, c) in ss.chars().enumerate() {
-            sk.sprite(&digit(c), 50.0 + 10.0 * i as f32, 9.0);
+            sk.sprite(&digit(c), 50.0 + 10.0 * i as f32, DIGITS_Y);
         }
         if ui
             .interact(
-                sk.rect(16.0, 9.0, 53.0, 13.0),
+                sk.rect(16.0, DIGITS_Y, 53.0, 13.0),
                 Id::new("mini_time"),
                 Sense::click(),
             )
@@ -8484,7 +8701,7 @@ impl DiggrApp {
         // The title line, or a verdict's flash centred on it.
         let icons_x = lcd_icons_x(w);
         let (tx, tw) = (74.0, icons_x - 3.0 - 74.0);
-        let ty = 4.0 + ((22.0 - def.font.glyph_h as f32) / 2.0).round();
+        let ty = LINE1_Y;
         let left = self
             .flash
             .as_ref()
@@ -8507,7 +8724,18 @@ impl DiggrApp {
                 lcd,
             );
         }
-        // ▤, EQ and spectrum, then SYNC: the band's tools, at the LCD row's right end.
+        // The second line: the record's label, side, year and what's for sale, or the
+        // file's album (the verdict flash leaves it alone).
+        if let Some(detail) = self.now_playing_detail() {
+            let fits = (tw / def.font.advance as f32) as usize;
+            sk.text(
+                tx,
+                LINE2_Y,
+                &format::scroll(&detail, fits, self.title_offset),
+                lerp_color(colors.lcd, [0, 0, 0], 0.35),
+            );
+        }
+        // ▤, EQ and spectrum: the band's tools, at the LCD's right end.
         for (i, (id, icon, on, tip, action)) in [
             (
                 "mini_group",
@@ -8534,25 +8762,18 @@ impl DiggrApp {
         .into_iter()
         .enumerate()
         {
-            let r = sk.rect(icons_x + (ICON_W + ICON_GAP) * i as f32, 9.0, ICON_W, 12.0);
+            let r = sk.rect(
+                icons_x + (ICON_W + ICON_GAP) * i as f32,
+                DIGITS_Y,
+                ICON_W,
+                12.0,
+            );
             if icon_toggle(ui, &sk, id, r, icon, on)
                 .on_hover_text(tip)
                 .clicked()
             {
                 actions.push(action);
             }
-        }
-        let sync = if self.settings.sync.on {
-            "sync_on"
-        } else {
-            "sync_off"
-        };
-        let r = sk.rect(w - 4.0 - SYNC_W, 9.0, SYNC_W, 12.0);
-        if sprite_button(ui, &sk, "mini_sync", r, sync)
-            .on_hover_text("SYNC: every track at one tempo, set on the turntable")
-            .clicked()
-        {
-            actions.push(Action::Sync);
         }
         // The main transport's buttons, the one of the play state lit.
         let lit = match state {
@@ -8570,7 +8791,7 @@ impl DiggrApp {
         .into_iter()
         .enumerate()
         {
-            let r = sk.rect(4.0 + 23.0 * i as f32, 34.0, 23.0, 18.0);
+            let r = sk.rect(4.0 + 23.0 * i as f32, TRANSPORT_Y, 23.0, 18.0);
             let sprite = if name == lit {
                 format!("{name}_on")
             } else {
@@ -8597,7 +8818,7 @@ impl DiggrApp {
         }
         // The button row ends where the LCD row's icons do: shuffle and repeat at the right,
         // the volume slider filling the room between them and the transport.
-        let r = sk.rect(SHUFFLE_X, BUTTON_ROW_Y, ICON_W, 12.0);
+        let r = sk.rect(shuffle_x(w), BUTTON_ROW_Y, ICON_W, 12.0);
         if icon_toggle(
             ui,
             &sk,
@@ -8616,7 +8837,7 @@ impl DiggrApp {
             Repeat::All => ("tog_rep", true, "Repeat: all"),
             Repeat::One => ("tog_rep1", true, "Repeat: one"),
         };
-        let r = sk.rect(SHUFFLE_X + ICON_W + ICON_GAP, BUTTON_ROW_Y, ICON_W, 12.0);
+        let r = sk.rect(shuffle_x(w) + ICON_W + ICON_GAP, BUTTON_ROW_Y, ICON_W, 12.0);
         if icon_toggle(ui, &sk, "mini_repeat", r, icon, on)
             .on_hover_text(tip)
             .clicked()
@@ -8646,7 +8867,7 @@ impl DiggrApp {
         }
         // Without windows of its own (the web, tests), it floats over the playlist's top left.
         if ctx.embed_viewports() {
-            let band = crate::layout::band_h(&self.settings, &self.skin.def) as f32;
+            let band = crate::layout::TOP_H as f32;
             let at = pos2(0.0, band * self.settings.scale as f32);
             egui::Area::new(Id::new("eq_area"))
                 .order(egui::Order::Foreground)

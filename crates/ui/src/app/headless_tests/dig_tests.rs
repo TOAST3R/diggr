@@ -257,10 +257,12 @@ fn play_mode_adds_to_the_crate_on_screen_and_plays_the_first_track_it_added() {
         "Release",
         "no crate named after the page"
     );
-    // The title line carries the side, year and for-sale summary.
+    // The title line is the track; the side, year and for-sale summary are on the second line.
     let line = rig.app.now_playing_line().unwrap();
-    assert!(line.contains(" · A1"), "{line}");
-    assert!(line.contains("6 for sale from"), "{line}");
+    assert!(!line.contains("for sale"), "{line}");
+    let detail = rig.app.now_playing_detail().unwrap();
+    assert!(detail.contains("A1"), "{detail}");
+    assert!(detail.contains("6 for sale from"), "{detail}");
 }
 
 #[test]
@@ -4474,6 +4476,8 @@ fn sync_rig(name: &str, files: Vec<PathBuf>) -> Rig {
     let f = Fakes::new();
     let mut rig = Rig::with_dig(name, files, |_| {}, move |dir| Some(f.setup(dir)));
     rig.app.analysis = None;
+    // Wide enough for the turntable, which is the band's middle third.
+    rig.screen.x = 720.0;
     rig.until(
         |r| {
             r.app.position.state == PlayState::Playing
@@ -4492,7 +4496,7 @@ fn another_track_starting_ends_the_wait_with_the_old_target() {
     let files = vec![beat_wav_of(&src, "a.wav", 600), beat_wav(&src, "b.wav")];
     let mut rig = sync_rig("dig-sync-skip", files);
     let first = rig.app.position.track;
-    rig.click(SYNC);
+    rig.click(deck_sync(&rig));
     assert!(rig.app.settings.sync.pending.is_some());
     let ctx = rig.ctx.clone();
     rig.app.apply(Action::Next, &ctx);
