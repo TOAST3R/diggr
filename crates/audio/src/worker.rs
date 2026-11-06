@@ -518,6 +518,13 @@ impl DecodeWorker {
                 self.clear_splices();
                 match self.recent.iter().rev().find(|(id, _)| *id == track) {
                     Some(&(_, index)) => self.start(index, secs),
+                    // Nothing of any track heard yet (the speed changed as playback started):
+                    // the track being decoded is the audible one; it takes the new speed where
+                    // it is. Dropping only its output would leave it without a stream.
+                    None if self.current.is_some() => {
+                        self.jump = None;
+                        self.reseek(secs);
+                    }
                     None => self.reset_output(),
                 }
             }

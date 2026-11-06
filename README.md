@@ -391,6 +391,11 @@ and Home/End jump), and Enter plays the entry under it.
   under it previous, play, pause, stop, next, volume, shuffle and repeat, and at the bottom a
   **seek bar** (click or drag it, and it seeks where you let go; its tooltip names the time):
   - click the time to switch between elapsed and remaining;
+  - under the time, a **level meter** shows how loud the music is, left channel above right:
+    LEDs from −48 to 0 dBFS, green, amber from −12 dB and red from −3 dB. A hit lights them at
+    once, they fall back 20 dB in 1.5 s, and a peak dot hangs a second at the loudest point.
+    It reads the music before the volume, so it moves even with the volume down; paused, it
+    falls empty and then the window rests;
   - the title line flashes WANTED, PASS, OWNED or UNWANTED for a moment after a verdict;
   - three buttons at the LCD's end: **▤** groups the crate on screen by record (lit while
     grouped), **EQ** opens the equalizer in a window of its own (it stays on top, and its place
@@ -406,6 +411,10 @@ and Home/End jump), and Enter plays the entry under it.
   record: it slows to a stop in 0.4 s, the pitch falling with it, and the time stops; let go
   and it spins back up to its speed in 0.3 s and plays on from where it stopped. A seek, stop,
   pause or track change lets go of it too.
+  At the state line's right end, the **beat lamp** flashes on each beat of the track's analysed
+  beat grid as you hear it, brighter on the downbeat, so you can see the grid sits on the beat;
+  it follows SYNC's speed, goes still with a held platter and stays dark until the beats are
+  known.
   With SYNC on:
     - its **pitch fader** sets your set's tempo: up is faster, down slower, the centre is the
       record's own tempo (±8%; the **8%/16%** button widens it), to 0.01 BPM. Scroll over it, or
@@ -1561,7 +1570,7 @@ run `cargo test -p dig -- --ignored real_pins`, which downloads both and checks 
 ## Tests
 
 ```sh
-cargo test --workspace            # 1192 tests, about a minute after the first build; no audio hardware or display needed
+cargo test --workspace            # 1207 tests, about a minute after the first build; no audio hardware or display needed
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check -p audio -p platform --target wasm32-unknown-unknown   # core stays web-portable
@@ -1597,15 +1606,18 @@ What's covered:
   - varispeed: a speed change heard within 50 ms with no click, gap or underrun, the
     clock in track time (1.06 track frames per frame, monotonic across a change), gapless
     at 1.03 → 0.97, jumps and loops landing in track time at 1.04, and a change in a track's
-    last moments or at a gapless boundary applying to the track being heard;
+    last moments or at a gapless boundary applying to the track being heard, and a change
+    before any of the track has been heard (SYNC fitting it as it starts) keeping it playing;
   - the platter hold: slowing within a buffer at 1.03 and coming back to 1.03 without an
     underrun, and a seek, stop, pause, next, previous or speed change ending it (the renderer's
     unit tests time the 0.4 s brake and 0.3 s spin-up, the silence and still clock while held,
     a release before the stop, the 0.5 s watchdog, no clicks, the clock within 1 ms of the
     audio and never going back, and the audio bit-exact again after a release).
 - **`crates/audio/tests/rt_alloc.rs`**: a counting global allocator proves the audio callback
-  never allocates on any path, varispeed, the speed change's crossfade and a platter hold
-  included.
+  never allocates on any path, varispeed, the speed change's crossfade, a platter hold and the
+  level meter's peaks included.
+- **Renderer unit tests** also keep the loudest peak per channel until the app reads it, and
+  measure it before the volume.
 - **`crates/ui`** (unit tests):
   - motion: easing, transitions that open and close in their times and turn around midway, the
     spring, each kind's movement, and Reduce motion jumping at once; headless, a context menu
@@ -1639,6 +1651,12 @@ What's covered:
     fader meanwhile, and a new track ending the wait;
   - crates: name rules, lazy loading, unreadable crate files, a damaged index, migration of a
     300-entry `playlist.ron`, and Send to crate without duplicates;
+  - the level meter's ballistics (instant attack, 20 dB per 1.5 s release, a second's peak
+    hold, the segments and colours); headless, a −1 dBFS channel lighting into the red beside a
+    −12 dBFS one, the meter moving with the volume at 0, a paused meter falling empty and still,
+    Reduce motion showing the level without a dot, and the beat lamp lighting twice a second on
+    a 120 BPM grid (brighter on the downbeat), 2.1 times at 1.05, and staying dark without beats
+    or with the platter held;
   - EQ curve;
   - that the committed app and extension icons match `icon-gen`;
   - skin validation, that the committed skin matches its generator, and that a skin without

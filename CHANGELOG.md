@@ -35,6 +35,11 @@ sentences. `## Unreleased` collects entries until a release renames it.
   and the cart total rolls up to its new price. Switching crates slides the list across, and rows
   make room when a record arrives.
 
+- **See the music move.** A small LED level meter under the time shows how loud each channel
+  is, jumping on every hit and falling back smoothly, with a peak dot that hangs for a moment.
+  On the turntable, a beat lamp flashes on every beat as you hear it, brighter on the one, so
+  you can see the BPM grid is right.
+
 ### Changed
 
 - **Tempo to a hundredth.** SYNC's tempo now goes to 0.01 BPM, shown small beside the big digits.
@@ -81,6 +86,9 @@ sentences. `## Unreleased` collects entries until a release renames it.
   and Set up Diggr…. The spectrogram is on the player's spectrum button and S, as before.
 
 ### Fixed
+
+- **Changing the speed as a track starts no longer stops the audio.** With SYNC on, a track
+  fitted the instant it began could fall silent for good; it now plays on at its new speed.
 
 - **Previews work on a Mac again.** The yt-dlp Diggr downloads for you now starts in about a
   second instead of never, after a one-time "Preparing yt-dlp…" of up to a minute. If you had

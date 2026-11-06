@@ -1211,3 +1211,29 @@ fn seek_stop_pause_and_track_changes_end_a_hold() {
     rig.engine.hold(true);
     assert!(!rig.engine.held());
 }
+
+#[test]
+fn a_speed_change_before_the_track_is_heard_keeps_it_playing() {
+    // SYNC fits a track as it starts: the speed can change before the clock has reported a
+    // single frame of it, so nothing says which track is audible yet.
+    let dir = temp_dir("speed-before-heard");
+    let t = sine_wav(&dir.join("a.wav"), 440.0, 0..96_000);
+    let mut rig = Rig::new(48_000, EngineConfig::default());
+    rig.engine.set_queue(vec![t]);
+    rig.engine.play_index(0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while rig.engine.current_index().is_none() {
+        assert!(std::time::Instant::now() < deadline, "the track loads");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(rig.engine.position().track, 0, "nothing heard yet");
+    rig.engine.set_speed(0, 1.05);
+    for _ in 0..40 {
+        rig.pull_waiting();
+    }
+    let p = rig.engine.position();
+    assert_ne!(p.track, 0, "it plays");
+    assert_eq!(p.speed, 1.05, "at the new speed");
+    assert!(p.frame > 0);
+    assert_eq!(rig.engine.stats().underruns, 0);
+}

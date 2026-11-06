@@ -151,6 +151,9 @@ pub struct Control {
     start_generation: AtomicU32,
     last_start_latency_ns: AtomicU64,
     queue_ended: AtomicU64,
+    /// The loudest peak of each channel played since the app last read them (`f32` bits; for
+    /// non-negative floats the bits order like the values, so `fetch_max` keeps the loudest).
+    levels: [AtomicU32; CHANNELS],
     /// A hand on the record (see [`Control::set_hold`]), and when the app last confirmed it.
     hold: AtomicBool,
     hold_seen_ns: AtomicU64,
@@ -173,6 +176,7 @@ impl Default for Control {
             start_generation: AtomicU32::new(0),
             last_start_latency_ns: AtomicU64::new(0),
             queue_ended: AtomicU64::new(0),
+            levels: [AtomicU32::new(0), AtomicU32::new(0)],
             hold: AtomicBool::new(false),
             hold_seen_ns: AtomicU64::new(0),
         }
@@ -281,6 +285,20 @@ impl Control {
     /// Increments each time playback runs off the end of the queue.
     pub fn queue_ended_count(&self) -> u64 {
         self.queue_ended.load(Ordering::Relaxed)
+    }
+
+    /// Keeps `peaks` (linear, one per channel) if they are louder than what's kept (callback).
+    fn note_levels(&self, peaks: [f32; CHANNELS]) {
+        for (kept, p) in self.levels.iter().zip(peaks) {
+            kept.fetch_max(p.max(0.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// The loudest peak of each channel (linear, post-EQ and pre-volume, as the tap) since the
+    /// last call, which clears them.
+    pub fn take_levels(&self) -> [f32; CHANNELS] {
+        let take = |i: usize| f32::from_bits(self.levels[i].swap(0, Ordering::Relaxed));
+        [take(0), take(1)]
     }
 }
 
@@ -608,6 +626,14 @@ impl Renderer {
             self.eq.process(&mut self.scratch[..n * CHANNELS]);
             self.lowpass
                 .process(&mut self.scratch[..n * CHANNELS], knob);
+            // The block's peaks, as heard before the volume, for the level meter.
+            let mut peaks = [0.0f32; CHANNELS];
+            for frame in self.scratch[..n * CHANNELS].as_chunks::<CHANNELS>().0 {
+                for (p, s) in peaks.iter_mut().zip(frame) {
+                    *p = p.max(s.abs());
+                }
+            }
+            self.control.note_levels(peaks);
             for r in &runs[..run_count] {
                 let data = &self.scratch[r.offset * CHANNELS..(r.offset + r.frames) * CHANNELS];
                 self.tap.write(r.track, r.start_frame, r.speed, data);
@@ -1209,6 +1235,46 @@ mod tests {
         assert_eq!(speeds[1], 1.0);
         // The clock gives where the last buffer started: the second 512 frames of the new audio.
         assert_eq!(g.clock.snapshot().frame, 96_000 + 512);
+    }
+
+    #[test]
+    fn the_loudest_peak_is_kept_until_the_app_reads_it() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        for (i, v) in [0.2f32, 0.9, 0.4].into_iter().enumerate() {
+            // Left at the level, right at half of it.
+            let block: Vec<f32> = (0..512).flat_map(|_| [v, -v / 2.0]).collect();
+            g.tx.push(gen_, 1, i as u64 * 512, &block);
+        }
+        g.control.set_state(PlayState::Playing);
+        let mut out = vec![0.0; 512 * 2];
+        for i in 0..3 {
+            g.r.render(&mut out, info(i * 10_666_667));
+        }
+        assert_eq!(
+            g.control.take_levels(),
+            [0.9, 0.45],
+            "the loudest of the three, per channel"
+        );
+        assert_eq!(g.control.take_levels(), [0.0, 0.0], "reading clears them");
+    }
+
+    #[test]
+    fn the_levels_are_measured_before_the_volume() {
+        let mut g = rig(2);
+        let gen_ = g.control.bump_generation();
+        g.tx.push(gen_, 1, 0, &vec![0.5; 2048]);
+        g.control.set_volume(0.0);
+        g.control.set_state(PlayState::Playing);
+        let mut out = vec![0.0; 512 * 2];
+        g.r.render(&mut out, info(0));
+        g.r.render(&mut out, info(10_666_667));
+        assert!(out.iter().all(|&s| s == 0.0), "silent at volume 0");
+        assert_eq!(
+            g.control.take_levels(),
+            [0.5, 0.5],
+            "the meter still sees the music"
+        );
     }
 
     #[test]
